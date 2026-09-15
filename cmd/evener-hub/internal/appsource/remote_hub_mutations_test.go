@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 const (
@@ -845,5 +847,77 @@ func TestRemoteHubThreadDiagnosticsTranslateNestedRefs(t *testing.T) {
 	}
 	if got := diagnostics.Jobs[1].TranscriptRef; got != "job:job_a" {
 		t.Errorf("shell job transcriptRef = %q, want opaque %q", got, "job:job_a")
+	}
+}
+
+// TestRemoteHubAcquisitionErrSSHStartIsSessionUnavailable pins the production
+// connector's retryable acquisition class. sshManager.Ensure surfaces
+// sshconn.ErrSSHStart (wrapping *exec.ExitError or plain stderr text) when the
+// ssh bridge cannot start or handshake; it carries no transport-shaped text, so
+// text matching alone misses it and an unreachable host would surface as a
+// generic error that never fires the hub's auto-resume gate. ErrSSHStart must
+// therefore map to SessionUnavailable on BOTH the read (call) and mutation
+// (mutationCall) paths, while the terminal classes stay raw.
+func TestRemoteHubAcquisitionErrSSHStartIsSessionUnavailable(t *testing.T) {
+	startErr := fmt.Errorf("%w: host %q: %w: ssh: connect to host host port 22: Connection refused",
+		sshconn.ErrSSHStart, "host", errors.New("exit status 255"))
+
+	assertSessionUnavailable := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("call succeeded despite an unreachable remote host")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (an acquisition failure must not be an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+		}
+		if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+			t.Fatalf("evenerErrorInfo = %q, want %q", got, appwire.ErrorSessionUnavailable)
+		}
+	}
+
+	t.Run("read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, startErr
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		assertSessionUnavailable(t, err)
+	})
+
+	t.Run("mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, startErr
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-sshstart"})
+		assertSessionUnavailable(t, err)
+	})
+
+	terminal := []struct {
+		name string
+		err  error
+	}{
+		{"ssh auth", fmt.Errorf("%w: host %q: permission denied", sshconn.ErrSSHAuth, "host")},
+		{"host not found", fmt.Errorf("%w: %q", sshconn.ErrHostNotFound, "host")},
+		{"protocol incompatible", fmt.Errorf("%w: host %q: peer speaks -1", sshconn.ErrProtocolIncompatible, "host")},
+	}
+	for _, tc := range terminal {
+		t.Run("terminal "+tc.name, func(t *testing.T) {
+			source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+				return nil, tc.err
+			})
+			_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-terminal"})
+			if err == nil {
+				t.Fatal("StartTurn succeeded despite a terminal acquisition failure")
+			}
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("error = %v, want the terminal class preserved", err)
+			}
+			if wire, ok := errors.AsType[appwire.WireError](err); ok {
+				t.Fatalf("terminal acquisition error was remapped to a wire error: %#v", wire)
+			}
+		})
 	}
 }
