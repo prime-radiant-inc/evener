@@ -1996,3 +1996,70 @@ func TestRelaySessionDaemonGoneIsAnnouncedOncePerDisconnect(t *testing.T) {
 	case <-time.After(1500 * time.Millisecond):
 	}
 }
+
+// Only "no rendezvous claim at all" is gone. The roster keeps an alive claim
+// whose ownership it cannot yet resolve off the listing on purpose (a probe
+// missed during a daemon or session transition), and that claim is not a
+// daemon that left: recovery keeps dialling until the claim is either
+// confirmed or dropped (review round 12 on #1325).
+func TestRelaySessionUnconfirmedClaimIsNotGone(t *testing.T) {
+	var mu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	var unconfirmed []rendezvous.Entry
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		mu.Lock()
+		defer mu.Unlock()
+		return listed
+	})
+	source.SetUnconfirmedEntries(func() []rendezvous.Entry {
+		mu.Lock()
+		defer mu.Unlock()
+		return unconfirmed
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+
+	// The claim leaves the listing but stays on the table, unresolved.
+	mu.Lock()
+	unconfirmed, listed = listed, nil
+	mu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case delivery := <-deliveries:
+		t.Fatalf("an unresolved claim was announced gone: %+v", delivery.Notification)
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	// The claim is dropped altogether: now the daemon is gone.
+	mu.Lock()
+	unconfirmed = nil
+	mu.Unlock()
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resync once the claim was gone altogether")
+	}
+}

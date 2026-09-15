@@ -21,8 +21,13 @@ import (
 type LocalDaemonSource struct {
 	sourceID string
 	entries  func() []LocalDaemonEntry
-	client   *http.Client
-	dial     appwireDialFunc
+	// unconfirmed lists the rendezvous claims the roster holds but has not
+	// confirmed (alive PID, ownership unresolved). They are not routable, and
+	// they are not gone either: a relay whose daemon's claim is still on the
+	// table keeps dialling instead of announcing the session ended.
+	unconfirmed func() []rendezvous.Entry
+	client      *http.Client
+	dial        appwireDialFunc
 
 	itemPagingLocks keyedMutexRegistry
 	itemSnapshots   *itemSnapshotStateCache
@@ -82,6 +87,14 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
 		}
 		return out
 	}, client)
+}
+
+// SetUnconfirmedEntries tells the source which rendezvous claims the roster is
+// still holding unresolved, so the relay can tell "no claim at all" (the
+// daemon is gone) from "claim present, ownership unresolved" (keep dialling).
+func (s *LocalDaemonSource) SetUnconfirmedEntries(unconfirmed func() []rendezvous.Entry) *LocalDaemonSource {
+	s.unconfirmed = unconfirmed
+	return s
 }
 
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
@@ -190,11 +203,14 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
 				currentEntry, resolveErr := s.relayEntry(ref)
 				if resolveErr != nil {
-					// Only an entry that is no longer listed means the daemon
-					// is gone; a resolver failure on a listed entry (its
-					// session moved under the thread, no workspace ref)
-					// names a daemon that is still there.
-					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted {
+					// Only "no claim at all" means the daemon is gone. A
+					// resolver failure on a listed entry (its session moved
+					// under the thread, no workspace ref) names a daemon that
+					// is still there, and so does a claim the roster holds
+					// unresolved: alive, ownership not yet confirmed, kept off
+					// the listing on purpose while a probe is missed during a
+					// transition. Both keep dialling.
+					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted && !s.unconfirmedClaimNames(ref) {
 						return nil, nil, &relayDaemonGoneError{err: resolveErr}
 					}
 					return nil, nil, resolveErr
@@ -994,15 +1010,36 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 		if item.ReadOnlyAlias && !allowReadOnlyAlias {
 			continue
 		}
-		entry := localDaemonRendezvousEntry(item)
-		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
-			return item, nil
-		}
-		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
+		if s.localEntryNamesRef(item, requestedRef, threadID) {
 			return item, nil
 		}
 	}
 	return LocalDaemonEntry{}, &localDaemonThreadNotFoundError{err: appwire.SessionUnavailable("thread not found: " + threadID)}
+}
+
+// localEntryNamesRef reports whether an entry is the one a ref (or, without a
+// ref, a thread id) addresses: by its workspace ref, its thread id or its
+// session id.
+func (s *LocalDaemonSource) localEntryNamesRef(item LocalDaemonEntry, requestedRef, threadID string) bool {
+	entry := localDaemonRendezvousEntry(item)
+	if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
+		return true
+	}
+	return localDaemonThreadID(item) == threadID || entry.SessionID == threadID
+}
+
+// unconfirmedClaimNames reports whether a rendezvous claim the roster holds
+// unresolved names the ref: not routable, but not gone either.
+func (s *LocalDaemonSource) unconfirmedClaimNames(ref appwire.Ref) bool {
+	if s.unconfirmed == nil {
+		return false
+	}
+	for _, claim := range s.unconfirmed() {
+		if s.localEntryNamesRef(LocalDaemonEntry{Entry: claim}, ref.String(), ref.ThreadID) {
+			return true
+		}
+	}
+	return false
 }
 
 // localDaemonThreadNotFoundError marks the one resolver failure that means no

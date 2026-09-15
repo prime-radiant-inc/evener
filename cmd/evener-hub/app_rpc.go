@@ -37,7 +37,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 		roster = hubcore.NewRoster(cfg.RunDir, &hubcore.StatusProber{}).RefreshOnRead()
 		cfg.Roster = roster
 	}
-	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		if roster != nil {
 			live := roster.List()
 			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
@@ -75,7 +75,14 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 			return entries
 		}
 		return nil
-	}, http.DefaultClient))
+	}, http.DefaultClient)
+	if roster != nil {
+		// The claims the roster holds unresolved are off the listing on
+		// purpose; the relay must still tell them apart from a daemon that
+		// is gone.
+		local.SetUnconfirmedEntries(roster.UnconfirmedEntries)
+	}
+	registry.Add(local)
 	return registry, cfg
 }
 

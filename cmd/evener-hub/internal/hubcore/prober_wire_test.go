@@ -45,6 +45,35 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 	}
 }
 
+// The answer a probe gets carries the answering daemon's session id (its
+// root thread's SessionID, also its Evener.InstanceID), and a daemon keeps its
+// rendezvous entry's session id current (rvreg.UpdateSessionID). So an
+// endpoint answering for a session the entry does not name is another
+// daemon that re-bound the port; its answer must not be published under the
+// entry (review round 12 on #1325).
+func TestStatusProberRejectsAnAnswerForAnotherSession(t *testing.T) {
+	other := appwire.Thread{ID: "other", SessionID: "other", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: other}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{other}}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+	prober := &StatusProber{client: httpSrv.Client()}
+	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
+
+	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "mine", ThreadID: "mine"}); got.OK {
+		t.Fatalf("an answer for session %q was published under an entry naming %q: %+v", other.SessionID, "mine", got)
+	}
+	// An entry that names no session takes the answer's, as it always has.
+	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint}); !got.OK || got.SessionID != "other" {
+		t.Fatalf("an entry naming no session did not take the answer's: %+v", got)
+	}
+}
+
 func (s wireProbeEnvelopeSource) ContextPressure() float64 { return 0 }
 func (s wireProbeEnvelopeSource) ContextMetrics() server.ContextMetrics {
 	return server.ContextMetrics{}

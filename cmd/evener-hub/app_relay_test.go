@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -768,6 +770,84 @@ func TestHubWithoutRosterListsALateDaemonInNavigationWithoutAThreadListingFirst(
 	snapshot := web.navigationSnapshotInputs(context.Background())
 	if len(snapshot.live) != 1 || snapshot.live[0].SessionID != "late" {
 		t.Fatalf("navigation read the fallback roster as %+v, want the daemon that appeared after startup", snapshot.live)
+	}
+}
+
+// The hub wires the roster's unresolved claims to the local source. A daemon
+// whose rendezvous claim changes identity mid-transition while a probe is
+// missed is parked unconfirmed, off the listing; the relay must keep dialling
+// it rather than announce the session ended, and announce only once the
+// claim is gone altogether (review round 12 on #1325).
+func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon, upstream := newDaemonStandIn(t, "before")
+	runDir := t.TempDir()
+	claim := rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "before",
+		SessionID: "before",
+		StartedAt: time.Now().UTC(),
+	}
+	writeRendezvous(t, runDir, claim)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
+		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+	roster.Refresh()
+	if _, ok := roster.Find("before"); !ok {
+		t.Fatal("the stand-in daemon was not confirmed into the roster")
+	}
+	sources, cfg := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: cfg.Roster}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:before", Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mid-transition: the claim changes identity under the same PID while the
+	// endpoint stops answering. The roster parks both claims unresolved.
+	claim.SessionID, claim.ThreadID = "after", "after"
+	writeRendezvous(t, runDir, claim)
+	if err := daemon.Shutdown(ctx); err != nil {
+		t.Fatalf("daemon shutdown: %v", err)
+	}
+	roster.Refresh()
+	if len(roster.List()) != 0 || len(roster.UnconfirmedEntries()) == 0 {
+		t.Fatalf("expected the claims parked unresolved, got listed=%+v unconfirmed=%+v", roster.List(), roster.UnconfirmedEntries())
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method == appwire.NotifyEvenerThreadResync {
+			t.Fatalf("an unresolved claim was announced gone: %s", got.Params)
+		}
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	// The claim is gone altogether: now the daemon is gone.
+	if err := os.Remove(filepath.Join(runDir, strconv.Itoa(claim.PID)+".json")); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			return
+		case <-deadline:
+			t.Fatal("no resync once the claim was gone altogether")
+		}
 	}
 }
 

@@ -85,6 +85,13 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if strings.TrimSpace(root.ID) == "" || rootID == "" {
 		return ProbeResult{}
 	}
+	// The answer names the answering daemon's session, and a daemon keeps its
+	// entry's session id current (rvreg.UpdateSessionID). An endpoint that
+	// answers for a session the entry does not name is another daemon that
+	// re-bound the port; its answer is not this entry's.
+	if named := strings.TrimSpace(entry.SessionID); named != "" && rootID != named {
+		return ProbeResult{}
+	}
 
 	// ThreadList carries the root and descendants from one projection cut. Keep
 	// the ThreadRead result only for identity validation, and use the matching
