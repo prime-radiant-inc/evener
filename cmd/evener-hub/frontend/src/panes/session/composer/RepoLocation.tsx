@@ -12,6 +12,11 @@
 // resolved once per cwd and cached by state, failing soft to "no branch shown"
 // (see shell/gitLocation.ts). This is display metadata only: nothing here is
 // sent anywhere, and a slow or failed lookup simply renders the cwd alone.
+//
+// The lookup runs only for a session whose cwd is on THIS hub's filesystem
+// (the `local` prop). A source-backed session's cwd belongs to another host, so
+// resolving it here could show an unrelated local repository that happens to
+// share the path; such a session still shows its working dir, just no branch.
 import { useEffect, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { resolveGitLocation } from "../../../shell/gitLocation";
@@ -22,6 +27,11 @@ import { FORGE_LABELS, parseRepoRemote } from "./repoRemote";
 
 export interface RepoLocationProps {
   cwd: string;
+  // Whether cwd is on this hub's own filesystem. A source-backed session's cwd
+  // belongs to another host, so resolving its branch here could surface an
+  // unrelated local repository that merely shares the path; those sessions get
+  // the working dir alone.
+  local: boolean;
 }
 
 const CLASS = {
@@ -39,12 +49,12 @@ interface ResolvedLocation {
   originUrl: string;
 }
 
-export function RepoLocation({ cwd }: RepoLocationProps) {
+export function RepoLocation({ cwd, local }: RepoLocationProps) {
   const client = useClient();
   const [resolved, setResolved] = useState<ResolvedLocation | null>(null);
 
   useEffect(() => {
-    if (cwd.trim() === "") return undefined;
+    if (!local || cwd.trim() === "") return undefined;
     let active = true;
     void resolveGitLocation(client, cwd).then((location) => {
       if (active) setResolved({ cwd, ...location });
@@ -52,11 +62,11 @@ export function RepoLocation({ cwd }: RepoLocationProps) {
     return () => {
       active = false;
     };
-  }, [client, cwd]);
+  }, [client, cwd, local]);
 
   if (cwd.trim() === "") return null;
 
-  const current = resolved !== null && resolved.cwd === cwd ? resolved : null;
+  const current = local && resolved !== null && resolved.cwd === cwd ? resolved : null;
   const branch = current?.branch ?? "";
   const remote = current !== null && current.originUrl !== "" ? parseRepoRemote(current.originUrl) : null;
 

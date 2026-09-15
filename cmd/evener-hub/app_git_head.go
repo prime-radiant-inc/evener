@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"net/url"
 	"os/exec"
 	"strings"
 
@@ -12,10 +13,11 @@ import (
 
 var gitCommand = exec.CommandContext
 
-// hubGitHead resolves a working directory's git HEAD and "origin" remote URL
-// for the hub AppWire method. Git and filesystem failures are intentionally
-// represented as empty values: callers use these only as display metadata
-// (the Spawn pane's branch chip, the composer's location line).
+// hubGitHead resolves a working directory's git HEAD and, when the caller asks
+// for it (GitHeadParams.IncludeOrigin), its "origin" remote URL. Git and
+// filesystem failures are intentionally represented as empty values: callers
+// use these only as display metadata (the Spawn pane's branch chip, the
+// composer's location line).
 func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHeadParams) appwire.GitHeadResponse {
 	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
@@ -26,23 +28,53 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 	if cfg.ResolveGitHead != nil {
 		resolve = cfg.ResolveGitHead
 	}
-	head, err := resolve(ctx, cwd)
-	if err != nil {
-		return appwire.GitHeadResponse{}
+	// HEAD and origin are independent reads, and each failure collapses only
+	// its own half. A repo with an origin remote but no HEAD yet (a fresh
+	// `git init`, an empty clone) still has an origin worth linking to, and a
+	// detached HEAD or a missing origin never suppresses the branch.
+	head, headErr := resolve(ctx, cwd)
+	if headErr != nil {
+		head = ""
 	}
 
-	// Origin resolution is independent of HEAD: a detached HEAD or a repo with
-	// no branch still has an origin worth linking to, and a missing origin
-	// never suppresses the branch. Both failures collapse to "".
-	resolveOrigin := resolveGitOrigin
-	if cfg.ResolveGitOrigin != nil {
-		resolveOrigin = cfg.ResolveGitOrigin
-	}
-	origin, err := resolveOrigin(ctx, cwd)
-	if err != nil {
-		origin = ""
+	// Origin is opt-in: a branch-only caller gets neither the lookup nor the
+	// remote on the wire.
+	origin := ""
+	if params.IncludeOrigin {
+		resolveOrigin := resolveGitOrigin
+		if cfg.ResolveGitOrigin != nil {
+			resolveOrigin = cfg.ResolveGitOrigin
+		}
+		if raw, originErr := resolveOrigin(ctx, cwd); originErr == nil {
+			origin = sanitizeGitRemote(raw)
+		}
 	}
 	return appwire.GitHeadResponse{Head: head, OriginURL: origin}
+}
+
+// sanitizeGitRemote strips credentials from a remote URL before it crosses
+// AppWire. `git remote get-url origin` returns the configured URL verbatim, and
+// an https remote can embed a username and token
+// (https://user:token@host/owner/repo.git); the browser needs only the host and
+// path to build a forge link, so the userinfo is removed here rather than left
+// for the caller to drop when it draws the link.
+//
+// A scheme-less, scp-like remote (git@host:owner/repo.git) is returned
+// unchanged: its leading `user@` is part of the address rather than a
+// credential, and the frontend's parser needs it. Anything with a scheme that
+// fails to parse yields "" - a URL this function cannot inspect is one it
+// cannot promise is credential-free.
+func sanitizeGitRemote(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.Contains(trimmed, "://") {
+		return trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	return parsed.String()
 }
 
 // resolveGitHead returns the current branch name or, in detached HEAD state,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -41,7 +42,7 @@ func TestHubGitHeadFailSoft(t *testing.T) {
 }
 
 func TestHubGitHeadNonGitDirectoryReturnsEmpty(t *testing.T) {
-	got := hubGitHead(context.Background(), hubcore.WebConfig{}, appwire.GitHeadParams{CWD: t.TempDir()})
+	got := hubGitHead(context.Background(), hubcore.WebConfig{}, appwire.GitHeadParams{CWD: t.TempDir(), IncludeOrigin: true})
 	if got.Head != "" {
 		t.Fatalf("head=%q, want empty for a non-git directory", got.Head)
 	}
@@ -62,7 +63,7 @@ func TestHubGitHeadResolvesOriginAlongsideHead(t *testing.T) {
 			return "git@github.com:owner/repo.git", nil
 		},
 	}
-	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir()})
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir(), IncludeOrigin: true})
 	if got.Head != "feature/x" {
 		t.Fatalf("head=%q, want feature/x", got.Head)
 	}
@@ -83,12 +84,101 @@ func TestHubGitHeadOriginFailureKeepsHead(t *testing.T) {
 			return "", errors.New("no origin remote")
 		},
 	}
-	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir()})
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir(), IncludeOrigin: true})
 	if got.Head != "main" {
 		t.Fatalf("head=%q, want main", got.Head)
 	}
 	if got.OriginURL != "" {
 		t.Fatalf("originUrl=%q, want empty on origin failure", got.OriginURL)
+	}
+}
+
+// The origin remote is opt-in: the method's other caller (the Spawn pane's
+// branch chip) renders only the branch, so the hub must not even run the origin
+// lookup for it - least data and one fewer git subprocess per directory change.
+func TestHubGitHeadOriginIsOptIn(t *testing.T) {
+	originCalls := 0
+	cfg := hubcore.WebConfig{
+		ResolveGitHead: func(context.Context, string) (string, error) { return "main", nil },
+		ResolveGitOrigin: func(context.Context, string) (string, error) {
+			originCalls++
+			return "git@github.com:owner/repo.git", nil
+		},
+	}
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir()})
+	if got.Head != "main" {
+		t.Fatalf("head=%q, want main", got.Head)
+	}
+	if got.OriginURL != "" {
+		t.Fatalf("originUrl=%q, want empty without IncludeOrigin", got.OriginURL)
+	}
+	if originCalls != 0 {
+		t.Fatalf("origin seam calls=%d, want 0 without IncludeOrigin", originCalls)
+	}
+}
+
+// `git remote get-url origin` returns the configured URL verbatim, and an https
+// remote can embed a username and token. The browser needs only host and path to
+// build a forge link, so the credential must be stripped before the URL crosses
+// AppWire - not merely before the link is drawn.
+func TestHubGitHeadStripsOriginCredentials(t *testing.T) {
+	cfg := hubcore.WebConfig{
+		ResolveGitHead: func(context.Context, string) (string, error) { return "main", nil },
+		ResolveGitOrigin: func(context.Context, string) (string, error) {
+			return "https://user:supersecret@github.com/owner/repo.git", nil
+		},
+	}
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir(), IncludeOrigin: true})
+	if strings.Contains(got.OriginURL, "supersecret") || strings.Contains(got.OriginURL, "user:") {
+		t.Fatalf("originUrl=%q leaked credentials across AppWire", got.OriginURL)
+	}
+	if got.OriginURL != "https://github.com/owner/repo.git" {
+		t.Fatalf("originUrl=%q, want the sanitized URL", got.OriginURL)
+	}
+}
+
+// HEAD and origin are independent reads: a repo with an origin remote but an
+// unborn branch (fresh `git init`, an empty clone) has no HEAD yet still has an
+// origin worth linking to, and the response must not be indistinguishable from a
+// non-git directory.
+func TestHubGitHeadOriginSurvivesHeadFailure(t *testing.T) {
+	cfg := hubcore.WebConfig{
+		ResolveGitHead: func(context.Context, string) (string, error) {
+			return "", errors.New("unborn HEAD")
+		},
+		ResolveGitOrigin: func(context.Context, string) (string, error) {
+			return "git@github.com:owner/repo.git", nil
+		},
+	}
+	got := hubGitHead(context.Background(), cfg, appwire.GitHeadParams{CWD: t.TempDir(), IncludeOrigin: true})
+	if got.Head != "" {
+		t.Fatalf("head=%q, want empty", got.Head)
+	}
+	if got.OriginURL != "git@github.com:owner/repo.git" {
+		t.Fatalf("originUrl=%q, want the origin resolved despite the HEAD failure", got.OriginURL)
+	}
+}
+
+func TestSanitizeGitRemote(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "https credentials", in: "https://user:tok@github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
+		{name: "https username only", in: "https://user@github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
+		{name: "https clean", in: "https://github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
+		{name: "ssh userinfo", in: "ssh://git@github.com/owner/repo.git", want: "ssh://github.com/owner/repo.git"},
+		{name: "scp-like unchanged", in: "git@github.com:owner/repo.git", want: "git@github.com:owner/repo.git"},
+		{name: "local path unchanged", in: "/srv/git/repo.git", want: "/srv/git/repo.git"},
+		{name: "empty", in: "   ", want: ""},
+		{name: "unparseable scheme fails closed", in: "https://a b@github.com/o/r.git", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeGitRemote(tc.in); got != tc.want {
+				t.Fatalf("sanitizeGitRemote(%q)=%q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

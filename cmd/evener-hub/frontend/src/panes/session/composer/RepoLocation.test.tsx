@@ -6,10 +6,10 @@ import { RepoLocation } from "./RepoLocation";
 
 afterEach(cleanup);
 
-function renderLocation(cwd: string, client: FakeClient) {
+function renderLocation(cwd: string, client: FakeClient, local = true) {
   return render(
     <ClientProvider client={client}>
-      <RepoLocation cwd={cwd} />
+      <RepoLocation cwd={cwd} local={local} />
     </ClientProvider>,
   );
 }
@@ -24,6 +24,19 @@ test("renders nothing for an empty cwd, without asking the hub", () => {
   const client = new FakeClient();
   const { container } = renderLocation("  ", client);
   expect(container.querySelector('[data-testid="composer-repo-location"]')).toBeNull();
+  expect(client.calls).toHaveLength(0);
+});
+
+// A source-backed session's cwd is another host's path: resolving it here could
+// surface an unrelated local repository that happens to share it, so the working
+// dir is shown alone.
+test("shows only the working dir for a non-local session, without a git lookup", () => {
+  const client = new FakeClient();
+  renderLocation("/srv/remote/repo", client, false);
+
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/srv/remote/repo");
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(client.calls).toHaveLength(0);
 });
 
@@ -117,7 +130,7 @@ test("ignores a late response for a cwd the composer has left", async () => {
   const { rerender } = renderLocation("/first", client);
   rerender(
     <ClientProvider client={client}>
-      <RepoLocation cwd="/second" />
+      <RepoLocation cwd="/second" local />
     </ClientProvider>,
   );
   expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("second-branch");

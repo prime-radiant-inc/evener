@@ -1146,16 +1146,16 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 // component's own rendering rules are covered in RepoLocation.test.tsx.
 test("shows the session's cwd and git branch under the composer card", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_loc", { cwd: "/home/jesse/repo" }));
+  fake.on("thread/read", () => readResponse("local:ref_loc", { cwd: "/home/jesse/repo" }));
   fake.on("evener/git/head", ({ cwd }) => {
     expect(cwd).toBe("/home/jesse/repo");
     return { head: "composer-line", originUrl: "git@github.com:owner/repo.git" };
   });
-  await threadsStore.getState().ensureThread("ref_loc");
+  await threadsStore.getState().ensureThread("local:ref_loc");
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="ref_loc" focused={false} />
+      <Composer ref="local:ref_loc" focused={false} />
     </ClientProvider>,
   );
   await act(async () => {
@@ -1180,11 +1180,11 @@ test("shows the session's cwd and git branch under the composer card", async () 
 test("keeps the location line under a finished session with no composer card", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
-    readResponse("ref_ended", {
+    readResponse("local:ref_ended", {
       cwd: "/home/jesse/repo",
       status: { type: "closed" },
       evener: {
-        ref: "ref_ended",
+        ref: "local:ref_ended",
         mutationStateAuthoritative: true,
         // send false: showFollowUpCard is false, so the form card is not rendered
         // at all and the location line is the composer's only visible content.
@@ -1195,11 +1195,11 @@ test("keeps the location line under a finished session with no composer card", a
     }),
   );
   fake.on("evener/git/head", () => ({ head: "ended-branch", originUrl: "git@github.com:owner/repo.git" }));
-  await threadsStore.getState().ensureThread("ref_ended");
+  await threadsStore.getState().ensureThread("local:ref_ended");
   render(
     <ClientProvider client={fake}>
       <Toast />
-      <Composer ref="ref_ended" focused={false} />
+      <Composer ref="local:ref_ended" focused={false} />
     </ClientProvider>,
   );
   await act(async () => {
@@ -1210,6 +1210,29 @@ test("keeps the location line under a finished session with no composer card", a
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
   expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
   expect(screen.getByTestId("composer-repo-branch").textContent).toBe("ended-branch");
+});
+
+// A source-backed session's cwd is another host's path. This hub must not be
+// asked to resolve a branch there: a local repository that merely shares the
+// path would render as that session's branch. The working dir still shows.
+test("does not resolve a branch for a source-backed (non-local) session", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("remote:ref_remote", { cwd: "/srv/remote/repo", source: "remote" }));
+  await threadsStore.getState().ensureThread("remote:ref_remote");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="remote:ref_remote" focused={false} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/srv/remote/repo");
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/git/head")).toBe(false);
 });
 
 // --- shared busy gate across Composer and QueueStrip (item 6) ---------------

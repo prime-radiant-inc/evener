@@ -2129,6 +2129,11 @@ type PathValidateResponse struct {
 // GitHeadParams selects the working directory whose git HEAD should be read.
 type GitHeadParams struct {
 	CWD string `json:"cwd"`
+	// IncludeOrigin asks the hub to also report the repo's sanitized "origin"
+	// remote URL. It is opt-in because the method's other caller (the Spawn
+	// pane's branch chip) renders only the branch: without it the hub neither
+	// runs the origin lookup nor sends the remote anywhere.
+	IncludeOrigin bool `json:"includeOrigin,omitempty"`
 }
 
 // GitHeadResponse reports a branch name, detached short SHA, or an empty
