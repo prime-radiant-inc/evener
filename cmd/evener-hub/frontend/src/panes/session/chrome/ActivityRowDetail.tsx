@@ -397,11 +397,13 @@ export function ActivityRowDetail({
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
-// It is the one watch surface that reads the tree clock: a caller with its own
-// ticking clock (the pane chrome) passes `now`, and the standalone pane passes
-// nothing and falls back to the tree's live context. Reading it HERE, rather
-// than in the row, is what keeps a collapsed watch row from re-rendering on
-// every tick with identical output.
+// It is the one watch surface that reads the tree clock, and in production the
+// tick has exactly one source: TreeNowContext. ActivityTree renders
+// <ActivityWatchDetail row={row} /> with no clock prop, so this strip never
+// follows the chrome's clock. The optional `now` is a deterministic seam for
+// direct tests, not a second production clock source. Reading the clock HERE,
+// rather than in the row, is what keeps a collapsed watch row from re-rendering
+// on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
   const contextNow = useTreeNow();

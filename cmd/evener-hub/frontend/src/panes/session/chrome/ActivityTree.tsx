@@ -993,8 +993,9 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
 
   return (
     // A session whose only work is a watch still needs the clock: armed ages,
-    // the "now" label and the timeline's end marker are all derived from it, and
-    // the standalone Activity pane has no clock of its own to pass in.
+    // the "now" label and the timeline's end marker are all derived from it.
+    // The tree owns that clock outright - TreeNowContext is the only source, no
+    // caller passes one in - so a watch-only session must still enable it.
     <TreeTickProvider live={hasLive || watchRows.length > 0}>
       {(watchRows.length > 0 || omittedWatches > 0) && (
         <WatchGroupHeader armed={armedWatches} omitted={omittedWatches} />
