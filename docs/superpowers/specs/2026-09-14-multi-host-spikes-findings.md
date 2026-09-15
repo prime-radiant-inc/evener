@@ -53,6 +53,10 @@ extraction is deferred unless a future mode serves stdio directly.
 
 ## Cleanup needed
 
-- `spike/bridge`, `spike/client`, and `appwire/stream_transport*.go` are spikes.
+- `spike/bridge` and `spike/client` are spikes (both already removed).
+  `appwire/stream_transport.go` is **not** disposable: the transport was promoted
+  out of the spike branch and is now shipped production code
+  (`cmd/evener-hub/attach.go` wraps its stdio in `appwire.NewStreamTransport(...)`),
+  the transport the SSH-channel path depends on (component 01). Do not delete it.
 - `/tmp/evener-spike-bridge` was copied to m4 (`jesses-macbook-pro-2-1`) and must
   be removed.

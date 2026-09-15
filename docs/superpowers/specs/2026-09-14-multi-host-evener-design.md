@@ -35,9 +35,12 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   source (a controller that is attached to this hub as a host) is served **only
   from local state**, and any attempt to route or fan that request out to
   another remote source is refused with a typed error. Together with the
-  `["local"]` remap that already strips a remote's own nested hosts on the list
-  path (component 05, §"Ref translation detail"), this caps fan-out at depth 1
-  and terminates any A→B→A chain regardless of what the config can see — the
+  `["local"]` remap **the implementing PR adds** to strip a remote's own nested
+  hosts on the list path (component 05, §"Ref translation detail"; the shipped
+  `remapRemoteSourceIDs` returns `nil` for an empty incoming filter, so this
+  half is the implementing PR's requirement, not a present fact), this caps
+  fan-out at depth 1 and terminates any A→B→A chain regardless of what the
+  config can see — the
   caller-identity guard that a later host-list RPC would make config-aware. The
   guard is not thread-fan-out-only: it also covers every **remote dispatch** a
   hub can initiate — the remote-administration proxy, credential push, remote
@@ -205,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–14)
+## Tracked code follow-ups (rounds 7–15)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -335,3 +338,19 @@ exact scope. None is a present fact.
   `PinSectionBySession`/`PinAssignments`) key session pins by `(source, id)`; the
   `SessionRef` resolves through its owning source; an idempotent migration adds a
   `source` column and backfills `source = "local"`.
+- **[04] snapshot health identity (round 15)** — `sshconn/version.go`
+  `waitHealthy` takes the expected `backend_git_sha` (`buildinfo.GitSHA`) in
+  addition to the expected `version`; for a snapshot pin a response whose
+  `backend_git_sha` is empty or not equal to the expected SHA is rejected (keep
+  polling; `ErrRestart` on exhaustion), so a wrong snapshot cannot pass
+  post-restart verification on `version` alone.
+- **[01] nonblocking one-shot close state (round 15)** — `appwire/stream_transport.go`
+  must replace the blocking `sync.Once.Do` in `doClose()` with a nonblocking
+  one-shot close state plus a completion channel: the underlying `rw.Close()`
+  runs on its own goroutine, `Close` and `drainWrites()` `select` on the
+  completion channel against `streamCloseDrainTimeout`, and write admission is
+  gated on the latched close state before taking the serialized-write lock so a
+  later `Send` returns `ErrStreamClosed` instead of blocking behind a stranded
+  waiter. Extends the round-14 bounded-`Close` item above (moving `rw.Close()` to
+  a goroutine under `sync.Once.Do` strands every later caller behind the first
+  `Close()`).

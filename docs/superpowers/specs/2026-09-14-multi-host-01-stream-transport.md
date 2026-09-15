@@ -100,25 +100,43 @@ shipped mechanism, so they are not interchangeable descriptions.
   write not yet admitted returns `ErrStreamClosed` (or the cancellation) without
   writing anything.
   **`Close` never waits indefinitely — neither on the underlying close nor on
-  the drain.** Because the interrupt-on-close guarantee is the stream's, not
-  Go's, `Close` bounds its wait for admitted writes with an explicit shutdown
-  timeout (a package constant, e.g. `streamCloseDrainTimeout`) and returns on
-  expiry with the terminal cause still latched. This is the backstop that keeps a
-  stream violating the accepted contract from hanging bridge shutdown: `Close`
-  returns, later `Send`/`Recv` report `ErrStreamClosed`, and the offending write
-  is abandoned rather than awaited forever. **The bound must also cover the
-  underlying `rw.Close()` itself.** The order above calls the underlying close
-  *before* the drain precisely so it interrupts a blocked write, but that makes
-  `Close` synchronously dependent on the underlying `Close` returning: a stream
-  whose own `Close` blocks (or is slow to release resources) would keep `Close`
-  blocked *before* the drain timeout is ever reached, defeating it. `Close`
-  therefore invokes the underlying `rw.Close()` in a way that cannot block its
-  own return — for example, running `rw.Close()` on its own goroutine and
-  bounding the whole shutdown (close + drain) by `streamCloseDrainTimeout`, so
-  an underlying close that never returns still lets `Close` return with the
-  terminal cause latched and later `Send`/`Recv` reporting `ErrStreamClosed`.
-  The requirement is a **bounded `Close`**: no step of `Close` may wait
-  unboundedly on a stream that violates the accepted-stream contract.
+  the drain, and no later `Send` blocks behind a stranded waiter.** Because the
+  interrupt-on-close guarantee is the stream's, not Go's, `Close` bounds every
+  step with an explicit shutdown timeout (a package constant, e.g.
+  `streamCloseDrainTimeout`) and returns on expiry with the terminal cause still
+  latched. This is the backstop that keeps a stream violating the accepted
+  contract from hanging bridge shutdown: `Close` returns, later `Send`/`Recv`
+  report `ErrStreamClosed`, and the offending write is abandoned rather than
+  awaited forever. **The bound must also cover the underlying `rw.Close()`
+  itself.** The order above calls the underlying close *before* the drain
+  precisely so it interrupts a blocked write, but that makes `Close`
+  synchronously dependent on the underlying `Close` returning: a stream whose own
+  `Close` blocks (or is slow to release resources) would keep `Close` blocked
+  *before* the drain timeout is ever reached, defeating it.
+  **A nonblocking one-shot close state is therefore required; a blocking
+  `sync.Once.Do` is not sufficient.** With `sync.Once.Do` every caller that
+  enters `doClose()` blocks until the *first* `Close()` returns, so merely moving
+  `rw.Close()` onto a goroutine while keeping the once still strands later
+  callers — and a second `Close` — behind the initiating `Close()`, bounding the
+  shutdown for no one but the first caller. The close state must instead be
+  **nonblocking and one-shot**: the first caller transitions it atomically to
+  *closing* and starts teardown without holding a lock others need, and a later
+  caller observes the already-closing state and returns immediately (or waits
+  only on a **completion channel**, itself bounded by
+  `streamCloseDrainTimeout`), never on the initiating goroutine. Concretely:
+  - the underlying `rw.Close()` runs on its own goroutine and signals a
+    completion channel; `Close` `select`s on that channel against
+    `streamCloseDrainTimeout`, so an underlying close that never returns still
+    lets `Close` return with the terminal cause latched;
+  - `drainWrites()` waits for admitted writes on that completion channel under
+    the same timeout, so neither the close nor the drain is unbounded;
+  - write admission is gated on the latched close state **before** taking the
+    serialized-write lock, so a `Send` that arrives after the latch returns
+    `ErrStreamClosed` immediately instead of blocking behind a write lock held
+    by a stranded writer or drainer.
+  The requirement is a **bounded `Close`**: no step of `Close`, and no later
+  `Send`, may wait unboundedly on a stream that violates the accepted-stream
+  contract.
   **The admitted-write drain is `Close`-only; it is not a promise of every
   poison path.** `poison()`/cancellation close the underlying stream to
   interrupt a blocked `Write` but deliberately do **not** take the write lock or
@@ -133,16 +151,19 @@ shipped mechanism, so they are not interchangeable descriptions.
   `doClose()` (the underlying `rw.Close()`), then `drainWrites()`; `poison`
   deliberately does **not** take the write lock, because that close is what
   unblocks the write it exists to interrupt. The contract is stated here so a
-  rewrite cannot regress to wait-before-close. **Two parts of this contract are
-  not yet implemented and are tracked code follow-ups:** the accepted-stream
+  rewrite cannot regress to wait-before-close. **Three parts of this contract
+  are not yet implemented and are tracked code follow-ups:** the accepted-stream
   interrupt-on-close requirement is a caller obligation the transport does not
-  enforce today, and the shipped `Close`/`drainWrites()` waits without a
+  enforce today; the shipped `Close`/`drainWrites()` waits without a
   `streamCloseDrainTimeout` bound **and calls the underlying `doClose()`
   synchronously**, so an underlying close that blocks would prevent the bound
-  from being reached. The production callers already pass
-  interrupt-on-close streams (SSH channel stdio, `os.Pipe`, `net.Conn`), so no
-  live hang is observed; the timeout constant is the guard that makes a
-  non-conforming stream impossible to hang shutdown with.
+  from being reached; and the close state is a blocking `sync.Once.Do`, so moving
+  the underlying close to a goroutine alone still strands every later caller
+  behind the initiating `Close()` (the nonblocking one-shot close state above is
+  the required fix). The production callers already pass interrupt-on-close
+  streams (SSH channel stdio, `os.Pipe`, `net.Conn`), so no live hang is
+  observed; the timeout constant and the nonblocking close state are the guard
+  that makes a non-conforming stream impossible to hang shutdown with.
 
 ## Data flow
 

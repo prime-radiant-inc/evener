@@ -886,10 +886,14 @@ deploy landed.
   PR's requirement, not a present fact.
 
   Post-restart verification is the same probe run under `waitHealthy`
-  (`version.go`): it polls the host's `/api/health` until the response's
-  `version` equals `expected`, or the bound is exhausted (`ErrRestart`). A bare
-  200 — or any non-empty body — is not sufficient, and a body that is not a
-  `hubapi.HealthResponse` is not usable evidence (`parseHealthVersion`).
+  (`version.go`): it polls the host's `/api/health` until the response reports
+  the *expected build identity*, or the bound is exhausted (`ErrRestart`). That
+  identity is **passed into** `waitHealthy` as an argument — the expected
+  `version` always, and, for a **snapshot** pin, the expected `backend_git_sha`
+  from `buildinfo.GitSHA` — because a version-only probe cannot tell two snapshot
+  builds that share a `version` apart. A bare 200 — or any non-empty body — is
+  not sufficient, and a body that is not a `hubapi.HealthResponse` is not usable
+  evidence (`parseHealthVersion`).
 
   **Version equality is the fresh-process marker; there is no clock
   comparison.** Because the restart is entered only when the running version
@@ -902,10 +906,17 @@ deploy landed.
   one-second-resolution marker can be equal to or earlier than a stale process's
   `started_at`, so it cannot distinguish processes, and comparing host-stamped
   `started_at` to the controller's clock adds skew for no benefit. No host-side
-  timestamp and no skew tolerance is used or needed. `backend_git_sha` is
-  carried in the response but the shipped `waitHealthy` does not consult it; it
-  may be added as a stricter *build*-identity check without changing the rule
-  above.
+  timestamp and no skew tolerance is used or needed. **For a snapshot pin the
+  probe must reject a missing or mismatched `backend_git_sha`.** The response
+  carries `backend_git_sha`, but the shipped `waitHealthy` consults only
+  `version`; a snapshot that shares the controller's `version` but not its commit
+  would therefore pass. The implementing PR passes the expected Git SHA into
+  `waitHealthy` and treats a response whose `backend_git_sha` is empty or not
+  equal to `buildinfo.GitSHA` as **not yet healthy** for a snapshot pin — it
+  keeps polling and fails with `ErrRestart` on exhaustion — which is the stricter
+  *build*-identity check the earlier rule anticipated, and without changing the
+  version-equality rule above. This is a tracked code follow-up ([04], round 15),
+  not a present fact.
 
   **What the version check proves — and what it does not.** `waitHealthy`
   proves that *a* process of the expected build is answering on the configured
