@@ -3,7 +3,14 @@
 import { expect, test } from "vitest";
 import type { ThreadModel } from "./model";
 import { applyNotification, hydrateThread } from "./reducer";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+import {
+  decideSteerRoute,
+  decideSubmitRoute,
+  isTurnActive,
+  NO_ACTIVE_TURN,
+  STEER_UNAVAILABLE,
+  sessionControls,
+} from "./submitRouting";
 import type { AnyNotification, Thread } from "./types.gen";
 
 // --- decideSubmitRoute: send vs queue vs no-op --------------------------
@@ -171,4 +178,42 @@ test("a session stays busy at every step of an inline turn boundary (turn/comple
     { method: "turn/started", busy: true, activeTurnId: "turn_2" },
     { method: "thread/status/changed", busy: true, activeTurnId: "turn_2" },
   ]);
+});
+
+// --- sessionControls: one derivation for every control surface -----------
+const ALL = { steer: true, interrupt: true, queue: true, send: true };
+
+test("a running turn on a fully capable harness offers stop, steer, drain and queue, not send", () => {
+  const c = sessionControls("active", ALL, 0);
+  expect(c).toMatchObject({ stop: true, steer: true, drain: true, queue: true, send: false });
+  expect(c.reason.send).toBeDefined();
+});
+
+test("an idle session offers send only, with 'no active turn' as every other reason", () => {
+  const c = sessionControls("idle", ALL, 0);
+  expect(c).toMatchObject({ stop: false, steer: false, drain: false, queue: false, send: true });
+  expect(c.reason).toEqual({
+    stop: NO_ACTIVE_TURN,
+    steer: NO_ACTIVE_TURN,
+    drain: NO_ACTIVE_TURN,
+    queue: NO_ACTIVE_TURN,
+  });
+});
+
+test("a queue parked by Stop (idle, depth > 0) makes drain available and nothing else", () => {
+  const c = sessionControls("idle", ALL, 2);
+  expect(c).toMatchObject({ stop: false, steer: false, drain: true, queue: false, send: true });
+  expect(c.reason.drain).toBeUndefined();
+});
+
+test("a harness without steer names the capability, not the status, for steer and drain", () => {
+  const c = sessionControls("active", { ...ALL, steer: false }, 1);
+  expect(c).toMatchObject({ steer: false, drain: false });
+  expect(c.reason).toMatchObject({ steer: STEER_UNAVAILABLE, drain: STEER_UNAVAILABLE });
+});
+
+test("awaiting with a queue is the ask boundary: no drain, and the reason is the status", () => {
+  const c = sessionControls("awaiting", ALL, 1);
+  expect(c.drain).toBe(false);
+  expect(c.reason.drain).toBe(NO_ACTIVE_TURN);
 });

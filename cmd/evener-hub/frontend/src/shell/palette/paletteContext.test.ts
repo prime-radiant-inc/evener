@@ -1,9 +1,8 @@
 // @vitest-environment node
 
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { buildPaletteContext, isSessionBusy } from "./paletteContext";
+import { buildPaletteContext } from "./paletteContext";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -43,25 +42,4 @@ test("buildPaletteContext treats a transcript pane as non-session (no interactiv
 
 test("buildPaletteContext returns a null sessionRef when nothing is focused", () => {
   expect(buildPaletteContext()).toEqual({ sessionRef: null, onPage: "other" });
-});
-
-// --- the one model-derived predicate ---
-
-function model(overrides: Partial<ThreadModel>): ThreadModel {
-  return {
-    status: { type: "idle" },
-    activeTurnId: undefined,
-    ...overrides,
-  } as ThreadModel;
-}
-
-test("isSessionBusy reads the thread status, not the transcript's open turn row", () => {
-  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: "t1" }))).toBe(true);
-  // Between turn/completed and turn/started of an inline turn boundary the
-  // id is gone while the session is still working.
-  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
-  expect(isSessionBusy(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
-  // Mid-ask nothing is running: the hub's queue capability is off and
-  // turn/steer needs a turn to redirect, so the palette says not busy.
-  expect(isSessionBusy(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
 });

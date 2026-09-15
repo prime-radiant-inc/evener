@@ -7,7 +7,6 @@
 // (capabilities), and whether a turn is in flight to act on.
 
 import type { ThreadModel } from "../../protocol/model";
-import { isTurnActive } from "../../protocol/submitRouting";
 import { threadsStore } from "../../stores/threads";
 import { workspaceStore } from "../workspace";
 
@@ -66,24 +65,4 @@ export function buildPaletteContext(): PaletteContext {
 // live activeTurnId()/isThreadBusy() DOM reads.
 export function focusedModel(sessionRef: string | null): ThreadModel | undefined {
   return sessionRef ? threadsStore.getState().threads.get(sessionRef) : undefined;
-}
-
-// isSessionBusy is the palette's ONE model-derived predicate, and it answers
-// exactly one question: is the session working right now. It belongs to
-// /steer, /queue and /drain, which are meaningless while nothing runs.
-// It reads the thread status, the same rule as the composer's Steer button
-// (isTurnActive) and the hub's steer/queue capabilities, never
-// model.activeTurnId: the transcript clears that id between the
-// turn/completed and turn/started of an inline turn boundary while the
-// session is still mid-input (issue #1341).
-//
-// It is deliberately the only one left. A "session is busy" and a "session has
-// ended" predicate used to live here too, gating /model and the whole
-// session scope respectively - both session-scoped decisions made from
-// turn-scoped information (kata cjzc). Whether the NEXT turn can be
-// configured is the hub's answer, not this module's: it advertises a
-// per-action capability for every thread, cold ones included, and resumes
-// behind the call. commands.ts reads those flags instead.
-export function isSessionBusy(model: ThreadModel): boolean {
-  return isTurnActive(model.status.type);
 }

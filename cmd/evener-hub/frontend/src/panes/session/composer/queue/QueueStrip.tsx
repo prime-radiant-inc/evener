@@ -10,7 +10,7 @@
 import { type ReactNode, useState } from "react";
 import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import { errorText, sessionActionError } from "../../../../protocol/errors";
-import { canDrainQueue } from "../../../../protocol/submitRouting";
+import { STEER_UNAVAILABLE, sessionControls } from "../../../../protocol/submitRouting";
 import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
@@ -114,7 +114,6 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 }
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
-const STEER_UNAVAILABLE_REASON = "Steer is not available for this session";
 
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -195,14 +194,9 @@ export function QueueStrip({
 
   if (!model || !visible) return null;
 
-  // Every steering affordance here (a drain or a promote) shares one gate,
-  // canDrainQueue: the harness can steer (the hub's capability is harness
-  // support alone) and either a turn is running or the queue is one a Stop
-  // parked -- idle with a non-empty queue, which an unparked queue never
-  // reports, and which a drain or promote releases. A harness that cannot
-  // steer gets no "Steer queue now" and a disabled "Steer now", never a
-  // request it would answer Unavailable. Edit and remove need no such gate.
-  const steerOffered = canDrainQueue(model.status.type, model.capabilities, depth);
+  // Drain and promote read the session's controls (submitRouting.ts
+  // sessionControls: harness steer, and a running turn or a queue a Stop parked).
+  const controls = sessionControls(model.status.type, model.capabilities, depth);
 
   const ids = queue?.ids;
   const texts = queue?.texts;
@@ -221,8 +215,8 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
-    if (!steerOffered) {
-      toasts.push("error", STEER_UNAVAILABLE_REASON);
+    if (!controls.drain) {
+      toasts.push("error", STEER_UNAVAILABLE);
       return;
     }
     setRowBusy(entryId, true);
@@ -280,8 +274,8 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    if (!steerOffered) {
-      toasts.push("error", STEER_UNAVAILABLE_REASON);
+    if (!controls.drain) {
+      toasts.push("error", STEER_UNAVAILABLE);
       return;
     }
     const { text, attachments, hasPending, skillNames } = getComposerText();
@@ -381,7 +375,7 @@ export function QueueStrip({
     <section className={CLASS.strip}>
       <div className={CLASS.header}>
         <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
-        {hasQueuedWork && steerOffered && (
+        {hasQueuedWork && controls.drain && (
           <Tooltip label="Send your message and everything queued into the current turn">
             <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
               Steer queue now
@@ -429,9 +423,9 @@ export function QueueStrip({
                   label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
-                  disabled={!actionsAvailable || !steerOffered || busy}
+                  disabled={!actionsAvailable || !controls.drain || busy}
                   disabledReason={
-                    !actionsAvailable ? ACTIONS_UNAVAILABLE_REASON : steerOffered ? undefined : STEER_UNAVAILABLE_REASON
+                    !actionsAvailable ? ACTIONS_UNAVAILABLE_REASON : controls.drain ? undefined : STEER_UNAVAILABLE
                   }
                   onClick={() => {
                     if (entryId !== undefined) void handlePromote(index, entryId);

@@ -40,13 +40,7 @@ import {
   type SlashToken,
   spliceSlashCommand,
 } from "../../../protocol/slashCompletion";
-import {
-  canDrainQueue,
-  canSteer,
-  decideSteerRoute,
-  decideSubmitRoute,
-  isTurnActive,
-} from "../../../protocol/submitRouting";
+import { decideSteerRoute, decideSubmitRoute, NO_ACTIVE_TURN, sessionControls } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -863,32 +857,16 @@ export function Composer({ ref, focused }: ComposerProps) {
     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
       : tableAvailability;
-  // "Is this session working" is the thread status alone (isTurnActive's own
-  // comment on why activeTurnId is not part of it). turn/interrupt and
-  // turn/steer both name no turn (appwire v3 dropped expectedTurnId from every
-  // control mutation) and the daemon answers each on the session's own state,
-  // so neither button is gated on an id the request does not carry: that could
-  // only withhold a control the daemon would have accepted, and did, for a
-  // frame at every inline turn boundary (issue #1330).
-  const busy = isTurnActive(model.status.type);
   const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
-
-  // Stop and Steer share the status gate and part on capability alone. The
-  // hub's `interrupt` folds the active status in; its `steer` is harness
-  // support alone (server/appwire_runtime.go appCapabilitiesLocked), and
-  // canSteer applies the status for turn/steer. The queue strip's drain and
-  // promote affordances read canDrainQueue, which also admits a queue a Stop
-  // parked.
-  const showStop = busy && model.capabilities.interrupt;
-  const showSteer = canSteer(model.status.type, model.capabilities);
-  // Read here for the keybinding handler below, which closes over `model`
-  // outside this component's narrowing (see the block at the top on why every
-  // handler reads a pre-narrowed local).
-  const steerSupported = model.capabilities.steer === true;
-  const drainReady = canDrainQueue(model.status.type, model.capabilities, queueDepth);
+  // What this session may be asked to do now: one derivation for every control
+  // surface, with the rationale (status alone, never activeTurnId; capability
+  // is the harness's) in appwire-client/typescript/submitRouting.ts.
+  const controls = sessionControls(model.status.type, model.capabilities, queueDepth);
+  const showStop = controls.stop;
+  const showSteer = controls.steer;
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -1327,29 +1305,13 @@ export function Composer({ ref, focused }: ComposerProps) {
       textareaRef.current?.focus();
       return;
     }
-    // The same readiness rule as the buttons: the session's status and the
-    // harness's capability, not "the transcript has an open turn row". Neither
-    // request names a turn (appwire v3), and the daemon's v3 mutation path
-    // accepts both without one: turn/steer adds pending steering for the
-    // carrier turn (agent/session_client_mutation_queue.go clientMutationSteer)
-    // and turn/drainAsSteer (clientMutationDrain, reached through the hub's
-    // retrySafeTurns.Drain) refuses only an interrupt fence, a stale queue
-    // revision, an empty queue or a reserved entry. The "drain: no active turn
-    // to steer" refusal lives in the legacy DrainAsSteerWithInput, which this
-    // route never reaches. Gating on activeTurnId here refused a click landing
-    // between the turn/completed and turn/started of an inline turn boundary,
-    // where the daemon is mid-input (issue #1341). Shift+Enter reaches this
-    // handler with no button on screen, so the capability is checked here too:
-    // a harness that advertises no steer must not be sent a request it answers
-    // Unavailable. The steer route needs a running turn (idle means Send is the
-    // route); the drain route also runs a queue a Stop parked (canDrainQueue).
-    const ready = route === "drain" ? drainReady : showSteer;
-    if (!ready) {
+    // Readiness is sessionControls' (submitRouting.ts); it is checked here as
+    // well as on the button because Shift+Enter reaches this handler with no
+    // button on screen.
+    const reason = route === "drain" ? controls.reason.drain : controls.reason.steer;
+    if (reason !== undefined) {
       const verb = route === "drain" ? "Drain" : "Steer";
-      toasts.push(
-        "error",
-        steerSupported ? `${verb} failed: no active turn` : `${verb} is not available for this session`,
-      );
+      toasts.push("error", reason === NO_ACTIVE_TURN ? `${verb} failed: ${reason}` : reason);
       return;
     }
     void submitAction(route);
