@@ -10,6 +10,10 @@ export interface TopNotesStoreState {
   setExpanded(ref: string, expanded: boolean): void;
   toggle(ref: string): void;
   openAndFocus(ref: string): void;
+  // Toggle that requests editor focus when it lands on open - the one
+  // action every opener that means "show me my notes" (the /notes command)
+  // wants, so no caller re-derives the epoch bookkeeping.
+  toggleAndFocus(ref: string): void;
   resetForTests(): void;
 }
 
@@ -45,6 +49,11 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
       nextEpochs.set(ref, (nextEpochs.get(ref) ?? 0) + 1);
       return { expanded: nextExpanded, focusEpochs: nextEpochs };
     });
+  },
+  toggleAndFocus(ref: string): void {
+    const current = get().expanded.get(ref) ?? false;
+    if (current) get().setExpanded(ref, false);
+    else get().openAndFocus(ref);
   },
   resetForTests(): void {
     set({ expanded: new Map(), focusEpochs: new Map() });

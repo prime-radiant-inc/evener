@@ -602,14 +602,7 @@ export function buildCommands(): Command[] {
       capability: "sharedNotes",
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
-        if (ctx.sessionRef) {
-          const isExp = topNotesStore.getState().isExpanded(ctx.sessionRef);
-          if (isExp) {
-            topNotesStore.getState().setExpanded(ctx.sessionRef, false);
-          } else {
-            topNotesStore.getState().openAndFocus(ctx.sessionRef);
-          }
-        }
+        if (ctx.sessionRef) topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
       },
     },
     {
