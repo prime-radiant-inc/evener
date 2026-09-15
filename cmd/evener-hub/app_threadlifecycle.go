@@ -337,6 +337,15 @@ func hubThreadAutoResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 }
 
 func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, automatic bool) (response appwire.ThreadResumeResponse, resumeErr error) {
+	logSessionID := strings.TrimSpace(params.Session)
+	if logSessionID == "" {
+		if ref, err := appwire.ParseRef(params.Ref); err == nil {
+			logSessionID = ref.ThreadID
+		}
+	}
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", logSessionID, nil)
+	requestDone := trace.stage(ctx, "request")
+	defer func() { requestDone(resumeErr) }()
 	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -367,7 +376,9 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err := sessionConnectionRecoveryError(ctx, cfg, "", requestedID); err != nil {
 			return appwire.ThreadResumeResponse{}, err
 		}
+		ownershipDone := trace.stage(ctx, "ownership")
 		target, aliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
+		ownershipDone(err)
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
@@ -377,13 +388,17 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		}
 		epochs[requestedID] = epoch
 		// Use force stop's sorted ownership order, retaining the original mutexes.
+		lockDone := trace.stage(ctx, "lock_wait")
 		for _, id := range aliases {
 			cfg.ResumeLocks.For(id).Lock()
 		}
+		lockDone(nil)
+		heldDone := trace.stage(ctx, "lock_held")
 		defer func() {
 			for _, id := range slices.Backward(aliases) {
 				cfg.ResumeLocks.For(id).Unlock()
 			}
+			heldDone(nil)
 		}()
 		for _, id := range aliases {
 			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
@@ -394,7 +409,9 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable("session recovery requires a fresh explicit thread/resume request")}
 			}
 		}
+		recheckDone := trace.stage(ctx, "ownership_recheck")
 		currentTarget, currentAliases, err := resumeOwnership(cfg, requestedID, requestedRefID)
+		recheckDone(err)
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
@@ -402,6 +419,7 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable("session ownership changed; refresh before resuming")
 		}
 		sessionID = target
+		ctx, trace = trace.resolved(ctx, sessionID)
 		defer func() {
 			if resumeErr != nil {
 				return
@@ -433,24 +451,34 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 
 	var discoveryErr error
 	if cfg.Roster != nil {
+		discoveryDone := trace.stage(ctx, "discovery")
 		discoveryErr = hubRosterRefresh(ctx, cfg.Roster)
+		discoveryDone(discoveryErr)
 	}
+	protocolDone := trace.stage(ctx, "protocol_check")
 	if err := daemonRestartRequiredError(ctx, cfg, "", sessionID, ""); err != nil {
+		protocolDone(err)
 		return appwire.ThreadResumeResponse{}, err
 	}
+	protocolDone(nil)
 	if discoveryErr != nil {
 		// Incomplete discovery cannot authorize a replacement, but a direct
 		// probe can establish that a previously confirmed owner still serves
 		// this session. Keep the global discovery failure for other owners.
 		if owner, ok := liveDaemonForThread(cfg.Roster, sessionID); ok && owner.Protocol == appwire.ProtocolVersion {
+			probeDone := trace.stage(ctx, "owner_probe")
 			if err := cfg.Roster.RefreshEntry(ctx, owner.Entry); err != nil {
+				probeDone(err)
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(discoveryErr, err).Error())
 			}
+			probeDone(nil)
 			return hubResumedThreadResponse(ctx, cfg, sources, owner.SessionID, owner.ThreadID)
 		}
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(discoveryErr.Error())
 	}
+	ownerDone := trace.stage(ctx, "owner_lookup")
 	owner, _, err := lookupDaemonOwner(ctx, cfg, "", sessionID, true)
+	ownerDone(err)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 	}
@@ -462,7 +490,9 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	if cfg.Spawner == nil {
 		return appwire.ThreadResumeResponse{}, appwire.Unavailable("spawner not configured")
 	}
+	prepareDone := trace.stage(ctx, "request_preparation")
 	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
+	prepareDone(err)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
@@ -484,19 +514,25 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			}
 		}
 	}
+	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
+	resumeDone(err)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
+		refreshDone := trace.stage(ctx, "post_launch_discovery")
 		refreshErr := hubRosterRefresh(ctx, cfg.Roster)
+		refreshDone(refreshErr)
 		if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" && !cfg.Roster.HasConfirmedEntry(entry) {
 			// A successful scan can still miss an owner whose status probe
 			// failed. Confirm the exact spawned endpoint through its read before
 			// relying on the shared roster for subsequent requests.
+			readDone := trace.stage(ctx, "daemon_read")
 			read, err := cfg.Roster.ReadSpawnedThread(ctx, entry, func(ctx context.Context) (appwire.ThreadReadResponse, error) {
 				return readSpawnedLocalThread(ctx, sources, entry)
 			})
+			readDone(err)
 			if err != nil {
 				return appwire.ThreadResumeResponse{}, appwire.Unavailable(errors.Join(refreshErr, err).Error())
 			}
@@ -699,9 +735,12 @@ func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID st
 	if cfg.Roster == nil {
 		return err
 	}
+	discoveryDone := threadLifecycleFromContext(ctx).stage(ctx, "failure_discovery")
 	if refreshErr := hubRosterRefresh(ctx, cfg.Roster); refreshErr != nil {
+		discoveryDone(refreshErr)
 		return errors.Join(err, refreshErr)
 	}
+	discoveryDone(nil)
 	blocker, ok := cfg.Roster.Find(sessionID)
 	if !ok || blocker.Crashed || blocker.Protocol == appwire.ProtocolVersion {
 		return err
@@ -717,7 +756,9 @@ func resumeFailureError(ctx context.Context, cfg hubcore.WebConfig, sessionID st
 // both a fresh spawn and the double-check reuse of an already-resumed daemon
 // resolve the thread the same way. threadID falls back to sessionID when the
 // rendezvous entry omitted it.
-func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
+func hubResumedThreadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, sessionID, threadID string) (response appwire.ThreadResumeResponse, readErr error) {
+	readDone := threadLifecycleFromContext(ctx).stage(ctx, "daemon_read")
+	defer func() { readDone(readErr) }()
 	if threadID == "" {
 		threadID = sessionID
 	}
