@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"primeradiant.com/evener/appwire"
@@ -55,6 +56,11 @@ type RemoteHubSource struct {
 	// fan-out. They are fed by the same drainLoop that routes thread
 	// notifications, never by a second reader of Client.Notifications().
 	hostSubs map[*remoteHubHostSubscription]struct{}
+	// hostNotifyDropped counts host-level notifications dropped because a
+	// consumer's buffer was full. Host fan-out is deliberately non-blocking so a
+	// stalled consumer cannot stall thread routing; this counter makes the
+	// tradeoff observable.
+	hostNotifyDropped atomic.Int64
 
 	// probeMu serializes HostCapabilities and guards probe, the last successful
 	// probe cached against the client it ran on.
@@ -244,32 +250,45 @@ func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelLi
 // answer, not a re-shaped one.
 //
 // The client is resolved per call, so a component-04 reconnect that swaps the
-// underlying client is picked up automatically. Errors pass through exactly as
-// the client produced them: a remote WireError keeps its code and message (a
-// launch credential-env refusal or an auth Codex/gcp-adc refusal reaches the
-// browser unchanged), and a transport failure stays raw so the caller can tell
-// a refusal by the remote hub from a channel that died mid-call.
+// underlying client is picked up automatically. Errors are mapped exactly as on
+// the other forwarding paths: an application-level WireError keeps its semantic
+// code and message (a launch credential-env refusal or an auth Codex/gcp-adc
+// refusal reaches the browser unchanged), while a transport-level failure
+// (dial, EOF, reset, timeout) becomes SessionUnavailable so the browser sees
+// CodeUnavailable/auto-resume rather than an InternalError, and so it matches
+// the pre-call offline refusal. A caller can still tell the two apart: a remote
+// refusal keeps its own code, a dead channel is SessionUnavailable.
 func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return s.mapCallError(err)
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return err
+		return s.mapCallError(err)
 	}
-	return client.Request(ctx, method, params, out)
+	if err := client.Request(ctx, method, params, out); err != nil {
+		return s.mapCallError(err)
+	}
+	return nil
 }
 
 // remoteHubHostSubscription is one host-level notification consumer, e.g. the
-// component-07a remote-admin fan-out. out is written and closed only by the
-// owning client's drainLoop — its sole sender and, on client teardown, its
-// closer — so a consumer that stops reading can never race a close. stop is
-// closed when the consumer's context ends, releasing a delivery that is
-// blocked on a full buffer.
+// component-07a remote-admin fan-out.
+//
+// Two channels with one writer each, mirroring remoteHubSubscription. in is
+// written only by the owning client's drainLoop and closed only by that same
+// drainLoop on client teardown; because it is never closed while a send can run,
+// a delivery can never panic on a closed channel, and a full buffer drops rather
+// than blocking the shared drain. out is written and closed only by the
+// subscription's pump goroutine, so it is out's sole owner: the pump closes it
+// on context end or when in closes, which is what makes the returned channel's
+// documented closure contract hold on every path. done is closed by the pump on
+// exit so the drain can skip a subscription whose pump is already gone.
 type remoteHubHostSubscription struct {
 	client *appwire.Client
+	in     chan appwire.Notification
 	out    chan appwire.Notification
-	stop   chan struct{}
+	done   chan struct{}
 }
 
 // SubscribeHostNotifications registers a consumer for this remote hub's
@@ -281,7 +300,9 @@ type remoteHubHostSubscription struct {
 // thread subscribers still receives notifications. The returned channel is
 // closed when ctx ends or when the client's notification stream ends (a
 // reconnect or a dead channel), so the caller re-subscribes and binds whatever
-// client the connector returns next.
+// client the connector returns next. Each call runs one pump goroutine for
+// exactly the subscription's lifetime; it exits on either termination path, so
+// a reconnecting host never accumulates one goroutine per reconnect.
 //
 // This is deliberately not a second reader of Client.Notifications(): that
 // channel already has exactly one consumer (drainLoop), and a second reader
@@ -293,29 +314,30 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 	}
 	sub := &remoteHubHostSubscription{
 		client: client,
+		in:     make(chan appwire.Notification, remoteHubSubBuffer),
 		out:    make(chan appwire.Notification, remoteHubSubBuffer),
-		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
 	}
 	s.subMu.Lock()
 	s.hostSubs[sub] = struct{}{}
 	s.ensureDrainLocked(client)
 	s.subMu.Unlock()
-	go func() {
-		<-ctx.Done()
-		s.subMu.Lock()
-		delete(s.hostSubs, sub)
-		s.subMu.Unlock()
-		close(sub.stop)
-	}()
+	go s.pumpHostSubscription(ctx, sub)
 	return sub.out, nil
 }
 
 // publishHostNotification delivers one remote notification to every registered
-// host-level consumer. It runs on the drain goroutine only, which is also the
-// sole closer of each subscription's out channel, so no send can race a close.
-// Blocking rather than dropping is deliberate, as for thread routing: a dropped
-// config broadcast leaves a settings pane stale. A consumer whose context
-// ended is released by its stop channel instead.
+// host-level consumer. It runs on the drain goroutine only, so it is the sole
+// writer of each subscription's in channel; in is never closed while a send can
+// run, so no send can race a close.
+//
+// Delivery is non-blocking: a full consumer buffer drops the notification and
+// counts it. Unlike thread routing — where a dropped turn/completed is the
+// failure this component exists to prevent — a dropped config broadcast only
+// leaves a settings pane stale until its next refresh, whereas blocking here
+// would stall the shared drain and therefore every thread notification for the
+// same client. A healthy consumer's pump keeps reading in, so drops are the
+// exception rather than the rule.
 func (s *RemoteHubSource) publishHostNotification(notification appwire.Notification) {
 	s.subMu.Lock()
 	subs := make([]*remoteHubHostSubscription, 0, len(s.hostSubs))
@@ -325,8 +347,42 @@ func (s *RemoteHubSource) publishHostNotification(notification appwire.Notificat
 	s.subMu.Unlock()
 	for _, sub := range subs {
 		select {
-		case sub.out <- notification:
-		case <-sub.stop:
+		case sub.in <- notification:
+		case <-sub.done:
+		default:
+			s.hostNotifyDropped.Add(1)
 		}
 	}
+}
+
+// pumpHostSubscription owns sub.out and sub.done: it is out's only sender and
+// only closer, so the returned channel closes on every termination path — its
+// context ending or the drain closing in on client teardown.
+func (s *RemoteHubSource) pumpHostSubscription(ctx context.Context, sub *remoteHubHostSubscription) {
+	defer close(sub.out)
+	defer close(sub.done)
+	defer s.unregisterHostSubscription(sub)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case notification, ok := <-sub.in:
+			if !ok {
+				return
+			}
+			select {
+			case sub.out <- notification:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// unregisterHostSubscription removes sub from the routing table. It is safe to
+// call after drainLoop has already removed it on client teardown.
+func (s *RemoteHubSource) unregisterHostSubscription(sub *remoteHubHostSubscription) {
+	s.subMu.Lock()
+	delete(s.hostSubs, sub)
+	s.subMu.Unlock()
 }

@@ -159,12 +159,12 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 			}
 		}
 		s.subMu.Unlock()
-		// Closing out here (never from the consumer's context watcher) keeps
-		// drainLoop the channel's only closer as well as its only sender, so a
-		// send can never race a close. The consumer sees the close and
-		// re-subscribes against the next client.
+		// Closing in (never out) keeps drainLoop the in channel's only writer and
+		// closer, so a host-fan-out send can never race a close. The
+		// subscription's pump sees in close, ends, and closes out, so the
+		// consumer observes the close and re-subscribes against the next client.
 		for _, sub := range orphaned {
-			close(sub.out)
+			close(sub.in)
 		}
 	}()
 	for {

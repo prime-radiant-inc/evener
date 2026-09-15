@@ -156,12 +156,15 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	if _, ok := c.hosts.Get(params.Host); !ok {
 		return nil, appwire.InvalidParams(fmt.Sprintf("unknown host %q", params.Host))
 	}
+	// Validate the allow-list before resolving the source: a method the proxy may
+	// never forward is refused identically whether the host is online or not, and
+	// refused without consulting the source registry at all.
+	if _, ok := remoteHostAdminMethods[params.Method]; !ok {
+		return nil, appwire.InvalidParams(fmt.Sprintf("method %q is not a permitted remote admin method", params.Method))
+	}
 	remote, err := c.remoteSourceFor(params.Host)
 	if err != nil {
 		return nil, err
-	}
-	if _, ok := remoteHostAdminMethods[params.Method]; !ok {
-		return nil, appwire.InvalidParams(fmt.Sprintf("method %q is not a permitted remote admin method", params.Method))
 	}
 	var out json.RawMessage
 	if err := remote.AdminCall(ctx, params.Method, params.Params, &out); err != nil {
@@ -212,17 +215,43 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // whenever the subscription ends — SubscribeHostNotifications closes its
 // channel when the host's channel (or the subscription's context) goes away —
 // so a reconnect rebinds the fresh client without a restart.
+//
+// Each cycle runs under its own child context, cancelled before the next cycle
+// begins, so the subscription's pump goroutine ends with the cycle that created
+// it and a flapping host never accumulates one goroutine per reconnect.
 func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
 	host := remote.ID()
 	for ctx.Err() == nil {
-		notifications, err := remote.SubscribeHostNotifications(ctx)
+		subCtx, cancel := context.WithCancel(ctx)
+		notifications, err := remote.SubscribeHostNotifications(subCtx)
 		if err != nil {
+			cancel()
 			if !hostNotificationBackoff(ctx) {
 				return
 			}
 			continue
 		}
-		for notification := range notifications {
+		c.relayHostNotifications(ctx, host, notifications)
+		cancel()
+		if !hostNotificationBackoff(ctx) {
+			return
+		}
+	}
+}
+
+// relayHostNotifications forwards one subscription's allow-listed config
+// notifications until the subscription ends (channel close) or ctx ends. It
+// selects on ctx.Done so a canceled context unblocks the loop even while the
+// subscription channel is still open.
+func (c *hubHostAdminController) relayHostNotifications(ctx context.Context, host string, notifications <-chan appwire.Notification) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case notification, ok := <-notifications:
+			if !ok {
+				return
+			}
 			if _, ok := remoteHostConfigNotifications[notification.Method]; !ok {
 				continue
 			}
@@ -231,9 +260,6 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 				Method: notification.Method,
 				Params: notification.Params,
 			})
-		}
-		if !hostNotificationBackoff(ctx) {
-			return
 		}
 	}
 }
