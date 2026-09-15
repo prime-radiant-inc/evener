@@ -40,7 +40,7 @@ import {
   type SlashToken,
   spliceSlashCommand,
 } from "../../../protocol/slashCompletion";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
+import { canSteer, decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -873,9 +873,10 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Stop and Steer share the gate and part on capability alone: the hub
   // derives both `interrupt` and `steer` from the same active status
   // (server/appwire_runtime.go appCapabilitiesLocked), so the pair the composer
-  // draws is the pair the daemon advertised for this status.
+  // draws is the pair the daemon advertised for this status. Steer's is
+  // canSteer, the predicate the queue strip's steering affordances share.
   const showStop = busy && model.capabilities.interrupt;
-  const showSteer = busy && model.capabilities.steer;
+  const showSteer = canSteer(model.status.type, model.capabilities);
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.

@@ -489,6 +489,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
     });
   });
   expect(screen.queryByTestId("composer-steer"), "Steer after turn/completed of the previous turn").not.toBeNull();
+  expect(screen.queryByTestId("composer-stop"), "Stop after turn/completed of the previous turn").not.toBeNull();
   act(() => {
     fake.emitNotification({
       method: "turn/started",
@@ -500,6 +501,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
     });
   });
   expect(screen.queryByTestId("composer-steer"), "Steer after turn/started of the next turn").not.toBeNull();
+  expect(screen.queryByTestId("composer-stop"), "Stop after turn/started of the next turn").not.toBeNull();
   act(() => {
     fake.emitNotification({
       method: "thread/status/changed",
@@ -507,6 +509,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
     });
   });
   expect(screen.queryByTestId("composer-steer"), "Steer after the status frame").not.toBeNull();
+  expect(screen.queryByTestId("composer-stop"), "Stop after the status frame").not.toBeNull();
 }
 
 // The click follows the same rule as the button. Between the two turn frames

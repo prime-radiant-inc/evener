@@ -10,6 +10,7 @@
 import { type ReactNode, useState } from "react";
 import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import { errorText, sessionActionError } from "../../../../protocol/errors";
+import { canSteer } from "../../../../protocol/submitRouting";
 import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
@@ -113,6 +114,7 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 }
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
+const STEER_UNAVAILABLE_REASON = "Steer is not available for this session";
 
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
   const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
@@ -193,6 +195,12 @@ export function QueueStrip({
 
   if (!model || !visible) return null;
 
+  // Every steering affordance here shares the composer's own Steer gate
+  // (canSteer): a harness that advertises no steer gets no "Steer queue now"
+  // and a disabled "Steer now", never a drain or promote it would answer
+  // Unavailable. Edit and remove need no such gate.
+  const steerOffered = canSteer(model.status.type, model.capabilities);
+
   const ids = queue?.ids;
   const texts = queue?.texts;
   const preview = queue?.preview;
@@ -210,6 +218,10 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
+    if (!steerOffered) {
+      toasts.push("error", STEER_UNAVAILABLE_REASON);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
@@ -265,6 +277,10 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    if (!steerOffered) {
+      toasts.push("error", STEER_UNAVAILABLE_REASON);
+      return;
+    }
     const { text, attachments, hasPending, skillNames } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -362,7 +378,7 @@ export function QueueStrip({
     <section className={CLASS.strip}>
       <div className={CLASS.header}>
         <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
-        {hasQueuedWork && (
+        {hasQueuedWork && steerOffered && (
           <Tooltip label="Send your message and everything queued into the current turn">
             <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
               Steer queue now
@@ -410,8 +426,10 @@ export function QueueStrip({
                   label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
-                  disabled={!actionsAvailable || busy}
-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
+                  disabled={!actionsAvailable || !steerOffered || busy}
+                  disabledReason={
+                    !actionsAvailable ? ACTIONS_UNAVAILABLE_REASON : steerOffered ? undefined : STEER_UNAVAILABLE_REASON
+                  }
                   onClick={() => {
                     if (entryId !== undefined) void handlePromote(index, entryId);
                   }}

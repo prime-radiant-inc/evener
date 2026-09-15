@@ -3,6 +3,7 @@
 // click/keydown handlers stay thin dispatchers over these, and every branch
 // is unit-testable without mounting anything.
 import type { SendQueueAvailability } from "./sendQueueAvailability";
+import type { ThreadCapabilities } from "./types.gen";
 
 export type SubmitRoute = "send" | "queue" | "none";
 
@@ -67,4 +68,16 @@ export function decideSteerRoute(opts: {
 // caller's own pending-send flag (its tier 6) in, which is a routing concern.
 export function isTurnActive(statusType: string): boolean {
   return statusType === "active";
+}
+
+// canSteer is the one gate every steering affordance shares: the composer's
+// Steer button and its keybinding, and the queue strip's "Steer queue now"
+// and per-row "Steer now". The session is working (isTurnActive) and the
+// daemon advertises steer for that status (the hub derives the capability
+// from the same status, server/appwire_runtime.go appCapabilitiesLocked).
+// One predicate rather than one per affordance, so a harness that cannot
+// steer is never sent a turn/steer, turn/drainAsSteer or
+// turn/promoteQueuedAsSteer it would answer Unavailable, from any of them.
+export function canSteer(statusType: string, capabilities: Pick<ThreadCapabilities, "steer">): boolean {
+  return isTurnActive(statusType) && capabilities.steer === true;
 }

@@ -152,7 +152,7 @@ export {
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
-export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export { canSteer, decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 export {
   clip,
   clipJobID,
