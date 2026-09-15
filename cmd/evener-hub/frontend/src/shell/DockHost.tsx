@@ -209,11 +209,17 @@ function ensureMainPane(): void {
 // is keyed on GROUP IDENTITY (is this the main group) instead of a pane
 // count, which is the only thing that was ever supposed to determine it -
 // the main group's one-pane-ness is a permanent invariant of its slot, not a
-// transient count secondary happens to share sometimes.
+// transient count secondary happens to share sometimes. One exception keeps
+// the count check in the rule itself: a RECOVERED layout (the saved main
+// pane was skipped as unregistered) seats the store's main pane inside the
+// old secondary group, which may hold several panes - hiding that group's
+// header would strand them behind a hidden tab bar, the exact one-way door
+// this function exists to prevent. In every normal state the two rules
+// agree: the main pane's group holds it alone.
 function syncGroupHeaders(api: DockviewApi): void {
   const mainPaneId = workspaceStore.getState().mainPane()?.id;
   for (const group of api.groups) {
-    const hidden = group.panels.some((p) => p.id === mainPaneId);
+    const hidden = group.panels.length === 1 && group.panels.some((p) => p.id === mainPaneId);
     if (group.model.header.hidden !== hidden) group.model.header.hidden = hidden;
   }
 }
