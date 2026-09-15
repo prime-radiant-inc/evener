@@ -915,13 +915,22 @@ deploy landed.
   does:
 
   ```
-  ssh <dest> curl -fsS <loopback(addr)>/api/health
+  ssh <dest> curl -fsS --noproxy '*' <loopback(addr)>/api/health
   ```
 
   where `<loopback(addr)>` is the configured host address (`Manager.hostAddr`:
   the per-host `addr`, else `Options.HubAddr`, else `127.0.0.1:9180`) with the
   same wildcard→loopback normalization the bridge applies (`loopbackAddr`:
   `0.0.0.0`, empty, and `localhost` → `127.0.0.1`; `::` → `[::1]`).
+  **The probe must bypass the host's proxy environment.** The `curl` runs in the
+  host's shell, so a `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` set there would route
+  the loopback health request through a proxy instead of reaching the host's own
+  hub (and could leak the loopback URL and health payload off-box) — the same
+  hazard component 02's bridge dial avoids with `Proxy: nil`. The probe
+  therefore passes `--noproxy '*'` (equivalently, clears the proxy variables for
+  the command) so the request always goes directly to the loopback address, and
+  this behavior is covered by a test asserting the argv carries `--noproxy '*'`
+  (and that a set `HTTP_PROXY` in the host environment is not consulted).
   **The configured address must be a literal loopback or wildcard address.**
   The design's transport invariant is loopback-only ("No HTTP port exposed
   beyond the host's loopback", design §2 "Transport"), but a configured `addr` is
@@ -1269,10 +1278,12 @@ with the remote hub and its daemons still running.
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
   `ErrRestart`, never an assumed success. Assert the probe argv is the on-host
-  `curl -fsS <loopback(addr)>/api/health` over `ssh`, not a controller-side HTTP
+  `curl -fsS --noproxy '*' <loopback(addr)>/api/health` over `ssh`, not a controller-side HTTP
   call, and that the address is the configured per-host `addr` normalized to
   loopback (a non-default port and a `0.0.0.0`/`::` bind both appear as the
-  loopback form). Assert an auto-match that decides to restart does so because
+  loopback form). Assert the argv carries `--noproxy '*'`, so a
+  `HTTP_PROXY`/`HTTPS_PROXY` in the host's environment cannot route the loopback
+  health request through a proxy. Assert an auto-match that decides to restart does so because
   the **running** `/api/health` version differed, not only the on-disk
   `launch-check` version, and that a probe that answers nothing invents no
   restart.

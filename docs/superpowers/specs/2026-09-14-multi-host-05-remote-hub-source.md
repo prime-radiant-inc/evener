@@ -32,13 +32,22 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
   `cmd/evener-hub/internal/appsource/`.
 - Mapping of all 30 `Source` methods onto wire methods that already exist on the
   remote hub's router (see the coverage table in §Contract).
-- Ref translation in both directions:
+- Ref translation in both directions, **recursively through every nested
+  structure that carries a session ref**:
   - request params: `host:<thread>` / bare thread ID → `local:<thread>`;
   - responses and notifications: remote `local:<thread>` → `host:<thread>`,
     including `Thread.Evener.Ref`, `Thread.Evener.ParentRef`, `Thread.Source`,
     and nested `Thread` snapshots carried by `thread/started`
     (`appwire.NotifyThreadStarted`, `appwire/types.go`);
-  - sub-thread (read-only alias) refs and parent refs.
+  - sub-thread (read-only alias) refs and parent refs;
+  - the `Thread.Evener.Diagnostics` block on a thread snapshot
+    (`EvenerDiagnostics.Jobs[].TranscriptRef`,
+    `EvenerDiagnostics.Delegates[].TranscriptRef` —
+    `EvenerJobInfo`/`EvenerDelegateInfo`, `appwire/types.go`) and the whole
+    `ListJobs` result tree (`appwire.JobActivityTree`:
+    `JobActivitySession.Ref`/`.Child`, `JobActivityJob.OwnerRef`/
+    `.TranscriptRef`/`.Child`/`.Turns`, `JobActivityDelegate.ChildRef` —
+    `appwire/types.go`).
 - Subscription: `SubscribeThread` drives the remote hub's `thread/read`
   (`subscribe:true`) live feed over the single channel and fans notifications
   out per ref, reference-counting per remote thread and sending the remote
@@ -127,7 +136,7 @@ inline inside a registration function, the registration function is named.
 |---|---|---|---|---|
 | `ID` | — | — | — | local; returns host name |
 | `ListThreads` | `MethodThreadList` | `ScopeBoth` | `hubThreadList` (`app_threadlist.go`) | forward; **remap `SourceIDs`**, translate refs |
-| `ReadThread` | `MethodThreadRead` | `ScopeBoth` | inline in `registerThreadHandlers` (`app_rpc.go`) | forward; translate refs |
+| `ReadThread` | `MethodThreadRead` | `ScopeBoth` | inline in `registerThreadHandlers` (`app_rpc.go`) | forward; translate refs, **including the nested `Thread.Evener.Diagnostics` job/delegate refs** |
 | `ListTurns` | `MethodThreadTurnsList` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
 | `StartThread` | `MethodThreadStart` | `ScopeHub` | `hubThreadStart` (`app_threadlifecycle.go`) | forward; **strip the controller-only `Source` field**; remote hub spawns on the host |
 | `ResumeThread` | `MethodThreadResume` | `ScopeHub` | `hubThreadResume` (`app_threadlifecycle.go`) | forward; translate refs |
@@ -152,7 +161,7 @@ inline inside a registration function, the registration function is named.
 | `ClearThread` | `MethodThreadClear` | `ScopeBoth` | `clearThreadWithResume` (inline in `registerThreadHandlers`) | forward |
 | `ListModels` | `MethodModelList` | `ScopeBoth` | `hubModelList` (`app_models.go`) | forward |
 | `ListTasks` | `MethodEvenerTasksList` | `ScopeBoth` | `hubTasksList` (`app_tasks.go`) | forward |
-| `ListJobs` | `MethodEvenerJobsList` | `ScopeBoth` | `hubJobsList` (`app_jobs.go`) | forward |
+| `ListJobs` | `MethodEvenerJobsList` | `ScopeBoth` | `hubJobsList` (`app_jobs.go`) | forward; **recursively translate the `JobActivityTree` session refs** |
 | `JobOutput` | `MethodEvenerJobsOutput` | `ScopeBoth` | `hubJobsOutput` (`app_jobs.go`) | forward |
 | `SubscribeThread` | `MethodThreadRead` with `Subscribe:true` + notifications | `ScopeBoth` | inline in `registerThreadHandlers` + relay | **compose** over the channel |
 
@@ -392,8 +401,10 @@ launchSourceID(params) }`). That fallback maps `"evener"` to `local` and any
 other non-empty harness string to a source ID, so a harness value that happens
 to equal a configured host name would silently retarget the spawn to that host.
 Component 06's write contract therefore requires that a harness value naming a
-configured host source be refused, or the harness-as-source fallback retired
-(component 06, §"Write contract (session targeting)").
+configured host source — or any other registered non-local source — be refused
+with `InvalidParams`. The `launchSourceID` fallback is **retained** for every
+other harness value and is consulted only when `Source` is empty; it is not
+retired outright (component 06, §"Write contract (session targeting)").
 
 **The host selector is controller-only and is stripped at the remote
 boundary; the harness is the backend selection and is preserved.**
@@ -700,18 +711,34 @@ Ref translation detail (`remote_hub_refs.go`):
     terminates an A→B→A chain even though the config alone cannot detect it
     (design §2 "Topology"; §Open questions item 3). It is a requirement of this
     component's routing seam, not a present fact.
-  - **The origin signal is the connection a request arrived on, never
-    `InitializeParams.ClientInfo`.** `ClientInfo` is caller-supplied and
-    spoofable, and no origin/hop field exists today in the request context,
-    `ThreadListParams`, or the `Source` interface, so the guard needs its own
-    signal. The hub's `/rpc` edge already distinguishes the **host-bridge
-    connection** — the one a peer hub's attach bridge opens with the host
-    capability token (component 02) — from an ordinary local browser/TUI
-    session. At accept/attach time the hub therefore marks the connection with
-    its **role** (the credential it authenticated with: host capability token ⇒
-    *remote-originated*; a local session ⇒ *local*), and the routing seam stamps
-    that role into the request context, so every handler can read
-    `origin` (empty for a local request, non-empty for a remote-originated one).
+  - **The origin signal is an explicit, verifiable bridge marker on the
+    connection, never `InitializeParams.ClientInfo`.** `ClientInfo` is
+    caller-supplied and spoofable, and no origin/hop field exists today in the
+    request context, `ThreadListParams`, or the `Source` interface, so the guard
+    needs its own signal. The signal **cannot be the credential**: the attach
+    bridge, the local TUI, CLI scripts, and browser sessions all present the
+    **same host capability token** (`cmd/evener-hub/web.go`,
+    `internal/hubedge/auth_token.go`,
+    `cmd/evener-tui/internal/hubstart/hub_start.go`,
+    `cmd/evener-hub/attach.go`), so no role can be derived from it.
+    Classifying every token-bearer *local* disables the guard entirely (the
+    attach bridge is local too, allowing unbounded A→B→A recursion); classifying
+    every token-bearer *remote-originated* blocks local clients from fanning out.
+    The hub's `/rpc` edge therefore requires a dedicated marker presented only
+    by `evener hub attach --stdio`: the request header `X-Evener-Bridge: 1`
+    (component 02, §Contract "Bridge marker"), validated **alongside** the
+    bearer token at accept/attach time. A connection presenting both a valid
+    token and the marker is marked *remote-originated*; a token-bearer without
+    the marker is *local*. A separate bridge token distinct from the user-facing
+    capability token is an equivalent mechanism; v1 uses the header.
+    At accept/attach time the hub therefore marks the connection with its
+    **role** (bridge marker present ⇒ *remote-originated*; marker absent ⇒
+    *local*), and the routing seam stamps that role into the request context, so
+    every handler can read `origin` (empty for a local request, non-empty for a
+    remote-originated one). **Implementation status:** neither the marker header,
+    the edge's role classification, nor the request-context `origin` exists
+    today (`cmd/evener-hub/web.go`, `internal/hubedge/auth_token.go`); this is
+    the design record, and the code delta is a tracked follow-up.
     The refusal is enforced at the **typed fan-out seam**, not by a check inside
     a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
     `app_threadlist.go`) — and any other path that routes a ref to more than one
@@ -735,6 +762,29 @@ Ref translation detail (`remote_hub_refs.go`):
   opaque precondition token round-tripped into `turn/start.expectedInstanceId`
   (`appwire/types.go`), so it must stay exactly what the remote hub
   minted.
+- **Nested response refs are translated recursively, not only at the top
+  level.** Two response shapes carry session refs below their top level, and
+  both must be walked with no field left as a remote `local:<id>`:
+  - the `ListJobs` result (`evener/jobs/list`, `JobsListResponse.Data` =
+    `appwire.JobActivityTree`, `appwire/types.go`) embeds a recursive session
+    tree — `Root.Ref` (`JobActivitySession.Ref`), `Root.Child`, and
+    `JobActivityJob.Child` (each a nested `JobActivitySession` with its own
+    `Ref`/`Child`/`Entries`), and, under `Root.Entries[].Job` /
+    `Root.Entries[].Delegate`, `OwnerRef`, `TranscriptRef`, and `ChildRef`
+    (`JobActivityJob`/`JobActivityDelegate`, `appwire/types.go`). Every one of
+    these is a session reference exactly like a top-level `ref`.
+  - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
+    `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
+    response or a `thread/started` notification): `Jobs[].TranscriptRef`
+    (`EvenerJobInfo.TranscriptRef`) and `Delegates[].TranscriptRef`
+    (`EvenerDelegateInfo.TranscriptRef`).
+  A nested `local:<id>` left untranslated makes the controller/TUI route the
+  job, delegate, or child session to the controller's *own* `local` — the wrong
+  machine, where the child session does not exist. `RemoteHubSource` must
+  rewrite every such field from the remote `local:<id>` to the controller
+  `host:<id>`, walking `JobActivityTree` and `EvenerDiagnostics` to their leaves.
+  This is the same rule the notification list below states, applied to the two
+  response carriers; a new nested ref field inherits it.
 - Sub-thread aliases: the remote hub emits them as read-only threads with
   `Kind:"subagent"`, empty capabilities, `Ref:"local:<child>"`, and
   `ParentRef:"local:<owner>"` (`local_daemon.go`). Translating both
@@ -823,12 +873,13 @@ questions for the atomicity tradeoff.
   and the fleet shows the host offline (parent design §2). Message names the
   host.
 - **Loop-guard refusal (remote-originated fan-out).** A request whose
-  routing-seam `origin` is non-empty — it arrived over a peer hub's
-  capability-token bridge connection — is served from the origin's local state
-  and is refused with a typed error if any fan-out path would route it to a
-  second remote source. The refusal is deliberate and surfaced, never a silent
-  serve-from-another-host; a local-originated request (`origin` empty) is
-  unaffected.
+  routing-seam `origin` is non-empty — it arrived over a peer hub's attach-bridge
+  connection, identified by the `X-Evener-Bridge: 1` marker the bridge presents
+  alongside the shared capability token (component 02) — is served from the
+  origin's local state and is refused with a typed error if any fan-out path
+  would route it to a second remote source. The refusal is deliberate and
+  surfaced, never a silent serve-from-another-host; a local-originated request
+  (`origin` empty, i.e. no bridge marker on the connection) is unaffected.
 - **Version mismatch.** `client.Initialize` returns
   `appwire.ProtocolVersionMismatchError` (`appwire/client.go`) when the remote
   speaks a different `appwire.ProtocolVersion` (`appwire/types.go`). Component
@@ -941,8 +992,19 @@ network.
     request whose routing-seam `origin` names a remote source — is served from
     the origin's local state and is refused typed if any fan-out path tries to
     route it to a second remote source; a local-originated request (empty
-    `origin`) fans out normally. Assert the origin is derived from the
-    connection role, not from `InitializeParams.ClientInfo`.
+    `origin`) fans out normally. Assert the origin is derived from the explicit
+    bridge marker (`X-Evener-Bridge: 1`) validated alongside the bearer token,
+    **not** from `InitializeParams.ClientInfo` and **not** from the token — a
+    token-only local connection (the TUI, a CLI script, a browser) must classify
+    `local`, and only a connection presenting the marker is *remote-originated*.
+13. **Nested response refs.** A `ListJobs` response whose `JobActivityTree`
+    carries `local:` refs at every level — `Root.Ref`, `Root.Child`,
+    `JobActivityJob.OwnerRef`/`TranscriptRef`/`Child`/`Turns`, and
+    `JobActivityDelegate.ChildRef` — reaches the caller fully rewritten to
+    `host:`; a `ReadThread`/`ListThreads` response whose
+    `Thread.Evener.Diagnostics` carries `Jobs[].TranscriptRef` and
+    `Delegates[].TranscriptRef` likewise. Assert no `local:` string survives in
+    the translated tree.
 
 ## Acceptance criteria
 
@@ -972,11 +1034,19 @@ network.
   `EvenerJobInfo`/`EvenerDelegateInfo` in `evener/job/*` and
   `evener/delegate/updated` — so no remote child reference reaches the
   controller as `local:<id>`.
+- Response ref translation rewrites every session-reference field **recursively**
+  through the `ListJobs` result (`appwire.JobActivityTree`: `Root.Ref`,
+  `Root.Child`, `JobActivityJob.OwnerRef`/`TranscriptRef`/`Child`/`Turns`, and
+  `JobActivityDelegate.ChildRef`) and through `Thread.Evener.Diagnostics`
+  (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), so no
+  nested remote `local:<id>` reaches the controller unrewritten.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
-- The loop guard's origin signal comes from the connection role (host
-  capability-token bridge connection), not `InitializeParams.ClientInfo`, and a
-  remote-originated request is refused typed before any fan-out to another
+- The loop guard's origin signal comes from an explicit, verifiable bridge marker
+  (`X-Evener-Bridge: 1`) presented by `evener hub attach --stdio` and validated
+  alongside the bearer token — **not** from `InitializeParams.ClientInfo`, and
+  **not** from the token (which every client shares, so it can carry no role) —
+  and a remote-originated request is refused typed before any fan-out to another
   remote source.
 
 ## PR size estimate (LOC)

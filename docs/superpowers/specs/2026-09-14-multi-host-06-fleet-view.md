@@ -153,11 +153,18 @@ happens to equal a configured host name (say a harness literally named `m4`)
 would silently retarget the spawn to that remote host — whether it arrives on
 the fallback path (`Source` empty) or is forwarded alongside a set `Source`.
 The required contract is therefore: a harness value that names a configured host
-source is refused (`InvalidParams`) rather than routed or forwarded; the
-harness-as-source fallback is likewise refused/retired outright. **Implementation
-status:** the shipped 06a `hubThreadStart` resolves the fallback unconditionally
-(`multi-host-pr06a-fleet-view-go`, **pending merge, not on `main`**), so this
-refusal is a requirement, not a present fact.
+source — or any other registered non-local source — is refused (`InvalidParams`)
+rather than routed or forwarded. The `launchSourceID` fallback itself is
+**retained**, not retired outright: it is consulted only when `Source` is empty,
+and for a harness value that does **not** name a configured/registered non-local
+source (e.g. `"claude"`, or `"evener"`→`local`) it resolves exactly as today.
+Deleting the fallback is explicitly *not* the contract — it would make a spawn
+with a non-empty harness like `"claude"` and an empty `Source` fall through to
+the local spawner in silence (`app_threadlifecycle.go:53-61`) instead of
+resolving its backend, which is the routing regression this section exists to
+prevent. **Implementation status:** the shipped 06a `hubThreadStart` resolves the
+fallback unconditionally (`multi-host-pr06a-fleet-view-go`, **pending merge, not
+on `main`**), so the host-naming refusal is a requirement, not a present fact.
 
 **The host selector is controller-only; the harness is preserved.** The
 `Source` field names a source in the controller's registry; the remote hub would
@@ -480,8 +487,10 @@ only `local`, so the fan-out currently degenerates to one source.
      plain hub-scoped method — **not** a forwarded `evener/host/request` admin
      call (component 07, §"Proxy method") and not added to that allow-list,
      because there is no host to forward to until the attach succeeds.
-   - The handler is a local browser request (empty loop-guard origin,
-     component 05 §"Ref translation detail"), so it is not itself a fan-out.
+   - The handler is a local (non-bridge) browser request — its connection
+     presents the capability token without `X-Evener-Bridge: 1`, so its
+     loop-guard origin is empty (component 05 §"Ref translation detail") — and
+     it is not itself a fan-out.
    The Connect control issues this call on the host row and renders its
    progress/error; it must not issue a proxy call, which refuses an unattached
    host. `appwire_catalog_test.go` picks the method up automatically; add a Go

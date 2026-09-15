@@ -41,9 +41,13 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   caller-identity guard that a later host-list RPC would make config-aware. The
   guard is a v1 requirement; the attach-time upstream-list detection
   (`AddWithUpstreams`/`SetUpstreams`) stays deferred. The guard's **origin
-  signal is the connection the request arrived on** — the hub marks a connection
-  opened by a peer hub's attach bridge with the host capability token as
-  remote-originated and stamps that role into the request context; it is never
+  signal is an explicit, verifiable bridge marker on the connection** — the
+  `evener hub attach --stdio` bridge presents `X-Evener-Bridge: 1` (component
+  02, §Contract "Bridge marker"), the hub's edge validates it alongside the
+  bearer token and stamps a remote-originated role into the request context; a
+  token-bearer without the marker is a local session. The token itself cannot
+  carry the role, because the attach bridge, the local TUI, CLI scripts, and
+  browser sessions all present the *same* host capability token. It is never
   `InitializeParams.ClientInfo`, which is caller-supplied and spoofable. The
   local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
   translation detail"), not by an advisory check in a handler.
@@ -85,12 +89,15 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   (`cmd/evener-hub/app_threadlifecycle.go`), where `"evener"` maps to `local`
   and any other value is treated as a source ID. **That legacy harness-as-source
   path is not the mechanism for host targeting.** Component 06 has settled on
-  an explicit `ThreadStartParams.Source` field as the sole host selector and
-  requires that a harness value naming a configured host source be refused with
-  `InvalidParams` rather than routed or forwarded (the fallback is likewise
-  retired), because `launchSourceID` silently retargets a spawn (component 06,
-  §"Write contract"). Harness-as-host targeting is therefore refused, not
-  endorsed.
+  an explicit `ThreadStartParams.Source` field as the sole host selector when
+  set and requires that a harness value naming a configured host source — or any
+  other registered non-local source — be refused with `InvalidParams` rather than
+  routed or forwarded, because `launchSourceID` silently retargets a spawn
+  (component 06, §"Write contract"). The `launchSourceID` fallback itself is
+  **retained** for every other harness value and is consulted only when `Source`
+  is empty; retiring it outright would make a non-empty harness like `"claude"`
+  with an empty `Source` fall through to the local spawner in silence.
+  Harness-as-host targeting is therefore refused, not endorsed.
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.

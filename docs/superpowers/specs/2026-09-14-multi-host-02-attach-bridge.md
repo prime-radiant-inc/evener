@@ -28,7 +28,10 @@ over an SSH channel with no additionally exposed port.
      (`<stateRoot>/auth-token` — `hubedge.TokenFileName`; trimmed), taking the
      state root from the same `hub.toml` (or `--config path`) the hub itself
      read, never a re-derived path;
-  3. dials `ws://<addr>/rpc` with `Authorization: Bearer <token>`;
+  3. dials `ws://<addr>/rpc` with `Authorization: Bearer <token>` **and the
+     bridge marker `X-Evener-Bridge: 1`** (see §Contract, "Bridge marker") — the
+     marker is what lets the hub edge tell a peer attach bridge from an ordinary
+     local session, which presents the same token without it;
   4. proxies `Message`s in both directions between the WebSocket transport and a
      `StreamTransport` over stdin/stdout;
   5. exits when either side closes.
@@ -80,6 +83,23 @@ capability token is never on the argv.
   `http.DefaultClient` (which honors `HTTP_PROXY`/`HTTPS_PROXY`), or a proxy in
   the environment would receive the hub's capability token aimed at the loopback
   join; it uses a client with `Proxy: nil`.
+- **Bridge marker.** The bridge presents a dedicated, verifiable marker on its
+  `/rpc` dial — the request header `X-Evener-Bridge: 1` — alongside the same
+  `Authorization: Bearer <token>` every other client uses. The hub's edge
+  validates the marker together with the token and marks the connection
+  *remote-originated*; a connection presenting the token **without** the marker
+  is an ordinary local session. The marker is required precisely because the
+  credential cannot carry the role: the attach bridge, the local TUI, CLI
+  scripts, and browser sessions all present the **same** host capability token
+  (`cmd/evener-hub/web.go`, `internal/hubedge/auth_token.go`,
+  `cmd/evener-tui/internal/hubstart/hub_start.go`), so the token alone cannot
+  distinguish a peer bridge from a local client. A separate bridge token
+  distinct from the user-facing capability token is an equivalent mechanism;
+  v1 uses the header. Component 05, §"Ref translation detail", defines how the
+  edge's role becomes the request-context `origin` and the loop-guard refusal
+  that reads it. **Implementation status:** neither the header nor the edge's
+  role classification exists today; this is the design record and a tracked code
+  follow-up.
 
 ## Implementation
 
@@ -131,6 +151,8 @@ controller hub
                                                    → bridge process
                                                        (stdout discipline: frames only)
                                                    → WebSocket ws://127.0.0.1:<hubaddr>/rpc
+                                                           (Authorization: Bearer <token>
+                                                            + X-Evener-Bridge: 1)
                                                    → hub AppWire router
 ```
 
@@ -163,6 +185,11 @@ sent on the other, in both directions.
   header is assembled for a refused address. A configured `HTTP_PROXY` /
   `HTTPS_PROXY` is not consulted by the dial (`attachDialClient` has
   `Proxy: nil`), so the token cannot reach a proxy.
+- **Bridge marker.** The dial presents `X-Evener-Bridge: 1` alongside the bearer
+  token, and the hub edge records the connection as remote-originated only when
+  both are present (component 05). Assert a token-only dial is classified local,
+  and that a request whose `InitializeParams.ClientInfo` names a host is *not*
+  treated as remote-originated (component 05, §"Ref translation detail").
 
 ## Acceptance criteria
 
@@ -172,6 +199,9 @@ sent on the other, in both directions.
 - `evener hub attach --stdio` and `evener-hub attach --stdio` both reach the
   bridge, and the bridge's stdin/stdout are the streams the caller supplied
   (`deps.stdin`/`deps.stdout`, defaulting to the process fds) — never nil.
+- The bridge's `/rpc` dial carries `X-Evener-Bridge: 1` with the bearer token, so
+  the hub edge can classify the connection remote-originated without deriving a
+  role from the shared token.
 
 ## PR size
 

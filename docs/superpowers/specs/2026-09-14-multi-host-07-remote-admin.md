@@ -379,8 +379,16 @@ conditional set, not read by the client before a separate write:
 | `ActiveSource == "api_key"` or `"credential_headers"` | **skipped** — the instance resolves from `providers.toml`, which *outranks* the file layer, so a pushed key would be shadowed and change nothing |
 | `ActiveSource == "env:<VAR>"` | **skipped** — the host operator's environment supplies a working credential; a file-layer write outranks `env:` and would silently replace it |
 | `ActiveSource == "store"` (implies `HasStoredFile == true`) | **updated** — write; the host overwrites its own file-layer key |
-| `ActiveSource == "none"` | **added** — write; the instance has no credential today |
+| `ActiveSource == "none"` **and the instance's auth scheme is key-capable** | **added** — write; the instance has no credential today and can consume an API key |
+| `ActiveSource == "none"` **and the instance uses `AuthNone`** | **skipped** — the host's `apiKey/set` refuses a key for an auth-none instance (`app_auth.go`: "authenticates without a credential"), so a pushed key would be one nothing reads; classify locally so the report is a skip, not an error |
 | remote `apiKey/set` returns an error | **failed**, with the wire error text |
+
+`"none"` is therefore **not** writable unconditionally: it is writable only
+when the instance's scheme can actually consume an API key. `AuthNone`
+(and an auth-none transport generally) deliberately reads no credential, so its
+`apiKey/set` rejects the write (`app_auth.go`); permitting the write for it would
+either fail on the host or store a credential nothing sends. Codex-OAuth and
+gcp-adc instances are already skipped by the rows above for the same reason.
 
 "Merge" means the host's other file-layer entries are never deleted — only
 `apiKey/set` is used, never `apiKey/clear`, and no whole-file replace exists.
@@ -647,7 +655,10 @@ receives a key, and the controller writes nothing.
    `evener/auth/apiKey/set`; the host file is written atomically at mode `0600`
    (host-side `store.go`). An instance whose remote credential resolves
    from `api_key`, `credential_headers`, `oauth`, `adc`, or `env:<VAR>` receives
-   no write at all; only `store` and `none` are writable.
+   no write at all; only `store`, and `none` **for a key-capable scheme**, are
+   writable. An `AuthNone` instance (`ActiveSource == "none"` with an auth-none
+   transport) is **skipped**, never written: its host-side `apiKey/set` refuses
+   the key.
 6. The push report lists every local entry with `added`/`updated`/`skipped`/
    `failed` and a reason for skips; remote-only entries are preserved.
 7. No key value appears in the push response, controller logs, or errors; the
