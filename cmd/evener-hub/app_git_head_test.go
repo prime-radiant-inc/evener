@@ -167,6 +167,9 @@ func TestSanitizeGitRemote(t *testing.T) {
 	}{
 		{name: "https credentials", in: "https://user:tok@github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
 		{name: "https username only", in: "https://user@github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
+		{name: "query token", in: "https://github.com/owner/repo.git?token=supersecret", want: "https://github.com/owner/repo.git"},
+		{name: "fragment token", in: "https://github.com/owner/repo.git#access_token=supersecret", want: "https://github.com/owner/repo.git"},
+		{name: "userinfo and query", in: "https://user:tok@github.com/owner/repo.git?token=supersecret", want: "https://github.com/owner/repo.git"},
 		{name: "https clean", in: "https://github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
 		{name: "ssh userinfo", in: "ssh://git@github.com/owner/repo.git", want: "ssh://github.com/owner/repo.git"},
 		{name: "scp-like unchanged", in: "git@github.com:owner/repo.git", want: "git@github.com:owner/repo.git"},

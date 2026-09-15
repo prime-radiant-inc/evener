@@ -54,10 +54,12 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 
 // sanitizeGitRemote strips credentials from a remote URL before it crosses
 // AppWire. `git remote get-url origin` returns the configured URL verbatim, and
-// an https remote can embed a username and token
-// (https://user:token@host/owner/repo.git); the browser needs only the host and
-// path to build a forge link, so the userinfo is removed here rather than left
-// for the caller to drop when it draws the link.
+// a remote can carry a secret in more than one place: userinfo
+// (https://user:token@host/owner/repo.git), a query string
+// (https://host/owner/repo.git?token=secret), or a fragment. The browser needs
+// only scheme, host and path to build a forge link, so every other part is
+// dropped here rather than left for the caller to ignore when it draws the
+// link.
 //
 // A scheme-less, scp-like remote (git@host:owner/repo.git) is returned
 // unchanged: its leading `user@` is part of the address rather than a
@@ -74,6 +76,10 @@ func sanitizeGitRemote(raw string) string {
 		return ""
 	}
 	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	return parsed.String()
 }
 
