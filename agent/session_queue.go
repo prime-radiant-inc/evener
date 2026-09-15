@@ -989,7 +989,14 @@ func (s *Session) injectDrainedSteering() {
 		if !ok {
 			break
 		}
-		s.consumeSteeringMessage(msg)
+		if !s.consumeSteeringMessage(msg) {
+			// The table put the failed steer back at the head of the queue;
+			// popping again would take the same steer and spend another
+			// retry attempt inside this turn, without the backoff. The retry
+			// the table armed owns the next attempt, for this steer and for
+			// everything queued behind it.
+			break
+		}
 	}
 }
 

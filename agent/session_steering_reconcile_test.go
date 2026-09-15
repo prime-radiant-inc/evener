@@ -51,7 +51,7 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 		{"5 claimed, in flight: left", "claimed", false, steeringReconcileInputs{inFlight: true, recorded: unrecorded}, want{state: "claimed", inOrder: true}},
 		{"5 claimed, in flight, recorded: still left", "claimed", false, steeringReconcileInputs{inFlight: true, recorded: recorded}, want{state: "claimed", inOrder: true}},
 		{"6 claimed, recorded: finalized", "claimed", false, steeringReconcileInputs{recorded: recorded}, want{state: "", inOrder: false}},
-		{"6 claimed, recorded, parked: finalized, hold untouched", "claimed", true, steeringReconcileInputs{recorded: recorded}, want{state: "", inOrder: false, held: true}},
+		{"6 claimed, recorded, parked, last steer: finalized, hold released (rule H)", "claimed", true, steeringReconcileInputs{recorded: recorded}, want{state: "", inOrder: false, held: false}},
 		{"7 claimed, unrecorded, held: returned and parked", "claimed", true, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true, held: true}},
 		{"7 claimed, unrecorded, Stop: returned and parked", "claimed", false, steeringReconcileInputs{recorded: unrecorded, stopping: true}, want{state: "accepted", inOrder: true, held: true}},
 		{"8 claimed, unrecorded, runnable: returned, retry re-armed", "claimed", false, steeringReconcileInputs{recorded: unrecorded}, want{state: "accepted", inOrder: true, rearm: true}},
@@ -106,6 +106,44 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 		}
 		if snapshot.PendingExecutions[id].ExecutionState != "accepted" || !out.rearm {
 			t.Fatalf("the caller's failed steer reads %q rearm=%v, want returned and re-armed (row 8)", snapshot.PendingExecutions[id].ExecutionState, out.rearm)
+		}
+	})
+	t.Run("slot: released even when row 6 finalizes the steer that named it", func(t *testing.T) {
+		snapshot := build("claimed", false, turn)
+		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: recorded})
+		if _, still := snapshot.PendingExecutions[id]; still || len(out.finalized) != 1 {
+			t.Fatalf("recorded steer finalized=%v still pending=%v, want finalized", out.finalized, still)
+		}
+		if snapshot.ActiveTurnID != "" || !out.released {
+			t.Fatalf("ActiveTurnID=%q released=%v after finalizing the carrier's own steer, want the claim released", snapshot.ActiveTurnID, out.released)
+		}
+	})
+	t.Run("hold: released once row 6 retires the last steer", func(t *testing.T) {
+		snapshot := build("claimed", true, "")
+		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: recorded, stopping: true})
+		if snapshot.SteeringHeld || !out.holdReleased {
+			t.Fatalf("held=%v holdReleased=%v after the last steer was finalized, want the hold released (#710)", snapshot.SteeringHeld, out.holdReleased)
+		}
+	})
+	t.Run("hold: released once row 1 drops the last stale entry", func(t *testing.T) {
+		snapshot := build("", true, "")
+		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
+		if snapshot.SteeringHeld || !out.holdReleased {
+			t.Fatalf("held=%v holdReleased=%v after the stale entry was dropped, want the hold released", snapshot.SteeringHeld, out.holdReleased)
+		}
+	})
+	t.Run("hold: kept while a pending steer names it", func(t *testing.T) {
+		snapshot := build("claimed", true, "")
+		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
+		if !snapshot.SteeringHeld || out.holdReleased {
+			t.Fatalf("held=%v holdReleased=%v with the returned steer parked behind it, want the hold kept (row 7)", snapshot.SteeringHeld, out.holdReleased)
+		}
+	})
+	t.Run("hold: an accepted steer keeps it", func(t *testing.T) {
+		snapshot := build("accepted", true, "")
+		out := reconcileClientSteering(&snapshot, steeringReconcileInputs{recorded: unrecorded})
+		if !snapshot.SteeringHeld || out.holdReleased {
+			t.Fatalf("held=%v holdReleased=%v with an accepted steer parked, want the hold kept (row 3)", snapshot.SteeringHeld, out.holdReleased)
 		}
 	})
 	t.Run("slot: a user turn's name is not a carrier claim", func(t *testing.T) {

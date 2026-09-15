@@ -51,6 +51,9 @@ type steeringReconcileOutcome struct {
 	// released reports that the active-turn slot was released from a carrier
 	// claim that never ran.
 	released bool
+	// holdReleased reports that a steering hold naming no pending user steer
+	// was released.
+	holdReleased bool
 }
 
 func (in steeringReconcileInputs) isRecorded(id string) bool {
@@ -79,12 +82,28 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 //	7  claimed         no         no        yes     return to accepted and park: the append never landed, a Stop or hold owns the next run
 //	8  claimed         no         no        no      return to accepted and re-arm the retry: the append never landed and nothing else will run it
 //
-// The active-turn slot: when no turn is in flight and the slot names a steer's
-// reserved id, that is a carrier claim that never ran to incorporation
-// (claimSteeringCarrierTurn publishes the id before the carrier opens; a
-// process death or a cancelled input leaves it), and it is released so the
-// next claim and the next turn/start are not refused. The caller's own name is
-// never released here.
+// Two rules follow the rows, over the whole store rather than one steer:
+//
+//	S  the active-turn slot: when no turn is in flight and the slot names a
+//	   steer's reserved id, that is a carrier claim that never ran to
+//	   incorporation (claimSteeringCarrierTurn publishes the id before the
+//	   carrier opens; a process death or a cancelled input leaves it), and it
+//	   is released so the next claim and the next turn/start are not refused.
+//	   Whether the slot names a steer is read BEFORE the rows run: row 6 (or
+//	   row 1) removes the steer from the order, and a carrier that recorded
+//	   its steer and died before the incorporation write is exactly the claim
+//	   this rule exists to release. The caller's own name is never released.
+//	H  the hold: after the rows, a SteeringHeld that names no pending user
+//	   steer is released. A Stop arms the hold for whatever was pending at
+//	   its acceptance, and rows 1 and 6 can retire the last of that; a hold
+//	   naming nothing swallows the next steer the user sends (#710). This is
+//	   a release only, never an arm: restore is not a Stop.
+//
+// A stale slot: a release write the store refused leaves the slot named until
+// the release retry lands (scheduleRunningTurnReleaseRetry). Until then a
+// caller outside any turn reads the slot as in flight (turnInFlight) and rows
+// 2 and 5 leave the steer; the release retry, when it lands, runs this table
+// again and wakes, which is what delivers the steer the stale slot held back.
 //
 // Row 1: an order entry with no pending execution is a remnant of a
 // finalization that retired the steer -- every retiring path nils the journal
@@ -100,6 +119,9 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 func reconcileClientSteering(snapshot *clientMutationSnapshot, in steeringReconcileInputs) steeringReconcileOutcome {
 	var out steeringReconcileOutcome
 	parked := snapshot.SteeringHeld || in.stopping
+	// Rule S's fact, taken before the rows can remove the steer that names it.
+	carrierClaim := !in.inFlight && snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != in.callerTurn &&
+		steeringOrderNamesTurn(snapshot, snapshot.ActiveTurnID)
 	for _, id := range slices.Clone(snapshot.SteeringOrder) {
 		pending, ok := snapshot.PendingExecutions[id]
 		if !ok {
@@ -146,9 +168,15 @@ func reconcileClientSteering(snapshot *clientMutationSnapshot, in steeringReconc
 			}
 		}
 	}
-	if !in.inFlight && snapshot.ActiveTurnID != "" && snapshot.ActiveTurnID != in.callerTurn && steeringOrderNamesTurn(snapshot, snapshot.ActiveTurnID) {
+	// Rule S.
+	if carrierClaim {
 		snapshot.ActiveTurnID = ""
 		out.released = true
+	}
+	// Rule H.
+	if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
+		snapshot.SteeringHeld = false
+		out.holdReleased = true
 	}
 	return out
 }
@@ -213,8 +241,12 @@ func (s *Session) recordedClientSteering() func(string) bool {
 
 // turnInFlight answers steeringReconcileInputs.inFlight for a caller outside
 // any turn: the session is processing, or the active-turn slot is taken --
-// in this process, a taken slot is a running turn or a carrier claim about to
-// open one.
+// in this process, a taken slot is a running turn, a carrier claim about to
+// open one, or a stale name a refused release write left behind. The last
+// reads as in flight too, deliberately: the release retry that clears it runs
+// the table again and wakes (scheduleRunningTurnReleaseRetry), so nothing is
+// lost by leaving the steer until then, and nothing is written into a slot
+// the retry is about to clear.
 func (s *Session) turnInFlight() bool {
 	if s.State() == SessionProcessing {
 		return true

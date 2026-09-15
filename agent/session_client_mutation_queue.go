@@ -1333,19 +1333,10 @@ func (s *Session) restoreDurableClientMutationQueues() {
 		reconcileClientSteering(snapshot, steeringReconcileInputs{
 			recorded: func(id string) bool { _, ok := incorporated[id]; return ok },
 		})
-		// Release a steering hold the loop above left naming nothing. A
-		// snapshot written before #710 could park steering unconditionally at
-		// Stop, so a restored hold can name no pending steer at all -- and a
-		// hold naming nothing swallows every steer the resumed session accepts
-		// afterwards. This runs after the claimed-steering returns above, so a
-		// claim that never landed still counts as parked.
-		//
-		// Release only, never arm: restore is not a Stop, and a session that
-		// was never stopped must keep waking for the steering it is holding
+		// A hold naming nothing (a snapshot written before #710 could park
+		// steering unconditionally at Stop) is released by the table's rule H
+		// above; release only, never arm, since restore is not a Stop
 		// (TestRestoredSteeringWakesWhenTheDaemonAttaches).
-		if snapshot.SteeringHeld && !snapshotHasPendingUserSteering(snapshot, "") {
-			snapshot.SteeringHeld = false
-		}
 		snapshot.QueueRevision++
 		return nil
 	}); err != nil {
