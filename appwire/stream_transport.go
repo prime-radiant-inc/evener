@@ -67,6 +67,13 @@ func NewStreamTransport(rw io.ReadWriteCloser) *StreamTransport {
 // enforces limit exactly, so a maximum-size frame is accepted while anything
 // larger fails without buffering it all.
 func NewStreamTransportWithLimit(rw io.ReadWriteCloser, limit int) *StreamTransport {
+	if limit < 1 {
+		// The limit is a caller-supplied seam (production goes through
+		// NewStreamTransport). A non-positive one is arithmetic nonsense —
+		// limit+1 would size the reader buffer at zero — and would leave a
+		// transport that silently rejects every frame while looking configured.
+		limit = 1
+	}
 	return &StreamTransport{
 		rw:    rw,
 		br:    bufio.NewReaderSize(rw, min(4096, limit+1)),
@@ -126,6 +133,11 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
+		// A concurrent call may have poisoned the transport and closed it under
+		// this write: report the recorded cause rather than the bare close error.
+		if pErr := t.poisonErr(); pErr != nil {
+			return pErr
+		}
 		t.poison(err)
 		return err
 	}
@@ -151,6 +163,13 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Message{}, ctxErr
+		}
+		// readLine poisons when it consumes part of a frame, and a concurrent
+		// call may have poisoned too. Report the recorded cause rather than the
+		// raw error this call woke up with, so a blocked Recv cannot surface a
+		// bare close error instead of the failure that closed the stream.
+		if pErr := t.poisonErr(); pErr != nil {
+			return Message{}, pErr
 		}
 		return Message{}, err
 	}
@@ -180,25 +199,36 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 			continue
 		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if len(line) == 0 && len(chunk) == 0 {
-					return nil, io.EOF
-				}
+			line = append(line, chunk...)
+			switch {
+			case errors.Is(err, io.EOF) && len(line) == 0:
+				return nil, io.EOF
+			case len(line) > t.limit:
+				// The frame had already outgrown the limit before the stream
+				// ended, so the size is the more specific cause.
+				t.poison(ErrStreamFrameTooLarge)
+				return nil, ErrStreamFrameTooLarge
+			case errors.Is(err, io.EOF):
 				// The stream ended mid-frame. Poisoning keeps that sticky: a
 				// later Recv would otherwise report a clean io.EOF, which reads
 				// as an orderly close rather than a truncated message.
 				t.poison(io.ErrUnexpectedEOF)
 				return nil, io.ErrUnexpectedEOF
+			default:
+				// Any other read error ends the frame mid-message, and the bytes
+				// already consumed are gone: resuming here would read this
+				// frame's tail as the next message.
+				t.poison(err)
+				return nil, err
 			}
-			return nil, err
 		}
 		line = append(line, chunk...)
 		// The trailing newline is framing, not payload: a frame whose payload is
-		// exactly the limit is in bounds. The delimiter was consumed, so the
-		// stream stays aligned even when the frame is rejected — that is why this
-		// rejection deliberately does NOT poison, unlike the buffer-full path
-		// above where the rest of the frame is still on the wire.
+		// exactly the limit is in bounds. An over-limit frame is terminal on this
+		// path too: whether the line happened to fit the reader's buffer must not
+		// decide whether a protocol violation kills the stream.
 		if len(line)-1 > t.limit {
+			t.poison(ErrStreamFrameTooLarge)
 			return nil, ErrStreamFrameTooLarge
 		}
 		return line[:len(line)-1], nil

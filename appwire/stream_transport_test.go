@@ -322,6 +322,80 @@ type shortWriteStream struct {
 func (s *shortWriteStream) Write([]byte) (int, error) { return s.limit, nil }
 func (s *shortWriteStream) Close() error              { return nil }
 
+// memoryStream serves reads from a fixed byte stream and records writes, so a
+// test can feed frames and assert what was written without net.Pipe's
+// synchronous handshake.
+type memoryStream struct {
+	r *bytes.Reader
+	w bytes.Buffer
+}
+
+func (m *memoryStream) Read(p []byte) (int, error)  { return m.r.Read(p) }
+func (m *memoryStream) Write(p []byte) (int, error) { return m.w.Write(p) }
+func (m *memoryStream) Close() error                { return nil }
+
+// The rejections that leave the stream aligned must not kill it: a Send refused
+// before it wrote, and a whole frame consumed but undecodable, both leave the
+// next frame readable.
+func TestStreamTransportNonTerminalRejectionsLeaveStreamUsable(t *testing.T) {
+	const limit = 64
+	valid, err := marshalWSMessage(ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	feed := append([]byte("not json at all\n"), append(valid, '\n')...)
+	stream := &memoryStream{r: bytes.NewReader(feed)}
+	tr := NewStreamTransportWithLimit(stream, limit)
+
+	// Refused before the write, so nothing reached the wire.
+	tooBig := ResponseMessage(NewIntID(1), json.RawMessage(`{"padding":"`+string(bytes.Repeat([]byte("x"), limit))+`"}`))
+	if err := tr.Send(context.Background(), tooBig); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("Send err = %v, want ErrStreamFrameTooLarge", err)
+	}
+	if stream.w.Len() != 0 {
+		t.Fatalf("a refused Send wrote %d bytes", stream.w.Len())
+	}
+
+	// The whole bad frame was consumed, so the valid one that follows still reads.
+	if _, err := tr.Recv(context.Background()); err == nil {
+		t.Fatal("Recv accepted a non-JSON frame")
+	}
+	if _, err := tr.Recv(context.Background()); err != nil {
+		t.Fatalf("Recv after two non-terminal rejections = %v, want the valid frame", err)
+	}
+}
+
+// An over-limit frame is terminal however it was detected. That matters for the
+// path where the reader's buffer (bufio floors it at 16 bytes, above limit+1 for
+// small limits) held the whole line: terminality must not depend on chunking.
+func TestStreamTransportBufferedOversizeIsTerminal(t *testing.T) {
+	const limit = 8
+	// A payload over the limit whose line still fits bufio's minimum buffer.
+	feed := append(bytes.Repeat([]byte("x"), limit+4), '\n')
+	tr := NewStreamTransportWithLimit(&memoryStream{r: bytes.NewReader(feed)}, limit)
+
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("Recv err = %v, want ErrStreamFrameTooLarge", err)
+	}
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("second Recv = %v, want the poisoning ErrStreamFrameTooLarge", err)
+	}
+}
+
+// A non-positive limit is clamped rather than leaving a transport whose reader
+// buffer is sized at zero and which rejects every frame.
+func TestStreamTransportLimitIsClamped(t *testing.T) {
+	tr := NewStreamTransportWithLimit(&memoryStream{r: bytes.NewReader([]byte("a\n"))}, 0)
+
+	line, err := tr.readLine()
+	if err != nil {
+		t.Fatalf("readLine with a non-positive limit = %v, want the frame accepted", err)
+	}
+	if string(line) != "a" {
+		t.Fatalf("readLine = %q, want %q", line, "a")
+	}
+}
+
 // A send queued behind another stalled write must obey its own context rather
 // than wait for a lock it may never get.
 func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
