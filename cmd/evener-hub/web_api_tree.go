@@ -647,6 +647,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Project:   project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
+	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
 	return meta, entry, true
 }
 
@@ -655,6 +656,15 @@ func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJob
 		return nil
 	}
 	return diagnostics.Jobs
+}
+
+// diagnosticsWatches returns a remote thread's own live-watch rows. A thread
+// with no diagnostics (old daemon, or one that listed nothing) and a
+// diagnostics that omits Watches both yield an empty list — absence is never
+// an error. It delegates to hubcore's shared projection so the local and remote
+// tree code cannot drift.
+func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	return hubcore.DiagnosticsWatches(diagnostics)
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the

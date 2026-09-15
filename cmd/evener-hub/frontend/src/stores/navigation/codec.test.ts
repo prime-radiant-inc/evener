@@ -907,3 +907,31 @@ test("repeated compatibility materialization preserves root and nested identity"
   expect(after.sessions[0]).toBe(before.sessions[0]);
   expect(after.sessions[0]?.children).toBe(before.sessions[0]?.children);
 });
+
+test("codec rejects an armed omitted count above the omitted watch total", () => {
+  const session = entityKey(key, "1");
+  const snapshotWithOmitted = (omitted: number | undefined, armed: number | undefined): NavigationSnapshot => ({
+    ...liveSnapshot(),
+    entities: [
+      {
+        key: session,
+        kind: "session",
+        value: {
+          ...sessionValue("local:session"),
+          ...(omitted === undefined ? {} : { omitted_watches: omitted }),
+          ...(armed === undefined ? {} : { omitted_armed_watches: armed }),
+        },
+      },
+    ],
+  });
+  const statusFor = (omitted: number | undefined, armed: number | undefined) =>
+    decodeNavigationResponse(key, undefined, snapshotResponse(key, snapshotWithOmitted(omitted, armed))).status;
+
+  expect(() => statusFor(1, 2)).toThrow();
+  expect(statusFor(2, 2)).toBe("snapshot");
+  expect(statusFor(3, 1)).toBe("snapshot");
+  expect(statusFor(1, undefined)).toBe("snapshot");
+  expect(statusFor(undefined, 0)).toBe("snapshot");
+  // An absent total is zero, not unknown: the Go schema rejects this shape too.
+  expect(() => statusFor(undefined, 1)).toThrow();
+});
