@@ -172,6 +172,16 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		t.poison(ctxErr)
 		return ctxErr
 	}
+	// stop() reports whether it prevented the callback. If it returns false the
+	// cancellation landed in the window since the check above, so the AfterFunc
+	// already closed the stream and the cancellation has to be latched even
+	// though this frame went out. The deferred stop is an idempotent safety net.
+	if !stop() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			t.poison(ctxErr)
+			return ctxErr
+		}
+	}
 	return nil
 }
 
@@ -212,6 +222,15 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	var msg Message
 	if err := unmarshalWSMessage(line, &msg); err != nil {
 		return Message{}, err
+	}
+	// Same window on the read side: a cancellation after the check above and
+	// before the deferred stop closed the stream, so the message is not
+	// delivered and the cancellation is latched.
+	if !stop() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			t.poison(ctxErr)
+			return Message{}, ctxErr
+		}
 	}
 	return msg, nil
 }
