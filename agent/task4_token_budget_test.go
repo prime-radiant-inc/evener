@@ -119,7 +119,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 		PreviousResponseID:             "resp-anchor",
 		FullHistoryInputTokensEstimate: 524_000,
 	}
-	req = sess.applyResponsesContinuationShadowEstimate(req)
+	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
 	t.Logf("continuation request full=%d input=%d max=%d", req.FullHistoryInputTokensEstimate, req.InputTokensEstimate, *req.MaxTokens)
 	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
 		t.Fatal("unsafe continuation delta was accepted")
@@ -155,7 +155,7 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	defer sess.Close()
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
-	req = sess.applyResponsesContinuationShadowEstimate(req)
+	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
 	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -897,44 +897,58 @@ func task4LargePNG() []byte {
 // accounting, so they must bill the target the request will actually dispatch
 // to. A gateway instance whose resolved row replays unsigned thinking text has no
 // name marker for the name rule to read, so the name-based estimator undercounts
-// every request the session plans and an oversized request can hide behind it.
-func TestSessionContinuationShadowEstimateUsesTheResolvedTarget(t *testing.T) {
+// every request the session plans; and the planning pass hands over the profile it
+// built the request with, so a model switch landing between planning and dispatch
+// cannot pair one model's request with another model's billing rules.
+func TestSessionContinuationShadowEstimateUsesTheHandedProfile(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "thinking-gw"})
-	profile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
-	resolved := profile.Resolved()
+	requestProfile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
+	resolved := requestProfile.Resolved()
 	resolved.Protocol = registry.ProtocolOpenAIChat
 	resolved.Caps.ThinkingAsText = new(true)
-	profile = profile.WithResolved(resolved)
-	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	requestProfile = requestProfile.WithResolved(resolved)
+
+	// The session's live profile is the row that does NOT replay unsigned
+	// thinking: the estimate has to follow the handed profile, not this one.
+	sessionProfile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
+	liveRow := sessionProfile.Resolved()
+	liveRow.Caps.ThinkingAsText = nil
+	liveRow.Caps.Reasoning = new(false)
+	sessionProfile = sessionProfile.WithResolved(liveRow)
+	sess, err := NewSession(client, sessionProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	if got := sess.profile.Resolved(); got.Protocol != registry.ProtocolOpenAIChat || !registry.BoolValue(got.Caps.ThinkingAsText) {
-		t.Fatalf("harness: session row = %+v, want the replaying openai-chat row", got)
-	}
 
 	req := llm.Request{
-		Provider: profile.ID(),
-		Model:    profile.Model(),
+		Provider: requestProfile.ID(),
+		Model:    requestProfile.Model(),
 		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "the visible answer"},
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
 		}}},
 	}
-	// Control: for this row the two rules disagree, so the assertion below can
-	// only pass when the resolved row decided. The name rule sees no vendor
-	// marker and bills the thinking part at nothing.
+	// Control: the three rules disagree here, so the assertion below can only pass
+	// when the handed row decided. The name rule sees no vendor marker and bills
+	// the thinking part at nothing, and the live row's adapter drops it.
 	resolvedTokens := llm.EstimateInputTokensForResolved(resolved, req).Tokens
 	nameTokens := llm.EstimateInputTokens(req).Tokens
-	if resolvedTokens <= nameTokens {
-		t.Fatalf("control: resolved estimate %d must exceed the name-based %d for this row", resolvedTokens, nameTokens)
+	liveTokens := llm.EstimateInputTokensForResolved(liveRow, req).Tokens
+	if resolvedTokens <= nameTokens || resolvedTokens == liveTokens {
+		t.Fatalf("control: handed row %d must exceed the name rule %d and the live row %d", resolvedTokens, nameTokens, liveTokens)
 	}
 
-	got := sess.applyResponsesContinuationShadowEstimate(req)
+	got := sess.applyResponsesContinuationShadowEstimate(requestProfile, req)
 	if got.InputTokensEstimate != resolvedTokens {
-		t.Fatalf("InputTokensEstimate = %d, want the resolved-target estimate %d (the name-based rule would bill %d)",
-			got.InputTokensEstimate, resolvedTokens, nameTokens)
+		t.Fatalf("InputTokensEstimate = %d, want the handed profile's estimate %d (the name rule would bill %d, the live row %d)",
+			got.InputTokensEstimate, resolvedTokens, nameTokens, liveTokens)
+	}
+	// The shadow estimate feeds the full-history reading, so it has to follow the
+	// same handed profile: it is the reading admission compares against.
+	if got.FullHistoryInputTokensEstimate != resolvedTokens {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the handed profile's estimate %d",
+			got.FullHistoryInputTokensEstimate, resolvedTokens)
 	}
 }

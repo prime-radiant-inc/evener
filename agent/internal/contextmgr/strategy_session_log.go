@@ -54,8 +54,11 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := s.cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return nil
 	}
 
@@ -77,9 +80,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 1: Observation masking.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
@@ -93,9 +96,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 2: Thinking clearing.
 	if p >= s.cm.ThinkingClearThreshold {
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
@@ -110,9 +113,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Layer 3 (replaced): Session-log checkpoint.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "session_log_checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -130,7 +133,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// Layer 4: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -138,7 +141,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			})
 		} else {
 			*history = result
-			after := s.cm.estimateTokens(*history)
+			after := s.cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

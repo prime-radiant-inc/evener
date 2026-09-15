@@ -390,7 +390,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
-	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+	req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, profile.SupportsStreaming())
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -432,7 +432,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, req, historyTurns, profile.SupportsStreaming())
+		req, fullHistory = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, profile.SupportsStreaming())
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -522,7 +522,7 @@ func (s *Session) shrinkTurnHistoryBaseline(preLen, postLen, injected int) {
 // applyResponsesContinuationAnchorPlanning returns the request to dispatch and,
 // when it planned a continuation delta, the full-history message list the delta
 // was cut from, for the retry a rejected anchor forces.
-func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
+func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, profile *provider.Profile, req llm.Request, historyTurns []schema.Turn, stream bool) (llm.Request, []llm.Message) {
 	if llm.ResponsesContinuationMode(strings.TrimSpace(s.cfg.OpenAIResponsesContinuation)) != llm.ResponsesContinuationAuto {
 		if req.HistoryMode == "" {
 			req.HistoryMode = llm.HistoryModeFullHistory
@@ -537,8 +537,8 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		}
 		return req, nil
 	}
-	target := s.resolvedRequestTarget()
-	req = s.applyResponsesContinuationShadowEstimate(req)
+	target := resolvedTargetOf(profile)
+	req = s.applyResponsesContinuationShadowEstimate(profile, req)
 	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		req.PreviousResponseID = ""
@@ -628,13 +628,13 @@ func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req l
 	return responsesContinuationWithInputEstimate(res, req)
 }
 
-func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.Request {
+func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Profile, req llm.Request) llm.Request {
 	shadowReq := req
 	shadowReq.HistoryMode = llm.HistoryModeFullHistory
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
-	tokens, ok := s.estimateResponsesContinuationShadow(shadowReq)
+	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		req.ContinuationDiagnostic = "continuation_shadow_estimate_unavailable"
@@ -643,28 +643,29 @@ func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.
 	if tokens > req.FullHistoryInputTokensEstimate {
 		req.FullHistoryInputTokensEstimate = tokens
 	}
-	return responsesContinuationWithInputEstimate(s.resolvedRequestTarget(), req)
+	return responsesContinuationWithInputEstimate(resolvedTargetOf(profile), req)
 }
 
-func (s *Session) estimateResponsesContinuationShadow(req llm.Request) (int, bool) {
+func (s *Session) estimateResponsesContinuationShadow(profile *provider.Profile, req llm.Request) (int, bool) {
 	if s.cfg.testOnly.responsesContinuationShadowEstimateFunc != nil {
 		return s.cfg.testOnly.responsesContinuationShadowEstimateFunc(req)
 	}
-	count := llm.EstimateInputTokensForResolved(s.resolvedRequestTarget(), req)
+	count := llm.EstimateInputTokensForResolved(resolvedTargetOf(profile), req)
 	return count.Tokens, count.Tokens > 0
 }
 
-// resolvedRequestTarget returns the resolved registry row of the profile that
-// will dispatch the request. The continuation estimates must bill the adapter
-// the target selects — thinking text is replayed by some adapters and dropped by
-// others — and only the resolved row knows which: a gateway instance's row
-// carries the protocol and reasoning capabilities, while its model name carries
-// no marker for the name rule to read.
-func (s *Session) resolvedRequestTarget() registry.Resolved {
-	if s.profile == nil {
+// resolvedTargetOf returns a profile's resolved registry row, or the zero row
+// when there is no profile: the estimator then falls back to the names the
+// request carries. Continuation estimates must bill the adapter the target
+// selects — thinking text is replayed by some adapters and dropped by others —
+// and only the resolved row knows which: a gateway instance's row carries the
+// protocol and reasoning capabilities, while its model name carries no marker for
+// the name rule to read.
+func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
+	if prof == nil {
 		return registry.Resolved{}
 	}
-	return s.profile.Resolved()
+	return prof.Resolved()
 }
 
 func responsesContinuationWithInputEstimate(res registry.Resolved, req llm.Request) llm.Request {

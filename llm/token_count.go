@@ -396,7 +396,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, unsignedThinking: unsignedThinkingReplayed(res)}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
@@ -414,16 +414,19 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 //     (gateway-fronted GLM), and Google drops the part; neither replays this
 //     text.
 //
-// A row with no resolved protocol falls back to the names it carries, because
-// such a row still knows what it was named.
-func unsignedThinkingReplayed(res registry.Resolved) bool {
+// A row with no resolved protocol falls back to names, because such a row still
+// knows what it was named. Those are the effective provider and model — the row's
+// own only where the caller supplied none — so a partially resolved row cannot
+// drop the vendor the request names and undercount what a name-based caller
+// bills correctly.
+func unsignedThinkingReplayed(res registry.Resolved, provider, model string) bool {
 	switch res.Protocol {
 	case registry.ProtocolAnthropic:
 		return true
 	case registry.ProtocolOpenAIChat:
 		return registry.BoolValue(res.Caps.ThinkingAsText) || !res.Caps.ReasoningDisabled()
 	case "":
-		return unsignedThinkingReplayedByName(res.Instance, res.ModelID)
+		return unsignedThinkingReplayedByName(provider, model)
 	default:
 		return false
 	}

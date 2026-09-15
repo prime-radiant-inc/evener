@@ -550,8 +550,11 @@ func (cm *Manager) MaybeCompact(
 	sysPromptChars int,
 	emitFn func(events.EventKind, events.EventData),
 ) {
-	cw := cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return
 	}
 
@@ -576,9 +579,9 @@ func (cm *Manager) MaybeCompact(
 	// Layer 1: Deterministic checkpoint at ≥80%.
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := cm.estimateTokens(*history)
+		before := cm.estimateTokensFor(prof, *history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-		after := cm.estimateTokens(*history)
+		after := cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -596,7 +599,7 @@ func (cm *Manager) MaybeCompact(
 	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
-		before := cm.estimateTokens(*history)
+		before := cm.estimateTokensFor(prof, *history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
@@ -605,7 +608,7 @@ func (cm *Manager) MaybeCompact(
 			})
 		} else {
 			*history = result
-			after := cm.estimateTokens(*history)
+			after := cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
@@ -645,11 +648,15 @@ func (cm *Manager) ForceCompact(
 	cm.historyLenAtMeasure = 0
 	cm.mu.Unlock()
 
+	// One profile snapshot covers every diagnostic below, for the same reason as
+	// MaybeCompact: the readings describe one model's rules, not two half-read.
+	prof, _, _ := cm.profileSnapshot()
+
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
-	before := cm.estimateTokens(*history)
+	before := cm.estimateTokensFor(prof, *history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-	after := cm.estimateTokens(*history)
+	after := cm.estimateTokensFor(prof, *history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
@@ -664,7 +671,7 @@ func (cm *Manager) ForceCompact(
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
 		turnsBefore = len(*history)
-		before = cm.estimateTokens(*history)
+		before = cm.estimateTokensFor(prof, *history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
@@ -677,7 +684,7 @@ func (cm *Manager) ForceCompact(
 		} else {
 			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
-			after := cm.estimateTokens(*history)
+			after := cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

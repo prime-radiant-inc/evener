@@ -543,7 +543,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		out, fullHistory := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
+		out, fullHistory := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream)
 
 		// Invariant: every return path leaves a concrete history mode.
 		if out.HistoryMode == "" {
@@ -567,7 +567,7 @@ func FuzzMsfzContinuationAnchorPlanning(f *testing.F) {
 		}
 
 		// Determinism: the same session state + request yields the same decision.
-		again, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, req, history, cfg.stream)
+		again, _ := sess.applyResponsesContinuationAnchorPlanning(ctx, sess.currentProfile(), req, history, cfg.stream)
 		if again.HistoryMode != out.HistoryMode || again.PreviousResponseID != out.PreviousResponseID {
 			t.Fatalf("planning not deterministic:\n first  = mode=%q prev=%q\n second = mode=%q prev=%q",
 				out.HistoryMode, out.PreviousResponseID, again.HistoryMode, again.PreviousResponseID)

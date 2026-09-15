@@ -52,8 +52,11 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := s.cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return nil
 	}
 
@@ -75,9 +78,9 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	// minimal "[tool: OK]" markers. Much more aggressive than compact's Layer 1
 	// which generates readable summaries.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		aggressiveMaskObservations(*history, s.cm.PreserveRecentTurns)
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "aggressive_obs_mask",
 			TurnsBefore:     len(*history),
@@ -92,9 +95,9 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	// Layer 2: Deterministic checkpoint as fallback if masking wasn't enough.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,

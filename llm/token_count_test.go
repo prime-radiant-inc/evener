@@ -647,6 +647,28 @@ func TestEstimateMessagesInputTokensForResolved_BillsAndSparesUnsignedThinking(t
 	}
 }
 
+// A partially resolved row must not lose the vendor its request names. With no
+// resolved protocol the name rule decides, and it has to read the request's
+// provider and model rather than the row's empty fields, or a resolved-but-partial
+// row undercounts exactly the requests a name-based caller bills correctly.
+func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing.T) {
+	req := Request{
+		Provider: "anthropic",
+		Model:    "claude-opus-5",
+		Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{
+			{Kind: ContentText, Text: "the visible answer"},
+			{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
+		}}},
+	}
+	partial := registry.Resolved{}
+
+	resolvedTokens := EstimateInputTokensForResolved(partial, req).Tokens
+	nameTokens := EstimateInputTokens(req).Tokens
+	if resolvedTokens != nameTokens {
+		t.Fatalf("partial-row estimate = %d, want the name-based estimate %d: the request names the vendor", resolvedTokens, nameTokens)
+	}
+}
+
 // A resolved row the registry did not classify still honors a model name that
 // identifies the vendor: the name describes the model, where the wire protocol
 // describes only the endpoint, so a gateway row served over openai-chat must not

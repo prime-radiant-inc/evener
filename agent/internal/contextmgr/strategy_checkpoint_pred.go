@@ -50,8 +50,11 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := s.cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return nil
 	}
 
@@ -71,9 +74,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 
 	// Layer 1: Observation masking (same as compact).
 	if p >= s.cm.ObservationMaskThreshold {
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
@@ -87,9 +90,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 
 	// Layer 2: Thinking clearing (same as compact).
 	if p >= s.cm.ThinkingClearThreshold {
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
@@ -104,7 +107,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
@@ -115,7 +118,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		} else {
 			*history = result
 		}
-		after := s.cm.estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint_pred",
 			TurnsBefore:     turnsBefore,
@@ -133,7 +136,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	// Layer 4: LLM summarization fallback (same as compact).
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
-		before := s.cm.estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -141,7 +144,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			})
 		} else {
 			*history = result
-			after := s.cm.estimateTokens(*history)
+			after := s.cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
