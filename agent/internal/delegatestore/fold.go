@@ -19,7 +19,12 @@ func Fold(events []Event) (State, error) {
 		if event.Seq != uint64(i+1) {
 			return nil, fmt.Errorf("delegate event sequence %d, want %d", event.Seq, i+1)
 		}
-		if err := Apply(state, event); err != nil {
+		if err := validateEventEnvelope(event); err != nil {
+			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
+		}
+		// This state is unpublished; any failure discards it instead of rolling
+		// back a transaction by cloning every aggregate for every event.
+		if err := applyWithProjectionRevisions(state, state, event); err != nil {
 			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
@@ -38,32 +43,46 @@ func Apply(state State, event Event) error {
 	if err != nil {
 		return err
 	}
-	before := make(map[string]publicProjection, len(state))
-	for id, aggregate := range state {
-		if aggregate == nil {
-			return fmt.Errorf("delegate %q aggregate is nil", id)
-		}
-		before[id] = aggregate.publicProjection()
-	}
-	if err := applyEvent(next, event); err != nil {
+	if err := applyWithProjectionRevisions(next, state, event); err != nil {
 		return err
 	}
-	for id, aggregate := range next {
-		previous, existed := state[id]
-		if !existed {
-			aggregate.ProjectionRevision = 1
-			continue
-		}
-		aggregate.ProjectionRevision = previous.ProjectionRevision
-		if !reflect.DeepEqual(before[id], aggregate.publicProjection()) {
-			aggregate.ProjectionRevision++
-		}
-	}
-
 	for id := range state {
 		delete(state, id)
 	}
 	maps.Copy(state, next)
+	return nil
+}
+
+// applyWithProjectionRevisions mutates privately owned state after envelope
+// validation. Apply owns a transaction copy; Fold owns its unpublished result.
+// Previous projections come from the original state: cloning may normalize
+// caller-supplied empty descriptor slices, which itself changes the projection.
+func applyWithProjectionRevisions(state, previousState State, event Event) error {
+	before := make(map[string]publicProjection, len(previousState))
+	for id, aggregate := range previousState {
+		if aggregate == nil {
+			return fmt.Errorf("delegate %q aggregate is nil", id)
+		}
+		before[id] = aggregate.publicProjection()
+		// Preserve the empty-slice representation of transactional cloneState
+		// for existing aggregates, including after the first creation event.
+		if state[id].PendingDeliveries == nil {
+			state[id].PendingDeliveries = make([]PendingDelivery, 0)
+		}
+	}
+	if err := applyEvent(state, event); err != nil {
+		return err
+	}
+	for id, aggregate := range state {
+		previous, existed := before[id]
+		if !existed {
+			aggregate.ProjectionRevision = 1
+			continue
+		}
+		if !reflect.DeepEqual(previous, aggregate.publicProjection()) {
+			aggregate.ProjectionRevision++
+		}
+	}
 	return nil
 }
 
