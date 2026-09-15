@@ -382,6 +382,63 @@ func TestStreamTransportBufferedOversizeIsTerminal(t *testing.T) {
 	}
 }
 
+// cancelOnWriteStream cancels the caller's context from inside Write, the way a
+// cancellation racing a failing write arrives.
+type cancelOnWriteStream struct {
+	cancel context.CancelFunc
+}
+
+func (s *cancelOnWriteStream) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (s *cancelOnWriteStream) Write(p []byte) (int, error) {
+	s.cancel()
+	// One byte short and an error: part of the frame reached the wire.
+	return len(p) - 1, errors.New("write failed midway")
+}
+
+func (s *cancelOnWriteStream) Close() error { return nil }
+
+// Close latches: a frame bufio already prefetched must not be delivered by a
+// Recv after the caller closed the transport.
+func TestStreamTransportCloseLatchesClosedState(t *testing.T) {
+	var frames []byte
+	for id := range 2 {
+		frame, err := marshalWSMessage(ResponseMessage(NewIntID(int64(id+1)), json.RawMessage(`{"ok":true}`)))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		frames = append(append(frames, frame...), '\n')
+	}
+	tr := NewStreamTransport(&memoryStream{r: bytes.NewReader(frames)})
+
+	if _, err := tr.Recv(context.Background()); err != nil {
+		t.Fatalf("first Recv: %v", err)
+	}
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Recv after Close = %v, want ErrStreamClosed", err)
+	}
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(3), json.RawMessage(`{}`))); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Send after Close = %v, want ErrStreamClosed", err)
+	}
+}
+
+// A write that fails as the context is canceled has still desynchronized the
+// stream, so the next Send must see the sticky failure rather than appending a
+// whole frame after the orphaned bytes.
+func TestStreamTransportCanceledPartialWriteStillPoisons(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	tr := NewStreamTransport(&cancelOnWriteStream{cancel: cancel})
+
+	_ = tr.Send(ctx, ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`))); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Send after a canceled partial write = %v, want the poisoning io.ErrShortWrite", err)
+	}
+}
+
 // A non-positive limit is clamped rather than leaving a transport whose reader
 // buffer is sized at zero and which rejects every frame.
 func TestStreamTransportLimitIsClamped(t *testing.T) {

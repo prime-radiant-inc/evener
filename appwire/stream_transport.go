@@ -13,6 +13,12 @@ import (
 // both paths, so callers and tests can match it with errors.Is.
 var ErrStreamFrameTooLarge = errors.New("appwire stream: frame exceeds read limit")
 
+// ErrStreamClosed is returned by Send and Recv after Close. The closed state is
+// latched rather than left to the underlying stream: bufio.Reader may already
+// hold prefetched frames, so a Recv after Close would otherwise still deliver
+// messages from a transport the caller has finished with.
+var ErrStreamClosed = errors.New("appwire stream: closed")
+
 // defaultStreamFrameLimit caps a single framed message: the same backstop the
 // WebSocket transport uses. Tests that need a smaller cap build a transport with
 // NewStreamTransportWithLimit rather than mutating a package-level value.
@@ -130,15 +136,23 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 
 	n, err := t.rw.Write(buf)
 	if err != nil {
+		// Decide terminality from the write itself, before consulting the
+		// context: a write that landed only part of a frame has desynchronized
+		// the stream whether or not the caller also canceled, and the deferred
+		// stop above can cancel the AfterFunc that would otherwise have closed
+		// it. Consulting the context first left a desynchronized stream open and
+		// let the next Send append a whole frame after the orphaned bytes.
+		if n != len(buf) {
+			t.poison(io.ErrShortWrite)
+		} else {
+			t.poison(err)
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		// A concurrent call may have poisoned the transport and closed it under
-		// this write: report the recorded cause rather than the bare close error.
 		if pErr := t.poisonErr(); pErr != nil {
 			return pErr
 		}
-		t.poison(err)
 		return err
 	}
 	if n != len(buf) {
@@ -252,4 +266,14 @@ func (t *StreamTransport) poisonErr() error {
 	return t.poisoned
 }
 
-func (t *StreamTransport) Close() error { return t.rw.Close() }
+// Close ends the transport. The closed state is latched, so Send and Recv keep
+// reporting ErrStreamClosed afterwards even when the reader still holds frames
+// it prefetched.
+func (t *StreamTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.poisoned == nil {
+		t.poisoned = ErrStreamClosed
+	}
+	return t.rw.Close()
+}
