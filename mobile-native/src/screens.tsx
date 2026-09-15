@@ -51,9 +51,11 @@ import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
 	composerCommand,
+	composerCommandAvailable,
 	isLocalComposerCommand,
 	submitComposerCommand,
 } from "./composerCommand";
+import { canComposeFor, conversationControls } from "./conversationControls";
 import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -1453,14 +1455,14 @@ export function ConversationScreen({
 		!pending &&
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
+	// What this conversation may be asked to do now (conversationControls.ts):
+	// every affordance and submission below reads it, never a raw capability.
+	const permitted = conversation ? conversationControls(conversation) : null;
 	const canCompose =
 		(!conversation ||
 			(!conversation.resumeRequired &&
 				conversation.status !== "restartRequired")) &&
-		(!conversation ||
-			(["send", "steer", "queue", "goal"] as const).some(
-				(action) => conversation.capabilities[action],
-			));
+		(!conversation || canComposeFor(conversation));
 	const slashToken =
 		composerSelection.start === composerSelection.end &&
 		draft.record.draft !== completionClosedAt
@@ -1482,7 +1484,11 @@ export function ConversationScreen({
 			!ready ||
 			!action ||
 			commandBusy.current ||
-			(capability != null && !conversation?.capabilities[capability]) ||
+			(clear
+				? !conversation?.capabilities.goal
+				: !command ||
+					!conversation ||
+					!composerCommandAvailable(command.command, conversation)) ||
 			draft.submitting ||
 			unconfirmedSend !== null ||
 			imageState.busy ||
@@ -1666,7 +1672,7 @@ export function ConversationScreen({
 			current.conversation?.instanceId !== bindingInstance ||
 			controls?.getSnapshot().pending != null ||
 			current.pendingMutation?.status === "pending" ||
-			!current.conversation?.capabilities.send ||
+			!(current.conversation && conversationControls(current.conversation).send) ||
 			text === null ||
 			!questionBatches.getSnapshot().includes(batch)
 		)
@@ -1746,12 +1752,12 @@ export function ConversationScreen({
 		kinds.map((kind) =>
 			canCompose &&
 			questions.length === 0 &&
-			conversation?.capabilities[kind] ? (
+			conversation &&
+			permitted?.[kind] ? (
 				<Action
 					key={kind}
 					tone={
-						kind === "send" ||
-						(kind === "steer" && !conversation.capabilities.send)
+						kind === "send" || (kind === "steer" && !permitted.send)
 							? "primary"
 							: "quiet"
 					}
@@ -1893,7 +1899,7 @@ export function ConversationScreen({
 					hubName={activeProfile?.name ?? "Hub"}
 					ready={
 						ready &&
-						!!conversation?.capabilities.send &&
+						!!permitted?.send &&
 						draft.loaded &&
 						!draft.error &&
 						unconfirmedSend === null &&
@@ -2180,10 +2186,10 @@ export function ConversationScreen({
 									<ErrorMessage message={draft.error} />
 									{unconfirmedDelivery()}
 									{connected &&
-									conversation &&
-									!conversation.capabilities.send &&
-									!conversation.capabilities.steer &&
-									!conversation.capabilities.queue ? (
+									permitted &&
+									!permitted.send &&
+									!permitted.steer &&
+									!permitted.queue ? (
 										<Copy muted>Sending is unavailable for this session.</Copy>
 									) : null}
 									{snapshot.olderCursor ? (
@@ -2478,8 +2484,8 @@ export function ConversationScreen({
 											(command.command.id === "goal" &&
 												!goalCommand &&
 												!conversation?.goal) ||
-											(command.command.capability != null &&
-												!conversation?.capabilities[command.command.capability])
+											!conversation ||
+											!composerCommandAvailable(command.command, conversation)
 										}
 										onPress={() => void applyCommand()}
 									>
@@ -2538,7 +2544,7 @@ export function ConversationScreen({
 												: "Review error"}
 									</Action>
 								) : null}
-								{conversation?.capabilities.interrupt ? (
+								{permitted?.stop ? (
 									<Action
 										tone="quiet"
 										disabled={!ready}

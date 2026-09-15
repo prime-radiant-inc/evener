@@ -65,17 +65,24 @@ function controlsFor(session: ComposerCommandSession) {
   );
 }
 
+export type ComposerCommandSpec = (typeof commands)[number];
+
+/** Whether a registry command may run against the session right now. */
+export function composerCommandAvailable(
+  command: ComposerCommandSpec,
+  session: ComposerCommandSession,
+): boolean {
+  if ("control" in command) return controlsFor(session)[command.control];
+  return (
+    command.capability === null || !!session.capabilities[command.capability]
+  );
+}
+
 /** Completion and submission share one supported-command registry. */
 export function builtinComposerItems(session: ComposerCommandSession) {
-  const controls = controlsFor(session);
   return mergeSlashCommands(
     commands
-      .filter((command) =>
-        "control" in command
-          ? controls[command.control]
-          : command.capability === null ||
-            session.capabilities[command.capability],
-      )
+      .filter((command) => composerCommandAvailable(command, session))
       .map((command) => ({ id: command.id, hint: command.label })),
     [],
   );
