@@ -22,13 +22,13 @@ func TestOwnershipFlockSeamIsRaceFree(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			setOwnershipFlock(func(int, int) error { return nil })
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			if err := withOwnershipLock(dir, 9911, func() error { return nil }); err != nil {
 				t.Errorf("withOwnershipLock: %v", err)
 				return

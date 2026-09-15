@@ -19,13 +19,13 @@ func TestRetirementReleaseFaultSeamIsRaceFree(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			setRetirementReleaseFault(func(string) error { return nil })
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_ = retirementReleaseFailure("race-probe")
 		}
 	}()

@@ -18,13 +18,13 @@ func TestRetireOwnershipCapabilitySeamIsRaceFree(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			setRetireOwnershipCapability(func() bool { return true })
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for range 1000 {
 			_ = strongOwnershipAvailable()
 		}
 	}()
