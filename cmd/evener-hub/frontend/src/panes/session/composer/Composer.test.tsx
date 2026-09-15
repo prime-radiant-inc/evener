@@ -3471,13 +3471,15 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
 
   // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
   // built-ins first), not just the two catalog entries. Fuzzy matching also
-  // finds the command labels whose "r" and "e" are separated.
+  // finds the command labels whose "r" and "e" are separated. /drain-as-steer
+  // would match too, but the session is idle with nothing queued, so the
+  // menu hides it the way it hides any unavailable built-in (scopeCommand's
+  // canDrainQueue rule).
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/review"),
     expect.stringContaining("/release"),
     expect.stringContaining("/project"),
-    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -3533,7 +3535,6 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/project"),
-    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -3676,7 +3677,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
-  // Five matches: three contiguous beginnings, then two fuzzy matches.
+  // Four matches: three contiguous beginnings, then one fuzzy match
+  // (/drain-as-steer would be a second, but it is unavailable on an idle
+  // session with nothing queued and the menu hides it).
+  expect(slashOptions()).toHaveLength(4);
 
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
@@ -3685,12 +3689,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}");
-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
@@ -3889,14 +3891,19 @@ test("an argless built-in invocation (/compact) runs and clears the draft", asyn
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-test("a no-active-turn built-in (/steer) is blocked with the floor's message, draft preserved", async () => {
+// /steer on an idle session is unavailable (scopeCommand applies the
+// running-turn rule the handler uses, since the hub's steer capability is
+// harness support alone), and a typed invocation for an unavailable built-in
+// gets the honest "not available right now" rather than the handler's floor
+// message or a plain-message send.
+test("an unavailable built-in (/steer while idle) is refused with the unavailable message, draft preserved", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_steer", { status: { type: "idle" } });
 
   await user.type(textarea(), "/steer go left");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/steer failed: no active turn/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
   expect(textarea().value).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });

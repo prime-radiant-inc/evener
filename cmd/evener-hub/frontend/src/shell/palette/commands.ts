@@ -12,7 +12,7 @@
 import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
 import type { ThreadModel } from "../../protocol/model";
 import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-import { canDrainQueue } from "../../protocol/submitRouting";
+import { canDrainQueue, canSteer } from "../../protocol/submitRouting";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
@@ -508,7 +508,14 @@ export function buildCommands(): Command[] {
         placeholder: "steer text…",
         run: (ctx, text) => {
           const model = focusedModel(ctx.sessionRef);
-          if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("steer failed: no active turn");
+          if (!ctx.sessionRef || !model) return blocked("steer failed: no active turn");
+          // The menu's rule (scopeCommand) and this one are the same
+          // predicate: a running turn on a harness that steers.
+          if (!canSteer(model.status.type, model.capabilities)) {
+            return blocked(
+              isSessionBusy(model) ? `steer failed: ${UNAVAILABLE_REASON}` : "steer failed: no active turn",
+            );
+          }
           return threadsStore.getState().steer(ctx.sessionRef, text);
         },
       },
@@ -526,6 +533,7 @@ export function buildCommands(): Command[] {
         run: (ctx, text) => {
           const model = focusedModel(ctx.sessionRef);
           if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("queue failed: no active turn");
+          if (model.capabilities.queue !== true) return blocked(`queue failed: ${UNAVAILABLE_REASON}`);
           return threadsStore.getState().queue(ctx.sessionRef, text);
         },
       },
@@ -707,8 +715,23 @@ function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedC
   if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
     return { ...command, unavailableReason: UNAVAILABLE_REASON };
   }
-  if (!capability || !model || model.capabilities[capability]) return command;
-  return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  if (!capability || !model) return command;
+  if (!model.capabilities[capability]) return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  // The steer capability is harness support alone (the hub no longer folds
+  // the active status in), so the two commands it gates apply the status
+  // here, with the same predicates their handlers use: /steer needs a running
+  // turn, /drain-as-steer a running turn or a queue a Stop parked. The
+  // available set the menu shows therefore equals what the handler accepts.
+  if (command.id === "steer" && !isSessionBusy(model)) {
+    return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
+  if (
+    command.id === "drain-as-steer" &&
+    !canDrainQueue(model.status.type, model.capabilities, model.queue?.depth ?? 0)
+  ) {
+    return { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
+  return command;
 }
 
 export interface FilteredCommands {

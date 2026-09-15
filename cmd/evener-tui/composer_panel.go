@@ -54,6 +54,14 @@ const (
 	hubComposerModeQueue
 	hubComposerModeFork
 	hubComposerModeReadOnly
+	// hubComposerModeParkedQueue is send mode with a queue a Stop parked:
+	// the session is idle, the queue is non-empty (the daemon reports that
+	// only for a held queue -- an unparked queue upgrades idle to active),
+	// and the harness steers. Enter sends as usual, which runs the new
+	// message first and then the parked messages; Ctrl+S drains the parked
+	// queue as steering now, the same turn/drainAsSteer the daemon accepts
+	// with nothing running. The rule is the web's canDrainQueue.
+	hubComposerModeParkedQueue
 )
 
 func (m hubModel) sessionComposerMode() hubComposerMode {
@@ -70,9 +78,19 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 		return hubComposerModeReadOnly
 	}
 	if m.sessionCanStartTurn() {
+		if m.sessionQueueParked() {
+			return hubComposerModeParkedQueue
+		}
 		return hubComposerModeSend
 	}
 	return hubComposerModeReadOnly
+}
+
+// sessionQueueParked reports a queue a Stop parked: idle with queued work on
+// a harness that steers. Only a held queue reports that way (see
+// hubComposerModeParkedQueue).
+func (m hubModel) sessionQueueParked() bool {
+	return stateLabel(m.detail.State) == "idle" && len(m.sessionQueue) > 0 && m.detail.Capabilities.Steer
 }
 
 func (m hubModel) sessionComposerReadOnlyReason() string {
@@ -173,6 +191,12 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	case hubComposerModeReadOnly:
 		panel.Label = "read-only"
 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
+	case hubComposerModeParkedQueue:
+		// Send mode's chrome plus the one extra binding: Ctrl+S runs the
+		// parked queue as steering now.
+		panel.Keys = append([]string{"enter: send", "ctrl+s: run queue as steer"}, keys...)
+		panel.CanSteer = true
+		panel.ChipContext.Mode = "PARKED " + itoa(len(m.sessionQueue))
 	default:
 		// No section label in default compose mode — the chip strip
 		// already carries all the live context; an extra "message" line

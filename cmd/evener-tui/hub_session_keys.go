@@ -528,7 +528,9 @@ func (m hubModel) restoreInstructionMessage() string {
 // the drain request so the daemon appends and drains atomically. With nothing
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
-	if m.sessionComposerMode() != hubComposerModeQueue {
+	switch m.sessionComposerMode() {
+	case hubComposerModeQueue, hubComposerModeParkedQueue:
+	default:
 		// Not in a queue-able state; nothing to do. Silently no-op so the
 		// keybind doesn't fight with idle-state composing.
 		return m, nil

@@ -2190,6 +2190,76 @@ func TestHubModelIdleSessionWithSteerSupportAdvertisesSteer(t *testing.T) {
 	}
 }
 
+// A Stop parks the daemon's queue: the session reports idle with queued
+// work (only a held queue does; an unparked one upgrades idle to active),
+// and a turn/drainAsSteer sent while idle is one of the runs that releases
+// it. With the hub advertising steer as harness support, the composer enters
+// the parked-queue mode and Ctrl+S drains the queue as steering.
+func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
+	var drained []appwire.TurnDrainAsSteerParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			drained = append(drained, params)
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Queue = false
+	m.detail.Capabilities.Steer = true
+	m.session.processing = false
+	m.sessionQueue = []string{"parked follow-up"}
+
+	if got := m.sessionComposerMode(); got != hubComposerModeParkedQueue {
+		t.Fatalf("composer mode=%v, want parked queue", got)
+	}
+	view := m.sessionView()
+	for _, want := range []string{"ctrl+s: run queue as steer", "enter: send"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
+		}
+	}
+
+	_, cmd := m.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s on a parked queue produced no command")
+	}
+	cmd()
+	if len(drained) != 1 {
+		t.Fatalf("turn/drainAsSteer calls = %d, want 1", len(drained))
+	}
+	if drained[0].Ref != "local:01SEND" || len(drained[0].Input) != 0 {
+		t.Fatalf("drain params = %+v, want the parked queue of 01SEND with no composer text", drained[0])
+	}
+}
+
+// The same parked queue on a harness that advertises no steer: plain send
+// mode, no Ctrl+S hint, and the binding is a silent no-op.
+func TestHubModelParkedQueueWithoutSteerOffersNoDrain(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Queue = false
+	m.detail.Capabilities.Steer = false
+	m.session.processing = false
+	m.sessionQueue = []string{"parked follow-up"}
+
+	if got := m.sessionComposerMode(); got != hubComposerModeSend {
+		t.Fatalf("composer mode=%v, want send", got)
+	}
+	view := m.sessionView()
+	if strings.Contains(view, "ctrl+s") {
+		t.Fatalf("composer without steer offered ctrl+s:\n%s", view)
+	}
+	_, cmd := m.handleSessionForceSteer()
+	if cmd != nil {
+		t.Fatal("ctrl+s without steer produced a command; it must be a silent no-op")
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
