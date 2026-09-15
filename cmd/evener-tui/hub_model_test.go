@@ -2207,6 +2207,66 @@ func TestHubModelParkedQueueWithoutSteerOffersNoDrain(t *testing.T) {
 	}
 }
 
+// The drain rule is the status alone, exactly as the SDK's: awaiting is the
+// ask boundary and never drains, whatever the optimistic processing flag says;
+// a running turn drains without any turn id.
+func TestHubModelDrainFollowsTheStatusAlone(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 1
+	m.detail.State = appwire.ThreadStatusAwaiting
+	m.session.processing = true
+	if m.sessionCanDrainQueue() {
+		t.Fatal("awaiting + processing reported drainable; the status alone decides")
+	}
+	if _, cmd := m.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s while awaiting produced a command")
+	}
+	m.detail.State = appwire.ThreadStatusActive
+	m.session.processing = false
+	m.detail.ActiveTurnID = ""
+	if !m.sessionCanDrainQueue() {
+		t.Fatal("active status without a turn id was not drainable")
+	}
+}
+
+// A force-steer that the daemon queued instead of steering leaves an
+// optimistic row in the local queue; the depth follows it, so the next drain
+// counts and sends it.
+func TestHubModelOptimisticQueuedRowRaisesTheDepth(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 0
+
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", queued: true, preQueueDepth: 0, err: errors.New("steer rejected after queueing")})
+	got := updated.(hubModel)
+	if len(got.sessionQueue) != 1 || got.detail.Queue.Depth != 1 {
+		t.Fatalf("optimistic row: preview=%v depth=%d, want one row and depth 1", got.sessionQueue, got.detail.Queue.Depth)
+	}
+
+	_, cmd := got.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s with an optimistic queued row produced no command")
+	}
+	msg, ok := cmd().(hubDrainAsSteerMsg)
+	if !ok {
+		t.Fatalf("drain result = %T, want hubDrainAsSteerMsg", cmd())
+	}
+	if msg.preQueueDepth != 1 {
+		t.Fatalf("drain preQueueDepth = %d, want 1 (the optimistic row counted)", msg.preQueueDepth)
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -3913,6 +3973,10 @@ func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
+	// The active turn is the wire's status; the transcript's turn id is
+	// bookkeeping the interrupt never reads (it is cleared between the
+	// turn/completed and turn/started of an inline turn boundary).
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = "turn_busy"
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})

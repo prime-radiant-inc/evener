@@ -57,15 +57,49 @@ const (
 	hubComposerModeReadOnly
 )
 
+// sessionControls is the Go twin of the SDK's sessionControls
+// (appwire-client/typescript/submitRouting.ts, which keeps the rationale):
+// what this session may be asked to do now, from the wire's status, the
+// harness's capabilities and the queue depth. Every affordance and key in the
+// TUI reads a field of it; none reads a raw capability. The status is the
+// wire's alone -- the optimistic processing flag routes Enter (sessionTurnRunning)
+// but never a control, and the transcript's turn id never enters.
+//
+//	stop   active && interrupt
+//	steer  active && steer   (the hub advertises steer as harness support)
+//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked)
+//	queue  queue             (the hub folds the active status in already)
+//	send   send              (likewise; and the composer's own contract admits a
+//	                          source that advertises send while a turn runs --
+//	                          composer_panel_covtest_test.go -- so the wire's
+//	                          word is taken as is)
+type sessionControls struct {
+	stop, steer, drain, queue, send bool
+}
+
+func (m hubModel) sessionControls() sessionControls {
+	active := m.detail.State == appwire.ThreadStatusActive
+	parked := m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0
+	caps := m.detail.Capabilities
+	return sessionControls{
+		stop:  active && caps.Interrupt,
+		steer: active && caps.Steer,
+		drain: caps.Steer && (active || parked),
+		queue: caps.Queue,
+		send:  caps.Send,
+	}
+}
+
 func (m hubModel) sessionComposerMode() hubComposerMode {
 	if m.forkDraft != nil {
 		return hubComposerModeFork
 	}
+	controls := m.sessionControls()
 	if m.sessionTurnRunning() {
-		if m.detail.Capabilities.Queue {
+		if controls.queue {
 			return hubComposerModeQueue
 		}
-		if m.detail.Capabilities.Send {
+		if controls.send {
 			return hubComposerModeSend
 		}
 		return hubComposerModeReadOnly
@@ -76,24 +110,18 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 	return hubComposerModeReadOnly
 }
 
-// sessionCanDrainQueue is the Go twin of the SDK's canDrainQueue
-// (appwire-client/typescript/submitRouting.ts): Ctrl+S may drain the queue as
-// steering when the harness steers and either a turn is running or the queue
-// is one a Stop parked -- idle with queued work, which only a held queue
-// reports (an unparked queue upgrades idle to active), and which the
-// turn/drainAsSteer the daemon accepts with nothing running releases. It is
-// independent of the composer mode, which decides only Enter's route.
+// sessionCanDrainQueue: Ctrl+S may drain the queue as steering. It is
+// sessionControls' drain, independent of the composer mode (which decides only
+// Enter's route) and of the optimistic processing flag: the status alone.
 func (m hubModel) sessionCanDrainQueue() bool {
-	if !m.detail.Capabilities.Steer {
-		return false
-	}
-	return m.sessionTurnRunning() || (m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0)
+	return m.sessionControls().drain
 }
 
 func (m hubModel) sessionComposerReadOnlyReason() string {
+	controls := m.sessionControls()
 	if m.sessionTurnActionState() {
-		if !m.detail.Capabilities.Queue {
-			if m.detail.Capabilities.Send {
+		if !controls.queue {
+			if controls.send {
 				return ""
 			}
 			return "source does not advertise queue"
@@ -106,7 +134,7 @@ func (m hubModel) sessionComposerReadOnlyReason() string {
 }
 
 func (m hubModel) sessionCanStartTurn() bool {
-	if m.detail.Capabilities.Send {
+	if m.sessionControls().send {
 		return true
 	}
 	return !m.detail.Live && m.detail.Capabilities.Resume
@@ -171,9 +199,9 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	case hubComposerModeQueue:
 		panel.Label = "queue"
 		queueHints := []string{"enter: queue"}
-		// Only advertise force-steer when the source also has steer; some
-		// sources may someday advertise queue without steer.
-		if m.detail.Capabilities.Steer {
+		// Only advertise force-steer when it would be accepted: some sources
+		// may someday advertise queue without steer.
+		if m.sessionCanDrainQueue() {
 			queueHints = append(queueHints, "ctrl+s: send as steer")
 			panel.CanSteer = true
 		}
