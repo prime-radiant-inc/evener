@@ -292,6 +292,22 @@ would silently change which credential is in force. Remote resolution order is
 layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
 `adc`, or `env:<VAR>` credential is never shadowed by a pushed key.
 
+**The no-clobber check is not atomic — a stated limitation.** As specified, the
+policy is check-then-act across two independent proxy RPCs: the pusher reads
+`evener/auth/status`, classifies, then writes `evener/auth/apiKey/set`. The
+host's `ApiKeySet` takes the credential write lock (`credentialWrite`,
+`app_auth.go:453` and `app_auth.go:396`) but does **not** re-resolve
+`ActiveSource` under it, so a credential whose source changes between the two
+calls — an operator exporting `env:<VAR>`, a `providers.toml` edit adding an
+`api_key`/`credential_headers` entry, a concurrent push to the same host — is
+never seen, and the file-layer write then shadows the credential that appeared
+after the check. "Don't clobber" is therefore best-effort **at check time**,
+not a guarantee. Making it a guarantee requires a host-side conditional set
+that re-resolves the instance's source under the same credential write lock and
+refuses when it is no longer the file layer (or an expected configuration
+revision the set validates); the 07c surface above, as specified, is the racy
+two-call form.
+
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
 emitted whenever a remote file-layer key already exists, even when the value is

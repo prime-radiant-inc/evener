@@ -105,8 +105,16 @@ Symmetric in the other direction; `Close` ends both.
 - **Underlying write error → propagated from `Send`, and it poisons the
   transport.** A write that lands only part of a frame
   (`io.ErrShortWrite`) has desynchronized the stream, so the transport is done;
-  so is a zero-byte write failure (a broken pipe, a reset). The error `Send`
-  returns agrees with the latched cause every later call reports.
+  so is a zero-byte write failure (a broken pipe, a reset). Every *later* call
+  returns the latched cause. The failing call itself may not: a partial write
+  that races a cancellation latches `io.ErrShortWrite` — the desync is the
+  durable cause, decided from the write before the context is consulted
+  (`appwire/stream_transport.go:173-183`) — but that `Send` returns
+  `context.Canceled`, because the in-flight call reports the cancellation it
+  was racing before it consults the latch
+  (`appwire/stream_transport.go:184-186`); the next call returns the latched
+  `io.ErrShortWrite`. A zero-byte failure that coincides with cancellation
+  latches and returns the same cancellation, so it does agree.
 - `ctx` already done on entry → `ctx.Err()`, returned before any read/write.
 - `Close` closes the underlying `io.ReadWriteCloser`; that is what unblocks a
   blocked `Recv`. `Close` is the caller's lever, not an error handler.

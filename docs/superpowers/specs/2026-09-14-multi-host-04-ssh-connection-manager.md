@@ -619,7 +619,22 @@ deploy landed.
   `started_at` to the controller's clock adds skew for no benefit. No host-side
   timestamp and no skew tolerance is used or needed. `backend_git_sha` is
   carried in the response but the shipped `waitHealthy` does not consult it; it
-  may be added as a stricter identity check without changing the rule above.
+  may be added as a stricter *build*-identity check without changing the rule
+  above.
+
+  **What the version check proves — and what it does not.** `waitHealthy`
+  proves that *a* process of the expected build is answering on the configured
+  address; it does not prove that process is the one this restart launched.
+  Version equality is a build-freshness marker, not a process-identity check:
+  any process of the expected build owning the address satisfies it, including
+  one the controller did not start, and — in the idempotent-retry case where
+  the running hub already reported `expected` — the pre-existing process
+  alone. The consequence is that the manager can attach to a right-build hub it
+  did not recover. Proving *process identity* instead needs a per-launch nonce
+  carried in the health/attach handshake, or a post-restart re-validation of
+  the listener's pid, argv, and effective user plus a process-start identity;
+  the shipped `waitHealthy`/`parseHealthVersion` (`sshconn/version.go`) do
+  neither. This is a stated limitation, not a guarantee.
 
   **The probe must run on the host.** A request to `127.0.0.1:<port>/api/health`
   from the controller's Go process reaches the *controller's* hub, not the
@@ -698,8 +713,32 @@ deploy landed.
   through to the ad hoc path. "First name that contains `evener` and `hub`
   wins" is not acceptable, because restarting an unrelated unit is exactly the
   failure this rule prevents. (Today's implementation matches names by
-  substring in `isEvenerHubName` and takes the first pid from `lsof -ti
-  :<port> -sTCP:LISTEN` in `findHubPID`; the spec's contract is stricter.)
+  substring in `isEvenerHubName`, but it already refuses ambiguity rather than
+  taking the first match — `pickSupervisor` requires exactly one named hub and
+  `findHubPID` requires exactly one pid from `lsof -ti :<port> -sTCP:LISTEN`;
+  what it does not do is check that the named hub *owns the configured
+  address*, and the bare path does not compare the effective user. The
+  contract above is stricter.)
+
+  **Limit: identification and signal are separate host commands, so there is a
+  PID-reuse window.** Every check above is its own command over the ssh seam —
+  `lsof` for the listener, `ps` for the argv, further probes for user and
+  socket — and the `kill` is one more command issued after them. Nothing binds
+  the identified process to the signal atomically: between the `ps` read and
+  the `kill`, the hub can exit and its PID can be reused by an unrelated
+  process, which then receives the SIGTERM. The argv and address checks narrow
+  the window but cannot close it, because they describe the process at
+  *identification* time, not at *signal* time. Re-checking identity in the same
+  remote command immediately before signaling (a guarded compare-and-kill
+  shell expression) shrinks the race but is still check-then-act; only a
+  host-side helper that opens a pidfd for the identified process — or otherwise
+  pins its start identity — and signals through that handle closes it. The
+  shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
+  `kill <pid>` with no re-validation at all. **Consequence:** on a host where
+  the hub exits during identification and the PID is reused, the restart can
+  terminate an unrelated process. A refusal (`ErrRestart`, no kill, no
+  relaunch) is the safe failure: a restart that cannot re-validate the
+  process must prefer it to an unguarded signal.
 
   The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:

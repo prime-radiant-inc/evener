@@ -91,6 +91,12 @@ Rules this component must satisfy:
 - `Online` must be `true` only while the source's connection state says the
   host is attached and healthy (component 05's optional online interface reads
   it from the SSH connection manager); `false` for a configured-but-down host.
+  `Online` is **attachment** state, not reachability: component 04's manager is
+  lazy (component 04, §"Channel lifecycle states"), so a configured and
+  reachable host that has had no traffic yet has no channel and reports
+  `false` — indistinguishable in the manifest from an unreachable host. Nothing
+  in this component probes or attaches a host on manifest read; a host first
+  reports `true` only after a request has forced component 04 to attach it.
   A source that reports no state defaults to online. **Implemented on
   `multi-host-pr06a-fleet-view-go`, pending merge (none of these symbols is on
   `main`):** `sourceOnline` (`cmd/evener-hub/web.go`) type-asserts
@@ -401,10 +407,14 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
 
 ## Acceptance criteria
 
-1. With two hosts configured and both reachable, the navigation manifest lists
-   three sources (`local` + two hosts) with `Online:true`, and each host's
-   sessions appear in the merged list and tree with `host_id` equal to the host
-   name; search matches sessions on any host.
+1. With two hosts configured, both reachable, and each already **attached** (it
+   has served a request, so component 04's lazy manager holds a live channel),
+   the navigation manifest lists three sources (`local` + two hosts) with
+   `Online:true`, and each host's sessions appear in the merged list and tree
+   with `host_id` equal to the host name; search matches sessions on any host.
+   A reachable host that has not yet been attached reports `Online:false` — the
+   manifest read has no probe that attaches on demand — so `Online` means
+   "attached", not "reachable", in every criterion here.
 2. With one host unreachable, the manifest lists it with `Online:false`, its
    last-known sessions remain visible and render dormant, and no fleet-wide
    list fails because of it.
