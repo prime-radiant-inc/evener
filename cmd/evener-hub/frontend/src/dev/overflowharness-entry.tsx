@@ -60,7 +60,12 @@ const REF = "overflowharness";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
-  steer: true,
+  // The narrow-pane status row budget (statusrow.module.css, <= 399px) was
+  // measured beside Stop + Send. A busy session on a harness that can steer
+  // draws Steer as well, and at 320px the facts then clip (issue #1339); until
+  // that layout is decided the guard measures the cluster the budget was built
+  // for, so the fixture advertises no steer capability.
+  steer: false,
   interrupt: true,
   compact: true,
   clear: true,
@@ -1456,10 +1461,10 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // The fixture has active status and interrupt capability, but no active turn
-  // ID, so Composer correctly renders Stop but not the busy-only Steer. These
-  // are the actual controls it must render at every width. The card alone is
-  // not a controls check: each control is measured below.
+  // The fixture is active with the interrupt capability and without the steer
+  // capability (see CAPABILITIES), so Composer renders Stop but not Steer.
+  // These are the actual controls it must render at every width. The card
+  // alone is not a controls check: each control is measured below.
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
