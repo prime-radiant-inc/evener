@@ -50,7 +50,7 @@ import { GoalControl } from "./GoalControl";
 import { NotesPanel, type NotesPanelHandle } from "./NotesPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
@@ -315,7 +315,9 @@ export function SessionChrome({
             canReadNotes={canReadSharedNotes(model)}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
+            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
+            // inline and in the panel; even a condensed aggregate would crowd
+            // the menu's leading pane group.
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             actions={{

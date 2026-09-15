@@ -38,6 +38,7 @@ import type { ItemModel } from "../../../../protocol/model";
 import { parseArgs, str } from "../../../../protocol/toolCallText";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { taskAggregateLabel } from "../../chrome/taskData";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { TaskCheck, type TaskTouch } from "./taskCheck";
@@ -248,21 +249,26 @@ function TaskCardBody({ item }: ToolRenderProps) {
   if (item.error) return null;
   const rows = mutationRows(item) ?? [];
   const progress = parseProgress(item.output);
+  // The parsed footer keeps the backend's own outcome shape (done/cancelled/
+  // remaining/total, or legacy done/total); only the displayed sentence is
+  // condensed, through the same helper the panel trigger uses.
+  const progressLabel = progress
+    ? taskAggregateLabel({
+        total: progress.total,
+        done: progress.done,
+        cancelled: progress.cancelled,
+        remaining: progress.remaining,
+      })
+    : undefined;
   return (
     <div className={CLASS.card} data-testid="task-card">
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.cancelled === undefined || progress.remaining === undefined
-              ? `${progress.done} of ${progress.total} done`
-              : `${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`}
+            {progressLabel}
           </span>
           <Meter
-            label={
-              progress.cancelled === undefined || progress.remaining === undefined
-                ? `Task progress: ${progress.done} of ${progress.total} complete`
-                : `Task progress: ${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`
-            }
+            label={progressLabel ? `Task progress: ${progressLabel}` : "Task progress"}
             value={progress.done + (progress.cancelled ?? 0)}
             max={progress.total}
             tone="neutral"
