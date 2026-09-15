@@ -466,7 +466,10 @@ function mergePresent(_prior: WatchSummary, row: SummaryRow): Partial<WatchSumma
   };
 }
 
-function compareTranscriptPosition(left: ItemModel, right: ItemModel): number {
+// Orders watch snapshots by where they sit in the transcript, with no opinion
+// about items that carry no position: those keep their caller order, so both
+// the fold and the memo key stay stable for well-ordered input.
+export function compareTranscriptPosition(left: ItemModel, right: ItemModel): number {
   const leftPosition = left.position;
   const rightPosition = right.position;
   if (!leftPosition || !rightPosition) return 0;
