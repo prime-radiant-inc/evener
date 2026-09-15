@@ -1,7 +1,9 @@
 package rendezvous
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -139,4 +141,132 @@ func TestRemoveIfOwnedKeepsLockInode(t *testing.T) {
 	if _, err := os.Stat(ownershipLockPath(dir, entry.PID)); err != nil {
 		t.Fatalf("lock inode for pid %d was deleted; a held fd would be orphaned", entry.PID)
 	}
+}
+
+// TestDiskHoldsReplacementUsesExactOwnership pins the single identity authority
+// the removal path re-checks a refused removal with: DiskHoldsReplacement must
+// answer with exactly the comparison RemoveIfOwned refuses on. In particular
+// every field OwnershipFingerprint omits still counts as identity, so a same-PID
+// record differing only in an excluded field is a replacement even though it
+// fingerprints identically.
+func TestDiskHoldsReplacementUsesExactOwnership(t *testing.T) {
+	t.Run("exact identity is not a replacement", func(t *testing.T) {
+		dir := t.TempDir()
+		entry := ownershipTestEntry(9311)
+		if _, err := Write(dir, entry); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		got, err := DiskHoldsReplacement(dir, entry)
+		if err != nil {
+			t.Fatalf("DiskHoldsReplacement(exact): %v", err)
+		}
+		if got {
+			t.Fatal("this process's own exact entry was reported as a replacement")
+		}
+	})
+
+	t.Run("fingerprint-excluded drift is a replacement", func(t *testing.T) {
+		mutations := map[string]func(*Entry){
+			"hub token":  func(e *Entry) { e.HubToken = "different-secret" },
+			"spawned by": func(e *Entry) { e.SpawnedBy = "evener-tui" },
+			"agent":      func(e *Entry) { e.Agent = "other-agent" },
+			"model":      func(e *Entry) { e.Model = "other-model" },
+			"provider":   func(e *Entry) { e.Provider = "other-provider" },
+		}
+		for name, mutate := range mutations {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				mine := ownershipTestEntry(9312)
+				mine.Agent, mine.Model, mine.Provider = "evener", "model-a", "provider-a"
+				mine.HubToken, mine.SpawnedBy = "hub-token-a", "evener-hub"
+				if _, err := Write(dir, mine); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				replacement := mine
+				mutate(&replacement)
+				if OwnershipFingerprint(replacement) != OwnershipFingerprint(mine) {
+					t.Fatalf("mutating %s moved the fingerprint; the case must be invisible to it", name)
+				}
+				if _, err := Write(dir, replacement); err != nil {
+					t.Fatalf("Write replacement: %v", err)
+				}
+				got, err := DiskHoldsReplacement(dir, mine)
+				if err != nil {
+					t.Fatalf("DiskHoldsReplacement: %v", err)
+				}
+				if !got {
+					t.Fatalf("same-PID record differing only in %s was not reported as a replacement", name)
+				}
+				// The guard itself is unchanged: it still refuses this record.
+				if err := RemoveIfOwned(dir, mine); err == nil {
+					t.Fatal("RemoveIfOwned accepted a record differing in an excluded field")
+				}
+			})
+		}
+	})
+
+	t.Run("fingerprinted drift is a replacement", func(t *testing.T) {
+		dir := t.TempDir()
+		mine := ownershipTestEntry(9313)
+		if _, err := Write(dir, mine); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		replacement := mine
+		replacement.StartedAt = mine.StartedAt.Add(time.Second)
+		if _, err := Write(dir, replacement); err != nil {
+			t.Fatalf("Write replacement: %v", err)
+		}
+		got, err := DiskHoldsReplacement(dir, mine)
+		if err != nil {
+			t.Fatalf("DiskHoldsReplacement: %v", err)
+		}
+		if !got {
+			t.Fatal("a record with a drifted fingerprinted field was not reported as a replacement")
+		}
+	})
+
+	t.Run("missing artifact is not a replacement", func(t *testing.T) {
+		dir := t.TempDir()
+		got, err := DiskHoldsReplacement(dir, ownershipTestEntry(9314))
+		if err != nil {
+			t.Fatalf("DiskHoldsReplacement(missing): %v", err)
+		}
+		if got {
+			t.Fatal("a missing artifact was reported as a replacement")
+		}
+	})
+
+	t.Run("unparseable artifact errors instead of answering", func(t *testing.T) {
+		dir := t.TempDir()
+		const pid = 9315
+		target := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
+		if err := os.WriteFile(target, []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("corrupt artifact: %v", err)
+		}
+		got, err := DiskHoldsReplacement(dir, ownershipTestEntry(pid))
+		if err == nil {
+			t.Fatal("DiskHoldsReplacement answered for an unparseable artifact instead of erroring")
+		}
+		if got {
+			t.Fatal("an unparseable artifact was reported as a replacement")
+		}
+	})
+
+	t.Run("ownership lock failure errors instead of answering", func(t *testing.T) {
+		if !StrongOwnershipAvailable() {
+			t.Skip("strong ownership unavailable on this platform")
+		}
+		dir := t.TempDir()
+		const pid = 9316
+		if err := os.Mkdir(ownershipLockPath(dir, pid), 0o700); err != nil {
+			t.Fatalf("sabotage ownership lock path: %v", err)
+		}
+		got, err := DiskHoldsReplacement(dir, ownershipTestEntry(pid))
+		if err == nil {
+			t.Fatal("DiskHoldsReplacement answered without taking the ownership lock")
+		}
+		if got {
+			t.Fatal("a failed re-check was reported as a replacement")
+		}
+	})
 }

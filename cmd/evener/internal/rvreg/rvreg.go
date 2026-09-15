@@ -121,21 +121,25 @@ func (r *Registration) Remove() error {
 
 // diskHoldsReplacement reports whether <pid>.json currently carries a valid
 // rendezvous entry for this PID that is not this registration's identity --
-// i.e. a replacement daemon reused the PID and rewrote the record. It uses the
-// canonical ownership fingerprint (rendezvous.OwnershipFingerprint) so the
-// decision matches the identity authority the daemon and Hub enforce for exact
-// ownership. A missing, unreadable or unparseable artifact reports false, which
-// keeps the caller's original (retryable) error rather than declaring a no-op.
+// i.e. a replacement daemon reused the PID and rewrote the record. It defers to
+// rendezvous.DiskHoldsReplacement, the single identity authority: that re-check
+// runs exactly the comparison RemoveIfOwned refuses on, under the same per-PID
+// ownership lock, so it cannot disagree with the guard.
+//
+// The canonical ownership fingerprint (rendezvous.OwnershipFingerprint) is
+// deliberately not used: it excludes HubToken, SpawnedBy, Agent, Model and
+// Provider, so a same-PID record differing only in one of them is refused by
+// the guard yet fingerprints identically -- the fingerprint would report "not a
+// replacement" and the shutdown loop would retry a record this process no
+// longer owns.
+//
+// A missing, unreadable or unparseable artifact, or a failure of the re-check
+// itself, reports false, which keeps the caller's original (retryable) error
+// rather than declaring a no-op.
 func diskHoldsReplacement(runDir string, own rendezvous.Entry) bool {
-	entries, err := rendezvous.List(runDir)
+	replaced, err := rendezvous.DiskHoldsReplacement(runDir, own)
 	if err != nil {
 		return false
 	}
-	for _, entry := range entries {
-		if entry.PID != own.PID {
-			continue
-		}
-		return rendezvous.OwnershipFingerprint(entry) != rendezvous.OwnershipFingerprint(own)
-	}
-	return false
+	return replaced
 }

@@ -1,6 +1,8 @@
 package rvreg
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -379,4 +381,145 @@ func TestRegistrationRemovePreservesOriginalErrorWhenFallbackRefuses(t *testing.
 	if _, statErr := os.Stat(artifact); statErr != nil {
 		t.Fatalf("Remove touched the regular artifact it refused to unlink: %v", statErr)
 	}
+}
+
+// TestRegistrationRemoveTreatsExcludedFieldDriftAsReplacement is the M3
+// regression. A same-PID artifact that differs from this registration only in a
+// field OwnershipFingerprint deliberately excludes (HubToken, SpawnedBy, Agent,
+// Model, Provider) is refused by RemoveIfOwned's exact-ownership guard, yet it
+// fingerprints identically to this process's record. Before the fix
+// diskHoldsReplacement compared fingerprints, reported "not a replacement", and
+// Remove returned the original retryable error -- so the shutdown loop logged
+// "entry may be stale" and spent its retry budget on a record this process no
+// longer owns. The re-check now asks the same question the guard refuses on, so
+// the refusal is a completed no-op and the replacement's record is left intact.
+func TestRegistrationRemoveTreatsExcludedFieldDriftAsReplacement(t *testing.T) {
+	mutations := map[string]func(*rendezvous.Entry){
+		"hub token":  func(e *rendezvous.Entry) { e.HubToken = "different-secret" },
+		"spawned by": func(e *rendezvous.Entry) { e.SpawnedBy = "evener-tui" },
+		"agent":      func(e *rendezvous.Entry) { e.Agent = "other-agent" },
+		"model":      func(e *rendezvous.Entry) { e.Model = "other-model" },
+		"provider":   func(e *rendezvous.Entry) { e.Provider = "other-provider" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			runDir := t.TempDir()
+			const pid = 5371
+			mine := rendezvous.Entry{
+				PID:        pid,
+				Address:    "127.0.0.1:4100",
+				Protocol:   "evener-appwire-v5",
+				Endpoint:   "ws://127.0.0.1:4100/rpc",
+				SourceID:   "local",
+				ThreadID:   "01MINE",
+				SessionID:  "01MINE",
+				InstanceID: "01MINE",
+				Agent:      "evener",
+				Model:      "model-a",
+				Provider:   "provider-a",
+				HubToken:   "hub-token-a",
+				SpawnedBy:  "evener-hub",
+				StartedAt:  time.Now(),
+			}
+			reg := &Registration{}
+			if err := reg.Register(runDir, mine); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			replacement := mine
+			mutate(&replacement)
+			// Premise of the regression: the excluded field is invisible to the
+			// canonical fingerprint, which is exactly why the fingerprint could
+			// not answer this question.
+			if rendezvous.OwnershipFingerprint(replacement) != rendezvous.OwnershipFingerprint(mine) {
+				t.Fatalf("mutating %s moved the fingerprint; choose a field OwnershipFingerprint excludes", name)
+			}
+			if _, err := rendezvous.Write(runDir, replacement); err != nil {
+				t.Fatalf("replacement write: %v", err)
+			}
+			if err := reg.Remove(); err != nil {
+				t.Fatalf("Remove = %v, want nil: the guard refused a same-PID record that is not ours, so the refusal is a completed no-op, not a retryable failure", err)
+			}
+			// The replacement's record survives byte-for-byte; the stale daemon
+			// neither deleted nor rewrote it.
+			artifact := filepath.Join(runDir, fmt.Sprintf("%d.json", pid))
+			got, err := os.ReadFile(artifact)
+			if err != nil {
+				t.Fatalf("replacement record after Remove: %v", err)
+			}
+			want, err := json.Marshal(replacement)
+			if err != nil {
+				t.Fatalf("marshal replacement: %v", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("on-disk record after Remove = %s, want the replacement's %s", got, want)
+			}
+		})
+	}
+}
+
+// TestRegistrationRemoveStaysRetryableWhenReplacementCheckCannotAnswer pins the
+// conservative half of diskHoldsReplacement. When the artifact cannot be parsed
+// or the ownership re-check itself cannot run, the caller must keep its original
+// retryable error rather than be handed a false completed no-op -- a transient
+// filesystem failure must not look like a replacement.
+func TestRegistrationRemoveStaysRetryableWhenReplacementCheckCannotAnswer(t *testing.T) {
+	t.Run("unparseable same-pid artifact", func(t *testing.T) {
+		runDir := t.TempDir()
+		const pid = 8383
+		reg := &Registration{}
+		if err := reg.Register(runDir, rendezvous.Entry{PID: pid, ThreadID: "01OLD", SessionID: "01OLD"}); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		artifact := filepath.Join(runDir, fmt.Sprintf("%d.json", pid))
+		if err := os.WriteFile(artifact, []byte("{not json"), 0o600); err != nil {
+			t.Fatalf("corrupt artifact: %v", err)
+		}
+		err := reg.Remove()
+		if err == nil {
+			t.Fatal("Remove declared a completed no-op for an unparseable artifact; a transient read/parse failure must stay retryable")
+		}
+		if !strings.Contains(err.Error(), "parse rendezvous file") {
+			t.Fatalf("Remove error = %v, want the original retryable parse failure", err)
+		}
+		if _, statErr := os.Stat(artifact); statErr != nil {
+			t.Fatalf("refused artifact was unlinked: %v", statErr)
+		}
+	})
+
+	t.Run("ownership re-check cannot take the lock", func(t *testing.T) {
+		if !rendezvous.StrongOwnershipAvailable() {
+			t.Skip("platform has no ownership lock to fail")
+		}
+		runDir := t.TempDir()
+		const pid = 8484
+		mine := rendezvous.Entry{
+			PID:       pid,
+			ThreadID:  "01MINE",
+			SessionID: "01MINE",
+			Model:     "model-a",
+			StartedAt: time.Now(),
+		}
+		reg := &Registration{}
+		if err := reg.Register(runDir, mine); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		// The on-disk record differs only in a fingerprint-excluded field, i.e.
+		// it would be reported as a replacement if the re-check could read it. A
+		// re-check that cannot run must not guess.
+		replacement := mine
+		replacement.Model = "other-model"
+		if _, err := rendezvous.Write(runDir, replacement); err != nil {
+			t.Fatalf("replacement write: %v", err)
+		}
+		lock := filepath.Join(runDir, fmt.Sprintf("%d.lock", pid))
+		if err := os.Remove(lock); err != nil {
+			t.Fatalf("remove ownership lock inode: %v", err)
+		}
+		if err := os.Mkdir(lock, 0o700); err != nil {
+			t.Fatalf("sabotage ownership lock path: %v", err)
+		}
+		if err := reg.Remove(); err == nil {
+			t.Fatal("Remove declared a completed no-op while the ownership re-check could not run")
+		}
+	})
 }

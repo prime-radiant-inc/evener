@@ -128,3 +128,39 @@ func RemoveUnlessRegular(dir string, pid int) error {
 		return removeFS(afero.NewOsFs(), dir, pid)
 	})
 }
+
+// DiskHoldsReplacement reports whether <dir>/<pid>.json currently carries a
+// valid rendezvous entry for expected.PID that is not expected's exact identity
+// -- i.e. a replacement daemon reused the PID and rewrote the record, leaving
+// the caller's own entry already gone.
+//
+// It answers with the very comparison RemoveIfOwned refuses on
+// (entryMatchesOwned), read under the same per-PID ownership lock Write and
+// RemoveIfOwned take, so the re-check can never disagree with the guard and
+// there is no second definition of ownership to keep in sync. Unlike
+// OwnershipFingerprint -- which deliberately omits HubToken, SpawnedBy, Agent,
+// Model and Provider so a fingerprint is safe to share with a peer -- this
+// comparison covers every published field, so a same-PID record differing in
+// even one of those is a different daemon's.
+//
+// A missing artifact reports (false, nil). An unreadable or unparseable
+// artifact, or a failure to take the ownership lock, reports a non-nil error
+// together with false: callers must treat that as "not a replacement" so a
+// transient filesystem failure stays retryable, never as a completed no-op.
+func DiskHoldsReplacement(dir string, expected Entry) (bool, error) {
+	var replacement bool
+	err := withOwnershipLock(dir, expected.PID, func() error {
+		disk, present, err := readOwnershipEntry(dir, expected.PID)
+		if err != nil {
+			return err
+		}
+		if present && !entryMatchesOwned(disk, expected) {
+			replacement = true
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return replacement, nil
+}
