@@ -496,7 +496,7 @@ func TestFormatWatchStatusesIsPureAndOrdersRows(t *testing.T) {
 func TestLiveWatchStatusesProjectionMatchesPureFormatter(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := jm.configureWatch(watchArgs{
 			Operation: "create", Source: "self", Target: runtimeMessageAliasCaller,
 			RepeatSeconds: 300,
@@ -506,7 +506,7 @@ func TestLiveWatchStatusesProjectionMatchesPureFormatter(t *testing.T) {
 	}
 	// One output watch per job: a watch's key is (visible session, target, send,
 	// receiver), so a second watch on the same job replaces the first.
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		rec, err := jm.createShell(createShellOpts{Command: "x"})
 		if err != nil {
 			t.Fatalf("create shell %d: %v", i, err)
