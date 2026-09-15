@@ -1599,10 +1599,23 @@ function measure() {
         const verbs = controls.filter(
           (control) => control.testId !== "composer-attach" && control.present && control.box,
         );
+        // The width the card's @container query resolves against: the content
+        // box of the nearest ancestor with inline-size containment (the
+        // composer root), which the pane's footer padding leaves narrower than
+        // the pane itself.
+        let container = composerCard?.parentElement ?? null;
+        while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
+          container = container.parentElement;
+        }
+        const containerStyle = container ? getComputedStyle(container) : null;
         return {
           controls: verbs.length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
           statusRowBottom: status ? status.getBoundingClientRect().bottom : null,
+          containerWidth:
+            container && containerStyle
+              ? container.clientWidth - parseFloat(containerStyle.paddingLeft) - parseFloat(containerStyle.paddingRight)
+              : null,
         };
       })(),
       sharedPaneWithoutOverflow:

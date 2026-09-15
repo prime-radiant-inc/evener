@@ -37,13 +37,8 @@
   }
 }
 
-/* wrap is inert on its own: the leading slot shrinks to nothing (its status
- * row sits in an inline-size container), so nothing ever forces a second line.
- * It exists for the phone-width rule on .actions below, which opts a cluster
- * into taking that line. */
 .controls {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
 }
@@ -67,6 +62,15 @@
  * Each control contributes exactly one direct child (Tooltip's wrapper span),
  * so :nth-child(3) means three controls. */
 @container (max-width: 399px) {
+  /* Wrapping is enabled only for the row that holds three controls. A row
+   * that may wrap breaks lines on its items' intrinsic widths before any
+   * shrinking, so a content-sized leading slot could push a two-verb cluster
+   * onto a second line; with the wrap scoped to this cluster no other row can
+   * wrap at all. */
+  .controls:has(> .actions > :nth-child(3)) {
+    flex-wrap: wrap;
+  }
+
   .actions:has(> :nth-child(3)) {
     flex-basis: 100%;
     justify-content: flex-end;

@@ -57,7 +57,10 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // reading measure and STOPS growing - which is exactly where a few px of
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
-const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
+// 399..699 bracket the composer card's 399px container threshold (the
+// three-verb wrap, promptcard.module.css): the container is the pane minus its
+// footer padding, so pane widths landing either side of it are measured.
+const DEFAULT_WIDTHS = [320, 390, 399, 400, 420, 480, 600, 699, 700, 899, 900, 1024, 1400];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
   { theme: "dark", fontSize: "m" },
@@ -1282,23 +1285,24 @@ async function main() {
             `${label} ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
           );
         }
-        // The wrap rule itself (promptcard.module.css): under the status row's
-        // 399px phone threshold a three-verb cluster sits below the row; two
-        // verbs stay inline there, and three stay inline above it.
+        // The wrap rule itself (promptcard.module.css): at a card container of
+        // 399px or less a three-verb cluster sits below the status row; two
+        // verbs stay inline there, and three stay inline above it. The
+        // threshold is the container's, measured by the harness, not the pane's.
         const cluster = result.currentWork.verbCluster;
         const expectedVerbs = steer ? 3 : 2;
-        const expectWrapped = width < 400 && expectedVerbs === 3;
+        const expectWrapped = cluster.containerWidth !== null && cluster.containerWidth <= 399 && expectedVerbs === 3;
         const wrapped =
           cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
         if (cluster.controls !== expectedVerbs || wrapped !== expectWrapped) {
           widthFailed = true;
           console.log(
-            `${label} ... FAIL - verb cluster: expected ${expectedVerbs} verbs ${expectWrapped ? "below" : "beside"} the status row, ` +
-              `got ${cluster.controls} verbs at top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+            `${label} ... FAIL - verb cluster: expected ${expectedVerbs} verbs ${expectWrapped ? "below" : "beside"} the status row ` +
+              `(card container ${cluster.containerWidth}px), got ${cluster.controls} verbs at top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
           );
         } else {
           console.log(
-            `${label} verbs ... PASS - ${cluster.controls} verbs ${wrapped ? "below" : "beside"} the status row`,
+            `${label} verbs ... PASS - ${cluster.controls} verbs ${wrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
           );
         }
         if (
