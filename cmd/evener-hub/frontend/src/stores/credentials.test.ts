@@ -94,6 +94,58 @@ describe("fetch", () => {
     await expect(credentialsStore.getState().fetch()).rejects.toThrow(/no client connected/);
   });
 
+  test("a replaced connection marks the held listing, and its own read clears it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
+
+    // The client is replaced: the listing still held was read on the one that
+    // went away, and this one has not answered with its own yet.
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => LIST_RESPONSE);
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    // This connection's own read is what clears the mark.
+    await credentialsStore.getState().fetch();
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
+  });
+
+  test("a write issued while the held listing is stale is refused until this connection's read lands", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // A replacement whose own read is held open: the rows still on screen name
+    // instances and endpoints of the connection that went away, so a write
+    // issued from them is refused rather than submitted to a connection that
+    // never read them.
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const replacement = new FakeClient("ready");
+    replacement.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRestore = resolve;
+        }),
+    );
+    replacement.on("evener/instance/setDefault", () => LIST_RESPONSE);
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    await expect(credentialsStore.getState().setDefault("work")).rejects.toThrow(/replaced/);
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(0);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    // The refusal is not sticky: once this connection's own listing lands, the
+    // same write goes through.
+    finishRestore(LIST_RESPONSE);
+    await vi.waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await credentialsStore.getState().setDefault("work");
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(1);
+  });
+
   test("populates instances/availableProviders/diagnostics/writesRefused from evener/instance/list on success", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
@@ -1148,8 +1200,11 @@ describe("notification-triggered refetch", () => {
     const firstPending = credentialsStore.getState().setApiKey("work", "first");
     // The connection is replaced while the first save is still in flight: the
     // old connection's callback lands after its markers were cleared.
-    const second = connectFakeClient();
+    // The replacement answers its own restore read: a connection whose own
+    // listing has not landed yet refuses writes (requireWritableClient).
+    const second = new FakeClient("ready");
     second.on("evener/instance/list", () => LIST_RESPONSE);
+    connectionStore.getState().connect(second);
     await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
 
     let resolveSecond: (value: AuthStatusResponse) => void = () => {};
