@@ -170,9 +170,12 @@ let refreshGeneration = 0;
 // listEstablished turns true on the first applied full-list answer: it
 // distinguishes "the store never held this name" from "a remove dropped it".
 let listEstablished = false;
-// refreshedInstances names the rows a refresh merged since the last full-list
-// apply: a read older than one merges around them instead of replacing them.
-const refreshedInstances = new Set<string>();
+// refreshedInstances counts, per instance, the refreshes that landed since the
+// last full-list apply: a read older than one merges around those rows instead
+// of replacing them, and a COUNT rather than a name is what tells a second
+// refresh apart from the first — a write in flight has to see that the row was
+// refreshed again, not merely that it was refreshed at some point.
+const refreshedInstances = new Map<string, number>();
 
 // noteLandedMutation records one landed write against the instance it touched.
 function noteLandedMutation(instance: string): void {
@@ -198,7 +201,7 @@ async function applyMutation(
   const client = connectionStore.getState().client;
   // Refreshes already landed when this write started: the answer is newer
   // than those rows and replaces them, as it always has.
-  const before = new Set(refreshedInstances);
+  const before = new Map(refreshedInstances);
   try {
     const response = await request();
     // The server applied this write whatever the store does with its answer,
@@ -213,7 +216,9 @@ async function applyMutation(
       if (connectionStore.getState().client === client) reconcile?.supersededFor?.(response);
       return false;
     }
-    const refreshedDuringFlight = new Set([...refreshedInstances].filter((name) => !before.has(name)));
+    const refreshedDuringFlight = new Set(
+      [...refreshedInstances].filter(([name, count]) => (before.get(name) ?? 0) !== count).map(([name]) => name),
+    );
     refreshedInstances.clear();
     listEstablished = true;
     const applied = listState(response);
@@ -289,7 +294,7 @@ function mergeNewerRows(instances: InstanceEntry[], generation: number, writes: 
     refreshedInstances.clear();
     return instances;
   }
-  const merged = keepWrittenRows(keepRefreshedModels(instances, refreshedInstances), written);
+  const merged = keepWrittenRows(keepRefreshedModels(instances, new Set(refreshedInstances.keys())), written);
   refreshedInstances.clear();
   return merged;
 }
@@ -452,7 +457,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         // knows about live models.
         const merged = current.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
         if (!known) merged.push({ ...row });
-        refreshedInstances.add(name);
+        refreshedInstances.set(name, (refreshedInstances.get(name) ?? 0) + 1);
         refreshGeneration++;
         credentialsStore.setState({ instances: merged, error: null });
       }
@@ -900,6 +905,9 @@ connectionStore.subscribe((state, previous) => {
     refreshVersions.clear();
     landedMutations.clear();
     refreshGeneration = 0;
+    // The listing bookkeeping goes with them: a refresh landing before this
+    // client's first read is a fresh row to stage, not a removal to preserve.
+    listEstablished = false;
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
