@@ -1652,6 +1652,10 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		{name: "instance", mutate: func(res *registry.Resolved) { res.Instance = "other" }},
 		{name: "model", mutate: func(res *registry.Resolved) { res.ModelID = "other-model" }},
 		{name: "protocol", mutate: func(res *registry.Resolved) { res.Protocol = registry.ProtocolAnthropic }},
+		{name: "surface", mutate: func(res *registry.Resolved) { res.Surface = registry.SurfaceAnthropic }},
+		{name: "model family", mutate: func(res *registry.Resolved) { res.Model.Family = "claude" }},
+		{name: "thinking as text", mutate: func(res *registry.Resolved) { res.Caps.ThinkingAsText = new(true) }},
+		{name: "reasoning", mutate: func(res *registry.Resolved) { res.Caps.Reasoning = new(false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cm := NewManager(profile, nil, cheapmodel.New(nil))

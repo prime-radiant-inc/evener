@@ -139,15 +139,16 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if err != nil {
 		return InputTokenCount{}, err
 	}
+	// The instance a request resolves to is not evidence about the model, so the
+	// estimator keeps the caller's own provider name -- empty when the caller gave
+	// none -- rather than the name the dispatch happened to use.
+	callerProvider := req.Provider
 	req.Provider = t.name
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
 	localEstimate := func() InputTokenCount {
-		if t.resolved {
-			return EstimateInputTokensForResolved(t.res, req)
-		}
-		return EstimateInputTokens(req)
+		return localInputEstimate(req, callerProvider, t)
 	}
 
 	// countExactly is the exact-count call of whichever half of the target
@@ -355,6 +356,13 @@ func (t targetInfo) mediaFamily() string {
 	if f := mediaFamilyFromModelFamily(t.family); f != "" {
 		return f
 	}
+	if genericModelFamily(t.family) {
+		// The registry classifies this family as deliberately generic (gpt-oss:
+		// its rows declare text-only input), so the empty result above is a
+		// decision, not an absence: neither the surface, the model name, nor the
+		// wire protocol may put an image family back.
+		return ""
+	}
 	switch t.surface {
 	case registry.SurfaceAnthropic:
 		return "anthropic"
@@ -398,6 +406,13 @@ func mediaFamilyFromModelFamily(family string) string {
 	default:
 		return ""
 	}
+}
+
+// genericModelFamily reports whether the registry classifies a family as
+// deliberately generic -- a family whose rows carry no vendor tokenizer rules at
+// all, so no image family may be inferred for them from anywhere else.
+func genericModelFamily(family string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(family)), "gpt-oss")
 }
 
 // targetFromNames builds the name-based view used by the exported entry points
@@ -553,6 +568,18 @@ func providerTokenFamily(provider, model string) string {
 	default:
 		return ""
 	}
+}
+
+// localInputEstimate is CountInputTokens' local half: a resolved target estimates
+// from its row, and the provider name it may read as vendor evidence is the
+// caller's own, never the instance the request resolved to.
+func localInputEstimate(req Request, callerProvider string, t dispatchTarget) InputTokenCount {
+	if !t.resolved {
+		return EstimateInputTokens(req)
+	}
+	estimateReq := req
+	estimateReq.Provider = callerProvider
+	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 
 // oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"

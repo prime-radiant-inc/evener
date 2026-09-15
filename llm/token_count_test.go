@@ -725,6 +725,46 @@ func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T
 	}
 }
 
+// The estimator may read a caller-supplied provider name, never the instance the
+// request resolved to: an aliased instance (here "google" serving an OpenAI
+// protocol) must not claim a vendor's image rules for a row that does not carry
+// them.
+func TestLocalInputEstimateKeepsTheCallersProviderNotTheInstance(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentText, Text: "hello"},
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	row := registry.Resolved{Instance: "google", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIResponses}
+	target := dispatchTarget{name: "google", res: row, resolved: true}
+
+	got := localInputEstimate(Request{Provider: "google", Model: "gateway-zz", Messages: messages}, "", target).Tokens
+	want := EstimateInputTokensForResolved(row, Request{Model: "gateway-zz", Messages: messages}).Tokens
+	if got != want {
+		t.Fatalf("estimate with no caller provider = %d, want the row-and-protocol estimate %d", got, want)
+	}
+}
+
+// A family the registry calls generic stays generic: gpt-oss rows declare
+// text-only input, so no image family is claimed for them -- not from the
+// protocol they are served over and not from anything else.
+func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	want := fallbackMediaTokens + len("image/png")/4
+	for _, protocol := range []string{registry.ProtocolOpenAIResponses, registry.ProtocolOpenAIChat, registry.ProtocolAnthropic, registry.ProtocolGoogle} {
+		row := registry.Resolved{
+			Instance: "gateway", ModelID: "gpt-oss-120b", Protocol: protocol,
+			Model: registry.Model{Family: "gpt-oss"},
+		}
+		if got := EstimateMessagesInputTokensForResolved(row, messages).Tokens; got != want {
+			t.Fatalf("gpt-oss row over %q image history = %d, want the generic fallback %d", protocol, got, want)
+		}
+	}
+}
+
 // An instance name is an alias, not vendor identity: a generic row that happens
 // to be named "anthropic" must not bill Anthropic's image rules for a model the
 // registry never classified, so a resolved target's family comes from the row's
@@ -784,13 +824,18 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 	// openai/gpt-oss name) both look like OpenAI to the name rule, so the name
 	// stage must not re-claim the tokenizer the family map refused. With no
 	// vendor decision left, the protocol decides.
+	// The generic classification is a decision, not an absence: a gpt-oss row
+	// claims no image family at all, so it takes the generic fallback rather than
+	// the protocol's rules (roborev's eleventh round; the third round's
+	// expectation that the protocol answers for it is superseded).
 	for _, modelID := range []string{"gpt-oss-120b", "openai/gpt-oss-120b", "openai.gpt-oss-120b"} {
 		gptOSS := registry.Resolved{
 			Instance: "cerebras", ModelID: modelID, Protocol: registry.ProtocolAnthropic,
 			Model: registry.Model{Family: "gpt-oss"},
 		}
-		if got, want := EstimateMessagesInputTokensForResolved(gptOSS, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
-			t.Fatalf("gpt-oss row %q image history = %d, want %d: the gpt-oss family must not claim OpenAI", modelID, got, want)
+		want := fallbackMediaTokens + len("image/png")/4
+		if got := EstimateMessagesInputTokensForResolved(gptOSS, messages).Tokens; got != want {
+			t.Fatalf("gpt-oss row %q image history = %d, want the generic fallback %d: the family must not claim any vendor", modelID, got, want)
 		}
 	}
 	// The rule at its source: a gpt-oss name is no vendor decision at all, so the

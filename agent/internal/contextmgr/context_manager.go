@@ -338,7 +338,33 @@ func sameProfileTarget(a, b *provider.Profile) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.ID() == b.ID() && a.Model() == b.Model() && a.Protocol() == b.Protocol()
+	if a.ID() != b.ID() || a.Model() != b.Model() || a.Protocol() != b.Protocol() {
+		return false
+	}
+	// The estimator reads more of the row than its identity: the surface and the
+	// model family choose the media rules, and the reasoning capabilities choose
+	// whether thinking text is billed (see llm.EstimateMessagesInputTokensForResolved).
+	// A metadata refresh that changes any of them invalidates the measurement,
+	// because the count was taken under the old rules.
+	return sameEstimatorTarget(a.Resolved(), b.Resolved())
+}
+
+// sameEstimatorTarget compares the resolved fields the token estimator reads.
+func sameEstimatorTarget(a, b registry.Resolved) bool {
+	if a.Surface != b.Surface || a.Model.Family != b.Model.Family {
+		return false
+	}
+	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
+		return false
+	}
+	aReasoning, bReasoning := false, false
+	if a.Caps.Reasoning != nil {
+		aReasoning = *a.Caps.Reasoning
+	}
+	if b.Caps.Reasoning != nil {
+		bReasoning = *b.Caps.Reasoning
+	}
+	return aReasoning == bReasoning
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race
