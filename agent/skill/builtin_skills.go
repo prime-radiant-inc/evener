@@ -76,11 +76,18 @@ var embeddedSkillsCache struct {
 	fallbackUntil time.Time
 	// heldLeases keeps leases on fallback copies this process has moved on from.
 	// Sessions created while a fallback was current hold SkillFile paths inside
-	// it, so its lease is held for the process lifetime and the age reaper cannot
-	// collect the base while those paths are still needed. A copy is added only
-	// when the cache moves off a fallback it was serving, so a retry that keeps
-	// the same copy adds nothing.
-	heldLeases []skillsLease
+	// it, so its lease is held until protectUntil, the same staleness window the
+	// age reaper uses; after that no session is plausibly still reading the copy.
+	// A copy is added only when the cache moves off a fallback it was serving, so
+	// a retry that keeps the same copy adds nothing.
+	heldLeases []heldSkillsLease
+}
+
+// heldSkillsLease is the lease this process keeps on a fallback copy it no
+// longer serves, and the time after which the age reaper may collect it.
+type heldSkillsLease struct {
+	lease        skillsLease
+	protectUntil time.Time
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -128,6 +135,7 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // ensureEmbeddedSkillsLocked publishes the bundled skills when the cached copy
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
+	releaseExpiredHeldLeasesLocked(time.Now())
 	// retryFallbackDir is a live fallback copy whose retry window has passed. It
 	// is kept while the shared cache is retried and reused if that retry fails,
 	// so an outage does not accumulate a copy and a lease per retry.
@@ -163,11 +171,30 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			forgetEmbeddedSkillsLocked()
 		}
 	}
+	// reuseFallbackLocked keeps serving the fallback copy this process still
+	// leases, extending its retry window. It reports false when that copy is gone
+	// or can no longer be protected.
+	reuseFallbackLocked := func() (string, bool) {
+		if retryFallbackDir == "" || embeddedSkillsCache.dir != retryFallbackDir ||
+			embeddedSkillsCache.skills == nil || !cacheDirExists(retryFallbackDir) ||
+			embeddedSkillsCache.lease == nil || !embeddedSkillsCache.lease.Valid() {
+			return "", false
+		}
+		embeddedSkillsCache.fallback = true
+		embeddedSkillsCache.verified = true
+		embeddedSkillsCache.fallbackBase = filepath.Dir(retryFallbackDir)
+		embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
+		touchDir(retryFallbackDir)
+		return retryFallbackDir, true
+	}
 	// Fallback bases are created by MkdirTemp, so they live under the temp dir
 	// even where the cache base does not. The caller holds the cache mutex.
 	reapStaleFallbackBases(os.TempDir(), time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
+		if dir, ok := reuseFallbackLocked(); ok {
+			return dir, nil
+		}
 		return "", err
 	}
 	const publishAttempts = 4
@@ -175,6 +202,9 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	for range publishAttempts {
 		dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, embeddedSkillsCache.dir)
 		if err != nil {
+			if fallbackDir, ok := reuseFallbackLocked(); ok {
+				return fallbackDir, nil
+			}
 			return "", err
 		}
 		if err := claimEmbeddedSkillsLocked(dir); err != nil {
@@ -202,13 +232,10 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		// reaper collects it once nothing holds it.
 		return dir, nil
 	}
-	if retryFallbackDir != "" && cacheDirExists(retryFallbackDir) &&
-		embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
-		// The shared cache is still unusable, so keep serving the copy this
-		// process already leased instead of publishing a replacement.
-		embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
-		touchDir(retryFallbackDir)
-		return retryFallbackDir, nil
+	// The shared cache is still unusable, so keep serving the copy this process
+	// already leased instead of publishing a replacement.
+	if dir, ok := reuseFallbackLocked(); ok {
+		return dir, nil
 	}
 	// The shared cache kept being reaped. Publish a private base under the reaped
 	// per-user prefix instead, so the copy has the same lease protection and age
@@ -283,18 +310,43 @@ func claimEmbeddedSkillsLocked(dir string) error {
 // releasePreviousSkillsLeaseLocked drops the lease held for a copy this process
 // is leaving behind. A fallback copy's lease is retained instead: sessions
 // created while it was current read its files on demand, so the base must stay
-// leased until the process ends. The caller holds the cache mutex.
+// leased until the reaper's staleness window has passed. The caller holds the
+// cache mutex.
 func releasePreviousSkillsLeaseLocked() {
 	if embeddedSkillsCache.lease == nil {
 		return
 	}
 	if embeddedSkillsCache.fallback && embeddedSkillsCache.lease.Valid() {
-		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, embeddedSkillsCache.lease)
+		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, heldSkillsLease{
+			lease:        embeddedSkillsCache.lease,
+			protectUntil: time.Now().Add(staleRetainedMaxAge),
+		})
 		embeddedSkillsCache.lease = nil
 		embeddedSkillsCache.leasedDir = ""
+		// The superseded copy is no longer the cached fallback: if the replacement
+		// turns out to be unusable, forget must release its lease rather than
+		// retain it as if it protected a fallback.
+		embeddedSkillsCache.fallback = false
+		embeddedSkillsCache.fallbackBase = ""
+		embeddedSkillsCache.fallbackUntil = time.Time{}
 		return
 	}
 	releaseSkillsLeaseLocked()
+}
+
+// releaseExpiredHeldLeasesLocked drops the retained leases whose protection
+// window has passed, so the age reaper can collect those bases. The caller holds
+// the cache mutex.
+func releaseExpiredHeldLeasesLocked(now time.Time) {
+	kept := make([]heldSkillsLease, 0, len(embeddedSkillsCache.heldLeases))
+	for _, held := range embeddedSkillsCache.heldLeases {
+		if now.Before(held.protectUntil) {
+			kept = append(kept, held)
+			continue
+		}
+		_ = held.lease.Release()
+	}
+	embeddedSkillsCache.heldLeases = kept
 }
 
 // releaseSkillsLeaseLocked drops the held lease, if any. The caller holds the
@@ -322,8 +374,12 @@ func forgetEmbeddedSkillsLocked() {
 	embeddedSkillsCache.fallbackUntil = time.Time{}
 	if fallback && embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
 		// Sessions created while this fallback was current may still read its
-		// files, so its lease is retained for the process lifetime.
-		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, embeddedSkillsCache.lease)
+		// files, so its lease is retained until the reaper's staleness window has
+		// passed.
+		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, heldSkillsLease{
+			lease:        embeddedSkillsCache.lease,
+			protectUntil: time.Now().Add(staleRetainedMaxAge),
+		})
 		embeddedSkillsCache.lease = nil
 		embeddedSkillsCache.leasedDir = ""
 		return

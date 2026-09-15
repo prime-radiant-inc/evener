@@ -38,7 +38,7 @@ type embeddedSkillsCacheSnapshot struct {
 	verified, fallback                   bool
 	fallbackUntil                        time.Time
 	lease                                skillsLease
-	heldLeases                           []skillsLease
+	heldLeases                           []heldSkillsLease
 }
 
 func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
@@ -54,7 +54,7 @@ func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 		verified:      embeddedSkillsCache.verified,
 		fallback:      embeddedSkillsCache.fallback,
 		lease:         embeddedSkillsCache.lease,
-		heldLeases:    append([]skillsLease(nil), embeddedSkillsCache.heldLeases...),
+		heldLeases:    append([]heldSkillsLease(nil), embeddedSkillsCache.heldLeases...),
 	}
 }
 
@@ -90,8 +90,8 @@ func releaseHeldSkillsLeases() {
 	held := embeddedSkillsCache.heldLeases
 	embeddedSkillsCache.heldLeases = nil
 	embeddedSkillsCache.mu.Unlock()
-	for _, lease := range held {
-		_ = lease.Release()
+	for _, entry := range held {
+		_ = entry.lease.Release()
 	}
 }
 
@@ -579,10 +579,10 @@ func TestEmbeddedSkillsDir_MovingOffFallbackRetainsItsLease(t *testing.T) {
 	}
 
 	embeddedSkillsCache.mu.Lock()
-	held := append([]skillsLease(nil), embeddedSkillsCache.heldLeases...)
+	held := append([]heldSkillsLease(nil), embeddedSkillsCache.heldLeases...)
 	lease, leasedDir := embeddedSkillsCache.lease, embeddedSkillsCache.leasedDir
 	embeddedSkillsCache.mu.Unlock()
-	if len(held) != 1 || !held[0].Valid() {
+	if len(held) != 1 || !held[0].lease.Valid() {
 		t.Fatalf("fallback lease not retained after moving on: held=%d", len(held))
 	}
 	if lease == nil || !lease.Valid() || leasedDir != dir {
@@ -628,13 +628,13 @@ func TestClaimEmbeddedSkillsLocked_RetainsTheFallbackLease(t *testing.T) {
 	}
 	embeddedSkillsCache.mu.Lock()
 	claimErr := claimEmbeddedSkillsLocked(nextDir)
-	held := append([]skillsLease(nil), embeddedSkillsCache.heldLeases...)
+	held := append([]heldSkillsLease(nil), embeddedSkillsCache.heldLeases...)
 	lease, leasedDir := embeddedSkillsCache.lease, embeddedSkillsCache.leasedDir
 	embeddedSkillsCache.mu.Unlock()
 	if claimErr != nil {
 		t.Fatalf("claimEmbeddedSkillsLocked: %v", claimErr)
 	}
-	if len(held) != 1 || !held[0].Valid() {
+	if len(held) != 1 || !held[0].lease.Valid() {
 		t.Fatalf("fallback lease not retained when the replacement copy was claimed: held=%d", len(held))
 	}
 	if lease == nil || !lease.Valid() || leasedDir != nextDir {
@@ -691,6 +691,147 @@ func TestEmbeddedSkillsDir_KeepsTheFallbackCopyAcrossRetries(t *testing.T) {
 	}
 	if !until.After(time.Now()) {
 		t.Fatalf("fallback retry window was not extended: %v", until)
+	}
+}
+
+// A shared cache that cannot be resolved or materialized must not take the
+// bundled skills away while a leased fallback copy is still usable.
+func TestEmbeddedSkillsDir_KeepsTheFallbackWhenTheBaseFails(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	saved := acquireSkillsLease
+	acquireSkillsLease = func(path string, exclusive bool) (skillsLease, bool, error) {
+		if strings.HasPrefix(path, filepath.Join(base, skillsLockDirName)) {
+			return nil, true, nil
+		}
+		return saved(path, exclusive)
+	}
+	t.Cleanup(func() { acquireSkillsLease = saved })
+	t.Cleanup(releaseHeldSkillsLeases)
+
+	fallbackDir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (fallback): %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(fallbackDir)) })
+
+	// The retry window passes and the shared base becomes unusable.
+	acquireSkillsLease = saved
+	embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(base, "missing-base"), nil }
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.fallbackUntil = time.Now().Add(-time.Second)
+	embeddedSkillsCache.mu.Unlock()
+
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (failed base) returned no fallback: %v", err)
+	}
+	if dir != fallbackDir {
+		t.Fatalf("fallback copy replaced after a base failure: %q then %q", fallbackDir, dir)
+	}
+	embeddedSkillsCache.mu.Lock()
+	lease, held := embeddedSkillsCache.lease, len(embeddedSkillsCache.heldLeases)
+	embeddedSkillsCache.mu.Unlock()
+	if lease == nil || !lease.Valid() {
+		t.Fatal("fallback copy lost its lease on a base failure")
+	}
+	if held != 0 {
+		t.Fatalf("base failure retained %d fallback leases", held)
+	}
+}
+
+// A replacement copy that vanishes before it is used must have its lease
+// released, not retained as if it protected a fallback copy.
+func TestClaimEmbeddedSkillsLocked_ReleasesAVanishedReplacement(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	saved := acquireSkillsLease
+	acquireSkillsLease = func(path string, exclusive bool) (skillsLease, bool, error) {
+		if strings.HasPrefix(path, filepath.Join(base, skillsLockDirName)) {
+			return nil, true, nil
+		}
+		return saved(path, exclusive)
+	}
+	t.Cleanup(func() { acquireSkillsLease = saved })
+	t.Cleanup(releaseHeldSkillsLeases)
+
+	fallbackDir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (fallback): %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(fallbackDir)) })
+
+	acquireSkillsLease = saved
+	nextDir := filepath.Join(t.TempDir(), "copy")
+	if err := os.MkdirAll(nextDir, 0o700); err != nil {
+		t.Fatalf("create next copy: %v", err)
+	}
+	embeddedSkillsCache.mu.Lock()
+	claimErr := claimEmbeddedSkillsLocked(nextDir)
+	replacement := embeddedSkillsCache.lease
+	embeddedSkillsCache.mu.Unlock()
+	if claimErr != nil {
+		t.Fatalf("claimEmbeddedSkillsLocked: %v", claimErr)
+	}
+	if replacement == nil {
+		t.Fatal("replacement copy was not leased")
+	}
+
+	// Dropping a replacement the way a reaped copy is dropped must release its
+	// lease: it protects a shared-cache entry, not a fallback copy.
+	forgetEmbeddedSkillsLocked()
+	if replacement.Valid() {
+		t.Fatal("vanished replacement's lease was retained instead of released")
+	}
+	embeddedSkillsCache.mu.Lock()
+	held := len(embeddedSkillsCache.heldLeases)
+	embeddedSkillsCache.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("held fallback leases = %d, want only the superseded fallback", held)
+	}
+}
+
+// Retained fallback leases must not pin their bases past the reaper's staleness
+// window, and a lease inside that window must keep its base protected.
+func TestReleaseExpiredHeldLeasesLocked_DropsOnlyExpiredLeases(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	t.Cleanup(releaseHeldSkillsLeases)
+
+	acquire := func(name string) skillsLease {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(base, name), 0o700); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		path, err := skillsLockPath(base, name, true)
+		if err != nil {
+			t.Fatalf("lock path for %s: %v", name, err)
+		}
+		lease, contended, err := acquireSkillsLease(path, false)
+		if err != nil || contended {
+			t.Fatalf("acquire lease for %s: contended=%v err=%v", name, contended, err)
+		}
+		return lease
+	}
+	expired, fresh := acquire("copy-expired"), acquire("copy-fresh")
+
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.heldLeases = []heldSkillsLease{
+		{lease: expired, protectUntil: time.Now().Add(-time.Second)},
+		{lease: fresh, protectUntil: time.Now().Add(staleRetainedMaxAge)},
+	}
+	releaseExpiredHeldLeasesLocked(time.Now())
+	held := len(embeddedSkillsCache.heldLeases)
+	embeddedSkillsCache.mu.Unlock()
+
+	if held != 1 {
+		t.Fatalf("held leases after sweep = %d, want 1", held)
+	}
+	if expired.Valid() {
+		t.Fatal("expired retained lease was not released")
+	}
+	if !fresh.Valid() {
+		t.Fatal("fresh retained lease was released")
 	}
 }
 
