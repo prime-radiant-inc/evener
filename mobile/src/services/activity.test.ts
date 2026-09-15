@@ -18,7 +18,7 @@ import type {
   QueueState,
   Thread,
   ThreadCapabilities,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { MobileCapabilities } from "../conversation/model";
 import {
   ActivityProjectionError,

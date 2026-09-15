@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  aliasesFrom,
   collectedUnder,
   describeAppImports,
   describeCwdRelativeReads,
   describeDifference,
   describeProofRun,
+  describeTestingImportsOutsideTests,
+  firstAliasMatch,
+  describeAliasOrder,
+  describeUnaliasedImports,
   pickProofFile,
+  reachableBareImports,
+  resolvePackageImport,
   sourceFilesOnDisk,
   testFilesOnDisk,
 } from "./package-test-files.mjs";
@@ -142,9 +149,17 @@ test("describeAppImports names every line that reaches into the app", () => {
     [files[1]]: 'import type { T } from "../../cmd/evener-hub/frontend/src/shell/palette/commands";\n',
   };
   const message = describeAppImports(files, (file) => sources[file], dir);
-  assert.match(message, /must not import from the app/);
-  assert.match(message, /a\.test\.ts: import Session/);
-  assert.match(message, /b\.ts: import type/);
+  assert.match(message, /must not import from the app or the mobile trees/);
+  assert.match(message, /a\.test\.ts: imports .*panes\/session\/Session/);
+  assert.match(message, /b\.ts: imports .*shell\/palette\/commands/);
+});
+
+test("describeAppImports flags a relative import into the mobile trees, not only the app", () => {
+  const files = [path.join(dir, "a.test.ts")];
+  const sources = { [files[0]]: 'import { x } from "../../mobile/src/state";\n' };
+  const message = describeAppImports(files, (file) => sources[file], dir);
+  assert.match(message, /must not import from the app or the mobile trees/);
+  assert.match(message, /a\.test\.ts: imports .*mobile\/src\/state/);
 });
 
 test("describeAppImports catches a side-effect import, a require and a dynamic import", () => {
@@ -156,10 +171,43 @@ test("describeAppImports catches a side-effect import, a require and a dynamic i
     [files[3]]: 'export { x } from "../../cmd/evener-hub/frontend/src/panes/session/Session";\n',
   };
   const message = describeAppImports(files, (file) => sources[file], dir);
-  assert.match(message, /a\.ts: import "/);
-  assert.match(message, /b\.ts: const s = require\(/);
-  assert.match(message, /c\.ts: const m = await import\(/);
-  assert.match(message, /d\.ts: export \{ x \} from/);
+  assert.match(message, /a\.ts: imports .*testSetup/);
+  assert.match(message, /b\.ts: imports .*stores\/threads/);
+  assert.match(message, /c\.ts: imports .*shell\/clientContext/);
+  assert.match(message, /d\.ts: imports .*panes\/session\/Session/);
+});
+
+test("describeTestingImportsOutsideTests flags a production file importing testing/, exempts test and dev-support files", () => {
+  const src = path.join(dir, "cmd/evener-hub/frontend/src");
+  const testingImport = 'import { FakeClient } from "@evener/appwire-client/testing/fakeClient";\n';
+  const files = {
+    [path.join(src, "shell/App.tsx")]: testingImport,
+    [path.join(src, "shell/App.test.tsx")]: testingImport,
+    [path.join(src, "shell/__tests__/helper.ts")]: testingImport,
+    [path.join(src, "dev/harness-entry.tsx")]: testingImport,
+    [path.join(src, "shell/paletteTestUtils.tsx")]: testingImport,
+    [path.join(src, "shell/normal.tsx")]: 'import { AppwireClient } from "@evener/appwire-client";\n',
+  };
+  const message = describeTestingImportsOutsideTests(Object.keys(files), (file) => files[file], dir);
+  assert.match(message, /only test and dev-support files may import it/);
+  // Only App.tsx is an offender; the exempt files are never listed. Assert on
+  // the offender lines (the "imports" lines), since the help text itself names
+  // __tests__ and src/dev as the allowed locations.
+  const offenders = message.split("\n").filter((line) => line.includes("imports"));
+  assert.deepEqual(offenders, ["  cmd/evener-hub/frontend/src/shell/App.tsx: imports @evener/appwire-client/testing/fakeClient"]);
+});
+
+test("describeTestingImportsOutsideTests judges dev-support by src/dev, not an absolute /dev/ prefix", () => {
+  // A checkout under a directory called dev/ must not make every file
+  // dev-support: the rule is the repo-relative src/dev/ segment.
+  const devRoot = path.join("/home/dev/checkout");
+  const file = path.join(devRoot, "cmd/evener-hub/frontend/src/shell/App.tsx");
+  const message = describeTestingImportsOutsideTests(
+    [file],
+    () => 'import { FakeClient } from "@evener/appwire-client/testing/fakeClient";\n',
+    devRoot,
+  );
+  assert.match(message, /App\.tsx: imports @evener\/appwire-client\/testing\/fakeClient/);
 });
 
 test("describeAppImports does not fire on a comment that merely names the app path", () => {
@@ -199,6 +247,15 @@ test("describeCwdRelativeReads names the working-directory read hubWireFixtures.
   assert.match(message, /hubWireFixtures\.ts:3: const FIXTURE_PATH/);
 });
 
+test("describeCwdRelativeReads catches a call whose relative argument is wrapped onto the next line", () => {
+  const file = path.join(dir, "a.ts");
+  const source = ['import { readFileSync } from "node:fs";', "const text = readFileSync(", '  "../testdata/x.json",', ");", ""].join(
+    "\n",
+  );
+  const message = describeCwdRelativeReads([file], () => source, dir);
+  assert.match(message, /a\.ts:2: const text = readFileSync\(/);
+});
+
 test("describeCwdRelativeReads accepts a read resolved against the module's own URL", () => {
   const file = path.join(dir, "a.ts");
   const source = [
@@ -211,6 +268,20 @@ test("describeCwdRelativeReads accepts a read resolved against the module's own 
     describeCwdRelativeReads([file], () => source, dir),
     "",
   );
+});
+
+test("describeCwdRelativeReads still flags a cwd read in a file that elsewhere uses import.meta.url", () => {
+  const file = path.join(dir, "a.ts");
+  const source = [
+    'import { readFileSync } from "node:fs";',
+    'import { fileURLToPath } from "node:url";',
+    'const ok = fileURLToPath(new URL("../testdata/ok.json", import.meta.url));',
+    'const bad = readFileSync(join("..", "testdata", "bad.json"), "utf8");',
+    "",
+  ].join("\n");
+  const message = describeCwdRelativeReads([file], () => source, dir);
+  assert.match(message, /a\.ts:4: const bad/);
+  assert.doesNotMatch(message, /ok\.json/);
 });
 
 test("describeCwdRelativeReads ignores ordinary relative imports beside an absolute read", () => {
@@ -297,4 +368,187 @@ test("describeProofRun matches when one side reaches the file through a symlink"
   const report = { numTotalTests: 1, numFailedTests: 0, testResults: [{ name: viaLink }] };
   assert.equal(describeProofRun(report, realFile, realDir), "");
   assert.equal(describeProofRun({ ...report, testResults: [{ name: realFile }] }, viaLink, linkDir), "");
+});
+
+test("aliasesFrom reads every key of the resolve.alias block, and what it serves", () => {
+  const config = [
+    "export default defineConfig({",
+    "  resolve: {",
+    '    alias: {',
+    '      "@evener/appwire-client/docContent": path.join(dir, "docContent.ts"),',
+    '      react: path.join(__dirname, "node_modules", "react"),',
+    "      // a comment between entries",
+    '      typescript: path.join(__dirname, "node_modules", "typescript"),',
+    "    },",
+    "  },",
+    "});",
+  ].join("\n");
+  const aliases = aliasesFrom(config);
+  assert.deepEqual([...aliases.keys()].sort(), ["@evener/appwire-client/docContent", "react", "typescript"]);
+  // A file target answers its own specifier and nothing below it; a directory
+  // target answers both.
+  assert.equal(aliases.get("@evener/appwire-client/docContent").servesSubpaths, false);
+  assert.equal(aliases.get("react").servesSubpaths, true);
+  assert.equal(aliases.get("typescript").servesSubpaths, true);
+});
+
+test("the package root does not stand in for a specifier below it", () => {
+  // The root alias points at index.ts. Vite would build
+  // index.ts/testing/fakeClient, which is not a path, so accepting the root
+  // as a prefix match said an unresolvable import was aliased.
+  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  assert.match(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client", { servesSubpaths: false }]])), /does not alias/);
+  assert.equal(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client/testing", { servesSubpaths: true }]])), "");
+  assert.equal(describeUnaliasedImports(subpath, new Map([["@evener/appwire-client/testing/fakeClient", { servesSubpaths: false }]])), "");
+});
+
+test("with the config's targets in hand, a directory alias serves subpaths and a file alias does not", () => {
+  const subpath = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  const asFile = new Map([["@evener/appwire-client", { servesSubpaths: false }]]);
+  const asDirectory = new Map([["@evener/appwire-client", { servesSubpaths: true }]]);
+  assert.match(describeUnaliasedImports(subpath, asFile), /does not alias/);
+  assert.equal(describeUnaliasedImports(subpath, asDirectory), "");
+});
+
+test("reachableBareImports follows relative imports and stops at bare ones", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import { helper } from "./helper";\nimport { expect } from "vitest";\n',
+    "/pkg/helper.ts": 'import ts from "typescript";\nimport { readFileSync } from "node:fs";\n',
+    // Not reachable from any test: the runner's own tooling.
+    "/pkg/scripts/qualify.mjs": 'import { WebSocketServer } from "ws";\n',
+  };
+  const bare = reachableBareImports(
+    ["/pkg/a.test.ts"],
+    (file) => files[file],
+    (from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
+    "/pkg",
+  );
+  assert.deepEqual([...bare.keys()].sort(), ["typescript", "vitest"]);
+  assert.deepEqual(bare.get("typescript"), ["helper.ts"]);
+});
+
+test("describeUnaliasedImports excuses vitest and anything the config aliases", () => {
+  const bare = new Map([
+    ["vitest", ["a.test.ts"]],
+    ["react", ["b.test.tsx"]],
+    ["@testing-library/react", ["b.test.tsx"]],
+  ]);
+  assert.equal(describeUnaliasedImports(bare, new Map([["react", { servesSubpaths: true }], ["@testing-library/react", { servesSubpaths: true }]])), "");
+});
+
+test("describeUnaliasedImports names the specifier and the file that imports it", () => {
+  const bare = new Map([["typescript", ["scripts/consumer-value-imports.mjs"]]]);
+  const problem = describeUnaliasedImports(bare, new Map([["react", { servesSubpaths: true }]]));
+  assert.match(problem, /typescript, imported by scripts\/consumer-value-imports\.mjs/);
+  assert.match(problem, /CI's web job/);
+});
+
+test("describeUnaliasedImports matches a subpath against a package alias that serves one", () => {
+  const bare = new Map([["@testing-library/react/pure", ["b.test.tsx"]]]);
+  assert.equal(describeUnaliasedImports(bare, new Map([["@testing-library/react", { servesSubpaths: true }]])), "");
+});
+
+test("resolvePackageImport answers a directory import with its index, not the directory", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-imports-"));
+  try {
+    mkdirSync(path.join(root, "helpers"));
+    writeFileSync(path.join(root, "helpers", "index.ts"), 'import ts from "typescript";\n');
+    writeFileSync(path.join(root, "a.test.ts"), 'import { helper } from "./helpers";\n');
+    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./helpers"), path.join(root, "helpers", "index.ts"));
+
+    // The crash this guards: the walk reads whatever the resolver hands back.
+    const bare = reachableBareImports(
+      [path.join(root, "a.test.ts")],
+      (file) => readFileSync(file, "utf8"),
+      resolvePackageImport,
+      root,
+    );
+    assert.deepEqual([...bare.keys()], ["typescript"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolvePackageImport probes index for every extension it was asked about", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-package-index-"));
+  try {
+    mkdirSync(path.join(root, "tools"));
+    writeFileSync(path.join(root, "tools", "index.mjs"), "export const x = 1;\n");
+    assert.equal(resolvePackageImport(path.join(root, "a.test.ts"), "./tools"), path.join(root, "tools", "index.mjs"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a subpath alias satisfies its own specifier without the root being aliased too", () => {
+  // Reading only the first two segments looked for "@evener/appwire-client",
+  // so a tree aliasing just the testing subpath reported a false offender.
+  const bare = new Map([["@evener/appwire-client/testing/fakeClient", ["a.test.ts"]]]);
+  assert.equal(describeUnaliasedImports(bare, new Map([["@evener/appwire-client/testing", { servesSubpaths: true }]])), "");
+  assert.match(describeUnaliasedImports(bare, new Map([["@evener/appwire-client/other", { servesSubpaths: true }]])), /does not alias/);
+});
+
+test("an erased import does not demand an alias", () => {
+  // `import type X from "pkg"` is gone before Vite resolves anything, so a
+  // package test that only names a dependency that way needs no alias entry.
+  const files = {
+    "/pkg/a.test.ts": 'import type { Program } from "typescript";\nexport type P = Program;\n',
+  };
+  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
+  assert.deepEqual([...bare.keys()], []);
+});
+
+test("an import that mixes a value member with a type one still demands its alias", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import ts, { type Program } from "typescript";\nvoid ts;\nexport type P = Program;\n',
+  };
+  const bare = reachableBareImports(["/pkg/a.test.ts"], (file) => files[file], () => null, "/pkg");
+  assert.deepEqual([...bare.keys()], ["typescript"]);
+});
+
+test("the walk does not follow an erased relative import either", () => {
+  const files = {
+    "/pkg/a.test.ts": 'import type { Helper } from "./helper";\nexport type H = Helper;\n',
+    "/pkg/helper.ts": 'import ts from "typescript";\nvoid ts;\n',
+  };
+  const bare = reachableBareImports(
+    ["/pkg/a.test.ts"],
+    (file) => files[file],
+    (_from, specifier) => (specifier === "./helper" ? "/pkg/helper.ts" : null),
+    "/pkg",
+  );
+  assert.deepEqual([...bare.keys()], []);
+});
+
+test("the alias Vite uses is the first that matches, in config order", () => {
+  const ordered = new Map([
+    ["@evener/appwire-client/docContent", { servesSubpaths: false }],
+    ["@evener/appwire-client/testing", { servesSubpaths: true }],
+    ["@evener/appwire-client", { servesSubpaths: false }],
+  ]);
+  assert.equal(firstAliasMatch("@evener/appwire-client/docContent", ordered), "@evener/appwire-client/docContent");
+  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", ordered), "@evener/appwire-client/testing");
+  assert.equal(firstAliasMatch("@evener/appwire-client", ordered), "@evener/appwire-client");
+});
+
+test("a general key placed before a specific one is refused by name", () => {
+  const reordered = new Map([
+    ["@evener/appwire-client", { servesSubpaths: true }],
+    ["@evener/appwire-client/testing", { servesSubpaths: true }],
+  ]);
+  const problem = describeAliasOrder(reordered);
+  assert.match(problem, /@evener\/appwire-client precedes @evener\/appwire-client\/testing, which it swallows/);
+  assert.match(problem, /takes the FIRST matching alias/);
+  // And with that root entry serving subpaths, first-match really does answer
+  // the testing specifier with the root -- which is the harm the order rule
+  // exists to prevent.
+  assert.equal(firstAliasMatch("@evener/appwire-client/testing/fakeClient", reordered), "@evener/appwire-client");
+});
+
+test("the real config is ordered specific before general", () => {
+  const config = readFileSync(
+    path.resolve(fileURLToPath(import.meta.url), "../../vite.config.ts"),
+    "utf8",
+  );
+  assert.equal(describeAliasOrder(aliasesFrom(config)), "");
 });

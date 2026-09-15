@@ -1,9 +1,9 @@
+import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } from "@evener/appwire-client";
+import * as docContentModule from "@evener/appwire-client/docContent";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, type MockInstance, test, vi } from "vitest";
-import * as docContentModule from "../../protocol/docContent";
-import { DOC_FILE_MAX_BYTES, type DocFileContent, DocFileError, docImageURL } from "../../protocol/docContent";
 import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { resetThreadsStoreForTests } from "../../stores/threads";

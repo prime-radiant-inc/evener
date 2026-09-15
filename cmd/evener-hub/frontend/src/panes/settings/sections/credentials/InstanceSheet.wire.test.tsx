@@ -4,9 +4,10 @@
 // one the hub actually sent — cmd/evener-hub's
 // TestAuthWireFixturesMatchTheHubHandler drives the real
 // evener/instance/list handler and re-verifies the corpus on every run.
+
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { hubInstance, hubInstanceEntries } from "./hubWireFixtures";

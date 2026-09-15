@@ -21,7 +21,7 @@ import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its 
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";

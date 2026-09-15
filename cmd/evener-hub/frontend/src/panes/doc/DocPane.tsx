@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   DOC_FILE_MAX_BYTES,
   type DocFileContent,
@@ -6,7 +5,8 @@ import {
   type DocFileErrorKind,
   docImageURL,
   readDocFile,
-} from "../../protocol/docContent";
+} from "@evener/appwire-client/docContent";
+import { useEffect, useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { Chip, Dialog, EmptyState, PaneScaffold, Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";

@@ -3,9 +3,10 @@
 // lifecycle (exactly once on mount/unmount) is SessionPane's own concern
 // (see its own comment), so this hook stays a plain, side-effect-free
 // selector a caller can use without implicitly acquiring the ref.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { useCallback, useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
 export interface UseTranscriptResult {

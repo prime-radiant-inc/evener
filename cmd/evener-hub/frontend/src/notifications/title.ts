@@ -2,8 +2,8 @@
 // the focused pane's title. Navigation summaries are bounded and cached; this
 // module never expands a project merely to render chrome.
 
+import type { AttentionSummary } from "@evener/appwire-client";
 import { navigationSummaryFor, resolveThreadName } from "../panes/session/threadTitle";
-import type { AttentionSummary } from "../protocol/types.gen";
 import { paneFor } from "../shell/paneRegistry";
 import { workspaceStore } from "../shell/workspace";
 import { threadsStore } from "../stores/threads";

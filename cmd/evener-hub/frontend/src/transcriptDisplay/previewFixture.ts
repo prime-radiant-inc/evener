@@ -1,5 +1,4 @@
-import type { ItemModel, ThreadModel, TurnModel } from "../protocol/model";
-import type { EvenerUsage, ThreadItemEventKind } from "../protocol/types.gen";
+import type { EvenerUsage, ItemModel, ThreadItemEventKind, ThreadModel, TurnModel } from "@evener/appwire-client";
 
 const THREAD_ID = "preview-thread";
 const TURN_ID = "preview-turn";

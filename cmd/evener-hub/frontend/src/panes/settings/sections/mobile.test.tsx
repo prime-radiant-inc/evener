@@ -1,7 +1,7 @@
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { MobileSection } from "./mobile";

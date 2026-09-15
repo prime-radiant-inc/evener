@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import WebSocket from "ws";
-import type { WebSocketLike } from "../../appwire-client/typescript/transport";
+import type { WebSocketLike } from "@evener/appwire-client";
 import { createHubClient } from "../src/connection";
 import { LaunchSettings } from "../src/launchSettings";
 

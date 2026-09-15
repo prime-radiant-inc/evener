@@ -20,8 +20,8 @@
 // duplicating it; this file keeps only what's specific to the read-only
 // card (the malformed-vs-absent fallback wording and the static markup).
 
-import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "../../../../protocol/askShared";
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel } from "@evener/appwire-client";
+import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "@evener/appwire-client";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

@@ -12,15 +12,16 @@
 // deliberately UNCACHED: each is read-your-writes sensitive (a getLayer
 // right after a setLayer must see the just-saved value) and varies by
 // cwd+layer, so there is no single value to memoize the way schema's is.
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
+
 import type {
+  AppwireClientLike,
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOptionSchemaResponse,
   PathValidateResponse,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { connectionStore } from "./connection";
 
 function requireClient(): AppwireClientLike {

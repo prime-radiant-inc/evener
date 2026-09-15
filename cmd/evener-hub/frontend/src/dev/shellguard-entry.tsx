@@ -13,10 +13,11 @@
 // document's scroll size beside the viewport, the rail body scroll metrics,
 // and the boxes (if any) whose bottoms escape the viewport - which is the
 // answer the fix has to be aimed at.
+
+import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { createRoot } from "react-dom/client";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import { navigationInvalidatedNotification } from "../protocol/testing/notifications";
-import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import railStyles from "../shell/rail/Rail.module.css";
 import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import {

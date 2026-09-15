@@ -1,6 +1,6 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView, watchFoldKey } from "@evener/appwire-client";
 import { useMemo } from "react";
-import type { ThreadModel } from "../../../protocol/model";
 import { retainedActivityTree, useActivityPanelStore } from "../../../stores/activityPanel";
 
 export function useEntityView(sessionRef: string, model: ThreadModel): Map<string, EntityView> {

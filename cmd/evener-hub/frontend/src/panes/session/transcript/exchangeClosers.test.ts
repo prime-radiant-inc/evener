@@ -1,5 +1,5 @@
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { exchangeClosersFor } from "./exchangeClosers";
 
 function item(id: string, type: string, overrides: Partial<ItemModel> = {}): ItemModel {
