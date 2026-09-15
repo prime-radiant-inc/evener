@@ -9,6 +9,7 @@ import {
   trailingBracketFooter,
 } from "../../../../protocol/toolCallText";
 import { CopyButton } from "../../../../widgets";
+import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -71,13 +72,14 @@ function JobListBody({ item, live }: ToolRenderProps) {
         state.items.map((job) => {
           const identity = textField(job, "id") ?? textField(job, "job_id");
           if (identity === undefined) return null;
-          const fields = [identity, textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
+          const fields = [textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
             (field): field is string => field !== undefined,
           );
           const description = textField(job, "description");
           return (
             <div key={identity} data-testid="job-list-row">
-              {fields.join(" · ")}
+              <EntityRef id={identity} />
+              {fields.length > 0 ? ` · ${fields.join(" · ")}` : ""}
               {description ? ` — ${description}` : ""}
             </div>
           );
