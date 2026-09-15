@@ -448,6 +448,25 @@ carries a host selector: every other method addresses an existing thread by
 and does not clear `Source` at all; forwarding the harness and clearing `Source`
 is the 05c requirement, not a present fact.
 
+**The receiving hub must reject a non-local resolution for a remote-originated
+`thread/start`.** The controller-side harness refusal is bounded by the
+controller's *own* registry: it cannot see the hosts configured on the remote.
+So a harness value preserved verbatim that happens to name a host **the remote**
+has registered — a host C configured only on B — reaches B's `hubThreadStart`
+with `Source` cleared, falls into `launchSourceID(params.Harness)`, and resolves
+to source C; B then routes the spawn onward to C, which is exactly the fan-out
+the loop guard forbids and which the controller could not have detected. The
+recipient hub therefore enforces the loop guard at the spawn seam too: for a
+request whose routing-seam `origin` is non-empty (remote-originated),
+`hubThreadStart` resolves **only** to `local` — a remote-originated
+`thread/start` whose effective source (from a set `Source`, or from the legacy
+harness fallback) would be any non-local source is refused typed
+(`InvalidParams`) and must never be routed. The `launchSourceID` fallback
+remains for local-originated requests under component 06's contract ("Write
+contract (session targeting)"). **Implementation status:** neither the
+`origin`-aware refusal nor the harness restriction exists today; it is a
+requirement, and the code delta is a tracked follow-up (component 05a/06).
+
 `hubThreadResume` already routes a non-local ref to its source
 (`app_threadlifecycle.go`), so resuming a remote session by
 `host:<session>` works without further plumbing.
@@ -755,7 +774,12 @@ Ref translation detail (`remote_hub_refs.go`):
     `app_threadlist.go`) — and any other path that routes a ref to more than one
     source — refuses to route a request whose `origin` is non-empty to any
     source other than `local` (the recipient hub's own local daemons),
-    returning the typed refusal instead. A remote-originated request is thus
+    returning the typed refusal instead. The same `origin` bound applies at the
+    **spawn seam**: a remote-originated `thread/start` may resolve only to
+    `local`, so a preserved harness that names one of the recipient's own
+    configured host sources cannot fan the spawn out to that host
+    (§"The receiving hub must reject a non-local resolution for a
+    remote-originated `thread/start`"). A remote-originated request is thus
     served from the **recipient hub's own local state** only and can never be
     fanned to another remote source, which caps fan-out at
     depth 1 and terminates A→B→A. Coverage: a scenario test that injects a
@@ -935,8 +959,13 @@ questions for the atomicity tradeoff.
   alongside the shared capability token (component 02) — is served from the
   **recipient hub's own local state** and is refused with a typed error if any
   fan-out path would route it to a second remote source. The refusal is deliberate and
-  surfaced, never a silent serve-from-another-host; a local-originated request
-  (`origin` empty, i.e. no bridge marker on the connection) is unaffected.
+  surfaced, never a silent serve-from-another-host. The `thread/start` spawn
+  seam is one such path: a remote-originated spawn whose effective source —
+  including one resolved from a preserved harness naming a host configured on
+  the recipient — is non-local is refused typed and never routed onward (see
+  §"The receiving hub must reject a non-local resolution for a
+  remote-originated `thread/start`"). A local-originated request (`origin`
+  empty, i.e. no bridge marker on the connection) is unaffected.
 - **Version mismatch.** `client.Initialize` returns
   `appwire.ProtocolVersionMismatchError` (`appwire/client.go`) when the remote
   speaks a different `appwire.ProtocolVersion` (`appwire/types.go`). Component
@@ -1055,11 +1084,16 @@ network.
     from the bridge marker — is served from the **recipient hub's own local
     state** and is refused typed if any fan-out path tries to
     route it to a second remote source; a local-originated request (empty
-    `origin`) fans out normally. Assert the origin is derived from the explicit
-    bridge marker (`X-Evener-Bridge: 1`) read alongside the bearer token,
-    **not** from `InitializeParams.ClientInfo` and **not** from the token — a
-    token-only local connection (the TUI, a CLI script, a browser) must classify
-    `local`, and only a connection presenting the marker is *remote-originated*.
+    `origin`) fans out normally. The spawn seam is asserted too: a
+    remote-originated `thread/start` whose preserved harness names a host
+    registered **on the recipient** (a host the requesting controller cannot
+    see) is refused typed and never forwarded to that host, while a
+    local-originated spawn with the same harness resolves normally. Assert the
+    origin is derived from the explicit bridge marker (`X-Evener-Bridge: 1`)
+    read alongside the bearer token, **not** from
+    `InitializeParams.ClientInfo` and **not** from the token — a token-only
+    local connection (the TUI, a CLI script, a browser) must classify `local`,
+    and only a connection presenting the marker is *remote-originated*.
 13. **Nested response refs.** A `ListJobs` response whose `JobActivityTree`
     carries `local:` refs at every level reaches the caller fully rewritten to
     `host:`. Assert **per ref-typed field**, not by scanning the serialized tree
@@ -1130,7 +1164,10 @@ network.
   alongside the bearer token — **not** from `InitializeParams.ClientInfo`, and
   **not** from the token (which every client shares, so it can carry no role) —
   and a remote-originated request is refused typed before any fan-out to another
-  remote source.
+  remote source, **including the `thread/start` spawn seam**: a remote-originated
+  spawn whose effective source (set `Source`, or the legacy harness fallback) is
+  non-local is refused and never routed, so a preserved harness naming one of
+  the recipient's own configured hosts cannot bypass the guard.
 
 ## PR size estimate (LOC)
 
@@ -1178,11 +1215,15 @@ splitting per the above keeps each PR reviewable.
    it.
    **v1 bounds this at runtime rather than by config:** the controller refuses
    to fan a remote-originated request out to another remote source (the
-   caller-identity guard; §"Ref translation detail"), and the `["local"]` list
-   remap keeps the list path from recursing, so a depth-2 chain cannot recurse
-   even though it cannot be detected. The ref-grammar question (how, if ever, to
-   represent a nested host's refs) stays open; the termination guarantee does
-   not depend on its answer.
+   caller-identity guard; §"Ref translation detail") — and the **recipient**
+   hub enforces the same bound at the `thread/start` spawn seam, since the
+   controller cannot see a host configured only on the recipient (see
+   §"The receiving hub must reject a non-local resolution for a
+   remote-originated `thread/start`") — while the `["local"]` list remap keeps
+   the list path from recursing, so a depth-2 chain cannot recurse even though
+   it cannot be detected. The ref-grammar question (how, if ever, to represent a
+   nested host's refs) stays open; the termination guarantee does not depend on
+   its answer.
 4. **Attach-time cross-hub cycle detection (deferred).** Component 03 exposes
    `AddWithUpstreams(entry, upstreamNames)` so a cycle can be refused at the
    moment an upstream host list is learned, but v1 has no way to learn one: no

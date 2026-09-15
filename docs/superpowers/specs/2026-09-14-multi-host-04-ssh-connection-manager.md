@@ -1035,10 +1035,19 @@ deploy landed.
      that issues the signal (a guarded compare-and-kill), and the signal goes out
      only on a full match. A mismatch — including any field that cannot be
      re-read — refuses with `ErrRestart`, no kill, no relaunch. This shrinks the
-     PID-reuse window but is still check-then-act; only a host-side helper that
-     pins the process's start identity (a `pidfd`, or a start time re-compared at
-     signal time) closes it, and one of the two is the required implementation —
-     the bare unguarded `kill` is not acceptable (see the limit below).
+     PID-reuse window but does **not** close it: it is still check-then-act, so
+     the process can exit and its PID be reused between the re-read and the
+     signal. The identity must therefore be **pinned atomically across the
+     signal**: the signal is issued through an atomic process handle — a `pidfd`
+     opened for the identified process and used as the target of
+     `pidfd_send_signal` — or through a host-side helper that holds an equivalent
+     identity pin on the process for the whole signal. **Re-reading the start
+     time (or any other identity field) immediately before the signal is not
+     sufficient** — that is the same check-then-act with a narrower window.
+     Where neither an atomic handle nor such a helper is available for the
+     identified process, the manager **refuses with `ErrRestart` and emits no
+     signal** rather than falling back to a check-then-act kill; the bare
+     unguarded `kill` is never acceptable (see the limit below).
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
@@ -1063,20 +1072,33 @@ deploy landed.
   `list-units`; on launchd, inspect the installed plists. A definition is a
   match **only when it both (a) launches the resolved hub executable running
   the hub subcommand — the same `run_path` + `hub` tokenization checks 1–4
-  apply to a recovered argv — and (b) carries an `--addr` that, after the
+  apply to a recovered argv — and (b) its own effective address, after the
   loopback normalization above, equals the configured address** (systemd
-  `ExecStart`; launchd `ProgramArguments`). A definition that merely mentions
-  the configured `--addr` (e.g. in `Description=`/`Environment=`, or an
-  unrelated process's flag) or merely names a path containing `evener`/`hub` is
-  **not** a match: without both facts it can select and start an unrelated
-  service. The exactly-one-candidate refusal still applies: several matches, or
-  none, fall through to the ad hoc path. When a supervisor cannot be identified
-  from such a definition, trusted explicit supervisor metadata (an operator-set
-  label/unit name recorded in the host entry) may be used instead, but an
-  inferred substring match may not. The address-ownership check remains
-  required whenever a listener exists (the restart path); on a genuinely stopped
-  host the unit-definition match above plus the "refuse to start when a hub
-  already owns the address" pre-check (`runningKnown`) is the substitute.
+  `ExecStart`; launchd `ProgramArguments`). "Its own effective address" is the
+  explicit `--addr` when the definition carries one, and otherwise **the
+  address resolved from the definition's own `--config <path>`**: the manager
+  reads that config on the host through the same seam and takes its `addr` — the
+  value a hub launched from that definition would actually bind. A supervisor
+  launched as `evener hub --config …` with no `--addr` is a valid, common case
+  and must not be missed: matching only a literal `--addr` in the definition
+  would let the manager start an ad hoc duplicate beside the supervisor, causing
+  split supervision and `hub.lock` contention — the exact failure this rule
+  exists to prevent. A definition that merely mentions the configured `--addr`
+  (e.g. in `Description=`/`Environment=`, or an unrelated process's flag) or
+  merely names a path containing `evener`/`hub` is **not** a match: without both
+  facts it can select and start an unrelated service. The exactly-one-candidate
+  refusal still applies: several matches, or none, fall through to the ad hoc
+  path. **When a candidate hub definition exists but its effective address
+  cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
+  carries no address), the cold bootstrap **refuses with `ErrRestart` and
+  starts nothing** — it must not fall through to the ad hoc launch and risk a
+  duplicate — unless trusted explicit supervisor metadata (an operator-set
+  label/unit name recorded in the host entry) identifies the unit and supplies
+  the match. An inferred substring match may never be used. The
+  address-ownership check remains required whenever a listener exists (the
+  restart path); on a genuinely stopped host the unit-definition match above
+  plus the "refuse to start when a hub already owns the address" pre-check
+  (`runningKnown`) is the substitute.
 
   **Limit: identification and signal are separate host commands, so there is a
   PID-reuse window.** Every check above is its own command over the ssh seam —
@@ -1088,14 +1110,17 @@ deploy landed.
   the window but cannot close it, because they describe the process at
   *identification* time, not at *signal* time. Re-checking identity in the same
   remote command immediately before signaling (a guarded compare-and-kill
-  shell expression) shrinks the race but is still check-then-act; only a
-  host-side helper that opens a pidfd for the identified process — or otherwise
-  pins its start identity — and signals through that handle closes it. The
+     shell expression) shrinks the race but is still check-then-act — re-reading
+     the start time at signal time is no better, because the process can still
+     exit and its PID be reused between that read and the signal. Only signaling
+     through an atomic handle that pins the process identity — a `pidfd` opened
+     for the identified process, or a host-side helper holding an equivalent pin
+     — closes it. The
   shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
   `kill <pid>` with no re-validation at all. **Consequence:** on a host where
   the hub exits during identification and the PID is reused, the restart can
   terminate an unrelated process. A refusal (`ErrRestart`, no kill, no
-  relaunch) is the safe failure: a restart that cannot re-validate the
+     relaunch) is the safe failure: a restart that cannot pin the
   process must prefer it to an unguarded signal.
 
   The restart path is then:
@@ -1475,8 +1500,11 @@ with the remote hub and its daemons still running.
     and no relaunch. The bare `restartBare` (`kill <pid>`, `sshconn/version.go`)
     is not acceptable. Because even a guarded compare-and-kill is still
     check-then-act, the PID-reuse window is closed only by a host-side
-    start-identity pin — a `pidfd` for the identified process, or its start time
-    re-compared at signal time — and one of those two forms is required. This
+    **atomic process handle** — a `pidfd` for the identified process, or a
+    host-side helper holding an equivalent identity pin across the signal — and
+    re-reading the start time (or any other identity field) at signal time is
+    **not** sufficient. When neither form is available for the identified
+    process the manager refuses with `ErrRestart` and emits no signal. This
     criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to end.
 
 ## PR size estimate (LOC)

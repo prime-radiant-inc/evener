@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–16)
+## Tracked code follow-ups (rounds 7–17)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -373,23 +373,44 @@ exact scope. None is a present fact.
   and echoes it, treating the zero value as "no revision fence" (the source
   fence still applies). Without this field there is nothing to source the
   required value from.
-- **[04] cold-bootstrap supervisor match (round 16)** — `sshconn` supervisor
-  detection on the cold-bootstrap path (where no listener exists) must accept a
-  systemd unit / launchd plist only when its definition **both** launches the
-  resolved `run_path` `hub` invocation **and** carries the configured `--addr`
-  (loopback-normalized); a definition that merely mentions `--addr` (e.g. in
-  `Description=`/`Environment=`) or merely contains `evener`/`hub` is not a
-  match. Several matches, or none, fall through to the ad hoc path. Trusted
-  explicit supervisor metadata recorded in the host entry may substitute for an
-  unidentifiable definition; an inferred substring match may not.
-- **[04] guarded compare-and-kill / start-identity pin (round 16)** —
-  `sshconn/version.go` restart must re-read the pid, recovered argv (with
-  `--config`/`--addr` agreeing with the entry's configured `config_path`/`addr`
-  after normalization), effective user, and listening socket in the **same**
-  remote command that issues the signal, refusing `ErrRestart` (no signal, no
-  relaunch) on any mismatch or on a field it cannot re-read; the shipped
-  `restartBare` (`kill <pid>`) is the unguarded form and is not acceptable.
-  Because the guarded form is still check-then-act, closing the PID-reuse window
-  requires a host-side start-identity pin — a `pidfd` for the identified
-  process, or its start time re-compared at signal time. Mirrors component-04
-  acceptance criterion 20.
+- **[04] cold-bootstrap supervisor match (round 16; corrected round 17)** —
+  `sshconn` supervisor detection on the cold-bootstrap path (where no listener
+  exists) must accept a systemd unit / launchd plist only when its definition
+  **both** launches the resolved `run_path` `hub` invocation **and** its own
+  effective address (loopback-normalized) equals the configured address. The
+  effective address is the explicit `--addr` when present, else the `addr`
+  resolved from the definition's own `--config <path>` (read on the host) — a
+  supervisor launched as `evener hub --config …` with no `--addr` must match, or
+  the manager starts an unmanaged duplicate. A definition that merely mentions
+  `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
+  `evener`/`hub` is not a match. Several matches, or none, fall through to the
+  ad hoc path; **a candidate hub definition whose effective address cannot be
+  resolved refuses with `ErrRestart` and starts nothing** rather than risking a
+  duplicate, unless trusted explicit supervisor metadata recorded in the host
+  entry supplies the match. An inferred substring match may not.
+- **[04] guarded compare-and-kill / atomic-identity pin (round 16; corrected
+  round 17)** — `sshconn/version.go` restart must re-read the pid, recovered
+  argv (with `--config`/`--addr` agreeing with the entry's configured
+  `config_path`/`addr` after normalization), effective user, and listening
+  socket in the **same** remote command that issues the signal, refusing
+  `ErrRestart` (no signal, no relaunch) on any mismatch or on a field it cannot
+  re-read; the shipped `restartBare` (`kill <pid>`) is the unguarded form and is
+  not acceptable. Because the guarded form is still check-then-act — and
+  re-reading the start time at signal time is no better, since the PID can still
+  be reused between that read and the signal — the window is closed only by
+  signaling through an **atomic process handle** (a `pidfd` for the identified
+  process) or a host-side helper holding an equivalent identity pin across the
+  signal; when neither is available the restart refuses `ErrRestart` and emits
+  no signal. Mirrors component-04 acceptance criterion 20.
+- **[05/06] remote-originated `thread/start` resolution (round 17)** — at the
+  **receiving** hub, `hubThreadStart` (`app_threadlifecycle.go`) and the
+  request-context `origin` plumbing (`cmd/evener-hub/app_rpc.go`) must refuse
+  `InvalidParams` for a remote-originated (`origin` non-empty) `thread/start`
+  whose effective source — a set `ThreadStartParams.Source`, or the legacy
+  `launchSourceID(params.Harness)` fallback — is any non-local source, resolving
+  only `local`; the controller-side harness refusal cannot see a host configured
+  only on the recipient, so without this a preserved harness naming the
+  recipient's own host C lets B route the spawn onward to C and bypasses the
+  loop guard. Component 05c clearing `Source` on forward is not sufficient by
+  itself. Mirrors component-05 acceptance criterion 12 and its §"The receiving
+  hub must reject a non-local resolution for a remote-originated `thread/start`".

@@ -180,6 +180,20 @@ clearing it is instead provided by the refusal above: a harness naming a
 configured host source never reaches the remote. The chosen host is expressed by
 which `RemoteHubSource` handled the start.
 
+**The recipient re-checks the resolution for a remote-originated request.** The
+refusal above runs against the *requesting* hub's own registry, so it cannot see
+a host configured only on the receiving hub. A remote-originated `thread/start`
+whose preserved `Harness` names one of the **recipient's** registered non-local
+sources would therefore still resolve to that source in `launchSourceID` and be
+routed onward, bypassing the component-05 loop guard. At the recipient,
+`hubThreadStart` must therefore resolve only `local` for a request whose
+routing-seam `origin` is non-empty: an effective non-local source (from a set
+`Source` or the harness fallback) is refused (`InvalidParams`) and never routed.
+The `launchSourceID` fallback above applies unchanged to local-originated
+requests. See component 05, §"The receiving hub must reject a non-local
+resolution for a remote-originated `thread/start`"; the code delta is a tracked
+follow-up.
+
 ## Implementation approach
 
 ### What already exists (this component is small because of it)
