@@ -207,19 +207,19 @@ func TestInspectionFailureAfterExitIsIdempotent(t *testing.T) {
 	}
 }
 
-// Refusals split by what they prove. A process whose owner, command or start
-// time is not the daemon's, or whose generation changed under inspection, is
+// Refusals split by what they prove. A process whose owner or start time is
+// not the daemon's, or whose generation changed under inspection, is
 // positively another process: ErrNotDaemon. A refusal that only means the
 // inspection could not vouch for it (no generation read, no start time, the
-// log descriptor not seen, an inspection error) carries no such claim.
+// log descriptor not seen, an inspection error, an argv that is not an
+// `evener serve` invocation - the skill guard's daemons run inside a test
+// binary and were disowned by exactly that check) carries no such claim.
 func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
 	positive := []struct {
 		name   string
 		change func(*identity)
 	}{
 		{"wrong owner", func(v *identity) { v.uid++ }},
-		{"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }},
-		{"missing argv", func(v *identity) { v.argv = nil }},
 		{"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }},
 	}
 	for _, tt := range positive {
@@ -236,6 +236,8 @@ func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
 		name   string
 		change func(*kernelProcess)
 	}{
+		{"wrong command", func(k *kernelProcess) { k.facts.argv = []string{"evener", "hub", "serve"} }},
+		{"missing argv", func(k *kernelProcess) { k.facts.argv = nil }},
 		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }},
 		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }},
 		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }},

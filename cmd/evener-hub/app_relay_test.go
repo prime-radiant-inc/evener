@@ -436,7 +436,7 @@ func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGon
 		ThreadID:  "gone",
 		SessionID: "gone",
 	})
-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
@@ -534,7 +534,7 @@ func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnALivePID(t *testing.T
 		ThreadID:  "stale",
 		SessionID: "stale",
 	})
-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
 	local, ok := sources.Source("local")
 	if !ok {
 		t.Fatal("no local source")
@@ -578,7 +578,7 @@ func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
 	if _, ok := roster.Find("reused"); !ok {
 		t.Fatal("the stand-in daemon was not confirmed into the roster")
 	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
@@ -698,6 +698,48 @@ func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("%s never received the malformed daemon resync", subscriber.name)
 		}
+	}
+}
+
+// A hub configured without a roster lists daemons through one it makes for
+// itself; that roster must be the hub's roster, not a private one the local
+// source alone can see, or every other consumer of cfg.Roster (restart
+// verification, ownership, navigation) still runs roster-less (review round
+// 9 on #1325).
+func TestHubWithoutRosterSharesItsFallbackRosterWithEveryConsumer(t *testing.T) {
+	_, upstream := newDaemonStandIn(t, "shared")
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "shared",
+		SessionID: "shared",
+	})
+	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
+	if web.cfg.Roster == nil {
+		t.Fatal("a roster-less hub left cfg.Roster nil for its other consumers")
+	}
+	// A roster-less hub's roster is refreshed by the local source's lookups;
+	// what that lookup confirmed is what every other consumer then reads.
+	local, ok := web.sources.Source("local")
+	if !ok {
+		t.Fatal("no local source")
+	}
+	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(listed.Data) != 1 || listed.Data[0].ID != "shared" {
+		t.Fatalf("local source lists %+v, want the one shared daemon", listed.Data)
+	}
+	if _, ok := web.cfg.Roster.Find("shared"); !ok {
+		t.Fatal("cfg.Roster is not the roster the local source lists through")
+	}
+	if _, required, err := restartRequiredDaemon(context.Background(), web.cfg, "local:shared", ""); err != nil || required {
+		t.Fatalf("restartRequiredDaemon through cfg.Roster: required=%v err=%v", required, err)
 	}
 }
 

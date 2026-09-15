@@ -418,9 +418,12 @@ func (r *Roster) refresh() error {
 		// shared by every daemon the hub spawns), not that entry.PID is that
 		// daemon: a crashed daemon's file whose port another daemon re-bound
 		// would otherwise be published under a PID anything may have reused.
-		// The process behind the PID is asked on success as well as on
-		// failure; verified not the owner, the entry takes the crashed path.
-		disowned := res.OK && r.procIdentity(e) == ProcessNotOwner
+		// The process behind the PID is asked whether or not the probe
+		// answered; verified not the owner, the entry takes the crashed path
+		// - never the unconfirmed one, which would park a reused PID with a
+		// closed socket forever (turns refused, deletion blocked, the stale
+		// file never cleaned).
+		disowned := r.procIdentity(e) == ProcessNotOwner
 		if disowned {
 			res.OK = false
 		}

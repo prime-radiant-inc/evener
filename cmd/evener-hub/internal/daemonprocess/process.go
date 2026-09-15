@@ -16,10 +16,15 @@ import (
 var ErrExited = errors.New("daemon process exited")
 
 // ErrNotDaemon means verification positively found another process at the
-// daemon's PID: its owner, command or start time is not the daemon's, or its
-// generation changed under inspection. A refusal that only means the
-// inspection could not vouch for the process (no generation or start time
-// read, the log descriptor not seen, an inspection error) does not carry it.
+// daemon's PID: a fact that cannot hold for the daemon that wrote the entry -
+// another owner, a start after the entry was written, a generation change
+// under inspection. A refusal that only means the inspection could not vouch
+// for the process does not carry it: no generation or start time read, the
+// log descriptor not seen, an inspection error, or an argv that is not an
+// `evener serve` invocation - the entry does not record how its daemon was
+// launched, and a daemon run inside another binary (a test helper) is still
+// that daemon. Kill refuses on every failure alike; only the roster's reading
+// of a failure differs.
 var ErrNotDaemon = errors.New("process is not the daemon its rendezvous entry names")
 
 // notDaemonError keeps each refusal's own message and answers errors.Is for
@@ -118,14 +123,16 @@ func (p *process) verify() error {
 		if v.uid != os.Geteuid() {
 			return notDaemonError{"daemon process belongs to another user"}
 		}
-		if len(v.argv) < 2 || v.argv[1] != "serve" {
-			return notDaemonError{"daemon process is not a serve command"}
-		}
 		if v.startedAt.IsZero() {
 			return errors.New("daemon process start time unknown")
 		}
 		if v.startedAt.After(p.target.StartedAt) {
 			return notDaemonError{"daemon process started after its rendezvous identity"}
+		}
+		// The checks that only fail to vouch come after the ones that can
+		// prove another process, so a refusal reports the strongest fact.
+		if len(v.argv) < 2 || v.argv[1] != "serve" {
+			return errors.New("daemon process is not a serve command")
 		}
 		if !v.ownsLog {
 			return errors.New("daemon process does not own the session API log")

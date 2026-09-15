@@ -809,7 +809,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 		DeletionStore: store,
 		ResumeLocks:   hubcore.NewResumeLocks(),
 	}
-	sources := newHubSourceRegistry(cfg)
+	sources, _ := newHubSourceRegistry(cfg)
 
 	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
@@ -853,7 +853,8 @@ func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
 		ResumeLocks:   hubcore.NewResumeLocks(),
 		Past:          past,
 	}
-	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
+	sources, _ := newHubSourceRegistry(cfg)
+	server := newHubAppServer(cfg, sources)
 	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
@@ -905,7 +906,8 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
 		Spawner:       spawner,
 	}
 
-	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
+	sources, _ := newHubSourceRegistry(cfg)
+	_, err = hubThreadResume(context.Background(), cfg, sources, appwire.ThreadResumeParams{Ref: ref})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
@@ -2102,7 +2104,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
+	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
@@ -6436,7 +6438,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 			JobID: "job_shell", JobType: "shell", Status: "running",
 		}},
 	})
-	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")

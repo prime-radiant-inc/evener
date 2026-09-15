@@ -54,28 +54,39 @@ func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
 }
 
 // And the positive case through the real verifier: a live process at the
-// entry's PID that is not an `evener serve` is another process, so the entry
-// is never published - not even while the socket still answers - and reads
-// as crashed.
+// entry's PID that started after the entry was written is another process
+// (a PID the kernel reused), so the entry is never published - whether the
+// socket is closed, as a crashed daemon's is, or still answers - and reads as
+// crashed rather than parking unconfirmed. Both orders, since the closed
+// socket is the one a reused PID actually presents.
 func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
-	other := exec.Command("sleep", "60")
-	if err := other.Start(); err != nil {
-		t.Fatalf("start stand-in process: %v", err)
-	}
-	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
-	dir := t.TempDir()
-	entry := rendezvous.Entry{PID: other.Process.Pid, SessionID: "01OTHER", ThreadID: "01OTHER", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01OTHER"), StartedAt: time.Now().UTC()}
-	writeRendezvous(t, dir, entry)
-	prober := &flakyProber{sessionID: "01OTHER"}
-	roster := NewRoster(dir, prober)
-	for _, probe := range []bool{true, false} {
-		prober.fail = !probe
-		roster.Refresh()
-		if roster.HasConfirmedEntry(entry) {
-			t.Fatalf("probe answering=%v: a PID held by another process acquired the daemon's route", probe)
-		}
-		if live, ok := roster.Find("01OTHER"); !ok || !live.Crashed {
-			t.Fatalf("probe answering=%v: the daemon behind a PID held by another process should read as crashed: ok=%v entry=%+v", probe, ok, live)
-		}
+	for _, order := range []struct {
+		name   string
+		probes []bool
+	}{{"socket closed first", []bool{false, true}}, {"socket answering first", []bool{true, false}}} {
+		t.Run(order.name, func(t *testing.T) {
+			startedAt := time.Now().UTC()
+			time.Sleep(50 * time.Millisecond) // the reused PID's process starts after the entry
+			other := exec.Command("sleep", "60")
+			if err := other.Start(); err != nil {
+				t.Fatalf("start stand-in process: %v", err)
+			}
+			t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
+			dir := t.TempDir()
+			entry := rendezvous.Entry{PID: other.Process.Pid, SessionID: "01OTHER", ThreadID: "01OTHER", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01OTHER"), StartedAt: startedAt}
+			writeRendezvous(t, dir, entry)
+			prober := &flakyProber{sessionID: "01OTHER"}
+			roster := NewRoster(dir, prober)
+			for _, probe := range order.probes {
+				prober.fail = !probe
+				roster.Refresh()
+				if roster.HasConfirmedEntry(entry) {
+					t.Fatalf("probe answering=%v: a PID held by another process acquired the daemon's route", probe)
+				}
+				if live, ok := roster.Find("01OTHER"); !ok || !live.Crashed {
+					t.Fatalf("probe answering=%v: should read as crashed, got ok=%v entry=%+v (unconfirmed: %+v)", probe, ok, live, roster.UnconfirmedEntries())
+				}
+			}
+		})
 	}
 }
