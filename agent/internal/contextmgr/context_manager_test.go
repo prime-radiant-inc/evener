@@ -1624,6 +1624,28 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 	}
 }
 
+// A measurement belongs to the profile that produced it: a SetProfile that lands
+// while a request is in flight invalidates the measurement that request belonged
+// to, so recording it afterwards must not attribute one model's count to another.
+func TestRecordInputTokensForRejectsAStaleAnsweringProfile(t *testing.T) {
+	live := provider.FromResolved(registry.Resolved{Instance: "openai", ModelID: "gpt-5.2", Protocol: registry.ProtocolOpenAIResponses}, nil)
+	previous := provider.FromResolved(registry.Resolved{Instance: "anthropic", ModelID: "claude-opus-5", Protocol: registry.ProtocolAnthropic}, nil)
+	cm := NewManager(live, nil, cheapmodel.New(nil))
+
+	if !cm.RecordInputTokensFor(live, 321, 7) {
+		t.Fatal("the live profile's own measurement was refused")
+	}
+	if got := cm.LastInputTokens(); got != 321 {
+		t.Fatalf("LastInputTokens = %d, want 321", got)
+	}
+	if cm.RecordInputTokensFor(previous, 999, 9) {
+		t.Fatal("a measurement from a profile the manager no longer holds was accepted")
+	}
+	if got := cm.LastInputTokens(); got != 321 {
+		t.Fatalf("LastInputTokens = %d after the stale write, want the live measurement 321", got)
+	}
+}
+
 // The estimate readers must stay total without a profile: a Manager built with
 // none (NewManager(nil, ...), as the session-log strategy tests do) has no window
 // and no resolved row to read, which is "unknown", not a crash. These paths were

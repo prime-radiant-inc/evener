@@ -791,6 +791,41 @@ func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily
 	}
 }
 
+// The equivalence covers what the estimator reads, model id included: the name
+// rules consult it whenever the row's own facts do not decide the family.
+func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {
+	base := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat}
+	same := base
+	if !EstimatorTargetsEquivalent(base, same) {
+		t.Fatal("identical rows are one estimator target")
+	}
+	otherModel := base
+	otherModel.ModelID = "gateway-aa"
+	if EstimatorTargetsEquivalent(base, otherModel) {
+		t.Fatal("rows with different model ids are different estimator targets: the name rule reads the id")
+	}
+	otherFamily := base
+	otherFamily.Model.Family = "claude"
+	if EstimatorTargetsEquivalent(base, otherFamily) {
+		t.Fatal("rows with different families are different estimator targets")
+	}
+}
+
+// A namespaced OpenAI id is the same model as its bare spelling, and a gemma id
+// is Google's: the name rule has to read both, with no row facts to decide from.
+func TestProviderTokenFamilyReadsNamespacedAndGemmaNames(t *testing.T) {
+	for _, model := range []string{"openai/gpt-4o", "openai.gpt-4o", "gpt-4o"} {
+		if got := providerTokenFamily("gateway", model); got != "openai" {
+			t.Fatalf("providerTokenFamily(gateway, %q) = %q, want openai", model, got)
+		}
+	}
+	for _, model := range []string{"gemma-3-27b", "openai/gemma-3-27b"} {
+		if got := providerTokenFamily("gateway", model); got != "google" {
+			t.Fatalf("providerTokenFamily(gateway, %q) = %q, want google", model, got)
+		}
+	}
+}
+
 // An instance name is an alias, not vendor identity: a generic row that happens
 // to be named "anthropic" must not bill Anthropic's image rules for a model the
 // registry never classified, so a resolved target's family comes from the row's

@@ -320,6 +320,22 @@ func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
 	cm.historyLenAtMeasure = historyLen
 }
 
+// RecordInputTokensFor records an API measurement only when the manager still
+// holds the profile that produced it. A SetProfile that lands while a request is
+// in flight already invalidated the measurement that request belonged to, so
+// writing it afterwards would attribute one model's count to another -- and the
+// estimator reads the target, so the count would be wrong under the new rules too.
+func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, historyLen int) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if !sameProfileTarget(cm.profile, profile) {
+		return false
+	}
+	cm.lastInputTokens = tokens
+	cm.historyLenAtMeasure = historyLen
+	return true
+}
+
 // SetProfile replaces the provider profile so that ContextWindowSize() and
 // other profile-derived values stay current after a model change. An exact
 // token count belongs only to the instance, model, and protocol that produced
@@ -341,11 +357,9 @@ func sameProfileTarget(a, b *provider.Profile) bool {
 	if a.ID() != b.ID() || a.Model() != b.Model() || a.Protocol() != b.Protocol() {
 		return false
 	}
-	// The estimator reads more of the row than its identity: the surface and the
-	// model family choose the media rules, and the reasoning capabilities choose
-	// whether thinking text is billed (see llm.EstimateMessagesInputTokensForResolved).
-	// A metadata refresh that changes any of them invalidates the measurement,
-	// because the count was taken under the old rules.
+	// The estimator reads more of the row than its identity (see
+	// EstimatorTargetsEquivalent), so every field it reads has to match before a
+	// measurement may survive: the count was taken under the old rules.
 	return sameEstimatorTarget(a.Resolved(), b.Resolved())
 }
 

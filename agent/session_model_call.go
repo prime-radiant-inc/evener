@@ -921,7 +921,7 @@ func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAl
 // compaction decisions still reflect the visible conversation. Anthropic makes
 // multiple forward passes for server-side web search, reporting combined usage
 // (~2x actual); that inflated baseline is skipped so the previous value stays valid.
-func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request) {
+func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answeringProfile *provider.Profile) {
 	if s.contextMgr == nil {
 		return
 	}
@@ -936,7 +936,10 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request) {
 		s.mu.Lock()
 		hLen := len(s.history)
 		s.mu.Unlock()
-		s.contextMgr.RecordInputTokens(tokens, hLen)
+		// Only the profile that answered may own this measurement: a SetModel
+		// during the request cleared the measurement it belonged to (roborev's
+		// fifteenth round).
+		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
 	}
 }
 

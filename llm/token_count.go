@@ -564,6 +564,10 @@ func imageDimensions(img *ImageData) (int, int, bool) {
 func providerTokenFamily(provider, model string) string {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	m := strings.ToLower(strings.TrimSpace(model))
+	// Namespaced ids are the same model: openai/gpt-4o and openai.o4 are OpenAI's,
+	// exactly like their bare spellings, so the namespace comes off once for every
+	// branch below.
+	m = strings.TrimPrefix(strings.TrimPrefix(m, "openai/"), "openai.")
 	// gpt-oss is deliberately generic in the registry (§6.1) — its rows declare
 	// text-only input — so no spelling of it may claim OpenAI's image rules. The
 	// family map already refuses it for a resolved row, but that refusal is
@@ -574,7 +578,7 @@ func providerTokenFamily(provider, model string) string {
 		return ""
 	}
 	switch {
-	case p == "google" || p == "gemini" || strings.Contains(m, "gemini"):
+	case p == "google" || p == "gemini" || strings.Contains(m, "gemini") || strings.Contains(m, "gemma"):
 		return "google"
 	case strings.Contains(p, "anthropic") || strings.Contains(m, "claude"):
 		return "anthropic"
@@ -598,11 +602,15 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 }
 
 // EstimatorTargetsEquivalent reports whether two resolved rows are one estimator
-// target: the fields the local estimate reads decide, so a caller that keeps a
-// measurement keyed to a target does not have to re-list them and drift when the
-// rules grow.
+// target: the fields the local estimate reads decide -- including the model id,
+// which the media-family name rule reads when the row's own facts do not -- so a
+// caller that keeps a measurement keyed to a target does not have to re-list them
+// and drift when the rules grow.
 func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if a.Protocol != b.Protocol || a.Surface != b.Surface || a.Model.Family != b.Model.Family {
+		return false
+	}
+	if a.ModelID != b.ModelID {
 		return false
 	}
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {

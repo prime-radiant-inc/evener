@@ -59,7 +59,7 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 		// The nil context-manager path must remain a no-op.
 		contextMgr := s.contextMgr
 		s.contextMgr = nil
-		s.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: int(selector) + 1}}, llm.Request{})
+		s.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: int(selector) + 1}}, llm.Request{}, s.currentProfile())
 		s.contextMgr = contextMgr
 
 		// Populate the per-session continuation circuit breaker from its nil map.

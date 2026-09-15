@@ -301,7 +301,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
 	sess.contextMgr.RecordInputTokens(42, 0)
 
-	modelResp, usedReq, _, _, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
+	modelResp, usedReq, _, usedProfile, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
 		Provider: primary.ID(),
 		Model:    primary.Model(),
 		Messages: []llm.Message{llm.User("task")},
@@ -309,7 +309,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
-	sess.recordResponseUsage(modelResp.Response, usedReq)
+	sess.recordResponseUsage(modelResp.Response, usedReq, usedProfile)
 	if got := sess.contextMgr.LastInputTokens(); got != 77 {
 		t.Fatalf("fallback input tokens = %d, want 77", got)
 	}
