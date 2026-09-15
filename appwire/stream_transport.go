@@ -148,6 +148,12 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		// discard the real cause and claim part of a frame reached the peer.
 		if n > 0 && n != len(buf) {
 			t.poison(io.ErrShortWrite)
+		} else if ctxErr := ctx.Err(); ctxErr != nil {
+			// A zero-byte failure that coincides with cancellation IS the
+			// cancellation: the AfterFunc closed the stream under this write.
+			// Latching the close error instead would make callers matching
+			// context.Canceled miss the teardown they asked for.
+			t.poison(ctxErr)
 		} else {
 			t.poison(err)
 		}
@@ -210,6 +216,12 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		if pErr := t.poisonErr(); pErr != nil {
 			return Message{}, pErr
 		}
+		// A read that consumed no bytes left the framing intact but the stream
+		// broken; a clean io.EOF is the stream simply ending. Latch the former
+		// so every later call reports it rather than a bare close error.
+		if !errors.Is(err, io.EOF) {
+			t.poison(err)
+		}
 		return Message{}, err
 	}
 	// A complete line can still arrive after the context was canceled — bufio
@@ -221,6 +233,16 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	}
 	var msg Message
 	if err := unmarshalWSMessage(line, &msg); err != nil {
+		// Decoding a large frame takes long enough for a cancellation to land and
+		// close the stream, so the same latch applies before reporting a decode
+		// failure — otherwise later calls see a raw close error for a teardown
+		// the caller asked for.
+		if !stop() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				t.poison(ctxErr)
+				return Message{}, ctxErr
+			}
+		}
 		return Message{}, err
 	}
 	// Same window on the read side: a cancellation after the check above and
@@ -270,10 +292,15 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 				t.poison(io.ErrUnexpectedEOF)
 				return nil, io.ErrUnexpectedEOF
 			default:
-				// Any other read error ends the frame mid-message, and the bytes
-				// already consumed are gone: resuming here would read this
-				// frame's tail as the next message.
-				t.poison(err)
+				// A read error that consumed part of a frame ends it mid-message,
+				// and those bytes are gone: resuming would read this frame's tail
+				// as the next message. With NO bytes consumed nothing is broken
+				// by the read itself — and the zero-byte error a cancellation's
+				// Close produces arrives this way — so the cause is left to Recv,
+				// which knows whether the context was canceled.
+				if len(line) > 0 {
+					t.poison(err)
+				}
 				return nil, err
 			}
 		}

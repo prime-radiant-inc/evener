@@ -487,6 +487,88 @@ type parkedReadStream struct {
 	release chan struct{}
 }
 
+// signalingPipeEnd wraps a real pipe end and signals when a Read has started.
+// Unlike parkedReadStream its Close is the real one, so a cancel unblocks the
+// read with an error — the path the SSH channel actually takes.
+type signalingPipeEnd struct {
+	net.Conn
+	entered chan struct{}
+}
+
+func (s *signalingPipeEnd) Read(p []byte) (int, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	return s.Conn.Read(p)
+}
+
+// The parked-read test above uses a stream whose Close is a no-op, so it never
+// exercises the cancel-induced close error path. Here the close really
+// interrupts the read, and the cancellation — not the close error it produced —
+// must be what later calls report.
+func TestStreamTransportRealCloseLatchReportsCancellation(t *testing.T) {
+	a, b := net.Pipe()
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+	reader := &signalingPipeEnd{Conn: b, entered: make(chan struct{}, 1)}
+	tr := NewStreamTransport(reader)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.Recv(ctx)
+		done <- err
+	}()
+	select {
+	case <-reader.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recv never reached the stream")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Recv err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recv did not return after cancellation")
+	}
+
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recv after the cancel-induced close = %v, want the latched context.Canceled", err)
+	}
+}
+
+// The production limit is far larger than the reader's 4096-byte buffer, so a
+// frame arrives as several chunks and the size check has to decide after the
+// line has outgrown one buffer. Every other test uses a limit below the buffer
+// size, where the first full buffer already proves oversize.
+func TestStreamTransportMultiChunkFrame(t *testing.T) {
+	const limit = 8192
+	payload := string(bytes.Repeat([]byte("x"), limit-256))
+	frame, err := marshalWSMessage(ResponseMessage(NewIntID(1), json.RawMessage(`{"pad":"`+payload+`"}`)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(frame) <= 4096 || len(frame) > limit {
+		t.Fatalf("frame is %d bytes; the test needs it above the 4096-byte buffer and within the %d limit", len(frame), limit)
+	}
+	tr := NewStreamTransportWithLimit(&memoryStream{r: bytes.NewReader(append(frame, '\n'))}, limit)
+	if _, err := tr.Recv(context.Background()); err != nil {
+		t.Fatalf("Recv of a multi-chunk frame within the limit = %v, want success", err)
+	}
+
+	// And one past the limit fails only after growing across chunks.
+	over := append(bytes.Repeat([]byte("x"), limit+512), '\n')
+	trOver := NewStreamTransportWithLimit(&memoryStream{r: bytes.NewReader(over)}, limit)
+	if _, err := trOver.Recv(context.Background()); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("Recv err = %v, want ErrStreamFrameTooLarge", err)
+	}
+}
+
 func (s *parkedReadStream) Read([]byte) (int, error) {
 	select {
 	case s.entered <- struct{}{}:
