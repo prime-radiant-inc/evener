@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -25,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -146,19 +146,6 @@ func entry(t *testing.T, resp appwire.InstanceListResponse, name string) appwire
 	}
 	t.Fatalf("List has no instance %q; got %+v", name, resp.Instances)
 	return appwire.InstanceEntry{}
-}
-
-// assertKeyFileMode0600 pins the mode the hub writes its key with, where the
-// platform records POSIX permission bits at all: Windows synthesizes 0666 for
-// every file (0444 when read-only), so there is no 0600 there to assert.
-func assertKeyFileMode0600(t *testing.T, info os.FileInfo, what string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		return
-	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("%s is %v, want 0600", what, perm)
-	}
 }
 
 // authoredEntry re-reads providers.toml and returns the authored entry, which
@@ -1779,7 +1766,7 @@ func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
 	}
-	assertKeyFileMode0600(t, info, "the key file")
+	hubtest.AssertFileMode0600(t, info, "the key file")
 }
 
 // A state root the hub cannot key under omits the fingerprint rather than
@@ -1924,7 +1911,7 @@ func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
 	}
-	assertKeyFileMode0600(t, info, "the key file after the read")
+	hubtest.AssertFileMode0600(t, info, "the key file after the read")
 	rotated, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
@@ -2047,7 +2034,7 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("the empty key file was left in place")
 	}
-	assertKeyFileMode0600(t, info, "the repaired key file")
+	hubtest.AssertFileMode0600(t, info, "the repaired key file")
 }
 
 // Something unusable at the key path does not leave the state root unkeyable
@@ -2074,7 +2061,7 @@ func TestInstances_EndpointFingerprintRepairsAnEmptyKeyPathDirectory(t *testing.
 	if !info.Mode().IsRegular() {
 		t.Fatalf("key path mode = %v, want a regular key file", info.Mode())
 	}
-	assertKeyFileMode0600(t, info, "the repaired key file")
+	hubtest.AssertFileMode0600(t, info, "the repaired key file")
 }
 
 // A platform that does not record POSIX permission bits - Windows synthesizes
