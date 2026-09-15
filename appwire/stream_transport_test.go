@@ -609,16 +609,23 @@ func TestStreamTransportCloseLatchesClosedState(t *testing.T) {
 }
 
 // A write that fails as the context is canceled has still desynchronized the
-// stream, so the next Send must see the sticky failure rather than appending a
-// whole frame after the orphaned bytes.
+// stream, so the next Send must find a poisoned transport rather than appending
+// a whole frame after the orphaned bytes. WHICH cause is recorded is a race this
+// test cannot control: the cancel callback latches the cancellation and the
+// write path latches the short write, and both are terminal for the stream. The
+// property under test is that it is poisoned at all.
 func TestStreamTransportCanceledPartialWriteStillPoisons(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	tr := NewStreamTransport(&cancelOnWriteStream{cancel: cancel})
 
 	_ = tr.Send(ctx, ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
 
-	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`))); !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("Send after a canceled partial write = %v, want the poisoning io.ErrShortWrite", err)
+	err := tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`)))
+	if err == nil {
+		t.Fatal("a transport with a canceled partial write still accepted a frame")
+	}
+	if !errors.Is(err, io.ErrShortWrite) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("Send after a canceled partial write = %v, want the short write or the cancellation", err)
 	}
 }
 

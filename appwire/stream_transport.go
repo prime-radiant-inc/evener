@@ -194,6 +194,11 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 			return ctxErr
 		}
 	}
+	// Close may have latched while this frame was being written. Reporting
+	// success would tell the caller a closed transport still works.
+	if pErr := t.poisonErr(); pErr != nil {
+		return pErr
+	}
 	return nil
 }
 
@@ -210,19 +215,21 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	defer stop()
 	line, err := t.readLine()
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			// Cancellation tears the transport down, and that has to be latched:
-			// the stream is closed underneath, so leaving the poison unset makes
-			// a later Recv report an orderly io.EOF for a local cancellation.
-			t.poison(ctxErr)
-			return Message{}, ctxErr
-		}
-		// readLine poisons when it consumes part of a frame, and a concurrent
-		// call may have poisoned too. Report the recorded cause rather than the
-		// raw error this call woke up with, so a blocked Recv cannot surface a
-		// bare close error instead of the failure that closed the stream.
+		// The recorded cause comes first. readLine poisons a framing break, and
+		// the cancel callback poisons the cancellation before performing the
+		// close that unblocks this read — so whichever it was is what every later
+		// call reports, and this call must not disagree with it by preferring a
+		// cancellation that did not actually win.
 		if pErr := t.poisonErr(); pErr != nil {
 			return Message{}, pErr
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Nothing was recorded yet, so this read was unblocked by something
+			// other than a teardown we know about. Latch the cancellation: the
+			// stream is closed underneath, so leaving it unset makes a later Recv
+			// report an orderly io.EOF for a local cancellation.
+			t.poison(ctxErr)
+			return Message{}, ctxErr
 		}
 		// A read that consumed no bytes left the framing intact but the stream
 		// broken; a clean io.EOF is the stream simply ending. Latch the former
@@ -261,6 +268,11 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 			t.poison(ctxErr)
 			return Message{}, ctxErr
 		}
+	}
+	// Same on the read side: a Close that landed while this frame was being read
+	// or decoded must not be answered with a message from a closed transport.
+	if pErr := t.poisonErr(); pErr != nil {
+		return Message{}, pErr
 	}
 	return msg, nil
 }
@@ -326,14 +338,19 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 }
 
 // poison records the failure that broke the framing and closes the stream, once.
-// Every later call returns that failure.
+// Every later call returns that failure. The close happens outside the lock:
+// closing can block, and every call that reads the recorded cause would wait
+// behind it.
 func (t *StreamTransport) poison(err error) {
 	t.mu.Lock()
-	if t.poisoned == nil {
+	first := t.poisoned == nil
+	if first {
 		t.poisoned = err
-		_ = t.rw.Close()
 	}
 	t.mu.Unlock()
+	if first {
+		_ = t.rw.Close()
+	}
 }
 
 func (t *StreamTransport) poisonErr() error {
@@ -344,12 +361,18 @@ func (t *StreamTransport) poisonErr() error {
 
 // Close ends the transport. The closed state is latched, so Send and Recv keep
 // reporting ErrStreamClosed afterwards even when the reader still holds frames
-// it prefetched.
+// it prefetched. Only the call that latches reaches the underlying closer:
+// io.Closer's post-close behavior is undefined, so a repeat must not call an
+// arbitrary closer a second time.
 func (t *StreamTransport) Close() error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.poisoned == nil {
+	first := t.poisoned == nil
+	if first {
 		t.poisoned = ErrStreamClosed
+	}
+	t.mu.Unlock()
+	if !first {
+		return nil
 	}
 	return t.rw.Close()
 }
