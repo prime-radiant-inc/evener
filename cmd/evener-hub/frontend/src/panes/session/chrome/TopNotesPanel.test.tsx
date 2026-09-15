@@ -1,8 +1,8 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
-import { resetHumanNoteDrafts } from "../../../stores/humanNoteDrafts";
+import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
 import { TopNotesPanel } from "./TopNotesPanel";
@@ -77,8 +77,12 @@ test("returns null if canReadSharedNotes is false", () => {
   const model = makeModel({
     capabilities: { ...makeModel().capabilities, sharedNotes: false },
   });
+  const { result } = renderHook(() => useHumanNoteDraft(model.ref));
   const { container } = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
   expect(container.firstChild).toBeNull();
+  // Nothing visible mounts, so nothing may feed the drafts store either: a
+  // session without the notes capability must not grow it.
+  expect(result.current).toBeUndefined();
 });
 
 test("collapsed default shows first priority: human note with person icon", () => {
@@ -318,4 +322,45 @@ test("a session that turns read-only shows the saved note, not the stranded draf
   view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "ended" } }} />);
   expect(screen.queryByText("Saved note never saved")).toBeNull();
   expect(screen.getByText("Saved note")).toBeTruthy();
+});
+
+test("a focus request never lands on another session's editor after pane reuse", async () => {
+  // Drive animation frames by hand so the take-to-frame window is
+  // deterministic: the request is taken now, the frame fires later.
+  const frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    frames.push(cb);
+    return frames.length;
+  });
+  try {
+    const modelA = makeModel({ humanNote: "A" });
+    const modelB = makeModel({ ref: "local:sess_b", humanNote: "B" });
+    const view = render(<TopNotesPanel sessionRef={modelA.ref} model={modelA} />);
+
+    // A's request is taken and its frame queued, unfired.
+    topNotesStore.getState().openAndFocus(modelA.ref);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Human note" })).toBeTruthy());
+    expect(frames.length).toBe(1);
+
+    // The pane is reused for session B, and B gets its own request, all
+    // before A's frame fires.
+    topNotesStore.getState().openAndFocus(modelB.ref);
+    view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
+    const editorB = await screen.findByRole("textbox", { name: "Human note" });
+    expect(frames.length).toBeGreaterThanOrEqual(2);
+
+    // A's stale frame must not focus B's editor.
+    act(() => {
+      frames.splice(0, 1)[0]?.(0);
+    });
+    expect(document.activeElement).not.toBe(editorB);
+
+    // B's own frame focuses B's editor.
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+    expect(document.activeElement).toBe(editorB);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
