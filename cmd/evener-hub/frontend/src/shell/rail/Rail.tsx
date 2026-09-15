@@ -39,6 +39,7 @@ import {
   type ResourceState,
 } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import {
   Badge,
   Button,
@@ -1234,7 +1235,11 @@ function NavigationRail({
       onOpenSessionPane: (session, pane) => {
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+        if (pane === "notes") {
+          topNotesStore.getState().toggle(session.ref);
+        } else {
+          workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+        }
       },
       onRenameSession: (session, name) =>
         runAction(

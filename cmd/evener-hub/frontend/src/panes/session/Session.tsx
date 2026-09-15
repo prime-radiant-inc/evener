@@ -37,6 +37,7 @@ import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { SessionChrome } from "./chrome/SessionChrome";
+import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
@@ -522,6 +523,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         </div>
       }
     >
+      <TopNotesPanel sessionRef={ref} model={model} />
       <SandboxEscalationRail sessionRef={ref} />
       {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
         <ColdStartSkeleton />
