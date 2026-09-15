@@ -383,10 +383,14 @@ function SpawnForm({
   // empty until it loads, and in the common single-host case holds only
   // "local" - either way no picker renders, so the existing form is unchanged.
   const sources = useNavigationStore(selectSources);
-  // A draft may name a host that has since disappeared from the manifest
-  // (removed while the draft lived). Fall back to local rather than launching
-  // an unknown source; the stale draft value stays until the picker changes it.
-  const hostChoice = sources.some((candidate) => candidate.id === source) ? source : "local";
+  // A draft may name a host that is no longer launchable: removed from the
+  // manifest while the draft lived, or still listed but offline (the hub keeps
+  // offline sources in the manifest - only the online flag flips). Both fall
+  // back to local rather than submitting a source the hub rejects with
+  // "spawn source is not available"; the stale draft value stays until the
+  // picker changes it, so a host that comes back online is chosen again.
+  const chosenSource = sources.find((candidate) => candidate.id === source);
+  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
   const remoteHosts = sources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
