@@ -183,11 +183,11 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve install path %q: %w: %s", ErrDeploy, host.Name, p, err, tail(out))
 	}
-	real := firstLine(string(out))
-	if real == "" {
+	resolved := firstLine(string(out))
+	if resolved == "" {
 		return "", fmt.Errorf("%w: host %q install path %q does not resolve to a real file", ErrDeploy, host.Name, p)
 	}
-	return real, nil
+	return resolved, nil
 }
 
 // pushBinary streams data to target over an ssh `cat`, then chmod +x and mv it

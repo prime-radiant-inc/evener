@@ -317,11 +317,11 @@ func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string
 // a cleared port would relaunch while the old hub still holds hub.lock.
 func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port string) error {
 	for range restartStopAttempts {
-		clear, err := m.portCleared(ctx, host, port)
+		cleared, err := m.portCleared(ctx, host, port)
 		if err != nil {
 			return err
 		}
-		if clear {
+		if cleared {
 			return nil
 		}
 		if err := m.opts.waitSleep(ctx, restartStopInterval); err != nil {

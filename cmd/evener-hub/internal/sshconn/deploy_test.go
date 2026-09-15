@@ -213,7 +213,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 // would clobber the installed layout.
 func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	const link = "/usr/local/bin/evener"
-	const real = "/opt/evener/1.2.3/evener"
+	const realPath = "/opt/evener/1.2.3/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: link}
 	var pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -222,7 +222,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		case strings.Contains(joined, "test -d /usr/local/bin"):
 			return nil, nil
 		case strings.Contains(joined, "readlink -f "+link):
-			return []byte(real + "\n"), nil
+			return []byte(realPath + "\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushRemote = joined
 			if stdin != nil {
@@ -242,10 +242,10 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if !strings.Contains(pushRemote, "cat > "+real+".tmp") || !strings.Contains(pushRemote, "mv "+real+".tmp "+real) {
-		t.Fatalf("push does not install onto the symlink's real file %q: %q", real, pushRemote)
+	if !strings.Contains(pushRemote, "cat > "+realPath+".tmp") || !strings.Contains(pushRemote, "mv "+realPath+".tmp "+realPath) {
+		t.Fatalf("push does not install onto the symlink's real file %q: %q", realPath, pushRemote)
 	}
-	if strings.Contains(pushRemote, "mv "+real+".tmp "+link) {
+	if strings.Contains(pushRemote, "mv "+realPath+".tmp "+link) {
 		t.Fatalf("push replaces the symlink %q instead of its target: %q", link, pushRemote)
 	}
 }
