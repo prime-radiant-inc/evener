@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,13 +176,18 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "scp-like unchanged", in: "git@github.com:owner/repo.git", want: "git@github.com:owner/repo.git"},
 		{name: "scp-like query token", in: "git@github.com:owner/repo.git?token=supersecret", want: "git@github.com:owner/repo.git"},
 		{name: "scp-like fragment token", in: "git@github.com:owner/repo.git#token=supersecret", want: "git@github.com:owner/repo.git"},
-		{name: "local path unchanged", in: "/srv/git/repo.git", want: "/srv/git/repo.git"},
+		// A local path is a remote the frontend cannot link, so it is not put on
+		// the wire at all - the allowlist leaves only scp-like remotes and
+		// authority-bearing URLs.
+		{name: "local path", in: "/srv/git/repo.git", want: ""},
+		{name: "relative path", in: "../sibling/repo.git", want: ""},
+		{name: "scp-like without a path", in: "git@github.com:", want: ""},
+		{name: "scp-like without a user", in: "github.com:owner/repo.git", want: ""},
 		// A scheme with no authority cannot be parsed for which part is a
 		// credential, so it fails closed. Neither shape is renderable by the
 		// frontend's parser (it needs `user@host:path` or an authority).
 		{name: "opaque scheme with token", in: "https:token@github.com/owner/repo.git", want: ""},
 		{name: "opaque file scheme", in: "file:/srv/git/repo.git", want: ""},
-		{name: "bare host scp-like", in: "github.com:owner/repo.git", want: ""},
 		// An empty authority parses with the credential in the path, not in
 		// userinfo, and leaves no host to link to.
 		{name: "empty authority with credentials", in: "https:///user:tok@github.com/owner/repo.git", want: ""},
@@ -195,6 +201,38 @@ func TestSanitizeGitRemote(t *testing.T) {
 				t.Fatalf("sanitizeGitRemote(%q)=%q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// resolveGitOrigin's real (non-seam) path: every other test injects the seam, so
+// a wrong subcommand or argument order in the real invocation would fail soft in
+// production - every session silently losing its forge link - with no default
+// test catching it. resolveGitHead's real path is covered the same way.
+func TestResolveGitOriginRealRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "git@github.com:owner/repo.git"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	got, err := resolveGitOrigin(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("resolveGitOrigin: %v", err)
+	}
+	if got != "git@github.com:owner/repo.git" {
+		t.Fatalf("resolveGitOrigin=%q, want the configured origin", got)
+	}
+
+	// A directory that is not a repository has no origin to report.
+	if _, err := resolveGitOrigin(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("resolveGitOrigin(non-repo) = nil error, want an error")
 	}
 }
 

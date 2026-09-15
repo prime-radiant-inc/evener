@@ -63,9 +63,11 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 //
 // A scheme-less, scp-like remote (git@host:owner/repo.git) is returned
 // unchanged: its leading `user@` is part of the address rather than a
-// credential, and the frontend's parser needs it. Anything with a scheme that
-// fails to parse yields "" - a URL this function cannot inspect is one it
-// cannot promise is credential-free.
+// credential, and the frontend's parser needs it. Anything else yields "" - a
+// URL this function cannot inspect is one it cannot promise is credential-free,
+// and a local path is a remote the frontend cannot turn into a link anyway.
+// The net contract is an allowlist: only an authority-bearing URL (sanitized)
+// or an scp-like remote leaves here.
 func sanitizeGitRemote(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
@@ -75,6 +77,11 @@ func sanitizeGitRemote(raw string) string {
 		// URL. Nothing renderable is lost - the frontend's parser only
 		// recognizes `user@host:path` or a scheme URL with an authority.
 		if hasOpaqueScheme(trimmed) {
+			return ""
+		}
+		// Local paths and bare hostnames are not remotes the frontend can link;
+		// putting them on the wire buys nothing.
+		if !looksLikeScpRemote(trimmed) {
 			return ""
 		}
 		// A query or fragment is not part of a git remote address, and a
@@ -102,6 +109,23 @@ func sanitizeGitRemote(raw string) string {
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
 	return parsed.String()
+}
+
+// looksLikeScpRemote reports whether value is git's scheme-less scp-like remote
+// syntax, `user@host:path`. Requiring the `@` matches the frontend's own parser,
+// which needs it to tell a remote from a bare hostname; requiring a path after
+// the colon keeps `user@host:` from passing as one.
+func looksLikeScpRemote(value string) bool {
+	at := strings.IndexByte(value, '@')
+	if at <= 0 {
+		return false
+	}
+	rest := value[at+1:]
+	colon := strings.IndexByte(rest, ':')
+	if colon <= 0 || strings.ContainsRune(rest[:colon], '/') {
+		return false
+	}
+	return strings.TrimSpace(rest[colon+1:]) != ""
 }
 
 // hasOpaqueScheme reports whether value starts with a URL scheme (RFC 3986:
