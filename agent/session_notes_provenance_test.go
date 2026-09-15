@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -334,6 +335,31 @@ func TestHistoryCopyKeepsARecordsNoteMethodOverAnUnrelatedTurnKind(t *testing.T)
 	out := escapeNotesHistoryTurns([]schema.Turn{turn}, origins)
 	if got := out[0].Message.Text(); strings.ContainsRune(got, 0x1b) {
 		t.Fatalf("history copy = %q, want the note-origin control bytes stripped", got)
+	}
+}
+
+// An inherited prefix is decided by its own turns: the child's journal is not in
+// reach when a forked session escapes its history, so a child mutation that reuses
+// a parent's client mutation id cannot classify a parent's steer. Note-shaped text
+// is still normalized by the write-path shape, and a steer that does not imitate
+// it keeps every byte.
+func TestInheritedHistoryIsEscapedWithoutAJournalInReach(t *testing.T) {
+	const id = "cm-parent"
+	const ordinary = "run the tests \x1b[31mnow\x1b[0m"
+	inherited := []transcript.Entry{
+		{Turn: schema.Turn{Kind: schema.TurnSteering, ClientMutationID: id, Message: llm.User("human updated their whiteboard: \x1b[31mnote\x1b[0m")}},
+		{Turn: schema.Turn{Kind: schema.TurnSteering, ClientMutationID: id, Message: llm.User(ordinary)}},
+	}
+
+	out := escapeInheritedHistory(inherited)
+	if len(out) != 2 {
+		t.Fatalf("inherited history = %d turns, want 2", len(out))
+	}
+	if got := out[0].Message.Text(); strings.ContainsRune(got, 0x1b) {
+		t.Fatalf("note-shaped inherited steer was not normalized: %q", got)
+	}
+	if got := out[1].Message.Text(); got != ordinary {
+		t.Fatalf("ordinary inherited steer = %q, want it verbatim (%q)", got, ordinary)
 	}
 }
 
