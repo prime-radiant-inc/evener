@@ -3,10 +3,13 @@
 package skill
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestEnsurePrivateCacheDir_CreatesPrivateDir(t *testing.T) {
@@ -242,3 +245,50 @@ func TestEmbeddedSkillsDir_ProcessCopyUnderASymlinkedTempRoot(t *testing.T) {
 		t.Fatalf("process copy was created through the symlink %s: %q", link, dir)
 	}
 }
+
+// A sticky root only protects this process's entries from users who do not own
+// it, so a sticky root owned by another user must not be trusted.
+func TestTempRootTrusted_RejectsAStickyRootOwnedByAnotherUser(t *testing.T) {
+	fake := func(mode fs.FileMode, uid uint32) fs.FileInfo {
+		return fakeFileInfo{mode: mode, uid: uid}
+	}
+	other := uint32(os.Getuid()) + 1
+	sticky := os.ModeSticky | 0o777
+
+	for _, trust := range []struct {
+		name  string
+		trust func(fs.FileInfo) bool
+	}{
+		{"tempRootTrusted", tempRootTrusted},
+		{"ancestorDirTrusted", ancestorDirTrusted},
+	} {
+		if trust.trust(fake(sticky, other)) {
+			t.Fatalf("%s trusted a sticky root owned by another user", trust.name)
+		}
+		for _, uid := range []uint32{0, uint32(os.Getuid())} {
+			if !trust.trust(fake(sticky, uid)) {
+				t.Fatalf("%s refused a sticky root owned by uid %d", trust.name, uid)
+			}
+		}
+	}
+	// A non-sticky private root owned by this user is still trusted, and one
+	// another user owns is not.
+	if !tempRootTrusted(fake(0o700, uint32(os.Getuid()))) {
+		t.Fatal("refused a private root owned by this user")
+	}
+	if tempRootTrusted(fake(0o700, other)) {
+		t.Fatal("trusted a private root owned by another user")
+	}
+}
+
+type fakeFileInfo struct {
+	mode fs.FileMode
+	uid  uint32
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() fs.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return true }
+func (f fakeFileInfo) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }

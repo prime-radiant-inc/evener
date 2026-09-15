@@ -990,3 +990,44 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsIncomplete(t *testing.T
 		t.Fatalf("re-extracted copy %q is missing %q: %v", second, removed, err)
 	}
 }
+
+// A copy whose files a cleaner removed must not be served just because its
+// directory is still the one this process validated.
+func TestEmbeddedSkillsDir_RepublishesAGuttedCopy(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read copy: %v", err)
+	}
+	var gutted string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			gutted = entry.Name()
+			break
+		}
+	}
+	if gutted == "" {
+		t.Fatalf("copy %q has no skill directories", dir)
+	}
+	if err := os.Remove(filepath.Join(dir, gutted, "SKILL.md")); err != nil {
+		t.Fatalf("remove %s/SKILL.md: %v", gutted, err)
+	}
+
+	again, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (gutted): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(again, gutted, "SKILL.md")); err != nil {
+		t.Fatalf("served a gutted copy %q: %v", again, err)
+	}
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(again, skills)
+	if !cacheDirComplete(skills) {
+		t.Fatalf("copy %q is still missing skill files after republishing", again)
+	}
+}

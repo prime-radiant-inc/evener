@@ -38,9 +38,20 @@ func cacheDirOwnerCanWrite(info fs.FileInfo) bool {
 // other user can replace the per-user entry between validation and use.
 func tempRootTrusted(info fs.FileInfo) bool {
 	if info.Mode()&os.ModeSticky != 0 {
-		return true
+		// A sticky root only protects this process's entries from users who do not
+		// own the root: its owner can still replace them, so the root must be
+		// owned by this process or by root for the sticky bit to mean anything.
+		return cacheDirOwnerIsUsOrRoot(info)
 	}
 	return cacheDirOwnedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
+}
+
+// cacheDirOwnerIsUsOrRoot reports whether info is owned by this process's user
+// or by root, the only owners whose sticky directory protects this process's
+// entries from everyone else.
+func cacheDirOwnerIsUsOrRoot(info fs.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && (int(stat.Uid) == os.Getuid() || stat.Uid == 0)
 }
 
 // processCopyRootTrusted reports whether a root may hold the process-lifetime
@@ -57,7 +68,7 @@ func processCopyRootTrusted(info fs.FileInfo) bool { return tempRootTrusted(info
 // user can rename the directories on the way to the cache.
 func ancestorDirTrusted(info fs.FileInfo) bool {
 	if info.Mode()&os.ModeSticky != 0 {
-		return true
+		return cacheDirOwnerIsUsOrRoot(info)
 	}
 	if info.Mode().Perm()&0o022 != 0 {
 		return false

@@ -235,7 +235,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
 		switch {
-		case embeddedSkillsCache.verified && cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity):
+		case embeddedSkillsCache.verified && cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity) &&
+			cacheDirComplete(embeddedSkillsCache.skills):
 			if err := claimEmbeddedSkillsLocked(cached); err == nil &&
 				cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity) {
 				touchDir(cached)
@@ -610,6 +611,25 @@ func cacheDirUnchanged(dir string, identity fs.FileInfo) bool {
 	}
 	info, err := os.Lstat(dir)
 	return err == nil && dirInfo(info) && os.SameFile(info, identity)
+}
+
+// cacheDirComplete reports whether every skill the cache handed out is still
+// present. An age-based temp cleaner removes stale files without removing the
+// directory that holds them, and the directory's identity is unchanged by that,
+// so without this check a gutted copy is served for the rest of the process and
+// the bundled skills silently disappear. Only the files the cache itself
+// recorded are checked, so the cost is one Lstat per skill.
+func cacheDirComplete(skills map[string]SkillMeta) bool {
+	if len(skills) == 0 {
+		return false
+	}
+	for _, meta := range skills {
+		info, err := os.Lstat(meta.SkillFile)
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	return true
 }
 
 // touchDir refreshes a cache directory's modification time, and its base's, so
