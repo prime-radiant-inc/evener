@@ -216,7 +216,7 @@ export function QueueStrip({
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
     if (!controls.drain) {
-      toasts.push("error", STEER_UNAVAILABLE);
+      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
       return;
     }
     setRowBusy(entryId, true);
@@ -275,7 +275,7 @@ export function QueueStrip({
 
   async function handleDrain(): Promise<void> {
     if (!controls.drain) {
-      toasts.push("error", STEER_UNAVAILABLE);
+      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
       return;
     }
     const { text, attachments, hasPending, skillNames } = getComposerText();
@@ -425,7 +425,11 @@ export function QueueStrip({
                   size="sm"
                   disabled={!actionsAvailable || !controls.drain || busy}
                   disabledReason={
-                    !actionsAvailable ? ACTIONS_UNAVAILABLE_REASON : controls.drain ? undefined : STEER_UNAVAILABLE
+                    !actionsAvailable
+                      ? ACTIONS_UNAVAILABLE_REASON
+                      : controls.drain
+                        ? undefined
+                        : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
                     if (entryId !== undefined) void handlePromote(index, entryId);

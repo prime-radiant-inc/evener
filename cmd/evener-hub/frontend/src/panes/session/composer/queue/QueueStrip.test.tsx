@@ -4,6 +4,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
+import { NO_ACTIVE_TURN } from "../../../../protocol/submitRouting";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
@@ -1272,6 +1273,31 @@ describe("drain-as-steer affordance", () => {
       const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
       expect(call?.params).toMatchObject({ ref: "ref_a" });
     });
+  });
+
+  // When the status is what blocks a drain (awaiting with a queue is the ask
+  // boundary; that queue runs next on its own), the strip names the status,
+  // not the capability: sessionControls' reason for drain is the status floor.
+  test("an awaiting session with a queue disables Steer now for the status, not the capability", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "awaiting" },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    const steerNow = screen.getByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(true);
+    const wrapper = steerNow.parentElement;
+    if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
+    fireEvent.mouseEnter(wrapper);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(NO_ACTIVE_TURN);
+    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
