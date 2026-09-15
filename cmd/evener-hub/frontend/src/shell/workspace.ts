@@ -408,7 +408,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       const activeId = dockviewApi.activePanel?.id;
       set({
         panes,
-        focusedPaneId: panes.some((p) => p.id === activeId) ? activeId : (panes[0]?.id ?? null),
+        focusedPaneId: panes.find((p) => p.id === activeId)?.id ?? panes[0]?.id ?? null,
       });
       return true;
     } catch {

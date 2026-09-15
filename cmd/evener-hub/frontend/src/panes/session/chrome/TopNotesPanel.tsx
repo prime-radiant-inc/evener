@@ -30,14 +30,23 @@ export interface TopNotesPanelProps {
 export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingFocus = usePendingTopNotesFocus(sessionRef);
+  const readable = canReadSharedNotes(model);
   // Subscribed before the canReadSharedNotes guard below so the early return
   // can never skip a hook (Rules of Hooks).
   const draftState = useHumanNoteDraft(sessionRef);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  // The frame-callback focus guard below compares against the ref the pane
+  // CURRENTLY serves; mirroring the prop here keeps that current through
+  // every render (the latest-ref pattern).
+  const latestSessionRef = useRef(sessionRef);
+  latestSessionRef.current = sessionRef;
 
   useEffect(() => {
+    // Gated on readability so a session without the notes capability never
+    // grows the drafts store at all; eviction bounds the rest.
+    if (!readable) return;
     syncHumanNote(sessionRef, model.humanNote);
-  }, [sessionRef, model.humanNote]);
+  }, [sessionRef, model.humanNote, readable]);
 
   // Serve the outstanding focus request whenever the editor is visible:
   // immediately for /notes on a mounted panel, and on mount for a request
@@ -48,12 +57,17 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   useEffect(() => {
     if (!expanded || !pendingFocus) return;
     if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
+    // The pane can be reused for another session between the take and the
+    // frame, and React hands the successor the same DOM editor, so the
+    // element alone cannot say whose request it carries: only the session
+    // identity can.
+    const requestedRef = sessionRef;
     requestAnimationFrame(() => {
-      editorRef.current?.focus();
+      if (latestSessionRef.current === requestedRef) editorRef.current?.focus();
     });
   }, [sessionRef, expanded, pendingFocus]);
 
-  if (!canReadSharedNotes(model)) return null;
+  if (!readable) return null;
 
   const canWrite = canWriteHumanNote(model);
   // While the session accepts writes, the summary mirrors the editor's
