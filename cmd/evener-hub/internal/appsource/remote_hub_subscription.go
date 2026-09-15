@@ -168,12 +168,40 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 			close(sub.clientDone)
 		}
 	}()
+	// pending buffers thread notifications read ahead while one thread's
+	// consumer has backpressured delivery. Reading ahead is what makes this
+	// goroutine's teardown independent of routing: the drain never blocks on a
+	// thread send without also selecting on the client's own stream, so the
+	// stream's close is always observed and the deferred cleanup above always
+	// runs — even when a thread consumer has parked a send. Without it a full
+	// thread in buffer would park the drain, clientDone would never close, and
+	// every host subscription would stay attached to a dead client across
+	// reconnect.
+	var pending []appwire.Notification
 	for {
-		notification, ok := <-client.Notifications()
-		if !ok {
+		var notification appwire.Notification
+		if len(pending) > 0 {
+			notification = pending[0]
+			pending = pending[1:]
+			if len(pending) == 0 {
+				pending = nil
+			}
+		} else {
+			next, ok := <-client.Notifications()
+			if !ok {
+				return
+			}
+			notification = next
+			// Host-level consumers see the notifications their filter accepts;
+			// delivery is scoped to the owning client so one connection's traffic
+			// never reaches another's subscriptions. It is prompt (non-blocking)
+			// and stays in read order: it happens before this notification's
+			// thread routing.
+			s.publishHostNotification(client, notification)
+		}
+		if !s.routeNotification(client, notification, &pending) {
 			return
 		}
-		s.routeNotification(client, notification)
 	}
 }
 
@@ -182,24 +210,36 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // outside it; a stale reference is harmless because in is never closed.
 // Blocking rather than dropping is deliberate: a dropped turn/completed is
 // exactly the failure this component exists to prevent.
-func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
-	// Host-level consumers see the notifications their filter accepts; delivery
-	// is scoped to the owning client so one connection's traffic never reaches
-	// another's subscriptions. Thread routing below is unchanged.
-	s.publishHostNotification(client, notification)
+//
+// The blocking send also selects on the client's own stream, so a stream close
+// is observed rather than missed while a thread consumer holds up delivery.
+// Notifications read ahead are published to host-level consumers immediately, in
+// read order, and buffered in pending for later thread routing. It reports false
+// when the stream ended, so the caller runs the drain's teardown.
+func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification, pending *[]appwire.Notification) bool {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
-		return
+		return true
 	}
 	s.subMu.Lock()
 	sub := s.subs[threadID]
 	s.subMu.Unlock()
 	if sub == nil {
-		return
+		return true
 	}
-	select {
-	case sub.in <- translated:
-	case <-sub.pumpDone:
+	for {
+		select {
+		case sub.in <- translated:
+			return true
+		case <-sub.pumpDone:
+			return true
+		case next, ok := <-client.Notifications():
+			if !ok {
+				return false
+			}
+			s.publishHostNotification(client, next)
+			*pending = append(*pending, next)
+		}
 	}
 }
 

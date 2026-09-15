@@ -40,6 +40,15 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// TUI has no editor for it, and a session reads its instruction docs once
 	// at session init, so a rewrite changes nothing the TUI is showing.
 	appwire.NotifyEvenerSettingsAgentsDocChanged,
+	// evener/host/notification is the controller hub's remote-admin proxy
+	// re-emitting a REMOTE host's own config broadcast (evener/auth/updated,
+	// launch/updated, marketplace/updated, plugin/updated,
+	// settings/agentsDoc/changed) tagged with the source host (component 07a).
+	// It exists for the Web UI's per-host settings panes. The TUI has no
+	// remote-host settings surface to fold it into — a local config change still
+	// arrives unwrapped as the underlying method and is dispatched above — so
+	// there is no case to give it.
+	appwire.NotifyEvenerHostNotification,
 }
 
 // kata e79v: evener/thread/modelRetry was added to the catalog and the TUI ignored
