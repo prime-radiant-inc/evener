@@ -235,6 +235,73 @@ function guidedRepair() {
   };
 }
 
+test("repair management retains focus when the post-save listing refresh runs after handoff", async () => {
+  const h = guidedRepair();
+  await h.select();
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  });
+  expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  fireEvent.click(screen.getByText("Advanced settings"));
+  fireEvent.click(screen.getByRole("button", { name: "Open full connection editor" }));
+  const dialog = screen.getByRole("dialog");
+  const focused = screen.getByRole("button", { name: "Replace API key" });
+  expect(document.activeElement).toBe(focused);
+
+  // Release the store-owned post-save timer only after the replacement dialog
+  // owns focus, then control the listing at the external transport boundary.
+  const refresh = deferred<InstanceListResponse>();
+  h.fake.on("evener/instance/list", () => refresh.promise);
+  await act(async () => vi.runOnlyPendingTimersAsync());
+  expect(h.fake.calls.at(-1)?.method).toBe("evener/instance/list");
+  expect(credentialsStore.getState().loading).toBe(true);
+  expect(document.activeElement).toBe(focused);
+  expect(screen.getByRole("button", { name: "Replace API key" })).toBe(focused);
+  await act(async () => {
+    refresh.resolve(h.listing());
+    await refresh.promise;
+  });
+  expect(credentialsStore.getState().loading).toBe(false);
+  expect(document.activeElement).toBe(focused);
+  expect(screen.getByRole("button", { name: "Replace API key" })).toBe(focused);
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+test("repair permits exactly one store-owned refresh and no extra auth checks after handoff", async () => {
+  const h = guidedRepair();
+  await h.select();
+  vi.useFakeTimers();
+  const check = deferred<AuthTestResponse>();
+  h.fake.on("evener/auth/test", () => check.promise);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  });
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toBeTruthy();
+  fireEvent.click(screen.getByText("Advanced settings"));
+  fireEvent.click(screen.getByRole("button", { name: "Open full connection editor" }));
+  const beforeRefresh = h.fake.calls.length;
+  const refresh = deferred<InstanceListResponse>();
+  h.fake.on("evener/instance/list", () => refresh.promise);
+  await act(async () => vi.runOnlyPendingTimersAsync());
+  expect(h.fake.calls.slice(beforeRefresh)).toEqual([{ method: "evener/instance/list", params: {} }]);
+  await act(async () => {
+    refresh.resolve(h.listing());
+    await refresh.promise;
+  });
+  expect(credentialsStore.getState().loading).toBe(false);
+  expect(h.fake.calls.slice(beforeRefresh)).toEqual([{ method: "evener/instance/list", params: {} }]);
+  const calls = h.fake.calls.length;
+  await act(async () => {
+    check.resolve({ provider: "openai", status: "success", message: "" });
+    await check.promise;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Back to connection choices" }));
+  await act(async () => vi.runOnlyPendingTimersAsync());
+  expect(h.fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(h.fake.calls).toHaveLength(calls);
+});
+
 test.each(["save", "refresh", "check", "result"])(
   "repair excursion invalidates %s without hidden dialogs or background checks",
   async (phase) => {
@@ -243,40 +310,65 @@ test.each(["save", "refresh", "check", "result"])(
     const refresh = deferred<InstanceListResponse>();
     const check = deferred<AuthTestResponse>();
     await h.select();
+    vi.useFakeTimers();
     if (phase === "save") h.fake.on("evener/auth/apiKey/set", () => save.promise);
     if (phase === "refresh") h.fake.on("evener/instance/list", () => refresh.promise);
     if (phase === "check") h.fake.on("evener/auth/test", () => check.promise);
-    await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-    if (phase === "result") expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+    });
+    if (phase === "result") expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
     else
       expect(
-        await screen.findByRole("button", {
+        screen.getByRole("button", {
           name: phase === "save" ? "Saving…" : phase === "refresh" ? "Refreshing access…" : "Checking model list…",
         }),
       ).toBeTruthy();
-    await h.leave();
+    fireEvent.click(screen.getByText("Advanced settings"));
+    fireEvent.click(screen.getByRole("button", { name: "Open full connection editor" }));
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     const checksBefore = countCalls(h.fake, "evener/auth/test");
     const writesBefore = countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS);
+    const beforeRefresh = h.fake.calls.length;
+    // A save still pending at handoff must not resume the guided chain, but
+    // its response schedules the store-owned refresh even with no active owner.
+    if (phase === "save") {
+      await act(async () => {
+        save.resolve(h.status);
+        await save.promise;
+      });
+      expect(h.fake.calls).toHaveLength(beforeRefresh);
+    }
+    const storeRefresh = deferred<InstanceListResponse>();
+    h.fake.on("evener/instance/list", () => storeRefresh.promise);
+    await act(async () => vi.runOnlyPendingTimersAsync());
+    expect(h.fake.calls.slice(beforeRefresh)).toEqual([{ method: "evener/instance/list", params: {} }]);
+    await act(async () => {
+      storeRefresh.resolve(h.listing());
+      await storeRefresh.promise;
+    });
+    expect(credentialsStore.getState().loading).toBe(false);
+    expect(h.fake.calls.slice(beforeRefresh)).toEqual([{ method: "evener/instance/list", params: {} }]);
+    // Sample quiescence only after that allowed external request completes.
+    // The stale guided refresh/check is still pending and may do no more work.
+    const calls = h.fake.calls.length;
     await act(async () => {
       save.resolve(h.status);
       refresh.resolve(h.listing());
       check.resolve({ provider: "openai", status: "success", message: "" });
       await Promise.all([save.promise, refresh.promise, check.promise]);
     });
-    // The resolution must not open a hidden dialog or steal focus: checked at
-    // the moment it lands, before the quiesce below lets the store's own
-    // debounced read re-render the section.
+    await act(async () => vi.runOnlyPendingTimersAsync());
+    expect(h.fake.calls).toHaveLength(calls);
     expect(h.connected).not.toHaveBeenCalled();
-    await focusSettlesInDialog();
-    // The excursion must not let an in-flight response continue into a check or
-    // a credential write, even once everything the store schedules for itself
-    // has settled. Asserting the named calls rather than the total is what
-    // removes the load-sensitive flake: the store's debounced listing read is
-    // bookkeeping, not the background check this test is named for.
-    await quiesceCalls(h.fake);
     expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
     expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
-    await h.back();
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Back to connection choices" }));
+    expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
     // Leaving and returning changed nothing: invalidation is not a reportable
@@ -286,14 +378,11 @@ test.each(["save", "refresh", "check", "result"])(
       "disabled",
       false,
     );
-    // The client is already settled above and Back issues no RPC, so this is a
-    // plain re-read rather than a second settle.
+    await act(async () => vi.runOnlyPendingTimersAsync());
+    expect(h.fake.calls).toHaveLength(calls);
     expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
     expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
   },
-  // The settle window runs on real timers and covers the store's ~250ms
-  // debounce, so these cases need more than the 5s default.
-  20000,
 );
 
 test("a refresh superseded by the credential notification's own refetch is not reported as a failure", async () => {
@@ -645,29 +734,6 @@ function countCalls(fake: FakeClient, ...methods: string[]): number {
   return fake.calls.filter((call) => methods.includes(call.method)).length;
 }
 
-/** Waits until the fake client has recorded no new call for a settle window, so
- * an assertion taken afterwards describes a quiescent client rather than one
- * with a call still in flight. The window must exceed the store's debounced
- * refetch (~250ms after a save's evener/auth/updated), or the helper would
- * return before that read is recorded and claim a quiescence it never saw; a
- * response that wrongly continued past an invalidation issues its check in the
- * microtasks right after its deferred resolves, so it too has landed by then.
- * A client that never goes quiet is a failure, not a pass: settling is the
- * precondition every caller's assertion depends on. */
-async function quiesceCalls(fake: FakeClient): Promise<void> {
-  const settleMs = 400;
-  const deadline = Date.now() + 3000;
-  let seen = fake.calls.length;
-  while (Date.now() < deadline) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, settleMs));
-    });
-    if (fake.calls.length === seen) return;
-    seen = fake.calls.length;
-  }
-  throw new Error("the fake client never went quiet; a call kept arriving past the settle deadline");
-}
-
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
@@ -685,6 +751,40 @@ afterEach(() => {
 });
 
 describe("ConnectProviderDialog", () => {
+  test("initial loading waits for the listing before showing the empty state", async () => {
+    const initial = deferred<InstanceListResponse>();
+    const fake = connectFakeClient({ instances: [], availableProviders: [] });
+    fake.on("evener/instance/list", () => initial.promise);
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByText("No provider instances are available.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
+
+    await act(async () => {
+      initial.resolve({ instances: [], availableProviders: [] });
+      await initial.promise;
+    });
+    expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+    expect(screen.getByText("No provider instances are available.")).toBeTruthy();
+  });
+
+  test("a failed refresh still hides stale provider rows and offers retry", async () => {
+    const fake = connectFakeClient({
+      instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
+      availableProviders: [],
+    });
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+    expect(await screen.findByRole("button", { name: "Set API key" })).toBeTruthy();
+    fake.on("evener/instance/list", () => {
+      throw new Error("fixture listing failure");
+    });
+    await act(async () => credentialsStore.getState().fetch());
+    expect(screen.getByRole("alert").textContent).toContain("Failed to load providers:");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set API key" })).toBeNull();
+    expect(screen.queryByText("No provider instances are available.")).toBeNull();
+  });
+
   test.each(["onboarding", "settings"])(
     "%s recovers when its first listing is interrupted by reconnect",
     async (view) => {
