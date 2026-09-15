@@ -652,24 +652,18 @@ function countCalls(fake: FakeClient, ...methods: string[]): number {
  * return before that read is recorded and claim a quiescence it never saw; a
  * response that wrongly continued past an invalidation issues its check in the
  * microtasks right after its deferred resolves, so it too has landed by then.
- * Polls rather than sleeping a whole window up front, so a client that never
- * goes quiet is still reported at the deadline instead of passing. */
+ * A client that never goes quiet is a failure, not a pass: settling is the
+ * precondition every caller's assertion depends on. */
 async function quiesceCalls(fake: FakeClient): Promise<void> {
   const settleMs = 400;
-  const pollMs = 50;
   const deadline = Date.now() + 3000;
   let seen = fake.calls.length;
-  let quietSince = Date.now();
   while (Date.now() < deadline) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      await new Promise((resolve) => setTimeout(resolve, settleMs));
     });
-    if (fake.calls.length !== seen) {
-      seen = fake.calls.length;
-      quietSince = Date.now();
-      continue;
-    }
-    if (Date.now() - quietSince >= settleMs) return;
+    if (fake.calls.length === seen) return;
+    seen = fake.calls.length;
   }
   throw new Error("the fake client never went quiet; a call kept arriving past the settle deadline");
 }
