@@ -26,6 +26,15 @@ type skillsLease interface {
 	Valid() bool
 }
 
+// noopSkillsLease stands in where locking is unavailable or unsupported. The
+// reaper cannot take an exclusive lease there either, so nothing is reaped on
+// that filesystem and an unleased copy is not at risk from it.
+type noopSkillsLease struct{}
+
+func (noopSkillsLease) Release() error { return nil }
+
+func (noopSkillsLease) Valid() bool { return true }
+
 // acquireSkillsLease opens path (creating it) and takes a shared lock, or an
 // exclusive one when exclusive is true. contended reports that the lock could
 // not be taken, or that the lock file was replaced underneath it. It is a

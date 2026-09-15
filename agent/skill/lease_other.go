@@ -7,9 +7,3 @@ package skill
 func platformAcquireSkillsLease(string, bool) (skillsLease, bool, error) {
 	return noopSkillsLease{}, false, nil
 }
-
-type noopSkillsLease struct{}
-
-func (noopSkillsLease) Release() error { return nil }
-
-func (noopSkillsLease) Valid() bool { return true }

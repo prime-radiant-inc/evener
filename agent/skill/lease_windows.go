@@ -15,6 +15,12 @@ type windowsSkillsLease struct {
 	path       string
 }
 
+// windowsLockUnsupported reports that the filesystem does not support locking at
+// all, as opposed to another process holding the lock.
+func windowsLockUnsupported(err error) bool {
+	return errors.Is(err, windows.ERROR_NOT_SUPPORTED) || errors.Is(err, windows.ERROR_INVALID_FUNCTION)
+}
+
 // platformAcquireSkillsLease takes a shared (reader) or exclusive (reaper) lock
 // on the lock file at path. A lock file that was replaced underneath the lock is
 // reported as contended: the lease is on a dead file and guards nothing.
@@ -43,6 +49,12 @@ func platformAcquireSkillsLease(path string, exclusive bool) (skillsLease, bool,
 	}
 	if err := windows.LockFileEx(handle, flags, 0, ^uint32(0), ^uint32(0), &lease.overlapped); err != nil {
 		contended := errors.Is(err, windows.ERROR_LOCK_VIOLATION)
+		if !contended && windowsLockUnsupported(err) {
+			// Locking is unavailable here, so the reaper cannot take an exclusive
+			// lease either and never removes anything; the copy is safe unleased
+			// rather than a reason to lose every bundled skill.
+			return noopSkillsLease{}, false, closeWith(nil)
+		}
 		return nil, contended, closeWith(fmt.Errorf("lock skill lease: %w", err))
 	}
 	if !lease.Valid() {

@@ -36,6 +36,7 @@ type embeddedSkillsCacheSnapshot struct {
 	dir, digest, leasedDir, fallbackBase string
 	skills                               map[string]SkillMeta
 	verified, fallback                   bool
+	fallbackUntil                        time.Time
 	lease                                skillsLease
 }
 
@@ -43,14 +44,15 @@ func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 	embeddedSkillsCache.mu.Lock()
 	defer embeddedSkillsCache.mu.Unlock()
 	return embeddedSkillsCacheSnapshot{
-		dir:          embeddedSkillsCache.dir,
-		digest:       embeddedSkillsCache.digest,
-		leasedDir:    embeddedSkillsCache.leasedDir,
-		fallbackBase: embeddedSkillsCache.fallbackBase,
-		skills:       embeddedSkillsCache.skills,
-		verified:     embeddedSkillsCache.verified,
-		fallback:     embeddedSkillsCache.fallback,
-		lease:        embeddedSkillsCache.lease,
+		dir:           embeddedSkillsCache.dir,
+		digest:        embeddedSkillsCache.digest,
+		leasedDir:     embeddedSkillsCache.leasedDir,
+		fallbackBase:  embeddedSkillsCache.fallbackBase,
+		fallbackUntil: embeddedSkillsCache.fallbackUntil,
+		skills:        embeddedSkillsCache.skills,
+		verified:      embeddedSkillsCache.verified,
+		fallback:      embeddedSkillsCache.fallback,
+		lease:         embeddedSkillsCache.lease,
 	}
 }
 
@@ -72,6 +74,7 @@ func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
 	embeddedSkillsCache.verified = s.verified
 	embeddedSkillsCache.fallback = s.fallback
 	embeddedSkillsCache.fallbackBase = s.fallbackBase
+	embeddedSkillsCache.fallbackUntil = s.fallbackUntil
 	embeddedSkillsCache.lease = s.lease
 	embeddedSkillsCache.leasedDir = s.leasedDir
 }

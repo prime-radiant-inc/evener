@@ -31,18 +31,22 @@ const embeddedSkillsPrefix = "evener-skills-"
 // reads it for its lifetime.
 const retainedSkillsPrefix = embeddedSkillsPrefix + "copy-"
 
-// Bounds on what the digest will read from a tree. The bundled skills are a
-// dozen small markdown files; these exist because the published name lives in a
-// shared temp directory, so an occupant this process did not write could be a
-// large or hostile tree that would otherwise be read before it is rejected.
+// Bounds on what the digest will read from a tree. They exist to stop a hostile
+// occupant of a shared cache name from being read without limit, so they are
+// generous ceilings rather than a shape the bundled tree must fit: the embedded
+// tree is a dozen small files today, and a future release that outgrows these
+// should raise them rather than silently lose its skills.
 const (
-	maxEmbeddedSkillBytes   = 1 << 20 // one file
-	maxEmbeddedSkillsBytes  = 8 << 20 // every file together
-	maxEmbeddedSkillEntries = 256
-	maxEmbeddedSkillDepth   = 8
+	maxEmbeddedSkillBytes   = 4 << 20  // one file
+	maxEmbeddedSkillsBytes  = 64 << 20 // every file together
+	maxEmbeddedSkillEntries = 4096
+	maxEmbeddedSkillDepth   = 16
 	// staleStagingMaxAge is how long a staging directory abandoned by a failed
 	// publish is left before a later publish reaps it.
 	staleStagingMaxAge = 24 * time.Hour
+	// fallbackRetryInterval is how long a private fallback copy is reused before
+	// the shared cache is tried again.
+	fallbackRetryInterval = 5 * time.Minute
 	// staleRetainedMaxAge is how long a retained fallback copy, a superseded
 	// published directory, or a randomized fallback base is left before a later
 	// publish reaps it. It is deliberately long: a process that resolves a copy
@@ -67,8 +71,9 @@ var embeddedSkillsCache struct {
 	// fallback marks a private copy created when the shared cache could not be
 	// leased, along with the private base it was published into. It is reaped by
 	// reapStaleFallbackBases and removed when replaced.
-	fallback     bool
-	fallbackBase string
+	fallback      bool
+	fallbackBase  string
+	fallbackUntil time.Time
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -115,8 +120,10 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
 		if embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached) {
-			// A fallback copy is only usable while its own lease is held.
-			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
+			// A fallback copy is only usable while its own lease is held, and it
+			// is only reused until the shared cache is due for another try.
+			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() &&
+				time.Now().Before(embeddedSkillsCache.fallbackUntil) {
 				touchDir(cached)
 				return cached, nil
 			}
@@ -171,6 +178,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.verified = true
 		embeddedSkillsCache.fallback = false
 		embeddedSkillsCache.fallbackBase = ""
+		embeddedSkillsCache.fallbackUntil = time.Time{}
 		if previousFallbackBase != "" {
 			// A shared copy replaced the private one; its base has no other owner.
 			_ = os.RemoveAll(previousFallbackBase)
@@ -207,6 +215,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	embeddedSkillsCache.verified = true
 	embeddedSkillsCache.fallback = true
 	embeddedSkillsCache.fallbackBase = base
+	embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
 	return dir, nil
 }
 
@@ -266,6 +275,7 @@ func forgetEmbeddedSkillsLocked() {
 	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.fallback = false
 	embeddedSkillsCache.fallbackBase = ""
+	embeddedSkillsCache.fallbackUntil = time.Time{}
 	releaseSkillsLeaseLocked()
 	if !fallback {
 		return
@@ -284,13 +294,14 @@ func forgetEmbeddedSkillsLocked() {
 // namespaced by user and verified private, so another user on a shared host
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
-	tmpBase := os.TempDir()
 	// Cleanup runs on every resolution, not only when the predictable name is
 	// unusable, so a base that becomes usable again does not strand the fallback
 	// bases earlier runs left behind. The caller holds the cache mutex, so the
-	// live paths passed here are read under it.
-	reapStaleFallbackBases(tmpBase, time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
-	dir := filepath.Join(tmpBase, embeddedSkillsPrefix+processOwnerTag())
+	// live paths passed here are read under it. Fallback bases are created by
+	// MkdirTemp, so they live under the temp dir even where the cache base does
+	// not.
+	reapStaleFallbackBases(os.TempDir(), time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
+	dir := filepath.Join(defaultSkillsBaseRoot(), embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err == nil {
 		return dir, nil
 	}
