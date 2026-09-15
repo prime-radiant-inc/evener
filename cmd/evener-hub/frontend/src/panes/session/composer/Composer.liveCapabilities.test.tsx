@@ -255,24 +255,24 @@ test("a live idle session's controls follow the turn its own send starts", async
   expect(submitButton().disabled).toBe(false);
 });
 
-// Stop is SESSION-scoped, so its gate cannot be "a turn has told us its name".
+// Both verbs are SESSION-scoped, so neither gate can be "a turn has told us
+// its name".
 //
-// turn/interrupt carries no turn id (appwire v3 dropped expectedTurnId from
-// every control mutation) and the daemon decides on the session's own
-// quiescence. But the composer gated Stop on `busy`, which is isTurnActive:
-// `statusType === "active" && !!activeTurnId` -- gating the BUTTON on an id the
-// REQUEST does not carry, which can only ever withhold a Stop the daemon would
-// have accepted.
+// turn/interrupt and turn/steer carry no turn id (appwire v3 dropped
+// expectedTurnId from every control mutation) and the daemon decides each on
+// the session's own state. The composer once gated both on an activeTurnId the
+// REQUEST does not carry, which can only ever withhold a control the daemon
+// would have accepted. The status alone gates either verb now (isTurnActive:
+// `statusType === "active"`), and the capability gates them independently, so
+// the pair drawn is the pair the daemon advertised beside that status.
 //
 // Active-with-no-id is a state the wire really reaches: a session holding queued
-// work reports active with no turn running. (An earlier version of this comment
-// blamed a turn reservation taken at turn/start. That reservation has no
-// production callers; it is not how this state is reached, and the gate is wrong
-// for the reason above regardless.)
-//
-// Steer stays behind `busy`: it needs a turn to redirect, and Send already
-// covers "say something now" for a session between turns.
-test("a working session offers Stop before its turn has announced a name", async () => {
+// work reports active with no turn running, and the id is cleared between the
+// turn/completed and turn/started of an inline turn boundary (issue #1330).
+// (An earlier version of this comment blamed a turn reservation taken at
+// turn/start. That reservation has no production callers; it is not how this
+// state is reached, and the gate was wrong for the reason above regardless.)
+test("a working session offers Stop and Steer before its turn has announced a name", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
 
   act(() => {
@@ -288,6 +288,7 @@ test("a working session offers Stop before its turn has announced a name", async
     activeTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
 });
 
 // The breadcrumb for kata 5gdv, wired end to end rather than unit-tested in
