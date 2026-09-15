@@ -68,11 +68,11 @@ handler registrations are:
 
 | Family | Handler source | Registration | Protocol rows |
 | --- | --- | --- | --- |
-| Provider instances | `cmd/evener-hub/app_instances.go` (`hubInstancesController`) | `app_rpc.go:969-1011` | `appwire/protocol.go:183-187` |
-| Launch config | `cmd/evener-hub/app_launch.go` (`hubLaunchController`) | `app_rpc.go:1015-1039` | `appwire/protocol.go:177-181` |
-| Plugins / marketplaces | `cmd/evener-hub/app_plugins.go` (`hubPluginsController`) | `app_rpc.go:1044-1135` | `appwire/protocol.go:188-202` |
-| Auth / credentials | `cmd/evener-hub/app_auth.go` (`hubAuthController`) | `app_rpc.go:904-962` | `appwire/protocol.go:166-176` |
-| Agents doc | `cmd/evener-hub/app_rpc_agents_doc.go` (`registerAgentsDocHandlers`) | `app_rpc_agents_doc.go:141-178` (called from `app_rpc.go:386`) | `appwire/protocol.go:210-211` |
+| Provider instances | `cmd/evener-hub/app_instances.go` (`hubInstancesController`) | `app_rpc.go` | `appwire/protocol.go` |
+| Launch config | `cmd/evener-hub/app_launch.go` (`hubLaunchController`) | `app_rpc.go` | `appwire/protocol.go` |
+| Plugins / marketplaces | `cmd/evener-hub/app_plugins.go` (`hubPluginsController`) | `app_rpc.go` | `appwire/protocol.go` |
+| Auth / credentials | `cmd/evener-hub/app_auth.go` (`hubAuthController`) | `app_rpc.go` | `appwire/protocol.go` |
+| Agents doc | `cmd/evener-hub/app_rpc_agents_doc.go` (`registerAgentsDocHandlers`) | `app_rpc_agents_doc.go` (called from `app_rpc.go`) | `appwire/protocol.go` |
 
 Concretely the proxied method names are (all `ScopeHub` in
 `appwire/protocol.go`):
@@ -86,30 +86,30 @@ Concretely the proxied method names are (all `ScopeHub` in
 
 The instance family has exactly those five handlers — the catalog has no
 `evener/instance/setModelDisabled` and no `evener/instance/refreshModels`
-(`protocol.go:183-187`), so the allow-list must not name them. Likewise the
+(`protocol.go`), so the allow-list must not name them. Likewise the
 plugin family is the nine above, including `evener/plugin/disable` and
-`evener/plugin/setAutoUpgrade` (`protocol.go:201-202`), which the pane's UI can
+`evener/plugin/setAutoUpgrade` (`protocol.go`), which the pane's UI can
 reach and which were missing here.
 
 Notes on the seams:
 
 - `hubInstancesController` is "the only writer of providers.toml"
-  (`app_instances.go:22-24`); reads go through `registry.ReadConfigFile`
-  (`app_instances.go:35`, `llm/registry/write.go:176`) and writes through
-  `registry.WriteConfigFile` (`app_instances.go:39`, `llm/registry/write.go:217`).
+  (`app_instances.go`); reads go through `registry.ReadConfigFile`
+  (`app_instances.go`, `llm/registry/write.go`) and writes through
+  `registry.WriteConfigFile` (`app_instances.go`, `llm/registry/write.go`).
   This is exactly why the proxy forwards rather than reimplements: the host's
   registry owns the file.
 - `hubLaunchController` refuses a launch-layer `env` key that looks like a
-  credential (`app_launch.go:179-182`), so the proxy must surface that refusal
+  credential (`app_launch.go`), so the proxy must surface that refusal
   verbatim; it must not launder it into a generic error.
 - The auth controller already refuses a stored key under a Codex instance
-  (`app_auth.go:466-468`) and under a gcp-adc instance (`app_auth.go:472-474`) —
+  (`app_auth.go`) and under a gcp-adc instance —
   the credential push relies on these host-side refusals.
 
 ### Proxy method
 
 The AppWire `Request` envelope carries only `ID`, `Method`, and `Params`
-(`appwire/jsonrpc.go:65-69`), and hub-scoped methods carry no ref, so there is
+(`appwire/jsonrpc.go`), and hub-scoped methods carry no ref, so there is
 **no existing host dimension** on an admin call. This component adds one. New
 hub-scoped method, one protocol row in `appwire/protocol.go`:
 
@@ -133,12 +133,12 @@ The handler:
    become a generic hub-to-hub RPC tunnel (design §6 "secret handling"; the
    remote hub is a trusted peer but the browser is not);
 4. calls the per-host `appwire.Client.Request(ctx, Method, Params, &out)`
-   (`appwire/client.go:287`) and returns `out` as the browser response, passing
+   (`appwire/client.go`) and returns `out` as the browser response, passing
    wire errors through unchanged.
 
 The per-host client is the one components 04/05 already maintain for
-`RemoteHubSource` (created the way `spike/client/main.go:67` and
-`appsource/local_daemon.go:202` create one: `appwire.NewClient(transport)`).
+`RemoteHubSource` (created the way `spike/client/main.go` and
+`appsource/local_daemon.go` create one: `appwire.NewClient(transport)`).
 Component 05 must expose it (or an equivalent admin-call accessor); this spec
 does not define that accessor.
 
@@ -169,36 +169,36 @@ type HostCredentialPushResult struct {
 
 Read side (local):
 
-- `credentials.LoadStore(cmdutil.CredentialsPath())` (`internal/credentials/store.go:49`,
-  `cmdutil/registry.go:31-42`), or the hub's already-loaded `cfg.CredsStore`
-  (`cmd/evener-hub/main.go:251-253`, `internal/hubcore/config.go:55`).
-- `Store.Names()` (`store.go:98`) lists the file-layer entries; `Store.Get(name)`
-  (`store.go:86`) returns one value. `Store.Set` writes atomically at mode `0600`
-  (`store.go:117`, `store.go:188-214`) — but the push does **not** write the
+- `credentials.LoadStore(cmdutil.CredentialsPath())` (`internal/credentials/store.go`,
+  `cmdutil/registry.go`), or the hub's already-loaded `cfg.CredsStore`
+  (`cmd/evener-hub/main.go`, `internal/hubcore/config.go`).
+- `Store.Names()` (`store.go`) lists the file-layer entries; `Store.Get(name)`
+  (`store.go`) returns one value. `Store.Set` writes atomically at mode `0600`
+  (`store.go`) — but the push does **not** write the
   local store; it only reads it.
 
 Write side (remote): for each local entry, call the remote hub's
 `evener/auth/apiKey/set` with `{provider, value}`
-(`appwire/types.go:2679-2682`) via the same `evener/host/request` channel. The
-host's `hubAuthController.ApiKeySet` (`app_auth.go:453`) validates, calls
-`c.setCredential` (= `creds.Set`, `app_auth.go:128`), reloads the registry
-(`app_auth.go:479`), and returns `AuthStatusResponse`. The host therefore writes
+(`appwire/types.go`) via the same `evener/host/request` channel. The
+host's `hubAuthController.ApiKeySet` (`app_auth.go`) validates, calls
+`c.setCredential` (= `creds.Set`), reloads the registry, and returns
+`AuthStatusResponse`. The host therefore writes
 its own `credentials.toml` atomically with the correct mode; the controller
 never sees the file path or writes it.
 
 **Merge / no-clobber policy.** Before writing, the pusher asks the remote
-`evener/auth/status` for the instance (`app_auth.go:184`) and reads
+`evener/auth/status` for the instance (`app_auth.go`) and reads
 `ActiveSource` and `HasStoredFile` from `AuthStatusResponse`
-(`appwire/types.go:2245`, `:2249`). Writes are permitted **only** when the
+(`appwire/types.go`). Writes are permitted **only** when the
 remote resolves the instance's credential from the file layer or has none;
 every other source is skipped, because the pushed key either cannot be used or
 would silently change which credential is in force. Remote resolution order is
 `api_key` > `credential_headers` > `store` > `env:<VAR>` (`registry.credential`,
-`llm/registry/instances.go:414-478`):
+`llm/registry/instances.go`):
 
 | Condition on the remote (evaluated top to bottom) | Action |
 | --- | --- |
-| instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go:466-474`); classify locally so the report is a skip, not an error |
+| instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go`); classify locally so the report is a skip, not an error |
 | instance not present in the remote `evener/instance/list` | **skipped** — no matching instance on the host |
 | `ActiveSource == "api_key"` or `"credential_headers"` | **skipped** — the instance resolves from `providers.toml`, which *outranks* the file layer, so a pushed key would be shadowed and change nothing |
 | `ActiveSource == "env:<VAR>"` | **skipped** — the host operator's environment supplies a working credential; a file-layer write outranks `env:` and would silently replace it |
@@ -220,20 +220,20 @@ identical. See "Open questions".
 ### OpenAI OAuth caveat
 
 The Codex OAuth record is `auth/<instance>.json` under the hub state root
-(`auth/openai/storage.go:62-74`, `AuthFilePath`), and the curated instance is
-`openai-codex` (`cmd/evener/openai_login.go:21`). The state root the hub uses
-is `cmdutil.StateRootFromLookup` (`cmd/evener-hub/openai_state_dir.go:32-34`,
-`hook` at `cmd/evener-hub/app_rpc.go:203-210`). `SaveAuth` writes it atomically
-at mode `0600` (`auth/openai/storage.go:129-165`).
+(`auth/openai/storage.go`, `AuthFilePath`), and the curated instance is
+`openai-codex` (`cmd/evener/openai_login.go`). The state root the hub uses
+is `cmdutil.StateRootFromLookup` (`cmd/evener-hub/openai_state_dir.go`,
+`hook` at `cmd/evener-hub/app_rpc.go`). `SaveAuth` writes it atomically
+at mode `0600` (`auth/openai/storage.go`).
 
 The record can be refresh/device-bound: an access/refresh token minted for the
 controller's machine may not refresh on the host. Therefore:
 
 - **Primary path:** sign in **on the host** through the remote hub's own
   `evener/auth/device/start` / `evener/auth/device/poll`
-  (`app_auth.go:552`, registration `app_rpc.go:940-947`). Device-code is chosen
-  headless by `EVENER_LOGIN_HEADLESS=1` (`envvars/envvars.go:68`, read at
-  `cmd/evener/openai_login.go:195-204`), which is what a controller-driven,
+  (`app_auth.go`, registration `app_rpc.go`). Device-code is chosen
+  headless by `EVENER_LOGIN_HEADLESS=1` (`envvars/envvars.go`, read at
+  `cmd/evener/openai_login.go`), which is what a controller-driven,
   non-interactive SSH session needs. The host writes its own record via
   `SaveAuth`; nothing is copied.
 - **Best-effort copy:** replaying the local record onto the host is offered only
@@ -252,16 +252,16 @@ Decompose component 07 into four landable PRs.
 ### PR 07a — proxy method + host validation + notification fan-out
 
 - Add the protocol row and typed params in `appwire/protocol.go` and
-  `appwire/types.go` beside the existing `ScopeHub` rows (`protocol.go:164-200`).
+  `appwire/types.go` beside the existing `ScopeHub` rows (`protocol.go`).
 - New controller `hubHostAdminController` in a new
   `cmd/evener-hub/app_host_admin.go`, registered in
   `newHubAppServerWithNavigationAndTrace` beside
-  `registerAuthHandlers`/`registerInstanceHandlers`/… (`app_rpc.go:350-365`).
+  `registerAuthHandlers`/`registerInstanceHandlers`/… (`app_rpc.go`).
 - The controller takes the component-03 `hostreg.Registry` and the component-05
   per-host client accessor. It allow-lists methods against the families in the
   table above; the allow-list is the security boundary.
 - Notification fan-out: the per-host `appwire.Client` delivers the remote hub's
-  notifications on `Client.Notifications()` (`appwire/client.go:217`); re-emit
+  notifications on `Client.Notifications()` (`appwire/client.go`); re-emit
   them to the controller's browser clients tagged with the host. The existing
   broadcast helpers (`notifyAuthUpdated`, `notifyLaunchUpdated`,
   `notifyMarketplaceUpdated`, `notifyPluginUpdated`, `notifyInstanceUpdated`)
@@ -290,7 +290,7 @@ Decompose component 07 into four landable PRs.
   the classification table above.
 - Read the local store through `cfg.CredsStore` or
   `credentials.LoadStore(cmdutil.CredentialsPath())`; enumerate with `Names()`
-  and `Get()` (`internal/credentials/store.go:49,86,98`).
+  and `Get()` (`internal/credentials/store.go`).
 - Query the remote `evener/auth/status` and `evener/instance/list` through the
   proxy channel; write through `evener/auth/apiKey/set`.
 - Add the push action to the remote-credentials pane in the frontend
@@ -302,7 +302,7 @@ Decompose component 07 into four landable PRs.
 - Frontend: for a Codex instance on a remote host, offer "Sign in on host",
   which drives `evener/auth/device/start`/`device/poll` through the proxy and
   shows the verification URL/code; document `EVENER_LOGIN_HEADLESS=1`
-  (`envvars/envvars.go:68`).
+  (`envvars/envvars.go`).
 - Optional best-effort token copy, clearly warned, gated behind the same
   explicit action.
 
@@ -317,7 +317,7 @@ browser                 controller hub                        host hub (remote)
   |  "evener/launch/      |  attached? (04/05)                    |
   |   setLayer",params} --|-- allow-list method                   |
   |                       |  appwire.Client.Request(method,params)|  hubLaunchController.SetLayer
-  |                       |-------------------------------------->|  (app_launch.go, app_rpc.go:1015)
+  |                       |-------------------------------------->|  (app_launch.go, app_rpc.go)
   |   response            |<--------------------------------------|  resolved config / wire error
   |<----------------------|                                       |
                           |  notification evener/launch/updated   |
@@ -331,16 +331,16 @@ Credential push:
 ```
 local credentials.toml                           host hub (remote)
   credentials.LoadStore(CredentialsPath())          |
-  Names()/Get()  (store.go:49,86,98)               |
+  Names()/Get()  (store.go)               |
         |                                           |
-        |  evener/auth/status (per instance) ------>| hubAuthController.Status (app_auth.go:184)
+        |  evener/auth/status (per instance) ------>| hubAuthController.Status (app_auth.go)
         |<-- ActiveSource, HasStoredFile -----------|
         |                                           |
         |  classify (added/updated/skipped)         |
         |                                           |
-        |  evener/auth/apiKey/set ----------------->| ApiKeySet (app_auth.go:453)
-        |    {provider, value}                      |   creds.Set  (store.go:117)
-        |<-- AuthStatusResponse / wire error -------|   atomic save 0600 (store.go:188-214)
+        |  evener/auth/apiKey/set ----------------->| ApiKeySet (app_auth.go)
+        |    {provider, value}                      |   creds.Set  (store.go)
+        |<-- AuthStatusResponse / wire error -------|   atomic save 0600 (store.go)
         |                                           |
   per-instance report -> browser
 ```
@@ -356,13 +356,13 @@ receives a key, and the controller writes nothing.
 - Disallowed method → `appwire.InvalidParams`; the allow-list is checked before
   any forwarding.
 - Remote wire errors are returned verbatim (`appwire.WireError` passthrough),
-  including the launch credential-env refusal (`app_launch.go:179-182`) and the
-  auth Codex/gcp-adc refusals (`app_auth.go:466-474`).
+  including the launch credential-env refusal (`app_launch.go`) and the
+  auth Codex/gcp-adc refusals (`app_auth.go`).
 - Push: a failure for one instance does not abort the run; it is recorded as
   `failed` for that instance and the loop continues. A failure to read the local
   store fails the whole call before any remote write.
 - A host whose `providers.toml` cannot be parsed keeps its own refusal
-  (`app_instances.go:294-303`); the proxy surfaces it, it does not repair it.
+  (`app_instances.go`); the proxy surfaces it, it does not repair it.
 - Channel loss mid-call follows component 04's reconnect policy; the in-flight
   call returns the client error.
 
@@ -382,10 +382,10 @@ receives a key, and the controller writes nothing.
   before/after).
 - **Secret hygiene:** assert no key value appears in the push response, in the
   controller log output, or in a rendered error, reusing the secret-marked
-  registry (`envvars/envvars.go:21`, `Secret`) and `redactEnvSecrets`
-  (`cmd/evener-hub/spawn.go:865-874`, used at `:789`, `:824`).
+  registry (`envvars/envvars.go`, `Secret`) and `redactEnvSecrets`
+  (`cmd/evener-hub/spawn.go`).
 - **Local read test:** `credentials.LoadStore`/`Names`/`Get` against a temp
-  store, including an absent file (empty store, `store.go:57-61`).
+  store, including an absent file (empty store, `store.go`).
 - **Frontend:** store tests asserting that a remote host wraps each admin call
   through `evener/host/request` and `local` does not; settings routing tests for
   the host context.
@@ -405,12 +405,12 @@ receives a key, and the controller writes nothing.
    is inside it, and no instance method outside the five listed exists to call.
 3. Remote config mutations reach the host's own store: an `evener/instance/create`
    proxied to `m4` lands in `m4`'s `providers.toml`, not the controller's
-   (`app_instances.go:22-24`).
+   (`app_instances.go`).
 4. Remote config notifications refresh the browser's panes without a manual
    reload (tagged with the host).
 5. Credential push reads the local store and writes the host's store only via
    `evener/auth/apiKey/set`; the host file is written atomically at mode `0600`
-   (host-side `store.go:188-214`). An instance whose remote credential resolves
+   (host-side `store.go`). An instance whose remote credential resolves
    from `api_key`, `credential_headers`, `oauth`, `adc`, or `env:<VAR>` receives
    no write at all; only `store` and `none` are writable.
 6. The push report lists every local entry with `added`/`updated`/`skipped`/

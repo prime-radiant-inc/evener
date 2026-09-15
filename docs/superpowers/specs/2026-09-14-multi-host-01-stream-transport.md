@@ -57,15 +57,54 @@ Symmetric in the other direction; `Close` ends both.
 
 ## Error handling
 
-- Oversize frame → error, do not grow the buffer unbounded.
-- Invalid JSON on a line → error; the connection is considered broken.
-- Underlying write error → propagated.
+- **Oversize frame → `errStreamFrameTooLarge`.** Both directions produce it:
+  `Send` refuses a marshaled frame larger than `streamFrameLimit`, and `Recv`
+  reports the capped scanner's `bufio.ErrTooLong` as the same sentinel. No
+  buffer grows unbounded. Once this fires the scanner is done, so **every later
+  `Recv` returns the same error** — the frame boundary is gone and the transport
+  is unusable.
+- **Invalid JSON on a line → the unmarshal error, and the transport does not
+  poison itself.** The offending line has been consumed, so a later `Recv` would
+  read the *following* line; nothing in the transport closes the stream. That
+  is deliberate — see the caller contract below.
+- **Underlying write error → propagated from `Send`.** The transport does not
+  close on it either.
+- `ctx` already done on entry → `ctx.Err()`, returned before any read/write.
+- `Close` closes the underlying `io.ReadWriteCloser`; that is what unblocks a
+  blocked `Recv`. `Close` is the caller's lever, not an error handler.
+
+### Contract for callers: a framing error ends the channel
+
+The transport does not decide when a connection is dead — the caller owns that.
+The required behavior (component 05 states the same rule as "close the client,
+fail pending requests, mark the source offline; never attempt to resynchronize a
+corrupt stream"):
+
+1. Any `Recv` error — `errStreamFrameTooLarge`, an unmarshal error, or `io.EOF`
+   — means the stream can no longer be trusted. `Close()` the transport and fail
+   everything in flight. Do not skip the bad line and keep reading; an
+   oversize-frame error in particular is unrecoverable because the scanner
+   returns the same error forever.
+2. This is what the shipping caller does. `appwire.Client`'s read loop stops on
+   the first `Recv` error, and component 04's link monitor (`linkMonitor`,
+   `Channel.markLost` in `cmd/evener-hub/internal/sshconn`) turns that first
+   read error into the channel's link-down edge, which closes the transport and
+   starts the reconnect.
+3. Cross-reference: `05-remote-hub-source.md` §"Error handling" assumes
+   close-and-offline after a framing/JSON error. That assumption is a property
+   of the *caller*, not of this transport; keep the two consistent by never
+   resuming a stream that produced a frame error.
 
 ## Testing
 
 - Round-trip between two `net.Pipe` ends (exists).
 - `appwire.Client` over the stream transport against a manual responder (exists).
 - Oversize-frame rejection and concurrent-`Send` non-interleaving (add).
+- Frame-error semantics (add): after an oversize frame, a second `Recv` returns
+  `errStreamFrameTooLarge` again (the scanner is exhausted); after an invalid
+  JSON line, the next `Recv` can still read the next frame, and the test
+  documents that closing is the caller's decision. `errors.Is` must match the
+  sentinel in both the read and write paths.
 
 ## Acceptance criteria
 

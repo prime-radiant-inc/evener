@@ -6,6 +6,14 @@ Siblings: `2026-09-14-multi-host-01-stream-transport.md`,
 `2026-09-14-multi-host-03-host-config.md`.
 Spikes: `2026-09-14-multi-host-spikes-findings.md` (Spikes A and C).
 
+**Citation convention.** Symbols (package, type, method, constant, file) are
+authoritative and were verified on the implementation branches
+(`multi-host-pr04a-ssh-channel`, `multi-host-pr04b-deploy-restart`,
+`multi-host-pr05a..d`, `multi-host-pr06a-fleet-view-go`). Line numbers are not
+used for Go or TypeScript sources; where a non-Go line reference survives
+(docs, `install.sh`, Makefiles) treat it as a hint from the `multi-host-specs`
+working tree, not as pinning — the reviewer's base is `origin/main`.
+
 ## Purpose
 
 Turn one `[[hosts]]` entry (component 03) into a live, owned AppWire channel to
@@ -21,11 +29,19 @@ component is the only place that runs `ssh`. It
    the installer;
 5. on attach, compares the controller's build with the host's and, when they
    differ, deploys the matching build, restarts the host hub, and verifies the
-   restarted hub's build identity through `/api/health` before attaching.
+   restarted hub's build identity **by running the health probe on the host**
+   (never from the controller's own loopback) before attaching.
 
 It produces a connected AppWire transport + initialized client per host; it does
 **not** map that client onto `appsource.Source` (component 05) or render hosts
 (component 06).
+
+**Registry membership is not this component's business.** Component 05 registers
+one `appsource.Source` per configured host at hub startup and never adds or
+removes one (components 03/05/06 agree on this). What this component publishes —
+lifecycle events and `Manager.Attached` — is *connection state only*: it feeds
+the source's `Online()` flag and navigation invalidation. There is no
+register/unregister path anywhere in this component or in 05.
 
 ## Scope
 
@@ -46,7 +62,10 @@ It produces a connected AppWire transport + initialized client per host; it does
 - Version auto-match on attach: compare controller `buildinfo.Version()` with the
   host's reported `version`; deploy + restart the host hub when they differ, then
   verify the **restarted** hub's build through its `/api/health` identity
-  (`version`, `backend_git_sha`, fresh `started_at`) before re-attaching.
+  (`version`, `backend_git_sha`, fresh `started_at`), probed on the host, before
+  re-attaching.
+- Client handoff: publish the current client per host so component 05 can rebind
+  after a reconnect without ever caching a dead client (§"Client handoff").
 
 ## Non-scope
 
@@ -70,7 +89,7 @@ New package `cmd/evener-hub/internal/sshconn`:
 
 ```go
 // Manager owns the SSH channels for the configured hosts.
-type Manager struct { /* cfg, registry, runner, clock, logger */ }
+type Manager struct { /* reg *hostreg.Registry, opts Options, runner Runner; per-host locks + live channels */ }
 
 func New(reg *hostreg.Registry, opts Options) *Manager
 
@@ -78,12 +97,46 @@ func New(reg *hostreg.Registry, opts Options) *Manager
 // preflighting/deploying/version-matching as needed. Idempotent while attached.
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error)
 
+// Attached reports whether host currently has a live, not-closed channel.
+// This is the online signal components 05/06 consume; it never changes registry
+// membership.
+func (m *Manager) Attached(name string) bool
+
 // Channel is one owned SSH channel + the AppWire client over it.
-type Channel struct { /* cmd, stream, client, dest, host */ }
+type Channel struct { /* host, facts, stdio, transport, client, drop/lifecycle channels */ }
 
 func (c *Channel) Client() *appwire.Client      // initialized AppWire client
 func (c *Channel) Transport() appwire.Transport // StreamTransport over ssh stdio
+func (c *Channel) Preflight() Preflight         // GOOS/GOARCH, HOME, resolved config/state roots
+func (c *Channel) Host() hostreg.Host           // the registry entry it was built from
 func (c *Channel) Close() error                 // kill ssh, close pipes
+
+// Options carries the seams and the connection parameters.
+type Options struct {
+    Runner              Runner        // nil = production execRunner
+    Stderr              io.Writer     // ssh diagnostics; nil = os.Stderr
+    Logger              func(format string, args ...any)
+    ConnectTimeout      time.Duration
+    ServerAliveInterval time.Duration
+    ServerAliveCountMax int
+    ClientName          string        // AppWire initialize ClientInfo; default "evener-hub"
+    ClientVersion       string        // default buildinfo.Version()
+    BackoffBase         time.Duration // default 500ms
+    BackoffMax          time.Duration // default 30s
+    OnEvent             func(Event)   // lifecycle sink (connection state, not registry mutation)
+    BuildBinary         func(ctx context.Context, goos, goarch, out string) error // nil = localBuild
+    HubAddr             string        // fallback host hub loopback address when the entry sets no addr; default 127.0.0.1:9180
+}
+
+// Event is one lifecycle notification. Attached/Detached mark connection-state
+// transitions for Online() and navigation invalidation; they do not add or
+// remove sources.
+type Event struct {
+    Host  string
+    Kind  EventKind // EventState | EventAttached | EventDetached | EventFailed
+    State State     // disconnected | preflighting | deploying | restarting | attaching | attached | reconnecting
+    Err   error
+}
 
 // Runner is the process seam. Production is execRunner; tests inject a fake.
 type Runner interface {
@@ -115,22 +168,35 @@ ssh -o BatchMode=yes -o ConnectTimeout=<n> <dest> <evener_path> hub attach --std
   `user` is set it is composed here (`user@host`).
 - `<evener_path>` is component 03's `evener_path`, defaulting to `evener` on the
   remote `PATH`.
-- **No address, token, or config path is on the argv.** The bridge resolves all
-  three on the host from the host's own `hub.toml` (component 02, §Scope), so
-  the controller never has to discover them to attach. The manager keeps its
-  own hub address only for the restart/health path (`Options.HubAddr`, default
-  `127.0.0.1:9180`; see §Preflight).
+- **Address, token, config path (corrected contract).** The argv carries none of
+  the three today: the bridge resolves the address and the token from the host's
+  own `hub.toml` and state root (component 02, §Scope). That is only correct for
+  a host hub started from the *default* configuration. A hub started with
+  `--config <path>` or a non-default `addr` attaches only by luck — the bridge
+  reads whatever the host's default resolution finds, not what the hub read —
+  and cannot be restarted or health-checked at all, because this component knows
+  only `Options.HubAddr` (default `127.0.0.1:9180`), a manager-wide value rather
+  than a per-host one. Corrected contract: the component-03 entry carries the
+  host's connection parameters (`config_path`, `addr`); this component passes
+  them through on the channel argv (`hub attach --stdio [--config
+  <config_path>] [--addr <addr>]`) and uses the same `addr` for the
+  restart/health path in place of the default. When the entry omits them, both
+  sides use the documented host defaults — and the manager must then refuse to
+  restart a hub whose listener it cannot match to the configured address (§5)
+  instead of restarting whatever happens to hold the default port. The
+  capability token is never on the argv; the bridge reads it from the resolved
+  state root.
 - `BatchMode=yes` and a connect timeout make the channel strictly
   non-interactive, so a credential prompt fails fast instead of hanging; mirrors
-  the spike invocation `spike/client/main.go:51`
+  the spike invocation `spike/client/main.go`
   (`ssh -o BatchMode=yes -o ConnectTimeout=10 <host> <remote>`).
 - stdin/stdout are the framed AppWire stream; stderr is diagnostics
-  (spike `spike/client/main.go:52`, `cmd.Stderr = os.Stderr`).
+  (spike `spike/client/main.go`, `cmd.Stderr = os.Stderr`).
 
 ### Preflight + version contract
 
 The host answers the same `launch-check` contract the local hub already gates on
-(`cmd/evener-hub/spawn.go:772-809`):
+(`cmd/evener-hub/spawn.go`):
 
 ```
 ssh <dest> <evener_path> launch-check --protocol <appwire.ProtocolVersion> --json
@@ -138,20 +204,23 @@ ssh <dest> <evener_path> launch-check --protocol <appwire.ProtocolVersion> --jso
 
 `launchcheck.RunLaunchCheck` emits
 `{"protocol","version","launch_flags",...}`
-(`cmd/evener/internal/launchcheck/launchcheck.go:42-54`, dispatch
-`cmd/evener/main.go:407-408`). This component parses `protocol` and `version` and
+(`cmd/evener/internal/launchcheck/launchcheck.go`, dispatch
+`cmd/evener/main.go`). This component parses `protocol` and `version` and
 reuses the local gate's rules:
 
-- `protocol` must equal `appwire.ProtocolVersion` (`appwire/types.go:25`); a
-  mismatch is refused before any bridge is spawned, exactly as
-  `validateEvenerLaunchContract` does (`spawn.go:802-804`).
+- `protocol` must equal `appwire.ProtocolVersion` (`appwire/types.go`), and the
+  gate refuses a mismatch exactly as `validateEvenerLaunchContract` does
+  (`spawn.go`). Unlike the local path, the controller is the version authority:
+  a refusal here means the host's on-disk binary is not the controller's build,
+  so it enters the same deploy + restart flow as a version difference (§5) and
+  is re-preflighted afterwards. It is not terminal on its own.
 - `launch_flags` must contain `api-log` (`supportedLaunchFlags`,
-  `launchcheck.go:40`; gate `spawn.go:805-807`), because the host hub will spawn
+  `launchcheck.go`; gate `spawn.go`), because the host hub will spawn
   host daemons with the same `--api-log` floor the controller pins
-  (`cmd/evener/serve.go:348`; docs/evener-hub.md:127-141).
-- `version` is `buildinfo.Version()` (`launchcheck.go:75`), i.e. the git SHA of
+  (`cmd/evener/serve.go`; docs/evener-hub.md:127-141).
+- `version` is `buildinfo.Version()` (`launchcheck.go`), i.e. the git SHA of
   the `evener` binary on the host (or `"dev"`). The controller's side of the
-  comparison is `buildinfo.Version()` in-process (`buildinfo/buildinfo.go:12-21`).
+  comparison is `buildinfo.Version()` in-process (`buildinfo/buildinfo.go`).
 
 ### Channel lifecycle states
 
@@ -161,23 +230,34 @@ remote hub or its daemons (design §2 lifecycle; docs/evener-hub.md:499-502); th
 manager transitions to `reconnecting` and re-runs `Ensure` on the same `dest`,
 which re-attaches as a client.
 
+The manager is **lazy and event-publishing, not a registry owner**:
+
+- `Ensure` is called on first use (the controller's per-host client accessor
+  calls it), so a configured host with no traffic has no SSH channel and its
+  source reports `Online() == false` (component 05's `SetHostOnline(Manager.Attached)`).
+- Lifecycle events (`EventState`, `EventAttached`, `EventDetached`,
+  `EventFailed`, delivered through `Options.OnEvent`) report *connection state*
+  only. They drive `Online()` and navigation invalidation. **No consumer adds or
+  removes a source in response to them** — component 05 registers one source per
+  configured host at startup and never changes the set (components 03/05/06).
+
 ## Implementation approach (files/packages, cited seams)
 
 ### 1. Process ownership — `runner.go`
 
 - `execRunner.Start` / `Run` build `argv` and call `exec.Command` (the same
-  constructor `spawnDaemon` uses, `cmd/evener-hub/spawn.go:381`), set
+  constructor `spawnDaemon` uses, `cmd/evener-hub/spawn.go`), set
   `cmd.Stderr`, and wire `StdinPipe`/`StdoutPipe`. It deliberately does **not**
   use `CommandContext`: the channel's lifetime is the attach, not one request's
-  `ctx`, the same reasoning `spawnDaemon` records at `spawn.go:378-381`
+  `ctx`, the same reasoning `spawnDaemon` records at `spawn.go`
   ("NOT CommandContext: the spawned daemon must outlive this call's ctx"). `ctx`
   bounds `Start`, not the child; `Channel.Close` (or the reaper) kills the child,
-  as the spike's `procStream.Close` does (`spike/client/main.go:26-36`).
+  as the spike's `procStream.Close` does (`spike/client/main.go`).
 - The SSH child is a **client** of the remote hub and binds no port; it must not
-  take `hostlock` (`cmd/evener-hub/internal/hostlock/hostlock.go:17-37`).
+  take `hostlock` (`cmd/evener-hub/internal/hostlock/hostlock.go`).
 - Local detach attributes (`SysProcAttr{Setsid:true}`,
-  `cmd/evener-hub/spawn_detach_unix.go:12-14`; nil elsewhere,
-  `spawn_detach_other.go:9`) apply to *locally spawned* children. The SSH child
+  `cmd/evener-hub/spawn_detach_unix.go`; nil elsewhere,
+  `spawn_detach_other.go`) apply to *locally spawned* children. The SSH child
   is not detached — it dies with the controller, which is correct: the remote hub
   is the detached process, not the channel. **Remote** detachment (for the hub
   start command) is a host-side idiom, not `SysProcAttr`; see §3.
@@ -186,17 +266,19 @@ which re-attaches as a client.
 
 - `Ensure`:
   1. if attached, return the live channel;
-  2. `preflight` (§2, below);
-  3. version-match (§3);
+  2. `preflight` (§3, below);
+  3. version-match (§5);
   4. `Start` the ssh bridge (`ssh ... hub attach --stdio`), wrap the child's
-     stdin/stdout in `appwire.NewStreamTransport` (`appwire/stream_transport.go:32`),
+     stdin/stdout in `appwire.NewStreamTransport` (`appwire/stream_transport.go`),
      and build an `appwire.Client` over it.
   5. `Initialize` with `ProtocolVersion: appwire.ProtocolVersion` and a
-     controller `ClientInfo`; treat `appwire.ProtocolVersionMismatchError`
-     (`appwire/client.go:338-345`; raise site `client.go:347-358`) as a
-     hard incompatibility, not a transient error.
+     controller `ClientInfo`. `appwire.ProtocolVersionMismatchError`
+     (`appwire/client.go`) here means the *running* hub speaks another protocol
+     while the on-disk binary preflighted clean: restart the hub once and
+     re-attach (§5). Only a mismatch that survives that restart is terminal
+     `ErrProtocolIncompatible`.
 - Keepalive: `StreamTransport` does not implement `Pinger`
-  (`appwire/stream_transport.go:17-21`), so the client keepalive loop skips it.
+  (`appwire/stream_transport.go`), so the client keepalive loop skips it.
   Liveness therefore comes from (a) the ssh child/NIC failing, (b) `Recv`
   returning `io.EOF`/error, and (c) an `ssh`-level keepalive. The manager sets
   `ServerAliveInterval`/`ServerAliveCountMax` on the ssh argv and treats child
@@ -206,9 +288,42 @@ which re-attaches as a client.
   fresh bridge/client against the still-running hub; it never starts a second hub
   (`hostlock`; spike finding both m4 lock files held,
   `2026-09-14-multi-host-spikes-findings.md:50-52`).
-- The manager exposes attach/detach events so component 05 can
-  add/remove the corresponding source (the 03 spec fixes `Registry.All()` as the
-  iteration point).
+- The manager exposes attach/detach events and `Attached` as **connection-state
+  signals** for component 05's `Online()` and for navigation invalidation. They
+  never add or remove a source: component 05 registers every configured host's
+  source once at startup (component 03, §"Source registration hook").
+
+### Client handoff (component 04 → 05)
+
+A reconnect creates a new ssh child, a new `StreamTransport`, and a new
+`appwire.Client`; the old client is dead. Component 05 must never be left bound
+to it, so the handoff is defined as:
+
+1. **The manager owns the binding.** `Ensure(ctx, host)` returns the current
+   `*Channel` and is serialized per host (a per-host mutex), and the supervisor
+   performs the whole reconnect under that same lock. A caller therefore never
+   observes a half-swapped channel, and `Ensure` after a drop returns the *new*
+   channel (or fails).
+2. **The consumer resolves the client per call.** Component 05 holds a
+   `RemoteHubClientFunc`-shaped accessor (`func(ctx, host) (*appwire.Client,
+   error)`), not a `*appwire.Client`: the wiring in `cmd/evener-hub/main.go`
+   calls `sshManager.Ensure(ctx, host)` and returns `ch.Client()`. Every call
+   re-resolves, so a handoff is picked up by the next call with no notification
+   handshake. Caching a client in the source is the defect this contract
+   forbids.
+3. **Derived state is keyed to the client.** The capability probe caches its
+   result against the client it ran on (component 05), so a new client
+   automatically re-probes; a subscription is bound to the client it was
+   created on and its notification stream ends with that client, which is what
+   tells the controller relay to re-subscribe.
+4. **In-flight work fails, it is not replayed.** Calls issued on the dead client
+   return the transport error (mapped to `SessionUnavailable`); the manager does
+   not buffer or reissue them. Restoring state — probe refresh, subscriptions —
+   is the consumer's job on the next call (component 05, §"Reconnect handoff").
+
+The events are advisory: `EventDetached` is emitted before the reconnect starts
+and `EventAttached` once the replacement channel is installed, but a consumer
+that ignores them still converges, because resolution happens per call.
 
 ### 3. Preflight — `preflight.go`
 
@@ -222,19 +337,33 @@ Run over non-interactive SSH (no login shell, no TTY):
   with `printenv`/parameter expansion. The spike found non-interactive SSH
   exports no `XDG_*`, so evener resolves to `~/.config/evener` and
   `~/.local/state/evener` (spike findings:47-49; docs/evener-hub.md:65-68;
-  `envvars/envvars.go:153-154`). Preflight records the resolved state root so the
+  `envvars/envvars.go`). Preflight records the resolved state root so the
   controller knows where the host's `auth-token` and `hub.lock` live; it must not
   invent XDG values the host environment does not have.
 - **Existing version/protocol.** The `launch-check` call in §"Contract" above.
-- **Hub address (not probed).** v1 does not discover the host hub's address over
-  SSH, and does not pass one to the bridge: the bridge reads the host's own
-  `hub.toml` (component 02). The manager's own copy lives in `Options.HubAddr`
-  (default `127.0.0.1:9180`; docs/evener-hub.md:96-104, 314-318) and is used
-  only by the restart/health path (§5) — today the wiring leaves it at the
-  default, so a host hub deliberately started on a non-default port attaches
-  fine but cannot be auto-restarted until that option is set.
-  `hub.lock` lives at `<hub_state_root>/hub.lock` (`cmd/evener-hub/main.go:175`)
-  and names no address or PID.
+- **Roots (probed).** Preflight resolves the host's config root and state root
+  from the probed environment with the same chain the host binary uses
+  (`resolveRoots`, `cmdutil.StateRootFromLookup`, `envvars/userdirs.ConfigRoot`)
+  and records them on `Preflight` (`Preflight.Home`, `.ConfigRoot`,
+  `.StateRoot`). Those are the roots a *default-layout* host hub reads, and they
+  tell the controller where the host's `auth-token` and `hub.lock` live.
+  Non-interactive ssh exports no `XDG_*`, so the defaults are
+  `~/.config/evener` and `~/.local/state/evener` (`envProbeScript`).
+- **Address / config path (not probed — corrected contract).** The bridge reads
+  the host hub's `addr` and the token's state root from the config path it is
+  given (component 02). So the two sides must agree on that path and on the
+  address, and today nothing carries them: `Options.HubAddr` (default
+  `127.0.0.1:9180`) is manager-wide, and the channel argv names no `--config`.
+  Consequently a host hub started with `--config /etc/evener/hub.toml` or a
+  non-default `addr` attaches to whatever the default resolution finds, and a
+  restart/health probe targets the wrong port. The corrected contract is
+  component 03's per-host `config_path`/`addr` (component 03, §"`config_path` /
+  `addr`"), passed to the bridge as `--config`/`--addr` and used for the
+  restart/health path; absent those fields, both sides use the defaults and a
+  restart the manager cannot match to the configured address is refused
+  (§5) rather than guessed.
+  `hub.lock` lives at `<hub_state_root>/hub.lock` (`cmd/evener-hub/main.go`)
+  and names no address or PID — it cannot be used to find the listener.
 - **Target support.** Only `linux/amd64` and `darwin/arm64` ship
   (`.goreleaser.yml:24-30`; `install.sh:39-45`). Any other `os-arch` is a
   terminal, named unsupported-host error — do not attempt a deploy.
@@ -244,10 +373,42 @@ Run over non-interactive SSH (no login shell, no TTY):
 Two paths, chosen per host (open question: which wins when both are viable):
 
 - **Cross-compile + push (primary).** Build the controller's own tree for the
-  host target with `CGO_ENABLED=0 GOOS=<o> GOARCH=<a> go build -o <stage>/evener
-  ./cmd/evener/` — the same command shape `make build-linux`
-  (`make/building.mk:41-42`) and `scripts/ops/build-runtime-pair.sh:24-28` use —
-  then push with `scp` (or `ssh <dest> 'cat > <path>'`) and `chmod +x`.
+  host target and push it with `scp` (or `ssh <dest> 'cat > <path>'`) plus
+  `chmod +x`. The command *must* stamp build identity — a bare `go build`
+  produces a binary whose `launch-check` version is `"dev"`, and version
+  auto-match would then compare against a build the host is not running. The
+  shipped implementation does it as `localBuild` in
+  `cmd/evener-hub/internal/sshconn/deploy.go`:
+
+  ```
+  CGO_ENABLED=0 GOOS=<o> GOARCH=<a> \
+    go build -ldflags "<buildLdflags()>" -o <stage>/evener ./cmd/evener/
+  ```
+
+  with `buildLdflags()` rendering one
+  `-X primeradiant.com/evener/buildinfo.<Field>=<value>` per field for
+  `GitSHA`, `GitDirty`, `BuildTime`, and `Channel` (the import path is the
+  `buildinfoPkg` constant), all **read in process** from `buildinfo.GitSHA`,
+  `buildinfo.GitDirty`, `buildinfo.BuildTime`, and `buildinfo.Channel` — never
+  re-derived by running `git` and `date` as the Makefile does. That is what
+  makes the pushed binary's `buildinfo.Version()` (and therefore its
+  `launch-check` `version`) exactly the controller's. Build from the module root
+  (`moduleRoot`), because the hub may have been started from another directory.
+  The build is a seam: `Options.BuildBinary` (nil = `localBuild`) lets tests
+  assert the argv without compiling.
+
+  **Dev builds must not auto-match.** `buildinfo.Version()` returns `"dev"`
+  whenever `GitSHA` is empty (`buildinfo/buildinfo.go`), so an unstamped
+  controller has no identity to deploy. Rule: when the controller's own
+  `buildinfo.Version()` is `"dev"`, auto-match is *disabled* — attach only to a
+  host reporting exactly `"dev"`, and refuse a mismatch with `ErrDeploy`
+  (message: the controller build carries no identity to deploy) instead of
+  pushing a binary that cannot be distinguished from what is already there.
+  Operators who want auto-match on a dev controller must supply the identity
+  (e.g. `-X buildinfo.GitSHA=…`, or a configured binary via `Options.BuildBinary`).
+
+  The same command shape as `make build-linux` (`make/building.mk:41-42`) and
+  `scripts/ops/build-runtime-pair.sh:24-28`, minus their git/date stamping.
   The spike proved this end to end for `darwin/arm64`: a cross-compiled Go binary
   runs on Apple Silicon without a manual signing step because the Go linker adds
   an ad-hoc signature, and `scp` + `chmod +x` sufficed
@@ -268,46 +429,100 @@ version-match can verify the deploy landed.
 ### 5. Version auto-match + restart — `version.go`
 
 - **On-disk identity (deploy decision).** Compare controller
-  `buildinfo.Version()` (`buildinfo.go:12-21`) with the host's `launch-check`
+  `buildinfo.Version()` (`buildinfo.go`) with the host's `launch-check`
   `version`. `launch-check` reports the binary at `evener_path`/`PATH`, which is
   exactly what a deploy replaces: equal → attach directly; different → the
   controller is the version authority (design §2) and deploys the matching
   build (§4), restarts, then re-attaches. The deploy stamps the controller's own
   buildinfo (`-X buildinfo.GitSHA=…`, `-X buildinfo.BuildTime=…`) into the
   pushed binary, so a deployed binary's `launch-check` version equals the
-  controller's `buildinfo.Version()`.
+  controller's `buildinfo.Version()`. A `"dev"` controller does not auto-match
+  (§4): an unstamped build has no identity to deploy, so a mismatching host is
+  refused rather than "matched" by pushing another `dev` binary.
 - **Running-hub identity (verification).** The binary on disk is *not* proof of
   what the running process executes: a running hub keeps executing the copy it
   was started from until it is restarted. The authoritative running-build
   signal is the host's own HTTP health endpoint, `GET /api/health`, which
   reports `version` and `backend_git_sha` from `buildinfo` in the live process
-  plus `started_at` (`cmd/evener-hub/web_api.go:72-94`; `hubapi.HealthResponse`,
-  `hubapi/types.go:10-20`). Post-restart verification therefore requires **all
-  three**: an answer, a `started_at` later than the restart, and
-  `version`/`backend_git_sha` matching the deployed build. A bare 200 is not
-  sufficient — that is the same check the hub's own self-update path relies on
-  (`cmd/evener-hub/web_api.go:77-79`).
+  plus `started_at` (`cmd/evener-hub/web_api.go`; `hubapi.HealthResponse` in
+  `hubapi/types.go`, fields `Version`, `StartedAt`, `BackendGitSha`).
+  Post-restart verification therefore requires **all three**: an answer, a
+  `started_at` later than the restart, and `version`/`backend_git_sha` matching
+  the deployed build (`buildinfo.Version()` / `buildinfo.GitSHA` in the
+  controller process). A bare 200 — or any non-empty body — is not sufficient;
+  that is the same check the hub's own self-update path relies on
+  (`cmd/evener-hub/web_api.go`).
+
+  **The probe must run on the host.** A request to `127.0.0.1:<port>/api/health`
+  from the controller's Go process reaches the *controller's* hub, not the
+  host's, and the controller has no generic remote-HTTP tool. So the probe is
+  one more `Runner.Run` over the same ssh seam as preflight and restart, exactly
+  as the shipped `waitHealthy` in `cmd/evener-hub/internal/sshconn/version.go`
+  does:
+
+  ```
+  ssh <dest> curl -fsS localhost:<port>/api/health
+  ```
+
+  and the response is decoded as `hubapi.HealthResponse` and checked against the
+  restart timestamp and the deployed identity. Consequences to state plainly:
+
+  - the host must have a working HTTP client (`curl`); record it as a
+    precondition. With no `curl`, the fallback is the AppWire identity read over
+    the attach bridge — `evener/settings/overview`, whose `SettingsHubOverview`
+    carries `Version`, `Commit`, and `BuildChannel` — which proves *which build*
+    the live process runs but cannot prove `started_at` freshness; a mismatch
+    there is still decisive proof the restart did not take. (`appwire.ServerInfo`
+    carries only `Name`/`Version`, where `Version` is the static `"0.1.0"` hub
+    constant, so it must never be used for this comparison.) There is no
+    `evener hub health` subcommand today.
+  - the implementation gap to close: `waitHealthy` currently accepts any
+    non-empty body; it must parse the response and enforce the three checks
+    above before re-attaching.
 - **Stop/restart mechanics.** The host hub is detached and holds an advisory
-  `flock` on `hub.lock` (`main.go:175`; `hostlock.go:17-37`) — an **`flock`,
+  `flock` on `hub.lock` (`main.go`; `hostlock.go`) — an **`flock`,
   not a PID file**: the lock cannot be read to find or signal the process, and
-  breaking it is never allowed. The restart path is:
+  breaking it is never allowed. **Identify before killing:** the port alone is
+  not identity, so a restart refuses unless all of these hold, and refusal is
+  `ErrRestart` naming the mismatch with no kill and no relaunch:
+
+  1. exactly **one** process is listening on the configured address (two or more
+     candidates means the address is wrong — e.g. a port collision with an
+     unrelated service — not that one of them is ours);
+  2. its recovered argv is an evener hub invocation — the configured
+     `evener_path`/`evener` (or the unit's `ExecStart`) running the hub, not
+     merely "something bound to that port";
+  3. the process runs as the configured ssh `user`;
+  4. the listening socket matches the configured `addr` (host and port).
+
+  Supervisor detection obeys the same rules: a launchd label or systemd unit is
+  accepted only when **exactly one** candidate names an evener hub *and* the hub
+  it names owns the configured address; several candidates, or none, fall
+  through to the ad hoc path. "First name that contains `evener` and `hub`
+  wins" is not acceptable, because restarting an unrelated unit is exactly the
+  failure this rule prevents. (Today's implementation matches names by
+  substring in `isEvenerHubName` and takes the first pid from `lsof -ti
+  :<port> -sTCP:LISTEN` in `findHubPID`; the spec's contract is stricter.)
+
+  The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:
      `launchctl kickstart -k gui/$(id -u)/<label>` on darwin, or
      `systemctl [--user] restart <unit>` on linux. Detection is from the host's
-     own listings (`launchctl list`, `systemctl list-units`), matching a label
-     or unit whose name names an evener hub. The supervisor command's exit
-     status is not the check; `/api/health` is (`scripts/ops/deploy-hub.sh`
+     own listings (`launchctl list`, `systemctl list-units`) under the
+     identification rules above. The supervisor command's exit status is not the
+     check; the on-host `/api/health` probe is (`scripts/ops/deploy-hub.sh`
      makes the same judgement).
   2. **Ad hoc hub** — the documented recipe
-     (`docs/evener-hub-remote-operations.md` §"Restarting an ad hoc Hub",
-     `:278-399`): find the PID listening on the hub port
+     (`docs/evener-hub-remote-operations.md` §"Restarting an ad hoc Hub"):
+     find the PID listening on the hub port
      (`lsof -ti :<port> -sTCP:LISTEN`), recover its exact argv
      (`ps -p <pid> -ww -o command`) and log (`lsof -p <pid> -a -d 1,2`), `kill`
      it (SIGTERM; the graceful drain is capped at ~5s), **wait for the port to
      clear**, then relaunch detached with the recovered argv, appending to the
      recovered log (`nohup <argv> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
-  3. Either path then verifies through `/api/health` (above) before re-attaching.
+  3. Either path then verifies on the host through `/api/health` (above) before
+     re-attaching.
   A relaunch that lands in the stop/start gap loses the lock race (the ops
   doc's "resource temporarily unavailable" message) and is retried under the
   backoff, never forced; the manager must surface "could not stop the old hub"
@@ -331,10 +546,11 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                    →  Manager.Ensure(name)
                         ├─ Runner.Run: ssh <dest> launch-check --protocol … --json
                         │     → protocol? launch_flags? version? (preflight)
-                        ├─ version != controller?
+                        ├─ protocol/version != controller?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
-                        │     └─ restart host hub (supervisor, else lsof/kill/nohup)
-                        │          → /api/health: fresh started_at + matching build
+                        │     └─ restart host hub (identify → supervisor, else lsof/kill/nohup)
+                        │          → Runner.Run on the host: curl /api/health
+                        │            → answer + fresh started_at + matching build
                         ├─ Runner.Start: ssh <dest> <evener_path> hub attach --stdio
                         │     ├─ stdin  ← StreamTransport.Send
                         │     ├─ stdout → StreamTransport.Recv
@@ -355,34 +571,55 @@ with the remote hub and its daemons still running.
 - **Non-interactive auth failure** (`BatchMode` refuses a password prompt) →
   terminal, named error telling the operator to install a key/agent on the host;
   never retried in a loop that would spam ssh.
-- **Protocol mismatch** (`launch-check --protocol` refusal at `spawn.go:802-804`,
-  or `appwire.ProtocolVersionMismatchError` at `client.go:347-358`) → terminal
-  `ErrProtocolIncompatible`; no deploy is attempted, since protocol and binary
-  version are separate gates.
-- **Missing `api-log` launch flag** (`spawn.go:805-807`) → terminal
-  `ErrLaunchContract`; a too-old host binary cannot be launched, and the fix is
-  the version-match deploy — so this is the trigger for auto-match, not a bare
-  failure.
+- **Protocol mismatch** (`launch-check --protocol` refusal at `spawn.go`, or
+  `appwire.ProtocolVersionMismatchError` at `client.go`) → **the auto-match
+  trigger, not a terminal state**. A `launch-check` refusal means the on-disk
+  binary is not the controller's build: deploy the matching build, restart,
+  re-preflight, and attach (component 05's version-mismatch rule assumes this).
+  An `Initialize` mismatch on a channel whose preflight matched means the
+  *running* hub is stale while the on-disk binary is right: restart once and
+  re-attach. Only a mismatch that survives the restart becomes terminal
+  `ErrProtocolIncompatible`. (Implementation status: `ensureOnce` compares
+  versions only after a successful preflight, and `preflight` returns
+  `ErrProtocolIncompatible` on a protocol refusal, so this routing is the
+  corrective contract for the implementing PR, not a description of the shipped
+  code.)
+- **Missing `api-log` launch flag** (`spawn.go`) → `ErrLaunchContract`. A
+  too-old host binary cannot be launched, and the version-match deploy is
+  exactly its fix, so this is an auto-match trigger first (deploy, restart,
+  re-preflight) and terminal only if it survives that. (Implementation status:
+  `isTerminal` lists `ErrLaunchContract` and `preflight` returns it before the
+  version comparison, so the shipped code stops instead of auto-matching; the
+  contract above is the corrective one.)
 - **Unsupported host os/arch** → terminal `ErrUnsupportedHost`; no build exists
   (`install.sh:39-45`).
-- **`launch-check` output unparseable** (`launchcheck.go:101-104` JSON; local
-  decoder `spawn.go:799-801`) → `ErrPreflightDecode`; treat as incompatible host.
+- **`launch-check` output unparseable** (`launchcheck.go` JSON; local
+  decoder `spawn.go`) → `ErrPreflightDecode`; treat as incompatible host.
 - **Deploy failure** (cross-compile nonzero, `scp` nonzero, checksum failure in
   the installer path `install.sh:124-130`) → `ErrDeploy`; the existing binary on
   the host is left untouched (temp-name + atomic `mv`).
+- **Unverifiable restart target** → `ErrRestart` and **no restart**: the listener
+  is not provably this host's hub (more than one listener, argv that is not an
+  evener hub, a different user, or a socket that does not match the configured
+  `addr`), or the address/config path is not known well enough to match. A
+  collision or a stale process must never be killed or relaunched; the operator
+  fixes the entry (`config_path`/`addr`) or the host.
 - **Restart failure** → `ErrRestart`; the manager stays `disconnected` and the
   next `Ensure` retries. A hub that fails to start leaves `hub.lock` free, so a
   retry is safe; if the old hub could not be stopped, surface that explicitly
   rather than starting a second hub. A hub that is up but reports the wrong
   `version`/`backend_git_sha`, or a `started_at` older than the restart, is the
   same failure: the restart did not take, and the manager must not attach to the
-  old process as if it had.
+  old process as if it had. Likewise a health probe that could not run (no
+  `curl`, no answer within the bound) is a failed verification, never an assumed
+  success.
 - **Link drop after attach** → `reconnecting`, not an error to the caller; the
   channel's `Client` fails in-flight calls, matching AppWire's existing client
   behavior.
 - **stdout discipline.** The bridge owns stdout for frames; the manager must never
   write logs into the child's stdin or read the child's stdout outside
-  `StreamTransport` (component 02's hard rule, `02-attach-bridge.md:32-34`).
+  `StreamTransport` (component 02, §"Contract" — stdout carries framed AppWire
+  exclusively, and it is a test).
 
 ## Testing
 
@@ -390,8 +627,8 @@ with the remote hub and its daemons still running.
   `launch-check` JSON and an in-memory `io.Pipe` pair for `Start`. This is the
   unit seam; production `execRunner` is the untested-by-default part. The
   injection style mirrors the existing function-var seams
-  (`cmd/evener-hub/spawn.go:35-42`) and `launchCheckLoadClient`
-  (`launchcheck.go:19-21`).
+  (`cmd/evener-hub/spawn.go`) and `launchCheckLoadClient`
+  (`launchcheck.go`).
 - **Preflight table tests.** `uname`/`sw_vers`/`HOME`/XDG outputs → resolved
   `GOOS`/`GOARCH`/state root. Include the non-interactive case with no `XDG_*`
   (spike finding) and assert the `~/.config`/`~/.local/state` fallback. PIN the
@@ -399,13 +636,36 @@ with the remote hub and its daemons still running.
   drift.
 - **Version-match tests.** Host version == controller → no deploy, attach.
   Host `<` or `>` controller → deploy argv asserted, then restart argv, then
-  attach; `--protocol` value asserted to be `appwire.ProtocolVersion`.
+  attach; `--protocol` value asserted to be `appwire.ProtocolVersion`. The
+  deploy argv must carry the `-ldflags` stamping `buildinfo.GitSHA` /
+  `GitDirty` / `BuildTime` / `Channel` from the controller process (assert the
+  rendered flag string, not a real `go build`). A controller whose
+  `buildinfo.Version()` is `"dev"` and a host reporting a real SHA → `ErrDeploy`
+  with no build and no restart; `"dev"` on both sides → attach with no deploy.
 - **Launch-contract tests.** Missing `api-log` in `launch_flags` routes to the
-  version-match path; a protocol mismatch short-circuits before any `Start`.
+  version-match path; a `launch-check` protocol refusal routes to deploy +
+  restart and is not terminal; a protocol mismatch that survives the restart
+  returns `ErrProtocolIncompatible` without a bridge `Start`.
+- **Restart-target tests.** Fake runner answers `lsof`/`ps` with (a) one listener
+  whose argv is an evener hub as the configured user → restart proceeds;
+  (b) two listeners on the port; (c) an argv that is not an evener hub;
+  (d) a different user; (e) a socket on another address → all four of (b)–(e)
+  return `ErrRestart` with **no** `kill` and no relaunch argv in the runner log.
+  Supervisor cases: exactly one evener-named unit → restarted; two candidates →
+  ad hoc path, never "first match".
+- **Health-verification tests.** Fake runner returns a body from the old build
+  (`version`/`backend_git_sha` of the previous deploy, `started_at` before the
+  restart) → not accepted; a fresh `started_at` with matching identity →
+  accepted; no answer within the bound, or a missing HTTP client → `ErrRestart`,
+  never an assumed success. Assert the probe argv is the on-host
+  `curl -fsS localhost:<port>/api/health` over `ssh`, not a controller-side HTTP
+  call.
 - **Channel argv tests.** Assert `ssh -o BatchMode=yes -o ConnectTimeout=…,
   ServerAliveInterval=…, ServerAliveCountMax=… <dest> <evener_path> hub attach
   --stdio`; assert stderr is wired to the diagnostic sink and stdout is not
-  touched outside `StreamTransport`.
+  touched outside `StreamTransport`. With a per-host `config_path`/`addr` set,
+  assert `--config`/`--addr` appear in that order and that the restart/health
+  path uses the same address.
 - **Reconnect test.** Fake link drops (`io.EOF` / child exit) → assert backoff
   schedule, a fresh `Start`, and that no `hub` start was issued (re-attach, not
   a second hub).
@@ -429,19 +689,28 @@ with the remote hub and its daemons still running.
 3. `Ensure` on a host whose `version` differs deploys the matching
    `GOOS`/`GOARCH` build and restarts the host hub before attaching; on a
    matching version it attaches with no deploy (`Runner.Run` argv log asserted).
-   The restart is verified through `GET /api/health` — a fresh `started_at` and
-   a `version`/`backend_git_sha` matching the deployed build — and a health
-   answer from the *old* process is not accepted.
+   The deploy argv stamps the controller's buildinfo (`-ldflags`), and a `"dev"`
+   controller does not auto-match. The restart is verified **on the host** by
+   `curl …/api/health` run through `Runner.Run` — a fresh `started_at` and a
+   `version`/`backend_git_sha` matching the deployed build — and a health answer
+   from the *old* process, or no answer at all, is not accepted.
 4. The SSH channel argv is exactly the non-interactive form in "Contract",
    stdin/stdout are the `StreamTransport` and stderr is diagnostics only.
 5. A link drop leaves the remote hub and its daemons running and re-attaches as
    a client; `Start` is re-issued but no hub-start command is issued.
 6. A host on an unsupported os/arch fails with a named error and no deploy.
-7. A protocol mismatch fails with `ErrProtocolIncompatible` before any bridge
-   process is started.
+7. A protocol mismatch found at preflight or at `Initialize` enters the
+   deploy/restart (preflight) or restart (initialize) flow; `ErrProtocolIncompatible`
+   is returned only when the mismatch survives it, before any bridge `Start`.
 8. The live `EVENER_SSH_E2E=1` test reaches `initialize` + `thread/list` over the
    channel (matches Spike C,
    `2026-09-14-multi-host-spikes-findings.md:27-33`).
+9. A restart refuses (`ErrRestart`, no kill, no relaunch) when the listener on
+   the configured address is not provably this host's hub: several listeners,
+   argv that is not an evener hub, another user, or a socket mismatch.
+10. Lifecycle events never change registry membership: with `OnEvent` wired to a
+    counter, attach/detach transitions change `Attached` and emit events, and
+    `appsource.Registry.All()` is untouched.
 
 ## PR size estimate (LOC)
 
@@ -466,15 +735,26 @@ from the component-03 registry.
   `.goreleaser.yml:24-30`); installer runs on the host but needs host network and
   a release archive. Decide precedence and whether `evener_path` implies
   "already correct, skip deploy".
-- **How the host hub is stopped for restart (resolved).** No new host-side RPC
-  is needed in v1: restart through the host's supervisor when one is detected,
-  otherwise the ops doc's ad hoc recipe — find the listener by port with `lsof`,
-  recover argv/log from the process, `kill` it, wait for the port to clear,
-  relaunch detached. See §5. `hub.lock` stays a pure mutual-exclusion `flock`
-  (`main.go:175`; `hostlock.go:17-37`); it is never read for a PID and never
-  broken. Residual risk: the ad hoc path calls `lsof`/`ps` on the host, so a
-  host without those tools (or a hub listening on a port the controller does not
-  know) is restart-refused rather than restarted wrong.
+- **How the host hub is stopped for restart (resolved, with identification).**
+  No new host-side RPC is needed in v1: restart through the host's supervisor
+  when one is identified unambiguously, otherwise the ops doc's ad hoc recipe —
+  find the listener by port with `lsof`, verify *what it is* (single listener,
+  evener hub argv, configured user, matching address), recover argv/log, `kill`
+  it, wait for the port to clear, relaunch detached. See §5. `hub.lock` stays a
+  pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never read for
+  a PID and never broken. Residual risk: the ad hoc path calls `lsof`/`ps` on
+  the host, so a host without those tools (or a hub the controller cannot match
+  to the configured address) is restart-refused rather than restarted wrong —
+  which is the intended trade.
+- **Per-host config path and address (corrected contract, new component-03
+  fields).** `hostreg.Host` today has `Name`, `SSH`, `User`, `EvenerPath`,
+  `Roots` only, and `Options.HubAddr` is manager-wide; that cannot express a hub
+  started with `--config <path>` or a non-default port. Component 03 adds
+  `config_path` and `addr` to the entry; this component passes them to the
+  bridge and uses `addr` for restart/health. Remaining choice for review: the
+  field names and whether an omitted `addr` means "use the config's own `addr`
+  by having the bridge report it" (an extra round trip) or "assume the
+  documented default and refuse restart otherwise" (today's safer choice).
 - **Restart deferral policy** (design §6). Version auto-match restart drops live
   browser/controller connections. Decide whether to defer while clients are
   attached, refuse, or restart immediately and let the manager reconnect. The
@@ -482,20 +762,20 @@ from the component-03 registry.
 - **Version identity of the *running* host hub (resolved).** `launch-check`
   reports the on-disk binary and stays the **deploy** decision; the running
   process is identified by `GET /api/health`'s `version` and `backend_git_sha`
-  (`cmd/evener-hub/web_api.go:72-94`), which the hub's own self-update flow
+  (`cmd/evener-hub/web_api.go`), which the hub's own self-update flow
   already polls for exactly this reason. The AppWire `ServerInfo.Version` is the
-  static `"0.1.0"` constant (`cmd/evener-hub/main.go:42`, wired at
-  `cmd/evener-hub/app_rpc.go:232-235`, surfaced at `appwire/types.go:530-533`)
+  static `"0.1.0"` constant (`cmd/evener-hub/main.go`, wired at
+  `cmd/evener-hub/app_rpc.go`, surfaced at `appwire/types.go`)
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
   through their supervisor (`launchctl kickstart -k`, `systemctl restart`); an
   ad hoc hub relaunches with `nohup <argv> >> <log> 2>&1 </dev/null &`,
-  preserving the recovered log (ops doc §"Restarting an ad hoc Hub", `:388-394`).
+  preserving the recovered log (ops doc §"Restarting an ad hoc Hub").
   A first-class systemd/launchd unit for hosts that have none is still open.
 - **Keepalive ownership.** Whether to rely on `ssh -o ServerAliveInterval`
   alone or add an AppWire-level ping (which would require `StreamTransport` to
   implement `Pinger`, explicitly deferred in
-  `appwire/stream_transport.go:17-21`).
+  `appwire/stream_transport.go`).
 - **`evener_path` empty semantics.** Component 03 leaves it opaque; here it must
   mean "resolve `evener` on the remote `PATH`", and a deploy to a non-empty
   `evener_path` may need the directory to exist (or fail with a clear error).

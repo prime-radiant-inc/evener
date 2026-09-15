@@ -17,7 +17,13 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 
 - **Topology**: any hub can act as a controller for hosts it can see. A static
   per-hub host list in config. No multi-master, no leader election, no shared
-  state. A hub can also be a host; cycles are refused at add time.
+  state. A hub can also be a host. **Cycle rejection in v1 is intra-config
+  only**: duplicate names, invalid/reserved names, and self-edges are refused at
+  load/add time, and a supplied upstream list is checked for back-edges. The
+  multi-hop case A→B→A is *not* detected, because a controller sees only its own
+  `[[hosts]]` table and no AppWire method reports another hub's host list; that
+  detection is deferred with the host-list RPC (component 03, §Open questions;
+  component 05, §Open questions item 4).
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -45,16 +51,16 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   with a bearer token (`hubcore/prober.go`, `appsource/local_daemon.go`). The
   protocol is already network-capable; the spike proved it crosses hosts.
 - Every thread/turn operation routes through an `appsource.Source` registry
-  (`cmd/evener-hub/app_rpc.go:24-74`). Production registers exactly one source,
+  (`cmd/evener-hub/app_rpc.go`). Production registers exactly one source,
   `"local"`; refs are namespaced by source (`appwire.Ref{SourceID,ThreadID}`).
 - The hub is a multi-client AppWire server; its web edge already serves browser
   and TUI. A controller attach is one more client.
 - `hostlock` allows one hub per machine (`cmd/evener-hub/internal/hostlock`).
 - New sessions already select a source: `hubThreadStart` calls
-  `launchSourceID(params.Harness)` (`cmd/evener-hub/app_threadlifecycle.go:53`,
-  `:310-319`), where `"evener"` maps to `local` and any other value is treated as
-  a source ID. A remote host can therefore be targeted through this existing
-  mechanism, or via a new explicit field — component 06 decides which.
+  `launchSourceID(params.Harness)` (`cmd/evener-hub/app_threadlifecycle.go`),
+  where `"evener"` maps to `local` and any other value is treated as a source
+  ID. A remote host can therefore be targeted through this existing mechanism,
+  or via a new explicit field — component 06 decides which.
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.
@@ -87,8 +93,11 @@ Ordered by dependency; each is independently reviewable and landable.
 
 ## 5. Interfaces
 
-- **Host config entry** (`hub.toml`): `{ name, ssh, user?, evener_path?, roots[] }`
-  — name is the source ID used in refs and URLs.
+- **Host config entry** (`hub.toml`): `{ name, ssh, user?, evener_path?,
+  roots[], config_path?, addr? }` — name is the source ID used in refs and
+  URLs; `config_path`/`addr` are the host's own `hub.toml` and hub loopback
+  address, which the bridge and the manager's restart/health path must agree on
+  (component 03, §"`config_path` / `addr`").
 - **Remote source ID**: the host `name`; refs surface as `name:<sessionID>`.
 - **Capability probe** — **not** one round trip: a short sequence of hub-scoped
   RPCs over the already-open channel after attach (`evener/launch/getLayer`,
@@ -104,6 +113,11 @@ Ordered by dependency; each is independently reviewable and landable.
 - **Source-method coverage**: `appsource.Source` was written against
   daemon-scoped calls; some methods may lack a hub-scoped counterpart. Enumerate
   and either compose or add hub RPCs. This is the biggest unknown.
+- **Multi-hop cycle detection (deferred)**: v1 cannot see an upstream hub's host
+  list, so A→B→A is not refused; only duplicates, self-edges, and supplied
+  upstream back-edges are checked (see §2 "Topology"). Closing this needs a new
+  hub-scoped host-list method; until then, treat configuration as acyclic *by
+  convention* for multi-hop chains.
 - **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
   sub-thread aliases.
 - **Version-match restart** drops live browser/controller connections; decide

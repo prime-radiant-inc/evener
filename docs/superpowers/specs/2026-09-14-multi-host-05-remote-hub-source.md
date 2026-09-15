@@ -5,6 +5,13 @@ Parent: `2026-09-14-multi-host-evener-design.md`. Depends on components 01
 manager). This is the highest-risk component; §Contract's method-coverage
 analysis is the keystone deliverable.
 
+**Citation convention.** Symbols (method constants, handler functions, files)
+are authoritative and were verified on `multi-host-pr05a..d` and
+`multi-host-pr06a-fleet-view-go`. Catalog and handler line numbers are omitted
+deliberately: they shift as methods are added and the reviewer's base
+(`origin/main`) is not the branch this spec describes. A `*.md:NNN` reference,
+where it survives, is a hint, not pinning.
+
 ## Purpose
 
 Expose a remote `evener hub` as one more `appsource.Source` on the controller
@@ -36,8 +43,8 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
   out per ref, reference-counting per remote thread and sending the remote
   hub's `thread/unsubscribe` when the last local subscriber leaves.
 - Registration of one `RemoteHubSource` per configured host in the production
-  registry (`cmd/evener-hub/app_rpc.go:24-74`), with the default source for an
-  empty ref remaining `local` (`cmd/evener-hub/app_sources.go:31-38`).
+  registry (`cmd/evener-hub/app_rpc.go`), with the default source for an
+  empty ref remaining `local` (`cmd/evener-hub/app_sources.go`).
 - Capability probe after attach, over the already-open channel.
 - Error mapping to the hub's existing typed conditions (offline → session
   unavailable, version mismatch → typed protocol error).
@@ -52,14 +59,14 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
 - Per-host settings proxying and credential push: component 07.
 - Native item-candidate paging (`appsource.ItemCandidateSource` /
   `ItemReadCandidateSource` / `CombinedItemReadSource`,
-  `cmd/evener-hub/internal/appsource/source.go:57-74`). A source that does not
+  `cmd/evener-hub/internal/appsource/source.go`). A source that does not
   implement these falls back to `sourceItemCandidateResultForRead` /
   `sourceItemCandidateResultForList`
-  (`cmd/evener-hub/app_item_page_fit.go:51-71`), so v1 is correct without them.
+  (`cmd/evener-hub/app_item_page_fit.go`), so v1 is correct without them.
   Adding them is a later optimization.
 - Atomic relay handoff (`appsource.RelaySessionSource`,
-  `cmd/evener-hub/internal/appsource/source.go:639-659`). v1 uses the legacy
-  read-then-subscribe path (`cmd/evener-hub/app_relay.go:1311-1322`); see §Data
+  `cmd/evener-hub/internal/appsource/source.go`). v1 uses the legacy
+  read-then-subscribe path (`cmd/evener-hub/app_relay.go`); see §Data
   flow and §Open questions.
 - Remote *tool execution* (`agent/execenv`): non-goal of the parent design.
 - Attach-time cross-hub cycle detection: v1 learns no remote host list, so it
@@ -70,7 +77,7 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
 
 ### The interface being implemented
 
-`Source` is declared at `cmd/evener-hub/internal/appsource/source.go:15-46`:
+`Source` is declared at `cmd/evener-hub/internal/appsource/source.go`:
 `ID`, `ListThreads`, `ReadThread`, `ListTurns`, `StartThread`, `ResumeThread`,
 `ForkThread`, `StartTurn`, `SteerTurn`, `ResolveSandboxEscalation`,
 `InterruptTurn`, `QueueTurn`, `DrainAsSteer`, `PromoteQueuedAsSteer`,
@@ -80,86 +87,100 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
 `ListJobs`, `JobOutput`, `SubscribeThread`.
 
 The registry stores sources by `ID()` and resolves a ref's source by its
-`SourceID` (`cmd/evener-hub/internal/appsource/registry.go:20-64`). A source's
+`SourceID` (`cmd/evener-hub/internal/appsource/registry.go`). A source's
 `ID()` is therefore the host `name` from the host config entry (parent design
 §5), and appears verbatim in controller refs and `hubapi.Ref.HostID`
-(`hubapi/refs.go:11-30`).
+(`hubapi/refs.go`).
 
 Wire refs are `SourceID + ":" + ThreadID`, pattern
-`^[A-Za-z0-9._~-]+$` (`appwire/refs.go:9-35`). The remote hub's own source ID is
-`"local"`: `ServerConfig{SourceID: "local"}` (`cmd/evener-hub/app_rpc.go:235`)
+`^[A-Za-z0-9._~-]+$` (`appwire/refs.go`). The remote hub's own source ID is
+`"local"`: `ServerConfig{SourceID: "local"}` (`cmd/evener-hub/app_rpc.go`)
 and the registered local source is `NewLocalDaemonSourceWithEntries("local", …)`
-(`cmd/evener-hub/app_rpc.go:26`). So the remote namespace is always `local:`.
+(`cmd/evener-hub/app_rpc.go`). So the remote namespace is always `local:`.
 
 ### Method-coverage analysis (core deliverable)
 
 `Source` was written against daemon-scoped calls: `LocalDaemonSource` dials each
-daemon's WebSocket endpoint (`cmd/evener-hub/internal/appsource/local_daemon.go:686-724`)
+daemon's WebSocket endpoint (`cmd/evener-hub/internal/appsource/local_daemon.go`)
 and never talks to the hub's own router. The remote source instead attaches to a
 **hub**, so the relevant question is which of its calls have a method on the
 hub's AppWire router.
 
-Method scopes are catalogued at `appwire/protocol.go:12-26` (`ScopeHub`,
+Method scopes are catalogued at `appwire/protocol.go` (`ScopeHub`,
 `ScopeDaemon`, `ScopeBoth`, `ScopeConnection`, `ScopeUnimplemented`); the
-`Methods` catalog is `appwire/protocol.go:112-213`. The hub router is
+`Methods` catalog is `appwire/protocol.go`. The hub router is
 cross-checked to register every `ScopeHub` **and** `ScopeBoth` method
-(`cmd/evener-hub/appwire_catalog_test.go:19-35`, `want :=
+(`cmd/evener-hub/appwire_catalog_test.go`, `want :=
 appwire.CatalogMethodNames(appwire.ScopeHub)`). Because a `ScopeBoth` method is
 handled by the hub by proxying to its local source, **every method the `Source`
 interface needs is already served by the remote hub's router.** No new
 hub-scoped thread/turn RPC is required.
 
-| `Source` method | Wire method | Scope (catalog line) | Remote-hub handler | Disposition |
+The table cites **method constants** (`appwire/types.go`) and **handler
+symbols** (`cmd/evener-hub/`). Catalog line numbers are deliberately omitted:
+the catalog shifts as methods are added, and the reviewer's base (`origin/main`)
+is not the branch this spec was written against. Where a handler is registered
+inline inside a registration function, the registration function is named.
+
+| `Source` method | Wire method constant | Scope | Remote-hub handler | Disposition |
 |---|---|---|---|---|
 | `ID` | — | — | — | local; returns host name |
-| `ListThreads` | `thread/list` | Both (`protocol.go:115`) | `hubThreadList` (`app_rpc.go:393-395`) | forward; **remap `SourceIDs`**, translate refs |
-| `ReadThread` | `thread/read` | Both (`protocol.go:116`) | `app_rpc.go:396-552` | forward; translate refs |
-| `ListTurns` | `thread/turns/list` | Both (`protocol.go:118`) | `app_rpc.go:583-629` | forward; translate refs |
-| `StartThread` | `thread/start` | Hub (`protocol.go:120`) | `app_rpc.go:662-677` | forward; remote hub spawns on the host |
-| `ResumeThread` | `thread/resume` | Hub (`protocol.go:121`) | `app_rpc.go:678-687` | forward; translate refs |
-| `ForkThread` | `thread/fork` | Hub (`protocol.go:122`) | `app_rpc.go:688-690` | forward |
-| `StartTurn` | `turn/start` | Both (`protocol.go:131`) | `registerThreadHandlers` (`app_rpc.go:386-885`) | forward |
-| `SteerTurn` | `turn/steer` | Both (`protocol.go:132`) | `registerThreadHandlers` | forward |
-| `ResolveSandboxEscalation` | `evener/sandbox/escalation/resolve` | Both (`protocol.go:212`) | `registerThreadHandlers` | forward |
-| `InterruptTurn` | `turn/interrupt` | Both (`protocol.go:133`) | `registerThreadHandlers` | forward |
-| `QueueTurn` | `turn/queue` | Both (`protocol.go:134`) | `registerThreadHandlers` | forward |
-| `DrainAsSteer` | `turn/drainAsSteer` | Both (`protocol.go:135`) | `registerThreadHandlers` | forward |
-| `PromoteQueuedAsSteer` | `turn/promoteQueuedAsSteer` | Both (`protocol.go:136`) | `registerThreadHandlers` | forward |
-| `CancelQueued` | `turn/cancelQueued` | Both (`protocol.go:137`) | `registerThreadHandlers` | forward |
-| `CompactThread` | `thread/compact/start` | Both (`protocol.go:128`) | `registerThreadHandlers` | forward |
-| `ShutdownThread` | `thread/shutdown` | Both (`protocol.go:130`) | `registerThreadHandlers` | forward |
-| `SetThreadModel` | `thread/model/set` | Both (`protocol.go:124`) | `registerThreadHandlers` | forward |
-| `SetThreadReasoningEffort` | `thread/reasoning-effort/set` | Both (`protocol.go:126`) | `registerThreadHandlers` | forward |
-| `SetThreadVisionModel` | `thread/vision-model/set` | Both (`protocol.go:127`) | `registerThreadHandlers` | forward |
-| `SetThreadName` | `evener/thread/name/set` | Both (`protocol.go:125`) | `registerThreadNameSetHandler` (`app_rpc.go:349`) | forward |
-| `GoalSet` | `goal/set` | Both (`protocol.go:138`) | `registerThreadHandlers` | forward |
-| `NotesHumanSet` | `notes/human/set` | Both (`protocol.go:139`) | `registerThreadHandlers` (`app_rpc.go:912-917`) | forward; translate `Ref` |
-| `UrlsRemove` | `urls/remove` | Both (`protocol.go:140`) | `registerThreadHandlers` (`app_rpc.go:912-917`) | forward; translate `Ref` |
-| `ClearThread` | `thread/clear` | Both (`protocol.go:123`) | `registerThreadHandlers` | forward |
-| `ListModels` | `model/list` | Both (`protocol.go:180`) | `hubModelList` (`app_rpc.go:1156-1158`) | forward |
-| `ListTasks` | `evener/tasks/list` | Both (`protocol.go:139`) | `hubTasksList` (`app_rpc.go:1159-1161`) | forward |
-| `ListJobs` | `evener/jobs/list` | Both (`protocol.go:140`) | `hubJobsList` (`app_rpc.go:1162-1164`) | forward |
-| `JobOutput` | `evener/jobs/output` | Both (`protocol.go:141`) | `hubJobsOutput` (`app_rpc.go:1165-1167`) | forward |
-| `SubscribeThread` | `thread/read` (`subscribe:true`) + notifications | Both (`protocol.go:116`) | `app_rpc.go:396-552` + relay | **compose** over the channel |
+| `ListThreads` | `MethodThreadList` | `ScopeBoth` | `hubThreadList` (`app_threadlist.go`) | forward; **remap `SourceIDs`**, translate refs |
+| `ReadThread` | `MethodThreadRead` | `ScopeBoth` | inline in `registerThreadHandlers` (`app_rpc.go`) | forward; translate refs |
+| `ListTurns` | `MethodThreadTurnsList` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `StartThread` | `MethodThreadStart` | `ScopeHub` | `hubThreadStart` (`app_threadlifecycle.go`) | forward; **strip the controller-only `Source` field**; remote hub spawns on the host |
+| `ResumeThread` | `MethodThreadResume` | `ScopeHub` | `hubThreadResume` (`app_threadlifecycle.go`) | forward; translate refs |
+| `ForkThread` | `MethodThreadFork` | `ScopeHub` | `hubThreadFork` (`app_threadlifecycle.go`) | forward |
+| `StartTurn` | `MethodTurnStart` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `SteerTurn` | `MethodTurnSteer` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `ResolveSandboxEscalation` | `MethodEvenerSandboxEscalationResolve` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `InterruptTurn` | `MethodTurnInterrupt` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `QueueTurn` | `MethodTurnQueue` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `DrainAsSteer` | `MethodTurnDrainAsSteer` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `PromoteQueuedAsSteer` | `MethodTurnPromoteQueuedAsSteer` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `CancelQueued` | `MethodTurnCancelQueued` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `CompactThread` | `MethodThreadCompactStart` | `ScopeBoth` | `compactThreadWithResume` (inline in `registerThreadHandlers`) | forward |
+| `ShutdownThread` | `MethodThreadShutdown` | `ScopeBoth` | `shutdownThreadTolerateExited` (inline in `registerThreadHandlers`) | forward |
+| `SetThreadModel` | `MethodThreadModelSet` | `ScopeBoth` | `setThreadModelWithResume` (inline in `registerThreadHandlers`) | forward |
+| `SetThreadReasoningEffort` | `MethodThreadReasoningEffortSet` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `SetThreadVisionModel` | `MethodThreadVisionModelSet` | `ScopeBoth` | `setThreadVisionModelWithResume` (inline in `registerThreadHandlers`) | forward |
+| `SetThreadName` | `MethodEvenerThreadNameSet` | `ScopeBoth` | `registerThreadNameSetHandler` (`app_rename.go`) | forward |
+| `GoalSet` | `MethodGoalSet` | `ScopeBoth` | `setGoalWithResume` (inline in `registerThreadHandlers`) | forward |
+| `NotesHumanSet` | `MethodNotesHumanSet` | `ScopeBoth` | `setNotesHumanWithResume` (inline in `registerThreadHandlers`) | forward; translate `Ref` |
+| `UrlsRemove` | `MethodUrlsRemove` | `ScopeBoth` | `removeURLWithResume` (inline in `registerThreadHandlers`) | forward; translate `Ref` |
+| `ClearThread` | `MethodThreadClear` | `ScopeBoth` | `clearThreadWithResume` (inline in `registerThreadHandlers`) | forward |
+| `ListModels` | `MethodModelList` | `ScopeBoth` | `hubModelList` (`app_models.go`) | forward |
+| `ListTasks` | `MethodEvenerTasksList` | `ScopeBoth` | `hubTasksList` (`app_tasks.go`) | forward |
+| `ListJobs` | `MethodEvenerJobsList` | `ScopeBoth` | `hubJobsList` (`app_jobs.go`) | forward |
+| `JobOutput` | `MethodEvenerJobsOutput` | `ScopeBoth` | `hubJobsOutput` (`app_jobs.go`) | forward |
+| `SubscribeThread` | `MethodThreadRead` with `Subscribe:true` + notifications | `ScopeBoth` | inline in `registerThreadHandlers` + relay | **compose** over the channel |
 
 Methods the hub also serves that are *not* on `Source` but that component 06/07
-will want: `thread/unsubscribe` (Both, `protocol.go:117`),
-`evener/thread/force-stop` (Hub, `protocol.go:129`, `app_rpc.go:855`),
-`evener/thread/transcripts/list` (Hub, `protocol.go:142`, `app_rpc.go:1168`),
-`evener/subagent/preview` (Hub, `protocol.go:143`, `app_rpc.go:630`), and the
-path/dir/project/git helpers (`protocol.go:144-148`). These are forwarded by the
-hub as normal hub-scoped methods once a host is selected, not through
+will want: `MethodThreadUnsubscribe` (`ScopeBoth`),
+`MethodEvenerThreadForceStop` — the wire string is `evener/thread/forceStop`,
+**not** `evener/thread/force-stop` (`ScopeHub`, registered in
+`registerThreadHandlers` as `forceStopThread`) — `MethodEvenerThreadTranscriptsList`
+(`ScopeHub`, `evener/thread/transcripts/list`, inline in `registerMiscHandlers`),
+`MethodEvenerSubagentPreview` — the wire string is `evener/subagentPreview`,
+**not** `evener/subagent/preview` (`ScopeHub`, inline in `registerThreadHandlers`)
+— and the path/dir/project/git helpers registered by `registerMiscHandlers`
+(`MethodEvenerPathsComplete`, `MethodEvenerDirsCreate`,
+`MethodEvenerProjectsRecent`, `MethodEvenerPathValidate`,
+`MethodEvenerGitHead`). The `Method*` constants live in `appwire/types.go`; the
+catalog rows live in `appwire/protocol.go`. These are forwarded by the hub as
+normal hub-scoped methods once a host is selected, not through
 `RemoteHubSource`.
 
-`thread/turnItemsList` is `ScopeUnimplemented` (`protocol.go:119`) and is not on
-the `Source` interface; nothing maps to it.
+`MethodThreadTurnItemsList` (wire string `thread/turns/items/list`) is
+`ScopeUnimplemented` — served by no evener router — and is not on the `Source`
+interface; nothing maps to it.
 
 **The one gap: OS/arch.** No AppWire method exposes host OS/arch. The closest
 hub RPCs are `initialize` (`ServerInfo.Name/Version`, protocol version, features
-— `appwire/types.go:223-229`) and `evener/settings/overview`
+— `appwire/types.go`) and `evener/settings/overview`
 (`SettingsHubOverview.Version/Commit/BuildChannel/ListenAddr/RunDir`,
-`appwire/types.go:3268-3308`); `evener/update/check` reports build/commit only
-(`appwire/types.go:2066-2075`). The only "host facts" type in the tree is
+`appwire/types.go`); `evener/update/check` reports build/commit only
+(`appwire/types.go`). The only "host facts" type in the tree is
 `sandbox.HostFacts`, which is internal to the remote agent and never crosses
 AppWire. So:
 
@@ -167,8 +188,8 @@ AppWire. So:
   component-04 SSH preflight (the same `uname`-style probe that decides which
   binary to push), and AppWire supplies the rest.
 - **Option B:** add one new hub-scoped method, e.g. `evener/host/info`
-  (`ScopeHub`), to `appwire/protocol.go:112-213` plus a handler in
-  `registerMiscHandlers` (`app_rpc.go:1149-1209`), returning OS, arch, HOME/XDG,
+  (`ScopeHub`), to `appwire/protocol.go` plus a handler in
+  `registerMiscHandlers` (`app_rpc.go`), returning OS, arch, HOME/XDG,
   and working roots. Cost: one catalog entry + one handler + the cross-check
   test (`appwire_catalog_test.go`) updates itself; ~60 LOC. Defer unless the
   controller needs OS/arch without a live SSH probe.
@@ -178,9 +199,11 @@ and the subscription stream, not new RPC surface.
 
 ### Capability probe
 
-After attach, `RemoteHubSource` runs a small sequence of calls on the same
-channel and caches the result. Suggested exported type and interface (in
-`appsource`, consumed by the fleet view in component 06):
+After attach, `RemoteHubSource` runs a small sequence of calls on the current
+client and caches the result **against that client** (`remoteHubProbe{client,
+caps}`), so a reconnect's new client re-probes automatically
+(§"Reconnect handoff"). Exported type and interface (in `appsource`, consumed by
+the fleet view in component 06):
 
 ```go
 type HostCapabilities struct {
@@ -206,20 +229,20 @@ Probe calls and their types:
 
 | Probe field | Call | Type |
 |---|---|---|
-| protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, kept as `Client.Features()`) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go:227-233`) |
+| protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, kept as `Client.Features()`) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go`) |
 | OS/arch | component-04 preflight (no RPC — see gap above) | — |
-| effective launch config | `evener/launch/resolve` per root, or `evener/launch/getLayer` `layer:"global"` | `LaunchConfigResolved` (`appwire/types.go:3014-3020`) |
-| available models | `model/list` | `ModelListResponse` (`appwire/types.go:2206-2215`) |
-| plugin inventory | `evener/plugin/list` (+ `evener/marketplace/list` if needed) | `PluginListResponse` (`appwire/types.go:3232-3234`) |
-| credential/provider health | `evener/auth/list` (+ `evener/instance/list`) | `AuthListResponse` (`appwire/types.go:2674-2676`) |
+| effective launch config | `evener/launch/resolve` per root, or `evener/launch/getLayer` `layer:"global"` | `LaunchConfigResolved` (`appwire/types.go`) |
+| available models | `model/list` | `ModelListResponse` (`appwire/types.go`) |
+| plugin inventory | `evener/plugin/list` (+ `evener/marketplace/list` if needed) | `PluginListResponse` (`appwire/types.go`) |
+| credential/provider health | `evener/auth/list` (+ `evener/instance/list`) | `AuthListResponse` (`appwire/types.go`) |
 | working roots | host config entry | — |
 
 `evener/auth/list` reports configured/signed-in state, not liveness. A live
-credential test (`evener/auth/test`, `protocol.go:165`) hits the network per
+credential test (`evener/auth/test`, `protocol.go`) hits the network per
 provider; keep it out of the attach probe and expose it as an explicit refresh.
 
 `initialize` is `ScopeConnection` and "must be the first request" on a
-connection (`appwire/protocol.go:113`), so the probe cannot re-run it on the
+connection (`appwire/protocol.go`), so the probe cannot re-run it on the
 already-initialized channel that component 04 handed over. Component 04 supplies
 those three fields through the facts seam (preflight `protocol`/`version`, and
 the feature set captured from the attach handshake); the probe makes the five
@@ -227,29 +250,45 @@ AppWire reads in the table above and nothing else.
 
 ### Registration and default-source selection
 
-Production registers exactly one source today (`cmd/evener-hub/app_rpc.go:24-74`)
-and the hub advertises `SourceID: "local"` (`app_rpc.go:235`). Component 05 adds
-one `registry.Add(NewRemoteHubSource(...))` per configured host in
-`newHubSourceRegistry`, each with `ID()` = host name. Registration is
-**eager and attachment-independent**: every configured host gets its source at
-hub startup, whether or not an SSH channel exists yet. An unattached host's
-source reports itself offline (`OnlineSource`, component 06a's `online.go`) and
-fails calls with `SessionUnavailable`; nothing is added or removed from the
-registry on attach/detach. That is what keeps the fleet view's host list equal
-to the configured `[[hosts]]` set (component 06). Order is irrelevant;
-`Registry.All` sorts by ID (`registry.go:39-52`).
+Production registers exactly one source today (`cmd/evener-hub/app_rpc.go`)
+and the hub advertises `SourceID: "local"` (`app_rpc.go`). Component 05 adds
+one `registry.Add(...)` per configured host inside `newHubSourceRegistry`
+(`cmd/evener-hub/app_rpc.go`), constructed as
+`appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)`,
+each with `ID()` = host name. Registration is **eager and
+attachment-independent**: every configured host gets its source at hub startup,
+whether or not an SSH channel exists yet. Nothing is added to or removed from
+the registry on attach/detach — lifecycle events carry connection state only
+(component 04, §"Client handoff"). That is what keeps the fleet view's host
+list equal to the configured `[[hosts]]` set (component 06). Order is
+irrelevant; `Registry.All` sorts by ID (`registry.go`).
+
+The source's two optional seams are installed once at registration, both from
+`hubcore.WebConfig` fields the hub already fills (`cmd/evener-hub/main.go`):
+
+- `SetHostOnline(RemoteHostOnline)` where `RemoteHostOnline` is
+  `sshManager.Attached` — so an unattached host reports itself offline. The
+  interface is `appsource.OnlineSource` (`{ Online() bool }`,
+  `cmd/evener-hub/internal/appsource/online.go`, component 06a), and
+  `RemoteHubSource` implements it. `Online() == false` is a *state*, never an
+  absent source.
+- `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
+  probe needs (`HostFacts`, `remote_hub_probe.go`).
+
+Without a facts seam the probe leaves the preflight-owned fields zero-valued; it
+never guesses them from the wire.
 
 An empty ref must stay local: `sourceForThread` returns
-`sources.Source("local")` for `ref == ""` (`cmd/evener-hub/app_sources.go:31-38`).
+`sources.Source("local")` for `ref == ""` (`cmd/evener-hub/app_sources.go`).
 Remote sources are reached only by a non-empty `host:` ref (via
-`Registry.SourceForRef`, `registry.go:54-64`).
+`Registry.SourceForRef`, `registry.go`).
 
 Spawn is the one place where "which source" is not derived from a ref.
 `hubThreadStart` already routes a non-local spawn to
-`sources.Source(sourceID)` (`cmd/evener-hub/app_threadlifecycle.go:53-60`).
+`sources.Source(sourceID)` (`cmd/evener-hub/app_threadlifecycle.go`).
 Component 06 adds an explicit wire field, `ThreadStartParams.Source` (a bare
 source ID), and `hubThreadStart` resolves it ahead of the legacy
-`launchSourceID(params)` harness fallback (`app_threadlifecycle.go:323-332`);
+`launchSourceID(params)` harness fallback (`app_threadlifecycle.go`);
 the field is on the wire type, not on `RemoteHubSource`.
 
 **The host selector is controller-only and is stripped at the remote
@@ -261,7 +300,9 @@ source. `RemoteHubSource.StartThread` therefore clears it before forwarding
 
 ```go
 remote := params
-remote.Source = "" // controller-only; the remote hub's own default (local) applies
+// Source names this source in the controller's registry; the remote hub
+// would resolve it against its own, so it is cleared before forwarding.
+remote.Source = ""
 ```
 
 The controller's chosen host is expressed purely by *which*
@@ -271,8 +312,46 @@ every other method addresses an existing thread by `Ref`, which is translated
 (above).
 
 `hubThreadResume` already routes a non-local ref to its source
-(`app_threadlifecycle.go:337-339`), so resuming a remote session by
+(`app_threadlifecycle.go`), so resuming a remote session by
 `host:<session>` works without further plumbing.
+
+### Reconnect handoff (component 04 → 05)
+
+A component-04 reconnect swaps the ssh child, the transport, and the
+`appwire.Client`. The source must survive that without being re-registered, and
+it does so by construction:
+
+- **Nothing is cached.** `RemoteHubSource` stores the `RemoteHubClientFunc`
+  resolver, never a `*appwire.Client` (`remote_hub_source.go`): `call` resolves
+  it on every request. Component 04 serializes each host's reconnect under its
+  per-host lock and installs the replacement channel only when it is attached,
+  so a resolution returns the old live client, the new one, or an error — never
+  a half-swapped pair.
+- **The capability cache is keyed to the client.** The probe result is stored as
+  `remoteHubProbe{client, caps}` and reused only while `probe.client == client`
+  (`remote_hub_probe.go`); a new client re-probes on the next
+  `HostCapabilities` call with no explicit invalidation hook, and `probeMu`
+  serializes concurrent probes.
+- **Subscriptions end with their client and are re-established by the relay.**
+  `SubscribeThread` binds to the client it resolved (`registerSubscriber(sub,
+  client)`) and starts exactly one drain goroutine per client
+  (`ensureDrainLocked` → `drainLoop`), which exits when that client's
+  `Notifications()` closes. `pumpSubscription` then closes the subscription's
+  `out` channel, which the controller relay treats as subscription end and
+  re-subscribes through its recovery path (`app_relay.go`). Re-subscription runs
+  the resolver again and lands on the new client. Routing state (`subs`) and the
+  drain set (`drains`) are guarded by `subMu`.
+- **No re-init, no replay.** The source never calls `Initialize` (component 04
+  owns the handshake) and never replays an in-flight call: it fails with the
+  transport error mapped to `SessionUnavailable` (`mapCallError`,
+  `transportUnavailable`). Recovery is the *next* call.
+- **Laziness is the known limitation.** Handoff is on demand, not event-driven:
+  between the drop and the next call (or the relay's re-subscribe) the source can
+  still hold a dead client, and nothing proactively re-probes or restores
+  subscriptions at the moment of reconnect. Consumers must therefore read
+  `SessionUnavailable` as "retry now", not as a permanent verdict, and
+  `Online()` (via `Manager.Attached`) as the only up/down signal — it flips
+  without notifying the source, so `apiTreeSources` reads it per request.
 
 ## Implementation approach
 
@@ -280,8 +359,9 @@ Files (all under `cmd/evener-hub/internal/appsource/` unless noted):
 
 - `remote_hub_source.go` — the `RemoteHubSource` type, method implementations,
   and the coverage/forwarding helper.
-- `remote_hub_refs.go` — ref translation (`toRemoteParams`, `fromRemoteThread`,
-  `fromRemoteNotification`).
+- `remote_hub_refs.go` — ref translation (`toRemoteRef`, `fromRemoteRefString`,
+  `fromRemoteThread`, `remapRemoteSourceIDs`, `translateOut`) plus the
+  notification rewrite (`translateNotification`, in `remote_hub_subscription.go`).
 - `remote_hub_probe.go` — `HostCapabilities` and the probe.
 - `remote_hub_subscription.go` — the single-client notification fan-out.
 - `cmd/evener-hub/app_rpc.go` — register remote sources in
@@ -291,37 +371,43 @@ Files (all under `cmd/evener-hub/internal/appsource/` unless noted):
 
 Reused seams:
 
-- Transport: `appwire.Transport` (`appwire/transport.go:5-9`) and the
+- Transport: `appwire.Transport` (`appwire/transport.go`) and the
   component-01 `StreamTransport` over the SSH channel. Component 04 hands the
   source a dial function shaped like
-  `appsource.appwireDialFunc` (`cmd/evener-hub/internal/appsource/transport.go:12-16`),
+  `appsource.appwireDialFunc` (`cmd/evener-hub/internal/appsource/transport.go`),
   or a long-lived `appwire.Transport`.
-- Client: `appwire.NewClient(transport)` (`appwire/client.go:53-62`),
-  `client.Start`, `client.Initialize` (`client.go:347-368`), `client.Request`
-  (`client.go:287-289`), and the notification stream
-  (`client.Notifications()`, `client.go:217-219`). One `Client` safely serves
+- Client: `appwire.NewClient(transport)` (`appwire/client.go`),
+  `client.Start`, `client.Initialize` (`client.go`), `client.Request`
+  (`client.go`), and the notification stream
+  (`client.Notifications()`, `client.go`). One `Client` safely serves
   concurrent requests and the notification feed: `Send` is mutex-guarded
-  (`client.go:243-249`) and responses are correlated by request ID
-  (`client.go:232-285`).
+  (`client.go`) and responses are correlated by request ID
+  (`client.go`).
 - Reference implementation for call mapping and error shape:
-  `LocalDaemonSource` (`local_daemon.go:246-724`), especially
-  `withClientCallMapper` (`local_daemon.go:686-724`), the dial-error mapping
-  (`local_daemon.go:731-782`), and the mutation-unknown mapping
-  (`local_daemon.go:808-828`). `RemoteHubSource` should mirror these shapes so
+  `LocalDaemonSource` (`local_daemon.go`), especially
+  `withClientCallMapper` (`local_daemon.go`), the dial-error mapping
+  (`local_daemon.go`), and the mutation-unknown mapping
+  (`local_daemon.go`). `RemoteHubSource` should mirror these shapes so
   the hub's auto-resume and mutation-retry gates keep working, but the strings
   should say "remote hub unavailable: <host>" rather than "local daemon".
 
 Key difference from `LocalDaemonSource`: `LocalDaemonSource` opens a fresh
 WebSocket per call (`withClientCallMapper`) except for relay sessions; a remote
-host's SSH channel is expensive, so `RemoteHubSource` should hold **one**
-long-lived `appwire.Client` per host and issue every call over it. That client
-also carries the notification stream that `SubscribeThread` needs, which is why
-subscription is a fan-out rather than a second connection.
+host's SSH channel is expensive, so the controller keeps **one** live channel
+(and therefore one `appwire.Client`) per host and every call goes over it. What
+the source itself holds is not that client but the *resolver*:
+`RemoteHubClientFunc` (`func(ctx context.Context, host string)
+(*appwire.Client, error)`, `remote_hub_source.go`), wired by the hub to
+`sshManager.Ensure` + `ch.Client()`. Every call re-resolves through it (`call` →
+`client`), so a reconnect's fresh client is picked up automatically — see
+§"Reconnect handoff". That client also carries the notification stream
+`SubscribeThread` needs, which is why subscription is a fan-out rather than a
+second connection.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
-hub's `thread/unsubscribe` (`appwire/types.go:37`, a `ScopeBoth` method,
-`protocol.go:117`, params `ThreadUnsubscribeParams` `appwire/types.go:1483-1486`)
+hub's `thread/unsubscribe` (`appwire/types.go`, a `ScopeBoth` method,
+`protocol.go`, params `ThreadUnsubscribeParams` `appwire/types.go`)
 only when the **final** local subscriber for that thread leaves. Without the
 count, a re-subscribe that replaces an existing subscription would unsubscribe
 the thread out from under the replacement, and without the unsubscribe the
@@ -339,30 +425,31 @@ Ref translation detail (`remote_hub_refs.go`):
   to `appwire.Ref{SourceID: "local", ThreadID: ref.ThreadID}`. If `ThreadID` is
   set without a ref, pass it through unchanged. This mirrors
   `localEntryForRefMode`'s source check
-  (`local_daemon.go:899-924`) — a foreign `SourceID` must be refused, not
+  (`local_daemon.go`) — a foreign `SourceID` must be refused, not
   silently retargeted.
 - `ListThreads` needs special handling: the remote `hubThreadList` filters by
-  `params.SourceIDs` (`app_threadlist.go:34-39,191-196`) and compares against
-  `thread.Source` (`app_threadlist.go:288-290`). Remap `SourceIDs` entries equal
+  `params.SourceIDs` (`app_threadlist.go`) and compares against
+  `thread.Source` (`app_threadlist.go`). Remap `SourceIDs` entries equal
   to `s.id` to `"local"`; if the list ends up empty it means "no filter", which
   matches the controller's intent when only this host was requested.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same
   way (sub-thread aliases). Leave `Thread.Evener.InstanceID` untouched: it is an
   opaque precondition token round-tripped into `turn/start.expectedInstanceId`
-  (`appwire/types.go:1490-1496`), so it must stay exactly what the remote hub
+  (`appwire/types.go`), so it must stay exactly what the remote hub
   minted.
 - Sub-thread aliases: the remote hub emits them as read-only threads with
   `Kind:"subagent"`, empty capabilities, `Ref:"local:<child>"`, and
-  `ParentRef:"local:<owner>"` (`local_daemon.go:1011-1018`). Translating both
+  `ParentRef:"local:<owner>"` (`local_daemon.go`). Translating both
   refs is sufficient for the controller's list/read views; mutations against an
   alias are already refused on the remote side (aliases are excluded from
-  mutation resolution, `local_daemon.go:911-922`).
+  mutation resolution, `local_daemon.go`).
 - Notifications: rewrite the `ref` field of every notification payload that
   carries one (the hub's own relay reads `ref` first, then `threadId`;
-  `app_relay.go:314-342`). Bare `threadId` values are already unnamespaced and
-  need no change. Notifications that embed a `Thread` (e.g. `thread/started`,
-  `appwire/protocol.go:269`) must get the same thread translation applied to the
+  `app_relay.go`). Bare `threadId` values are already unnamespaced and
+  need no change. Notifications that embed a `Thread` (e.g. `NotifyThreadStarted`,
+  wire string `"thread/started"`; see the notification catalog in
+  `appwire/protocol.go`) must get the same thread translation applied to the
   nested snapshot.
 
 ## Data flow
@@ -373,7 +460,8 @@ Attach and probe (component 04 drives, 05 owns the probe):
 controller host config → SSH manager spawns `ssh host <bridge>`
   → bridge dials remote hub loopback /rpc with the host capability token
   → stdio becomes StreamTransport (component 01)
-  → RemoteHubSource.client = appwire.NewClient(transport); client.Initialize
+  → component 04: client = appwire.NewClient(transport); client.Initialize
+  → RemoteHubSource resolves that client per call (RemoteHubClientFunc)
   → HostCapabilities probe over that client
     (the source itself was already registered at hub startup)
 ```
@@ -382,7 +470,7 @@ Read path (controller RPC → remote session):
 
 ```
 browser: thread/read ref="host:S"
- → hub ThreadRead handler (app_rpc.go:396)
+ → hub ThreadRead handler (app_rpc.go)
  → sourceForThread → Registry.SourceForRef("host:S") → RemoteHubSource
  → RemoteHubSource.ReadThread: ref "local:S" → client.Request(thread/read)
  → remote hub handler runs against its local daemon source
@@ -410,43 +498,52 @@ entry; a still-nonzero count leaves the remote relay attached.
 
 The controller relay uses the non-atomic path because `RemoteHubSource` does not
 implement `RelaySessionSource`: `prepareRelay` takes the
-`source.ReadThread` + `startRelay` branch (`app_relay.go:1311-1322`) and
-`startRelayForThread` takes the non-atomic branch (`app_relay.go:1794-1798`).
-This matches the existing legacy path (`local_daemon.go:605-655`). See §Open
+`source.ReadThread` + `startRelay` branch (`app_relay.go`) and
+`startRelayForThread` takes the non-atomic branch (`app_relay.go`).
+This matches the existing legacy path (`local_daemon.go`). See §Open
 questions for the atomicity tradeoff.
 
 ## Error handling
 
 - **Offline / transport failure.** Every call maps dial, EOF, reset, closed and
   timeout failures to `appwire.SessionUnavailable`, mirroring
-  `localDaemonDialError` (`local_daemon.go:731-782`), so the hub refuses actions
+  `localDaemonDialError` (`local_daemon.go`), so the hub refuses actions
   and the fleet shows the host offline (parent design §2). Message names the
   host.
 - **Version mismatch.** `client.Initialize` returns
-  `appwire.ProtocolVersionMismatchError` (`appwire/client.go:333-360`) when the
-  remote speaks a different `appwire.ProtocolVersion` (`appwire/types.go:25`).
-  Surface it typed; component 04's version auto-match owns the restart. Until it
-  restarts, mark the source unavailable rather than retrying in place.
+  `appwire.ProtocolVersionMismatchError` (`appwire/client.go`) when the remote
+  speaks a different `appwire.ProtocolVersion` (`appwire/types.go`). Component
+  04 owns the response and it is **not** terminal by itself: a mismatch found at
+  preflight (the host's `launch-check` refuses the protocol) enters the
+  version-auto-match deploy + restart flow, and a mismatch found at `Initialize`
+  triggers one restart of the already-correct on-disk build. Until that lands,
+  the source is marked unavailable and does not retry in place; only a mismatch
+  that survives the restart is terminal. This is the same rule component 04
+  states in its §"Error handling" — the two specs must not diverge here.
 - **Bridge stdout corruption.** A framing/JSON error from the component-01
   transport is a broken channel: close the client, fail pending requests, and
-  mark the source offline. Never attempt to resynchronize a corrupt stream.
+  mark the source offline. Never attempt to resynchronize a corrupt stream. This
+  is the caller side of component 01's contract: the transport does not close
+  itself on a bad frame (it only goes permanently unusable after an
+  oversize-frame error), so **the caller must `Close`** and treat the channel as
+  dead.
 - **Mutation outcome unknown.** Remote mutations carry the flag-day mutation
-  envelope (`appwire/protocol.go:215-257`). When a mutation's response is lost,
+  envelope (`appwire/protocol.go`). When a mutation's response is lost,
   map it the way `localDaemonMutationCallError` does
-  (`local_daemon.go:808-828`): `ErrorMutationOutcomeUnknown`, preserved
+  (`local_daemon.go`): `ErrorMutationOutcomeUnknown`, preserved
   `ClientMutationID`, `RetryDispositionAutomatic`. Do not invent a different
   shape.
 - **Foreign ref.** A params ref whose `SourceID` is neither `s.id` nor empty is
-  `InvalidParams`, matching `localEntryForRefMode` (`local_daemon.go:899-908`).
+  `InvalidParams`, matching `localEntryForRefMode` (`local_daemon.go`).
 - **Nested remote hosts.** If the remote hub is itself a controller and returns
   a thread whose ref is not `local:`, that ref cannot be represented in the
   controller's `SourceID:ThreadID` namespace without collision (ref grammar has
-  no separator beyond the first colon, `appwire/refs.go:9-35`). v1 should refuse
+  no separator beyond the first colon, `appwire/refs.go`). v1 should refuse
   such refs with a clear error rather than pass them through. See §Open
   questions.
 - **Secrets.** The host capability token lives in the component-04 SSH/bridge
   layer and is never logged by `RemoteHubSource`; use the hub log sink
-  (`hubConnectionLogf`, `cmd/evener-hub/internal/appsource/transport.go:24-31`)
+  (`hubConnectionLogf`, `cmd/evener-hub/internal/appsource/transport.go`)
   and never include tokens in errors.
 
 ## Testing
@@ -463,7 +560,7 @@ network.
    - each `Source` method sends the exact wire method from the coverage table;
    - inbound refs are `local:` on the wire, outbound refs are `host:`.
 2. **Real in-process hub.** Higher fidelity: build a hub with
-   `newHubAppServer(hubcore.WebConfig{...}, registry)` (`cmd/evener-hub/app_rpc.go:212-370`)
+   `newHubAppServer(hubcore.WebConfig{...}, registry)` (`cmd/evener-hub/app_rpc.go`)
    whose registry contains one fake local source, connect a `RemoteHubSource`
    to it over a pipe pair, and round-trip `ListThreads`, `ReadThread`,
    `ListTurns`, a mutation, and a subscription. This exercises the real hub
@@ -471,9 +568,10 @@ network.
 3. **Ref round-trip.** Property test: for refs `host:X`, `host:local:X`
    confusion, sub-thread alias refs, and `ParentRef`, `fromRemote(toRemote(r))
    == r`.
-4. **Notification translation.** Feed a remote `thread/status/changed` with
-   `ref:"local:S"` and a `thread/started` with a nested `Thread`; assert the
-   subscriber sees `host:S` and a translated nested ref.
+4. **Notification translation.** Feed a remote `NotifyThreadStatusChanged`
+   (`"thread/status/changed"`) with `ref:"local:S"` and a `NotifyThreadStarted`
+   (`"thread/started"`) with a nested `Thread`; assert the subscriber sees
+   `host:S` and a translated nested ref.
 5. **Subscription teardown.** With two local subscribers on one remote thread,
    drop one: assert no `thread/unsubscribe` is sent and the survivor keeps
    receiving. Drop the last: assert exactly one
@@ -487,7 +585,7 @@ network.
    as `SourceIDs:["local"]` and return the host's threads.
 8. **Catalog guard.** A test asserting every wire method in the coverage table is
    in `appwire.CatalogMethodNames(appwire.ScopeHub)` (that helper includes
-   `ScopeBoth`, `appwire/protocol.go:49-61`), so a future re-scope of a mapped
+   `ScopeBoth`, `appwire/protocol.go`), so a future re-scope of a mapped
    method fails loudly.
 9. **Live (gated).** A real SSH test against a disposable host behind
    `EVENER_SSH_E2E=1`, never in default `make test`.
@@ -503,7 +601,7 @@ network.
   subscription all round-trip with refs translated in both directions.
 - `ListThreads` with `SourceIDs` naming the host returns that host's threads.
 - `newHubSourceRegistry` registers one source per configured host and leaves the
-  empty-ref default as `local` (`app_sources.go:31-38`).
+  empty-ref default as `local` (`app_sources.go`).
 - The capability probe returns protocol version, hub version, features, launch
   config, models, plugins, auth/instances, and roots (OS/arch via preflight or
   the optional `evener/host/info` method).
@@ -538,38 +636,45 @@ splitting per the above keeps each PR reviewable.
 ## Open questions
 
 1. **Subscription atomicity.** v1 uses the legacy read-then-subscribe path
-   (`app_relay.go:1311-1322`), accepting a possible missed frame between the
+   (`app_relay.go`), accepting a possible missed frame between the
    controller's read and the remote subscription. Implementing
-   `RelaySessionSource` (`source.go:639-659`) would need the generic
-   `relaySession` machinery (`relay_session.go:11-134`) to accept a *logical*
+   `RelaySessionSource` (`source.go`) would need the generic
+   `relaySession` machinery (`relay_session.go`) to accept a *logical*
    connection over the shared client plus request-ID-scoped cut markers
-   (`appwire.WithRequestIDObserver`, `client.go:156-173`) — real but larger
+   (`appwire.WithRequestIDObserver`, `client.go`) — real but larger
    work. Decide after 05b ships whether the gap is observable.
 2. **OS/arch source.** Preflight (04) vs a new `evener/host/info` hub method.
    The method is clean and testable but adds wire surface; preflight keeps the
    wire stable but couples the probe to component 04.
 3. **Nested hosts.** A remote hub that is itself a controller returns refs the
    controller namespace cannot represent (see §Error handling). Refuse, drop, or
-   introduce a ref grammar change? Parent design allows a hub to be a host;
-   cycles are refused, but depth-2 chains are not addressed.
+   introduce a ref grammar change? Parent design allows a hub to be a host; v1
+   refuses only what the config alone can see (duplicate names, invalid names,
+   self-edges — see item 4), so a depth-2 chain is *not* prevented and no ref
+   grammar exists for it.
 4. **Attach-time cross-hub cycle detection (deferred).** Component 03 exposes
    `AddWithUpstreams(entry, upstreamNames)` so a cycle can be refused at the
    moment an upstream host list is learned, but v1 has no way to learn one: no
    AppWire method reports a hub's configured hosts, and the attach handshake
    returns server info, protocol version, source ID, and features only
-   (`InitializeResponse`, `appwire/types.go:227-233`). So v1 refuses what the
+   (`InitializeResponse`, `appwire/types.go`). So v1 refuses what the
    config alone can see (duplicate names, self-edges) and does **not** perform
    A→B→A attach-time detection. Closing this needs a new `ScopeHub` host-list
    method plus a call from the attach path into `hostreg.AddWithUpstreams`;
    component 03 records the same deferral.
 5. **Controller-side past/recovery fencing.** Non-local refs bypass the
    controller's past index, deletion fence, and recovery admission
-   (`app_sources.go:163-200`, `app_sources.go:283-292`). Remote sessions
+   (`app_sources.go`, `app_sources.go`). Remote sessions
    therefore have no controller-side dormant view; confirm that the fleet view
    (06) is acceptable as the only source of last-known remote state.
-6. **One client vs per-call clients.** A long-lived client amortizes SSH setup
-   but must survive reconnects (component 04) and re-`initialize`; confirm the
-   reconnect contract the SSH manager exposes to sources.
+6. **One client vs per-call clients (resolved).** The SSH manager keeps one live
+   channel per host and the source resolves the current client per call through
+   `RemoteHubClientFunc`; it never caches a client, so a reconnect that swaps
+   the underlying client is picked up automatically. §"Reconnect handoff" is
+   that contract. What remains open is only the *eagerness* of recovery: the
+   probe and subscriptions re-establish on next use (or on the relay's
+   re-subscribe) rather than at the moment of reconnect. Decide later whether a
+   component-04 event should proactively re-probe.
 7. **Capability caching / refresh.** Probe once at attach, or re-probe on a
    timer and on reconnect? Auth/model/plugin state changes on the host between
    probes.
