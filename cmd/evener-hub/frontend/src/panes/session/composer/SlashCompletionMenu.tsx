@@ -12,7 +12,7 @@
 // own doc comment) - this component itself has no notion of which source a
 // row came from beyond rendering its already-resolved label/hint/invocation.
 
-import type { SlashMenuItem } from "../../../protocol/slashCompletion";
+import type { SlashMenuItem } from "@evener/appwire-client";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./slashcompletionmenu.module.css";
 

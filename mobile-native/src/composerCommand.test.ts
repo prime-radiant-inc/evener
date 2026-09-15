@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
   parseSlashToken,
   spliceSlashCommand,
-} from "../../appwire-client/typescript/slashCompletion";
+} from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import { builtinComposerItems, composerCommand } from "./composerCommand";
 

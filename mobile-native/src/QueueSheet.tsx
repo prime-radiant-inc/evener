@@ -8,7 +8,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { WireError } from "../../appwire-client/typescript/errors";
+import { WireError } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type { QueueConversationService } from "../../mobile/src/services/conversation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";

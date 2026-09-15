@@ -9,11 +9,9 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
-import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
-import type { ThreadModel } from "../../protocol/model";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-import { NO_ACTIVE_TURN, sessionControls } from "../../protocol/submitRouting";
-import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
+import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { canReadSharedNotes, slashCommandInvocation, visibleCatalogCommands } from "@evener/appwire-client";
+import { NO_ACTIVE_TURN, sessionControls } from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";

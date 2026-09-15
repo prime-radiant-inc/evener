@@ -1,12 +1,17 @@
+import type {
+  ConnectionState,
+  InputItem,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ConnectionState } from "../../../../protocol/client";
-import { NO_ACTIVE_TURN } from "../../../../protocol/submitRouting";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
+import { NO_ACTIVE_TURN } from "@evener/appwire-client";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";

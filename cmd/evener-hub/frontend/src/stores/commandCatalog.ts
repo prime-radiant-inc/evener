@@ -1,5 +1,5 @@
+import type { CommandDescriptor, CommandListResponse } from "@evener/appwire-client";
 import { create } from "zustand";
-import type { CommandDescriptor, CommandListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
 interface CommandCatalogState {

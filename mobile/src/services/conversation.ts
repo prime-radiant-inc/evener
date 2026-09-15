@@ -14,10 +14,9 @@
 // The service guards its current identity and capabilities with open epochs;
 // the store owns profile/connection/conversation generations and view publication.
 
-import type { AppwireClient } from "../../../appwire-client/typescript/client";
-import { isStaleCursorError } from "../../../appwire-client/typescript/errors";
 import type {
   AnyNotification,
+  AppwireClient,
   InputItem,
   MethodName,
   MethodTypes,
@@ -34,7 +33,8 @@ import type {
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
+import { isStaleCursorError } from "@evener/appwire-client";
 import type {
   MobileConversation,
   MobileTimelineItem,

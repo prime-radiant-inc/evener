@@ -4,7 +4,7 @@ import type {
   NavigationOrderContainer,
   NavigationReadBase,
   NavigationSnapshot,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
   NavigationBaseInvalidError,

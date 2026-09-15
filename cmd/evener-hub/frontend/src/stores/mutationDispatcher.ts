@@ -1,6 +1,11 @@
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { mutationErrorData, WireError } from "../protocol/errors";
-import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../protocol/types.gen";
+import type {
+  AppwireClientLike,
+  MethodName,
+  MutationReceipt,
+  NotesHumanSetResponse,
+  ThreadClearResponse,
+} from "@evener/appwire-client";
+import { mutationErrorData, WireError } from "@evener/appwire-client";
 import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 

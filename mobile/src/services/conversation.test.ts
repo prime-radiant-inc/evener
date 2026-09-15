@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WireError } from "../../../appwire-client/typescript/errors";
+import { WireError } from "@evener/appwire-client";
 import type {
   AnyNotification,
   EmptyResponse,
@@ -34,7 +34,7 @@ import type {
   TurnQueueResponse,
   TurnStartResponse,
   TurnSteerResponse,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import * as projectModule from "../conversation/project";
 import type { createActivityService } from "./activity";
 import * as activityModule from "./activity";

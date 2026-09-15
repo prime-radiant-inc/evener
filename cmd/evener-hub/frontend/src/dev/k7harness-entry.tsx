@@ -6,11 +6,12 @@
 // whose width is driven by a <input type="range"> - a real, resizable BOX,
 // not the window - so this reproduces the pane-narrowing trigger the kata
 // describes, not a viewport media query.
+
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { SessionChrome } from "../panes/session/chrome/SessionChrome";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
 import "../styles/tokens.css";
 import "../styles/global.css";

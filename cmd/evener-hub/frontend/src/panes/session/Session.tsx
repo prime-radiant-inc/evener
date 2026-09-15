@@ -20,10 +20,11 @@
 // "chips beside the composer", per its own doc comment) and shares its
 // --session-measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
+
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import type { ThreadModel } from "../../protocol/model";
-import { sessionControls } from "../../protocol/submitRouting";
+import { sessionControls } from "@evener/appwire-client";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";

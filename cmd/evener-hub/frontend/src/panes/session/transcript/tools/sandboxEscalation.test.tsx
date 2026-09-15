@@ -1,16 +1,16 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   SandboxEscalationRequested,
   Thread,
   ThreadCapabilities,
   ThreadReadResponse,
-} from "../../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";

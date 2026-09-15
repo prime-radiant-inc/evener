@@ -9,9 +9,10 @@
 // "Load earlier output" button pages backwards (beforeBytes = the earliest
 // offset on screen) and prepends, so the whole log is reachable. Refresh
 // re-reads the tail and drops the paged prefix.
+
+import type { JobLogTail } from "@evener/appwire-client";
+import { parseJobLogTail } from "@evener/appwire-client";
 import { Fragment, useEffect, useMemo, useState } from "react";
-import type { JobLogTail } from "../../protocol/jobOutput";
-import { parseJobLogTail } from "../../protocol/jobOutput";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { Button, EmptyState, PaneScaffold } from "../../widgets";

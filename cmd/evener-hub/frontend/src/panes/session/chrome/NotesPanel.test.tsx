@@ -2,16 +2,16 @@
 // and the live remove wiring. Mirrors DetailsPanel.test.tsx's harness
 // (testModel with capability overrides); the body renders directly here
 // (no Sheet trigger to click through - the desktop pane mounts the body).
+
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
-import { WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";

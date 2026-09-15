@@ -1,8 +1,8 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";

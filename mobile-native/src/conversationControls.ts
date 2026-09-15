@@ -1,4 +1,4 @@
-import { sessionControls } from "../../appwire-client/typescript/submitRouting";
+import { sessionControls } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 
 /** The slice of a conversation every control decision reads. */

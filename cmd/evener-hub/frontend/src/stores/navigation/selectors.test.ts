@@ -1,5 +1,5 @@
+import type { NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { NavigationSessionSummary, NavigationWatchSummary } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
 import {
   relativeAge,

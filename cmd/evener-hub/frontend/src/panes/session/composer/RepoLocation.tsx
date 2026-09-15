@@ -21,8 +21,9 @@
 // (the `local` prop). A source-backed session's cwd belongs to another host, so
 // resolving it here could show an unrelated local repository that happens to
 // share the path; such a session still shows its working dir, just no branch.
+
+import type { AppwireClientLike } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import type { AppwireClientLike } from "../../../protocol/clientLike";
 import { useClient } from "../../../shell/clientContext";
 import { resolveGitLocation } from "../../../shell/gitLocation";
 import { requireClass } from "../../../widgets/internal/requireClass";

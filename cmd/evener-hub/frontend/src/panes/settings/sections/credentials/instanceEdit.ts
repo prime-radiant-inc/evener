@@ -14,7 +14,7 @@
 // registry applies when it resolves a URL. So a template variable gets its
 // row from the template and not from the entry, blank until authored, and
 // emptying one goes out as an empty value - the wire's delete - not a clear.
-import type { InstanceEditParams, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
+import type { InstanceEditParams, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import type { SelectOption } from "../../../../widgets";
 
 export const PROTOCOL_OPTIONS: SelectOption[] = [

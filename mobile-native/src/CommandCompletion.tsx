@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import {
   filterSlashMenuItems,
   type SlashMenuItem,
-} from "../../appwire-client/typescript/slashCompletion";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { CommandCatalog } from "./commandCatalog";
 import {

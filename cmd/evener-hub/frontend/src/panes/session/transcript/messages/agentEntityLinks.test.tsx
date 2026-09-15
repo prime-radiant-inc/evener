@@ -1,9 +1,8 @@
+import type { ActivityJob, ActivityTree, ThreadModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useRef } from "react";
 import { afterEach, expect, test } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../../protocol/activityData";
-import type { ThreadModel } from "../../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";

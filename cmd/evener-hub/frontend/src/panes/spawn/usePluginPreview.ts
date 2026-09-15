@@ -1,7 +1,6 @@
+import type { AppwireClientLike, LaunchConfigLayer, PluginPreviewResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import { errorText } from "../../protocol/errors";
-import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
 
 export const PLUGIN_PREVIEW_DEBOUNCE_MS = 250;
 

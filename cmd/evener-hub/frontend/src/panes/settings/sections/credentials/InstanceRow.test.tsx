@@ -1,7 +1,7 @@
+import type { InstanceEntry } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { InstanceRow } from "./InstanceRow";
 
 afterEach(cleanup);

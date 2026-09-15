@@ -1,8 +1,8 @@
+import type { UpdateCheckResponse } from "@evener/appwire-client";
+import { GENERIC_ERROR_MESSAGE, HUB_UNREACHABLE_MESSAGE, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { GENERIC_ERROR_MESSAGE, HUB_UNREACHABLE_MESSAGE, WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { UpdateCheckResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import {
   APPLY_TIMEOUT_MS,

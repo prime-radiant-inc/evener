@@ -13,6 +13,8 @@
 // Validation failures degrade to warnings + skipped rules; nothing here can
 // crash startup on malformed persisted data.
 
+import type { AnyNotification, AppwireClientLike, KeybindingsOverrides } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { serializeChord } from "../keybindings/chord";
@@ -20,9 +22,6 @@ import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../keybindings/defaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "../keybindings/overrides";
 import { type Binding, keybindingsRegistry } from "../keybindings/registry";
 import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "../keybindings/validation";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { WireError } from "../protocol/errors";
-import type { AnyNotification, KeybindingsOverrides } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
 

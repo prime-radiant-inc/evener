@@ -1,7 +1,7 @@
 import type {
 	NavigationReadParams,
 	NavigationSessionLocation,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,

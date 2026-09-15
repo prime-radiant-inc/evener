@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "../protocol/types.gen";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
