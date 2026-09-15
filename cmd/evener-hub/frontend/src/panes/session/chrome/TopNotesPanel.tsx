@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import { canWriteHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
-import { topNotesStore, useTopNotesExpanded, useTopNotesFocusEpoch } from "../../../stores/topNotes";
+import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
+import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { NotesPanelBody } from "./NotesPanel";
@@ -29,30 +29,41 @@ export interface TopNotesPanelProps {
 
 export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
-  const focusEpoch = useTopNotesFocusEpoch(sessionRef);
-  // The summary must read the SAME text the editor does: edits land in the
-  // draft store immediately while model.humanNote lags until the 10s
-  // blur-save commits, so collapsing right after typing would otherwise show
-  // the pre-edit note (or "Add a note…") for up to ten seconds. Subscribed
-  // before the canReadSharedNotes guard below so the early return can never
-  // skip a hook (Rules of Hooks).
+  const pendingFocus = usePendingTopNotesFocus(sessionRef);
+  // Subscribed before the canReadSharedNotes guard below so the early return
+  // can never skip a hook (Rules of Hooks).
   const draftState = useHumanNoteDraft(sessionRef);
   const editorRef = useRef<HTMLTextAreaElement>(null);
-  const prevEpoch = useRef(focusEpoch);
 
   useEffect(() => {
-    if (focusEpoch > prevEpoch.current) {
-      prevEpoch.current = focusEpoch;
-      requestAnimationFrame(() => {
-        editorRef.current?.focus();
-      });
-    }
-  }, [focusEpoch]);
+    syncHumanNote(sessionRef, model.humanNote);
+  }, [sessionRef, model.humanNote]);
+
+  // Serve the outstanding focus request whenever the editor is visible:
+  // immediately for /notes on a mounted panel, and on mount for a request
+  // that arrived while the session pane was still being opened (the /notes
+  // command opens the pane first). The token is per-ref and served exactly
+  // once, so a pane reused for another session neither misses its own
+  // request nor serves the other session's.
+  useEffect(() => {
+    if (!expanded || !pendingFocus) return;
+    if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
+    requestAnimationFrame(() => {
+      editorRef.current?.focus();
+    });
+  }, [sessionRef, expanded, pendingFocus]);
 
   if (!canReadSharedNotes(model)) return null;
 
-  const humanNote = draftState?.text ?? model.humanNote;
   const canWrite = canWriteHumanNote(model);
+  // While the session accepts writes, the summary mirrors the editor's
+  // draft - kept equal to the model between edits by the sync effect above,
+  // while edits themselves land in the draft store immediately (the 10s
+  // blur-save lag was the original staleness bug). A session that turned
+  // read-only mid-edit keeps its pending edit in the draft store for
+  // retry-after-resume, but the read-only body shows the saved note, so the
+  // summary must agree with what expanding will actually show.
+  const humanNote = canWrite ? (draftState?.text ?? model.humanNote) : model.humanNote;
 
   const hasHumanNote = humanNote.trim() !== "";
   const hasAgentNote = model.agentNote.trim() !== "";

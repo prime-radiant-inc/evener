@@ -248,3 +248,74 @@ test("collapsed summary shows unsaved draft edits immediately, in phrasing conte
   // span, not a div.
   expect(summaryText.tagName).toBe("SPAN");
 });
+
+test("a focus request made before the panel mounts is served on mount", async () => {
+  const model = makeModel({ humanNote: "Draft" });
+  // /notes with only a session-details pane focused: the request lands
+  // before the session pane (and this panel) mounts.
+  topNotesStore.getState().openAndFocus(model.ref);
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await waitFor(() => {
+    expect(document.activeElement).toBe(textarea);
+  });
+});
+
+test("focus requests stay scoped when a pane is reused for another session", async () => {
+  const modelA = makeModel({ humanNote: "A" });
+  const modelB = makeModel({ ref: "local:sess_b", humanNote: "B" });
+  const view = render(<TopNotesPanel sessionRef={modelA.ref} model={modelA} />);
+
+  // A's request is served while A is mounted.
+  topNotesStore.getState().openAndFocus(modelA.ref);
+  const editorA = await screen.findByRole("textbox", { name: "Human note" });
+  await waitFor(() => {
+    expect(document.activeElement).toBe(editorA);
+  });
+
+  // Pane reuse: the same component instance rerenders for session B
+  // without unmounting. B starts collapsed.
+  view.rerender(<TopNotesPanel sessionRef={modelB.ref} model={modelB} />);
+  expect(screen.getByTestId("top-notes-summary")).toBeTruthy();
+
+  // /notes on B must focus B's editor: the request belongs to B, not to a
+  // numeric epoch compared against A's already-served baseline.
+  topNotesStore.getState().openAndFocus(modelB.ref);
+  const editorB = await screen.findByRole("textbox", { name: "Human note" });
+  await waitFor(() => {
+    expect(document.activeElement).toBe(editorB);
+  });
+});
+
+test("collapsed summary follows model updates after the draft record goes clean", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "First note" });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // Expand once (the body mounts and creates the draft record), then
+  // collapse: the record stays behind with the text it had at collapse.
+  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+
+  // Another client saves a new note while the panel is collapsed. The
+  // summary must show it, not the stale clean record.
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, humanNote: "Updated by another tab" }} />);
+  expect(screen.getByText("Updated by another tab")).toBeTruthy();
+});
+
+test("a session that turns read-only shows the saved note, not the stranded draft", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  await user.click(screen.getByTestId("top-notes-summary"));
+  await user.type(screen.getByRole("textbox", { name: "Human note" }), " never saved");
+  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+
+  // The session ends with the edit unsaved: the read-only body shows the
+  // saved note, so the summary must agree with what expanding will show.
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "ended" } }} />);
+  expect(screen.queryByText("Saved note never saved")).toBeNull();
+  expect(screen.getByText("Saved note")).toBeTruthy();
+});

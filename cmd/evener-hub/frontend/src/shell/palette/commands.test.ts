@@ -969,10 +969,29 @@ test("/notes toggles the top notes panel and requests focus", () => {
 
   cmd("notes").run?.(runContext());
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
-  expect(topNotesStore.getState().getFocusEpoch("ref_a")).toBe(1);
+  expect(topNotesStore.getState().hasPendingFocus("ref_a")).toBe(true);
 
   cmd("notes").run?.(runContext());
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+});
+
+test("/notes focuses or opens the session pane, not just the notes state", () => {
+  // Only a details pane is mounted: the session pane itself is not open, so
+  // a notes-state change alone would look like a no-op.
+  workspaceStore.setState({
+    panes: [{ id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "pd1",
+  });
+  seedModel("ref_a");
+
+  cmd("notes").run?.(runContext());
+
+  const session = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: string }).ref === "ref_a");
+  expect(session).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(session?.id);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
