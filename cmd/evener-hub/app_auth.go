@@ -1039,18 +1039,27 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr)
 }
 
-// verifyEndpointFingerprintWithKey is verifyEndpointFingerprint over a key the
-// caller resolved before taking its credential lock, with keyErr the reason it
-// has none. The credential writes resolve the key before that lock and call
-// this form, because a resolution here could repair the key file (an
-// inter-process lock and a write) while every listing and credential op waited
-// on credMu. Threading the result in keeps the answer for every case: keyErr is
-// the failed resolution the empty assertion is refused for, and a key the hub
-// could not resolve is the empty current value an assertion is refused against.
+// verifyEndpointFingerprintWithKey is verifyAssertedDestination for the
+// credential writes, whose remedy is to enter the secret again. They resolve the
+// key before their lock and call this form, because a resolution here could
+// repair the key file (an inter-process lock and a write) while every listing
+// and credential op waited on credMu. Threading the result in keeps the answer
+// for every case: keyErr is the failed resolution the empty assertion is refused
+// for, and a key the hub could not resolve is the empty current value an
+// assertion is refused against.
 func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
+	return c.verifyAssertedDestination(name, asserted, key, keyErr, "review its destination and enter the credential again")
+}
+
+// verifyAssertedDestination refuses a write whose client asserted a destination
+// this name no longer resolves to. remedy is the tail of every refusal: a
+// credential write and an instance edit make the same check but offer different
+// next steps, and naming the wrong one sends the user to an action the form they
+// are on does not offer.
+func (c *hubAuthController) verifyAssertedDestination(name, asserted string, key []byte, keyErr error, remedy string) error {
 	if asserted == "" {
 		if keyErr != nil {
-			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so " + remedy)
 		}
 		return nil
 	}
@@ -1063,10 +1072,10 @@ func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted stri
 	// is nothing to check only while the hub can key a fingerprint or has no
 	// state root at all.
 	if current == "" {
-		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so " + remedy)
 	}
 	if current != asserted {
-		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: " + remedy)
 	}
 	return nil
 }

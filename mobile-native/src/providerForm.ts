@@ -36,13 +36,21 @@ export function createProviderParams(
     credentialHeader: credentialHeader || undefined,
   };
 }
+/** editProviderParams carries the endpoint fingerprint the editor displayed, so
+ * the hub can refuse an edit whose name another client re-pointed between the
+ * listing this editor was opened from and the RPC
+ * (appwire.InstanceEditParams.ExpectedEndpointFingerprint). A row the hub could
+ * not key serves no fingerprint and asserts nothing, which the hub accepts. */
 export function editProviderParams(
-  instance: { name: string; baseUrl?: string },
+  instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
   value: string,
 ): InstanceEditParams {
+  const params: InstanceEditParams = { name: instance.name };
+  if (instance.endpointFingerprint)
+    params.expectedEndpointFingerprint = instance.endpointFingerprint;
   const baseUrl = value.trim();
-  if (baseUrl === (instance.baseUrl || "")) return { name: instance.name };
-  return baseUrl
-    ? { name: instance.name, baseUrl }
-    : { name: instance.name, clearBaseUrl: true };
+  if (baseUrl === (instance.baseUrl || "")) return params;
+  if (baseUrl) params.baseUrl = baseUrl;
+  else params.clearBaseUrl = true;
+  return params;
 }

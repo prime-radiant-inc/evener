@@ -378,7 +378,10 @@ export function InstanceSheet({
       // this response as superseded. Its listing is then a document nothing
       // holds, so a toast naming it, a reseed from it, or a steer onto a name
       // it alone reports would all show the user a state that is not there.
-      const applied = await credentialsStore.getState().edit(params);
+      // The fingerprint the sheet displayed rides the edit as the store's own
+      // stamp, so the hub can refuse a name another client re-pointed between
+      // this check and the RPC.
+      const applied = await credentialsStore.getState().edit(params, instance.endpointFingerprint);
       // Except when the store's own list holds this save's rename: the same
       // instance, now wearing the name it was given. Holding the name is not
       // enough on its own - a rename frees a name that any other instance can

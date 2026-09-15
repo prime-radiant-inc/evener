@@ -748,6 +748,43 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
+  // The server-side half of the stale-draft guard: the sheet's own identity
+  // check reads a listing a concurrent change can outdate, so the save carries
+  // the endpoint fingerprint the sheet displayed and the hub re-checks it under
+  // its locks. Pinned on the wire, because the identity comparison alone cannot
+  // prove what was sent.
+  test("a save asserts the endpoint fingerprint the sheet displayed", async () => {
+    const WITH_FP = instance({ ...WORK, endpointFingerprint: "fp-work" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [WITH_FP], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WITH_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-work",
+    });
+  });
+
+  // A row the hub cannot key serves no fingerprint, and the sheet has to stay
+  // usable during that outage: the save still goes out, and it asserts nothing
+  // rather than an empty assertion - there is no fingerprint to check, so the
+  // hub must keep its pre-fingerprint behaviour instead of refusing the save.
+  test("a save on a row the hub cannot key sends no assertion", async () => {
+    const row = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://gw.example.test/v1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [row], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(row, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+  });
+
   test("emptying Base URL shows the reset note and sends clearBaseUrl", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", () => ({ instances: [WORK], availableProviders: [OPENAI] }));
@@ -1452,7 +1489,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     const renamed = { ...shadow, name: "openai-work", base: "openai" };
     await refreshList(fake, [renamed]);
@@ -1485,7 +1526,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
@@ -1506,7 +1551,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+    });
 
     const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
     await refreshList(fake, [lookAlike]);
