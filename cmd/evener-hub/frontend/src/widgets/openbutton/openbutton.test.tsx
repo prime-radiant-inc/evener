@@ -30,6 +30,14 @@ test("the accessible name falls back to 'Open' when no label is given", () => {
   expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
 });
 
+test("describedBy forwards to the button and stays unset by default", () => {
+  const { rerender } = render(<OpenButton label="Open transcript" onClick={() => {}} />);
+  expect(screen.getByRole("button", { name: "Open transcript" }).getAttribute("aria-describedby")).toBeNull();
+
+  rerender(<OpenButton label="Open transcript" describedBy="entity-card" onClick={() => {}} />);
+  expect(screen.getByRole("button", { name: "Open transcript" }).getAttribute("aria-describedby")).toBe("entity-card");
+});
+
 test("a click never reaches the enclosing row - the affordance rides disclosures", () => {
   const onParentClick = vi.fn();
   render(

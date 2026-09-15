@@ -11,6 +11,8 @@ import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../pr
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
+import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -150,6 +152,21 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 
 function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
+}
+
+function emptyActivityTree(ref: string) {
+  return {
+    revision: 1,
+    root: {
+      sessionId: `sess_${ref}`,
+      ref,
+      label: "Root session",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
 }
 
 function connectFakeClient(): FakeClient {
@@ -734,6 +751,8 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -766,6 +785,8 @@ afterEach(() => {
   // test. Under isolate:false that is what a later file's own
   // connectionStore.connect() re-triggers via rewireClient.
   resetThreadsStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   // Every test here writes real durable outbox records into this file's own
   // globalThis.indexedDB instance (one exercises the unavailable-storage
   // boundary by setting it to undefined) - the beforeEach above only
@@ -836,6 +857,30 @@ test("a focused pane never focuses its composer on mount on mobile", async () =>
   } finally {
     restoreViewport();
   }
+});
+
+test("the real live Composer mount discovers initial activity without a test-supplied opt-in", async () => {
+  const ref = "ref_activity_live";
+  const fake = connectFakeClient();
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () => readResponse(ref));
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  await threadsStore.getState().ensureThread(ref);
+  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
+  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref={ref} focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
 });
 
 test("restores a stored draft into the textarea on mount", async () => {

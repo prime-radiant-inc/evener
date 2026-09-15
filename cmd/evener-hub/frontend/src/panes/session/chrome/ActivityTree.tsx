@@ -1,4 +1,13 @@
 import {
+  type ActivityDelegateRow,
+  type ActivityFoldRow,
+  type ActivityJobRow,
+  type ActivityRow,
+  activityDelegateState,
+  buildActivityRows,
+  jobIsFailed,
+} from "@evener/appwire-client";
+import {
   createContext,
   Fragment,
   forwardRef,
@@ -21,15 +30,6 @@ import {
   activityDelegateBranch,
   activityNodeID,
 } from "../../../protocol/activityData";
-import {
-  type ActivityDelegateRow,
-  type ActivityFoldRow,
-  type ActivityJobRow,
-  type ActivityRow,
-  activityDelegateState,
-  buildActivityRows,
-  jobIsFailed,
-} from "../../../protocol/activityRows";
 import { openSessionByRef } from "../../../shell/sessionPlacement";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
