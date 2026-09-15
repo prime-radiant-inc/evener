@@ -659,13 +659,12 @@ test("/queue and /drain-as-steer each block with their own no-active-turn messag
   expect(blockedMessage(cmd("drain-as-steer").run?.(runContext()))).toBe("drain failed: no active turn");
 });
 
-// /interrupt is not in that list, for the same reason /model is not: only the
-// daemon knows. turn/interrupt names no turn (appwire v3) and its precondition
-// is the session's own quiescence, so a palette that answers "is a turn in
-// flight" itself can only ever refuse a Stop the daemon would have accepted.
-// The state is real: a session holding queued work reports active with no turn
-// running, so activeTurnId is absent while the user is looking at a session
-// that is plainly not settled (kata vewa/5gdv).
+// /interrupt carries its own rule too (available: stopAvailable, sessionControls'
+// stop: an active status and the interrupt capability). It never reads
+// activeTurnId: turn/interrupt names no turn (appwire v3), and the id is absent
+// in states the wire really reaches -- a session holding queued work reports
+// active with no turn running (kata vewa/5gdv), and the transcript clears it
+// between the turn/completed and turn/started of an inline turn boundary.
 test("/interrupt sends turn/interrupt for a working session whose turn has no name yet", async () => {
   const fake = connectFake();
   fake.on("turn/interrupt", (params) => ({
