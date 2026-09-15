@@ -64,7 +64,7 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
 			"sess_child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
 		},
 	})
-	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")
