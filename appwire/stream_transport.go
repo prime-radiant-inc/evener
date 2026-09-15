@@ -392,15 +392,16 @@ func (t *StreamTransport) poisonErr() error {
 }
 
 // latchLateCancel closes the window between a caller's last context check and
-// its deferred stop. stop reports whether it prevented the callback; when it did
-// not, the callback already latched the cancellation and closed the stream, and
-// the caller must report that rather than the success or unrelated error it was
-// about to return. It is one helper because every path that can return has to
-// apply the same rule, and four copies of it drifted apart once already.
+// its deferred stop. Every path that can return has to apply the same rule, and
+// four copies of it drifted apart once already.
+//
+// The context is the authority, not stop(): stop reports whether it suppressed
+// the callback, and a cancellation can land in the same instant and be
+// suppressed with it, in which case nobody has latched anything. So the context
+// is checked unconditionally, and a live context is the only case that returns
+// nil.
 func (t *StreamTransport) latchLateCancel(ctx context.Context, stop func() bool) error {
-	if stop() {
-		return nil
-	}
+	stop()
 	ctxErr := ctx.Err()
 	if ctxErr == nil {
 		return nil

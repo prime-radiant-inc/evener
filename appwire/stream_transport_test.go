@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"testing"
 	"time"
 )
@@ -280,36 +279,32 @@ func TestStreamTransportSendUnblocksOnCancel(t *testing.T) {
 // blockingWriteStream stalls inside Write until released, so a test can hold the
 // transport's write lock deterministically instead of racing a sleep.
 type blockingWriteStream struct {
+	entered chan struct{}
 	release chan struct{}
-	mu      sync.Mutex
-	writes  int
 }
 
 func (s *blockingWriteStream) Read([]byte) (int, error) { return 0, io.EOF }
 
 func (s *blockingWriteStream) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	s.writes++
-	s.mu.Unlock()
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
 	<-s.release
 	return len(p), nil
 }
 
 func (s *blockingWriteStream) Close() error { return nil }
 
-func (s *blockingWriteStream) waitForWrites(t *testing.T, n int) {
+// awaitWrite waits for a write to have started, by synchronization rather than
+// by polling: a sleep-based wait is flaky under load.
+func (s *blockingWriteStream) awaitWrite(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		s.mu.Lock()
-		got := s.writes
-		s.mu.Unlock()
-		if got >= n {
-			return
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-s.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("write never started")
 	}
-	t.Fatal("write never started")
 }
 
 // shortWriteStream accepts only part of every write, the way a stream that fails
@@ -720,7 +715,7 @@ func TestStreamTransportLimitIsClamped(t *testing.T) {
 // A send queued behind another stalled write must obey its own context rather
 // than wait for a lock it may never get.
 func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
-	st := &blockingWriteStream{release: make(chan struct{})}
+	st := &blockingWriteStream{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	tr := NewStreamTransport(st)
 
 	holder := make(chan error, 1)
@@ -728,7 +723,7 @@ func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
 		holder <- tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
 	}()
 	// Once the first send is inside Write it owns the lock.
-	st.waitForWrites(t, 1)
+	st.awaitWrite(t)
 
 	queuedCtx, cancelQueued := context.WithCancel(context.Background())
 	queued := make(chan error, 1)
@@ -751,14 +746,14 @@ func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
 // A send that was already queued on the write lock when the transport got
 // poisoned must observe the poisoning, not write into a stream that is gone.
 func TestStreamTransportQueuedSendSeesPoison(t *testing.T) {
-	st := &blockingWriteStream{release: make(chan struct{})}
+	st := &blockingWriteStream{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	tr := NewStreamTransport(st)
 
 	holder := make(chan error, 1)
 	go func() {
 		holder <- tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
 	}()
-	st.waitForWrites(t, 1)
+	st.awaitWrite(t)
 
 	queued := make(chan error, 1)
 	go func() {
