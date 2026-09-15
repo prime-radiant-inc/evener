@@ -247,34 +247,11 @@ func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
 	argv = append(argv, sshDest(h)...)
-	argv = append(argv, quoteRemoteWord(evenerCommand(h.EvenerPath)))
+	argv = append(argv, shellQuote(evenerCommand(h.EvenerPath)))
 	for _, a := range args {
-		argv = append(argv, quoteRemoteWord(a))
+		argv = append(argv, shellQuote(a))
 	}
 	return argv
-}
-
-// remoteShellSpecial lists the bytes that make a word unsafe to hand to a remote
-// login shell as-is. "~" is deliberately absent: it expands only at the start of
-// a word, and quoting it away would break the "~/bin/evener" spelling for no
-// safety gain.
-const remoteShellSpecial = " \t\n'\"\\$`;&|<>()*?[]{}!#"
-
-// quoteRemoteWord renders one word for the remote login shell. A word already
-// free of whitespace and shell metacharacters is returned unchanged, so the
-// ordinary argv keeps the exact form the spec documents; anything else is
-// single-quoted, with an embedded quote closed, escaped, and reopened ('\”, the
-// POSIX idiom). A quoted value is literal, so a leading "~" survives only when
-// the word did not need quoting: use an absolute path when the value itself
-// contains whitespace or a metacharacter.
-func quoteRemoteWord(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(s, remoteShellSpecial) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // channelArgv is the exact non-interactive bridge form:
