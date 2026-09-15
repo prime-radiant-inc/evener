@@ -27,6 +27,13 @@ import styles from "./hubResidents.module.css";
 
 const POLL_INTERVAL_MS = 2000;
 
+// PRE_RETIRE_PHASE is the only lifecycle phase from which the Hub accepts a
+// retire (agent/retirement.go's TryClaim requires phase "resident"). A fresh
+// roster snapshot that still reports it after an accepted retire is the Hub's
+// cached pre-retire view — not evidence the retire was undone — so it must not
+// supersede the accepted result.
+const PRE_RETIRE_PHASE = "resident";
+
 const CLASS = {
   root: requireClass(styles.root, "hubResidents.module.css", "root"),
   heading: requireClass(styles.heading, "hubResidents.module.css", "heading"),
@@ -134,7 +141,9 @@ export function HubResidents() {
   // accepted:false retire, so its empty blocker set is not evidence the refusal
   // resolved. A refusal is dropped when the row leaves the roster or its
   // lifecycle phase changes; a newly initiated action clears it in the handler
-  // below. A lifecycle phase change clears an accepted retire. actionErrors for
+  // below. An accepted retire is dropped when the row leaves the roster or the
+  // daemon reaches a genuinely different, concrete phase; the pre-retire phase
+  // reported by the Hub's cached roster does not supersede it. actionErrors for
   // rows absent from the list are dropped so a departed daemon cannot leave a
   // stale error behind a later row that reuses its ref. Keyed by residentRowKey
   // — the row's generation, falling back to ref, the same key the rows and the
@@ -157,12 +166,24 @@ export function HubResidents() {
         // phase change — that would discard a retire the Hub already accepted
         // while the daemon is exiting.
         const fresh = daemon !== undefined && daemon.probeState === "current";
-        const phaseChanged = fresh && daemon.lifecycle?.phase !== result.lifecycle.phase;
+        const phase = daemon?.lifecycle?.phase;
+        const phaseChanged = fresh && phase !== result.lifecycle.phase;
         // A fresh snapshot does not supersede a refusal: the list's lifecycle
         // reports only in-flight leases, so an empty blocker set cannot prove
         // the offline obligation behind an accepted:false retire is gone. The
         // refusal survives until the phase changes or the row leaves the roster.
-        if (!daemon || phaseChanged) {
+        //
+        // An accepted retire is pruned on a phase change too, but NOT when the
+        // differing phase is the pre-retire phase: the Hub's cached roster can
+        // still report phase "resident" with a current probe while the daemon is
+        // already retiring, and treating that as a change would revert the row
+        // from "retiring" to "resident" and re-enable the Retire button. Only a
+        // move to a genuinely different, concrete phase supersedes an accepted
+        // result; a refusal keeps its exact prior rule.
+        const superseded = result.accepted
+          ? phaseChanged && phase !== undefined && phase !== PRE_RETIRE_PHASE
+          : phaseChanged;
+        if (!daemon || superseded) {
           next.delete(key);
           changed = true;
         }
@@ -356,7 +377,12 @@ export function HubResidents() {
                       <div className={CLASS.actions}>
                         <Button
                           size="sm"
-                          disabled={!daemon.canRetire || isPending}
+                          disabled={
+                            !daemon.canRetire ||
+                            isPending ||
+                            retireResult?.accepted === true ||
+                            displayPhase === "retiring"
+                          }
                           onClick={() => void handleRetire(daemon.identity)}
                         >
                           Retire now

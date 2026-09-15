@@ -1067,6 +1067,171 @@ test("accepted retire phase survives a later stale probe with no lifecycle", asy
   expect(phaseCell).not.toBe("—");
 });
 
+// ─── Round-10 M3: a stale CURRENT snapshot does not supersede an accepted retire
+
+test("an accepted retire survives a post-retire refresh that still reports resident", async () => {
+  const fake = connectFakeClient();
+  // The Hub's cached roster keeps reporting the pre-retire view after the retire
+  // is accepted: a current probe, phase "resident", canRetire true. That is not
+  // evidence the retire was undone, so the accepted result must not be pruned.
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Cached-rostered resident",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  // The first list renders the row; the post-retire refresh is held so the
+  // accepted result can be observed before the cached snapshot arrives.
+  let listCalls = 0;
+  let releaseRefresh!: () => void;
+  fake.on("evener/daemon/list", () => {
+    listCalls += 1;
+    if (listCalls === 1) {
+      return { defaultTimeoutMillis: 3600000, daemons: [resident] };
+    }
+    return new Promise<DaemonListResponse>((resolve) => {
+      releaseRefresh = () => resolve({ defaultTimeoutMillis: 3600000, daemons: [resident] });
+    });
+  });
+  fake.on("evener/daemon/retire", () => ({
+    accepted: true,
+    lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Cached-rostered resident/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+
+  // The Hub accepted the retire: the row shows "retiring" and stays un-retirable
+  // while the cached snapshot is still held.
+  await waitFor(() => {
+    const acceptingRow = screen.getByRole("row", { name: /Cached-rostered resident/ });
+    expect(within(acceptingRow).getAllByRole("cell")[4]!.textContent).toBe("retiring");
+  });
+  expect(
+    isDisabled(
+      within(screen.getByRole("row", { name: /Cached-rostered resident/ })).getByRole("button", { name: "Retire now" }),
+    ),
+  ).toBe(true);
+
+  // The cached snapshot lands still reporting phase "resident" with a current
+  // probe. It must not supersede the accepted result: the row stays "retiring"
+  // and the Retire button stays disabled rather than reverting to "resident" and
+  // re-enabling a repeat click for a retirement that already succeeded.
+  await waitFor(() => {
+    expect(fake.calls.filter((c) => c.method === "evener/daemon/list").length).toBeGreaterThanOrEqual(2);
+  });
+  await act(async () => {
+    releaseRefresh();
+    await Promise.resolve();
+  });
+  const settledRow = screen.getByRole("row", { name: /Cached-rostered resident/ });
+  expect(within(settledRow).getAllByRole("cell")[4]!.textContent).toBe("retiring");
+  expect(isDisabled(within(settledRow).getByRole("button", { name: "Retire now" }))).toBe(true);
+});
+
+test("an accepted retire is cleared when its row leaves the roster", async () => {
+  const fake = connectFakeClient();
+  let present = true;
+  const resident = {
+    identity: IDENTITY_FIXTURE,
+    name: "Accepted departing resident",
+    protocol: "evener-appwire-v5",
+    compatibility: "compatible",
+    archived: false,
+    probeState: "current",
+    lifecycle: { phase: "resident", timeoutMillis: 3600000, blockers: [] },
+    canRetire: true,
+    canForceStop: true,
+  };
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: present ? [resident] : [],
+  }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: true,
+    lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Accepted departing resident/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await waitFor(() => {
+    expect(
+      within(screen.getByRole("row", { name: /Accepted departing resident/ })).getAllByRole("cell")[4]!.textContent,
+    ).toBe("retiring");
+  });
+
+  // The daemon departs the roster: the accepted result must be dropped, not
+  // carried onto a later row that reuses the same generation/ref.
+  present = false;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  expect(screen.queryByRole("row", { name: /Accepted departing resident/ })).toBeNull();
+
+  present = true;
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  const returned = await screen.findByRole("row", { name: /Accepted departing resident/ });
+  expect(within(returned).getAllByRole("cell")[4]!.textContent).toBe("resident");
+});
+
+test("an accepted retire is cleared when the daemon reaches a genuinely different phase", async () => {
+  const fake = connectFakeClient();
+  // The row's own probe tracks its lifecycle; the accepted retire records
+  // "retiring" locally before the list reports the daemon's next phase.
+  let phase = "resident";
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: IDENTITY_FIXTURE,
+        name: "Phase-moving resident",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        lifecycle: { phase, timeoutMillis: 3600000, blockers: [] },
+        canRetire: phase === "resident",
+        canForceStop: true,
+      },
+    ],
+  }));
+  fake.on("evener/daemon/retire", () => ({
+    accepted: true,
+    lifecycle: { phase: "retiring", timeoutMillis: 3600000, blockers: [] },
+  }));
+  const user = userEvent.setup();
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Phase-moving resident/ });
+  await user.click(within(row).getByRole("button", { name: "Retire now" }));
+  await waitFor(() => {
+    expect(
+      within(screen.getByRole("row", { name: /Phase-moving resident/ })).getAllByRole("cell")[4]!.textContent,
+    ).toBe("retiring");
+  });
+
+  // The daemon moves to a different phase the retire result does not describe:
+  // that is a genuine transition, so the accepted result must give way to the
+  // current probe rather than pin the row at "retiring".
+  phase = "preparing";
+  await act(async () => {
+    await import("../../../stores/daemonResidents").then((m) => m.daemonResidentsStore.getState().refresh());
+  });
+  const moved = await screen.findByRole("row", { name: /Phase-moving resident/ });
+  expect(within(moved).getAllByRole("cell")[4]!.textContent).toBe("preparing");
+});
+
 // ─── Retire refusal: blockers displayed, row kept ────────────────────────────
 
 test("retire refusal persists across an immediately-following fresh current snapshot with no blockers", async () => {
