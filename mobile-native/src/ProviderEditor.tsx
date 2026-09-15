@@ -7,6 +7,8 @@ import type {
 import {
   createProviderParams,
   editProviderParams,
+  ENDPOINT_CHANGED_MESSAGE,
+  isEndpointConflict,
   type ProviderDraft,
 } from "./providerForm";
 import type { ProviderInstances } from "./providerInstances";
@@ -90,11 +92,23 @@ export function ProviderEditor({
       if (edit) await model.edit(edit);
       else if (create) await model.create(create);
       if (alive.current) onSaved(instance?.name ?? draft.name.trim());
-    } catch {
-      if (alive.current)
-        setError(
-          "Save could not be confirmed. Check the provider list before trying again.",
-        );
+    } catch (cause) {
+      if (!alive.current) return;
+      if (isEndpointConflict(cause)) {
+        // The hub refused this edit's asserted destination: the name moved
+        // since the listing this editor was opened from. Re-anchor to the row
+        // now on screen rather than reporting a failed save for an endpoint the
+        // user is not on, and let them re-enter the destination.
+        const current = model
+          .getSnapshot()
+          .data?.instances.find((row) => row.name === instance?.name);
+        setDraft((value) => ({ ...value, baseUrl: current?.baseUrl ?? "" }));
+        setError(ENDPOINT_CHANGED_MESSAGE);
+        return;
+      }
+      setError(
+        "Save could not be confirmed. Check the provider list before trying again.",
+      );
     } finally {
       if (alive.current) setSaving(false);
     }

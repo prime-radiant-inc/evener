@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { createProviderParams, editProviderParams } from "./providerForm";
+import { WireError } from "../../appwire-client/typescript/errors";
+import {
+  createProviderParams,
+  editProviderParams,
+  isEndpointConflict,
+} from "./providerForm";
 
 const providers = [
   {
@@ -69,6 +74,46 @@ it("distinguishes unchanged endpoint, replacement and explicit reset", () => {
     clearBaseUrl: true,
   });
   expect(editProviderParams({ name: "work" }, " ")).toEqual({ name: "work" });
+});
+
+it("asserts the endpoint fingerprint the editor displayed", () => {
+  const instance = {
+    name: "work",
+    baseUrl: "https://example.test/v1",
+    endpointFingerprint: "fp-work",
+  };
+  expect(editProviderParams(instance, " https://example.test/v1 ")).toEqual({
+    name: "work",
+    expectedEndpointFingerprint: "fp-work",
+  });
+  expect(editProviderParams(instance, " https://new.test ")).toEqual({
+    name: "work",
+    baseUrl: "https://new.test",
+    expectedEndpointFingerprint: "fp-work",
+  });
+  expect(editProviderParams(instance, " ")).toEqual({
+    name: "work",
+    clearBaseUrl: true,
+    expectedEndpointFingerprint: "fp-work",
+  });
+});
+
+it("asserts nothing for a row the hub could not key", () => {
+  expect(
+    editProviderParams(
+      { name: "work", baseUrl: "https://example.test/v1" },
+      " https://new.test ",
+    ),
+  ).toEqual({ name: "work", baseUrl: "https://new.test" });
+});
+
+it("recognizes the hub's endpoint refusal, and only that", () => {
+  const conflict = new WireError("moved", -32013, {
+    evenerErrorInfo: "conflict",
+  });
+  expect(isEndpointConflict(conflict)).toBe(true);
+  expect(isEndpointConflict(new WireError("boom", -32000))).toBe(false);
+  expect(isEndpointConflict(new Error("boom"))).toBe(false);
 });
 
 it("does not treat environment variable names as template keys", () => {
