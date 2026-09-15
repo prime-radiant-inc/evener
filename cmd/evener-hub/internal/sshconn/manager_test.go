@@ -3073,6 +3073,66 @@ func TestClientIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
+// exitGatedStdio is a bridge Stdio whose child exit the test releases directly,
+// rather than through Kill: the stdio pipes stay open, so the manager's read
+// loop keeps waiting and the child-wait goroutine's own liveness transition is
+// the only one in play.
+type exitGatedStdio struct {
+	*fakeStdio
+	exited   chan struct{}
+	exitOnce sync.Once
+}
+
+func newExitGatedStdio(b *fakeBridge) *exitGatedStdio {
+	return &exitGatedStdio{fakeStdio: b.stdio, exited: make(chan struct{})}
+}
+
+// exitChild releases the child, standing in for the ssh process ending. It is
+// deliberately not Kill: nothing about the stdio link changes.
+func (s *exitGatedStdio) exitChild() { s.exitOnce.Do(func() { close(s.exited) }) }
+
+func (s *exitGatedStdio) Wait() error {
+	<-s.exited
+	return nil
+}
+
+// Round sixteen found the child-wait goroutine closing ch.stopped before calling
+// ch.markLost(): a consumer that could tell the ssh child had exited (the
+// stopped signal) could still be handed the dead channel by ClientIfAttached or
+// Ensure. Liveness must be retired no later than the reaping is announced, so
+// this parks the goroutine at the publication point and asserts the invariant
+// deterministically instead of racing it.
+func TestExitedChildIsNeverReportedLive(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	gated := newExitGatedStdio(newFakeBridge(appwire.ProtocolVersion))
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			return gated, nil
+		},
+	}
+	exitGate := newGateHook()
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		afterChildExit: func(string, *Channel) { exitGate.hook() },
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client == nil {
+		t.Fatal("ClientIfAttached did not offer the freshly attached channel")
+	}
+
+	exitGate.arm()
+	gated.exitChild() // the ssh child exits; the stdio pipes stay open
+	exitGate.wait(t, "the child-exit edge")
+	defer exitGate.open()
+
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("ClientIfAttached reported an exited child's channel as live: %v, %v", client, ok)
+	}
+}
+
 // A caller that gives up while its attach is finishing must not be handed a
 // channel. The channel is manager-owned and already supervised, so it is not torn
 // down; the caller gets its own error instead.

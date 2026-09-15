@@ -112,6 +112,12 @@ type Options struct {
 	// and released any gate it held. Tests use it to observe "the supervisor
 	// stood down" instead of sleeping long enough to hope it did.
 	superviseExited func(name string)
+	// afterChildExit, when set, runs in the child-wait goroutine once the exited
+	// SSH child's exit edge has been published. Tests use it to inspect, without
+	// a sleep or a scheduling race, what a consumer could observe at the moment
+	// the reaping is announced: a channel whose process has exited must never be
+	// reported live by ClientIfAttached/installedLiveChannel.
+	afterChildExit func(name string, ch *Channel)
 }
 
 func (o Options) runner() Runner {
@@ -762,8 +768,16 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 
 	go func() {
 		_ = stdio.Wait()
-		close(ch.stopped)
+		// Retire the channel's liveness before announcing the reaping. A
+		// consumer that has observed the child's exit (stopped) — or that
+		// decides liveness without consulting stopped at all — must never find
+		// the already-exited process still offered by ClientIfAttached or
+		// installedLiveChannel, so lost is closed before stopped.
 		ch.markLost()
+		close(ch.stopped)
+		if h := m.opts.afterChildExit; h != nil {
+			h(host.Name, ch)
+		}
 	}()
 	return ch, nil
 }
