@@ -6333,7 +6333,79 @@ test("a remote host selection discloses that discovery is controller-local", asy
   const notice = screen.getByTestId("spawn-remote-host-notice");
   expect(notice.textContent).toContain("buildbox");
   expect(notice.getAttribute("role")).toBe("status");
+  // Naming BOTH owners is the whole point of the disclosure: the controller is
+  // where the readings below come from, and the selected host is what resolves
+  // its own environment at start. Asserted so the copy cannot drift into
+  // claiming the controller's readings are the host's (or drop the host).
+  expect(notice.textContent).toContain("come from this controller");
+  expect(notice.textContent).toContain("buildbox resolves its own environment when the session starts");
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
   expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
+});
+
+// The remote-target fix must not trade a WRONG early judgment for no feedback at
+// all. With a remote host selected the launch really reaches thread/start, and
+// the selected host's own validation is what reports: its WireError surfaces
+// verbatim through friendlyLaunchErrorMessage, and nothing is created on the
+// controller (the remote hub runs its own hubThreadStart, which canonicalizes
+// and rejects a cwd it cannot see).
+test("a remote launch rejected by the selected host surfaces that host's own error", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    // The controller would call this cwd a creatable missing directory...
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+    // ...and the selected host rejects it as its own cwd failure.
+    f.on("thread/start", () => {
+      throw new WireError("cwd: no such file or directory on buildbox", -32602);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/remote/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText("Start failed: cwd: no such file or directory on buildbox");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true);
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Create & start" })).toBeNull();
+});
+
+// Relaxing the controller-local provider gate must not mean a doomed remote
+// launch is SILENTLY accepted: when the selected host cannot serve it either,
+// that host's own credential failure is what the person sees - so "allowed to
+// submit" and "actually succeeded" stay distinguishable, and no session is
+// navigated to on the failure path.
+test("a remote launch the selected host cannot serve reports that host's own failure", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    f.on("thread/start", () => {
+      throw new WireError("provider credentials missing for anthropic", -32014, { evenerErrorInfo: "hubLaunch" });
+    });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-providers-fail");
+  renderSpawn(fake);
+
+  // Starts blocked by the CONTROLLER's missing provider check (local target).
+  await screen.findByRole("button", { name: "Connect provider" });
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText("Start failed: provider credentials missing for anthropic");
+  expect(window.location.pathname).not.toContain("/s/");
 });
