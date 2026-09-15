@@ -23,6 +23,20 @@ test("keeps caller order when snapshots have no transcript positions", () => {
   expect(foldWatchSummaries([watching, ended]).get("watch_x")?.state).toBe("ended");
 });
 
+test("a positionless snapshot sorts after positioned ones, so it decides the fold", () => {
+  const positioned = {
+    ...watchItem("a", { watch_id: "watch_x", watching: true, source: "job_old" }, "t1"),
+    position: { entry: 1, item: 0 },
+  };
+  const positionless = watchItem("b", { watch_id: "watch_x", watching: false, end_reason: "job_completed" }, "t2");
+
+  // A snapshot with no transcript place sorts after every positioned one, so it
+  // wins the fold's last-wins merge in BOTH caller orders. Comparing equal across
+  // that boundary instead left the winner to the caller's array order.
+  expect(foldWatchSummaries([positioned, positionless]).get("watch_x")?.state).toBe("ended");
+  expect(foldWatchSummaries([positionless, positioned]).get("watch_x")?.state).toBe("ended");
+});
+
 test("folds positioned snapshots in transcript order when supplied in reverse", () => {
   const older = {
     ...watchItem("a", {
