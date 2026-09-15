@@ -1743,27 +1743,7 @@ func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
 		defer listingMu.Unlock()
 		return listed
 	})
-	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.acquireRelaySession(params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease := leaseValue.(*relaySessionLease)
-	defer lease.Close()
-	deliveries, err := lease.Listen(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := readRelayAsync(context.Background(), lease, params)
-	call := <-daemon.reads
-	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
-	result := <-read
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	if !result.result.Handoff.Commit() {
-		t.Fatal("initial handoff did not commit")
-	}
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
 
 	// The daemon exits: its rendezvous entry goes, its socket closes, and the
 	// roster (here, the test) announces it.
@@ -1826,27 +1806,7 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 		defer listingMu.Unlock()
 		return listed
 	})
-	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
-	leaseValue, err := source.acquireRelaySession(params)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lease := leaseValue.(*relaySessionLease)
-	defer lease.Close()
-	deliveries, err := lease.Listen(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := readRelayAsync(context.Background(), lease, params)
-	call := <-daemon.reads
-	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
-	result := <-read
-	if result.err != nil {
-		t.Fatal(result.err)
-	}
-	if !result.result.Handoff.Commit() {
-		t.Fatal("initial handoff did not commit")
-	}
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
 	session := relaySessionFor(t, source)
 
 	// A delivery the listener has not acknowledged holds the publisher, so
@@ -1878,4 +1838,34 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 	case <-time.After(5 * time.Second):
 		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
 	}
+}
+
+// openCommittedRelay subscribes to threadID through source: it acquires the
+// relay lease, listens, answers the daemon's read with a snapshot and commits
+// the handoff, and returns the lease, the listener's deliveries and the
+// daemon-side call whose transport the test can close to end the connection.
+func openCommittedRelay(t *testing.T, source *LocalDaemonSource, daemon *relayTestDaemon, threadID string) (*relaySessionLease, <-chan RelayDelivery, relayReadCall) {
+	t.Helper()
+	params := appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	t.Cleanup(lease.Close)
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot(threadID, "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+	return lease, deliveries, call
 }

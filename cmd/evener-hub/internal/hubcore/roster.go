@@ -259,6 +259,18 @@ func (r *Roster) SetProcessAlive(alive func(pid int) bool) *Roster {
 
 // ProcessIdentity is what the host can say about the process behind a
 // rendezvous entry whose daemon stopped answering.
+//
+// Why the roster asks. A daemon that crashed leaves its rendezvous file, and
+// the kernel may hand its PID to anything. To liveness (signal 0) that reuse
+// looks exactly like a busy daemon missing one probe, so a confirmed entry
+// would stay listed for as long as the unrelated process lived, its relay
+// would keep dialling a dead endpoint, and the session's subscribers would
+// never be told the daemon is gone. The probe tells the two apart through the
+// same verifier force-stop binds to (daemonprocess.Identify): only positive
+// evidence - the process is gone, or its owner or earliest possible start
+// cannot be the daemon's - counts against the entry; a busy daemon that is
+// still itself, an entry without the fields verification needs, and a host
+// that cannot inspect all keep the route exactly as liveness alone would.
 type ProcessIdentity int
 
 const (
@@ -529,14 +541,11 @@ func (r *Roster) refresh() error {
 	}
 	for _, res := range results {
 		e := res.entry
-		// An answering probe is bound to the entry's session (StatusProber),
-		// so it vouches for the entry. When it does not answer, the process
-		// behind the PID is asked, once per entry per refresh: gone, or verifiably another
-		// process, takes the crashed path (never the unconfirmed one, which
-		// would park a reused PID with a closed socket forever); a daemon that
-		// is still itself, or a host that cannot tell, is retained on
-		// liveness alone. A roster built without a prober admits every entry
-		// and asks the host nothing.
+		// An answering probe is bound to the entry's session (StatusProber)
+		// and vouches for it; otherwise the process behind the PID is asked
+		// once per entry per refresh (see ProcessIdentity for why): gone or
+		// verifiably another process takes the crashed path, never the
+		// unconfirmed one. A roster without a prober asks nothing.
 		identity := ProcessIdentityUnknown
 		if r.prober != nil && !res.OK {
 			identity = r.procIdentity(e)

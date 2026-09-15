@@ -1654,7 +1654,7 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 // its PID to anything. To liveness that reuse looks exactly like a busy
 // daemon missing one probe, so a confirmed entry stayed listed for as long as
 // the unrelated process lived and the relay never announced the daemon gone
-// (review round 5 on #1325). The process-identity probe tells the two apart;
+// (see ProcessIdentity). The process-identity probe tells the two apart;
 // only the reused PID is dropped, and it reads as a crash.
 func TestRosterDropsRetainedEntryWhoseProcessIsNoLongerItsDaemon(t *testing.T) {
 	dir := t.TempDir()
@@ -1709,8 +1709,7 @@ func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
 
 // A roster built without a prober admits every entry as listed (offline or
 // synthetic rosters); it must not then ask the host about a PID that is
-// nobody's on this machine and mark a complete entry crashed (review round 10
-// on #1325).
+// nobody's on this machine and mark a complete entry crashed.
 func TestRosterWithoutProberDoesNotAskTheHostAboutAPID(t *testing.T) {
 	dir := t.TempDir()
 	entry := rendezvous.Entry{PID: 1001, SessionID: "01OFFLINE", ThreadID: "01OFFLINE", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: "/private/state", StartedAt: time.Now().UTC()}

@@ -50,7 +50,7 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 // rendezvous entry's session id current (rvreg.UpdateSessionID). So an
 // endpoint answering for a session the entry does not name is another
 // daemon that re-bound the port; its answer must not be published under the
-// entry (review round 12 on #1325).
+// entry.
 func TestStatusProberRejectsAnAnswerForAnotherSession(t *testing.T) {
 	other := appwire.Thread{ID: "other", SessionID: "other", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}
 	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})

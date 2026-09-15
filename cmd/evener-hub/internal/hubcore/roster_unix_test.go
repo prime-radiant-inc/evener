@@ -33,8 +33,7 @@ func crashedDaemonStateDir(t *testing.T, sessionID string) string {
 // state dir, so the inspection errors before it can judge the process; the
 // same shape as a pidfd that will not open or a /proc read racing a closing
 // descriptor on a busy daemon - is not evidence that the PID belongs to
-// someone else, and the liveness-only retention stands (review round 6 on
-// #1325).
+// someone else, and the liveness-only retention stands.
 func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
 	other := exec.Command("sleep", "60")
 	if err := other.Start(); err != nil {
@@ -100,7 +99,7 @@ func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
 // reused answers signal 0 and cannot be bound by the force-stop verifier
 // (which refuses its own PID), so it read as unknown and was retained for as
 // long as the hub ran. In the roster's reading, the hub's own PID is positive
-// evidence (review round 13 on #1325).
+// evidence.
 func TestRosterTreatsItsOwnPIDAsAnotherProcess(t *testing.T) {
 	dir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), SessionID: "01HUB", ThreadID: "01HUB", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01HUB"), StartedAt: time.Now().UTC()}

@@ -8,10 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -308,7 +306,7 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) 
 // the opposite case: nothing else will ever tell a subscriber on a read-only
 // child alias that the daemon behind its session is gone, so it reaches every
 // route the relay serves, each stamped with that route's own identity - the
-// clients act on params.ref (issue #1318, review round 1).
+// clients act on params.ref (issue #1318).
 func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 	const (
 		rootRef  = "local:gone-root"
@@ -399,163 +397,41 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 func TestHubRelayTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	daemon, upstream := newDaemonStandIn(t, "gone")
-	// The rendezvous file claims a real process, alive for now.
-	process := exec.Command("sleep", "60")
-	if err := process.Start(); err != nil {
-		t.Fatalf("start stand-in process: %v", err)
-	}
-	t.Cleanup(func() { _ = process.Process.Kill(); _ = process.Wait() })
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       process.Process.Pid,
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "gone",
-		SessionID: "gone",
-	})
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
-	roster.Refresh()
-	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
-	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer wire.Close()
-	client := dialHubRPC(t, wire)
-	defer client.Close()
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:gone", Subscribe: true}); err != nil {
-		t.Fatal(err)
-	}
+	daemon := startAliasRecoveryDaemon(t, "gone", "gone")
+	hub := openSubscribedHub(ctx, t, daemon.entry, nil)
 
 	// The daemon dies: its process is gone and its socket closes, but its
-	// rendezvous file stays. (httptest's CloseClientConnections skips
-	// hijacked WebSockets; the daemon server closes its own.) The roster's
-	// watcher would refresh here; the test does it.
-	if err := process.Process.Kill(); err != nil {
+	// rendezvous file stays. The roster's watcher would refresh here; the
+	// test does it.
+	if err := daemon.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	_ = process.Wait()
-	if err := daemon.Shutdown(ctx); err != nil {
-		t.Fatalf("daemon shutdown: %v", err)
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
 	}
-	roster.Refresh()
-
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyEvenerThreadResync {
-				continue
-			}
-			var params appwire.ThreadResyncParams
-			if err := json.Unmarshal(got.Params, &params); err != nil {
-				t.Fatalf("resync params: %v", err)
-			}
-			if params.Ref != "local:gone" {
-				t.Fatalf("resync names %q, want local:gone", params.Ref)
-			}
-			return
-		case <-deadline:
-			t.Fatal("the subscriber was never told to re-read: the dead daemon's rendezvous file kept it dialable")
-		}
-	}
-}
-
-// newDaemonStandIn serves one session over a real WebSocket the way a daemon
-// does, enough for both a subscribing thread/read and the roster's identity
-// probe (thread/list plus a bare thread/read naming the root).
-func newDaemonStandIn(t *testing.T, sessionID string) (*appserver.Server, *httptest.Server) {
-	t.Helper()
-	thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + sessionID}}
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
-	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if p.Subscribe {
-			appserver.Subscribe(ctx, sessionID)
-		}
-		return appwire.ThreadReadResponse{Thread: thread}, nil
-	})
-	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	t.Cleanup(upstream.Close)
-	return daemon, upstream
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "gone", "local:gone", 10*time.Second)
 }
 
 // The roster keeps a confirmed daemon through a probe miss as long as its PID
-// answers signal 0, so a daemon that crashed and had its PID reused stayed
-// listed, the relay kept dialling the dead endpoint, and the subscriber was
-// never told (review round 5 on #1325). Once the process behind the PID is
+// answers signal 0, so a daemon that crashed and had its PID reused would stay
+// listed and its subscriber never told. Once the process behind the PID is
 // verified not to be the daemon, the entry reads as crashed, leaves the
-// listing, and recovery announces the daemon gone.
+// listing, and the daemon is announced gone (see hubcore.ProcessIdentity).
 func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	daemon, upstream := newDaemonStandIn(t, "reused")
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(), // alive for the whole test, like a reused PID
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "reused",
-		SessionID: "reused",
-		StateDir:  t.TempDir(),
-		StartedAt: time.Now().UTC(),
-	})
+	daemon := startAliasRecoveryDaemon(t, "reused", "reused")
 	var identity atomic.Int32
 	identity.Store(int32(hubcore.ProcessOwnsEntry))
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
-		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentity(identity.Load()) })
-	roster.Refresh()
-	if _, ok := roster.Find("reused"); !ok {
-		t.Fatal("the stand-in daemon was not confirmed into the roster")
-	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
-	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer wire.Close()
-	client := dialHubRPC(t, wire)
-	defer client.Close()
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:reused", Subscribe: true}); err != nil {
-		t.Fatal(err)
-	}
+	hub := openSubscribedHub(ctx, t, daemon.entry, func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentity(identity.Load()) })
 
 	// The daemon crashes and its PID is reused: the endpoint stops answering,
-	// signal 0 still succeeds, the process is no longer the daemon.
+	// the process (here, still the fixture's) is no longer the daemon.
 	identity.Store(int32(hubcore.ProcessNotOwner))
-	if err := daemon.Shutdown(ctx); err != nil {
-		t.Fatalf("daemon shutdown: %v", err)
-	}
-	roster.Refresh()
-
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyEvenerThreadResync {
-				continue
-			}
-			var params appwire.ThreadResyncParams
-			if err := json.Unmarshal(got.Params, &params); err != nil {
-				t.Fatalf("resync params: %v", err)
-			}
-			if params.Ref != "local:reused" {
-				t.Fatalf("resync names %q, want local:reused", params.Ref)
-			}
-			return
-		case <-deadline:
-			t.Fatal("the subscriber was never told to re-read: the reused PID kept the crashed daemon listed")
-		}
-	}
+	daemon.server.Close()
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "reused", "local:reused", 10*time.Second)
 }
 
 // A daemon resync whose ref cannot be read is malformed. It fans out exactly
@@ -639,59 +515,27 @@ func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
 	}
 }
 
-// The hub wires the roster's unresolved claims to the local source. A daemon
-// whose rendezvous claim changes identity mid-transition while a probe is
-// missed is parked unconfirmed, off the listing; the relay must keep dialling
-// it rather than announce the session ended, and announce only once the
-// claim is gone altogether (review round 12 on #1325).
+// A daemon whose rendezvous claim changes identity mid-transition while a
+// probe is missed is parked unresolved, off the listing; it is not announced
+// gone until its claim is gone altogether.
 func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	daemon, upstream := newDaemonStandIn(t, "before")
-	runDir := t.TempDir()
-	claim := rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "before",
-		SessionID: "before",
-		StartedAt: time.Now().UTC(),
-	}
-	writeRendezvous(t, runDir, claim)
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
-		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
-	roster.Refresh()
-	if _, ok := roster.Find("before"); !ok {
-		t.Fatal("the stand-in daemon was not confirmed into the roster")
-	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
-	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
-	defer wire.Close()
-	client := dialHubRPC(t, wire)
-	defer client.Close()
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:before", Subscribe: true}); err != nil {
-		t.Fatal(err)
-	}
+	daemon := startAliasRecoveryDaemon(t, "before", "before")
+	hub := openSubscribedHub(ctx, t, daemon.entry, func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 
 	// Mid-transition: the claim changes identity under the same PID while the
 	// endpoint stops answering. The roster parks both claims unresolved.
+	claim := daemon.entry
 	claim.SessionID, claim.ThreadID = "after", "after"
-	writeRendezvous(t, runDir, claim)
-	if err := daemon.Shutdown(ctx); err != nil {
-		t.Fatalf("daemon shutdown: %v", err)
-	}
-	roster.Refresh()
-	if len(roster.List()) != 0 || len(roster.UnconfirmedEntries()) == 0 {
-		t.Fatalf("expected the claims parked unresolved, got listed=%+v unconfirmed=%+v", roster.List(), roster.UnconfirmedEntries())
+	writeRendezvous(t, hub.runDir, claim)
+	daemon.server.Close()
+	hub.roster.Refresh()
+	if len(hub.roster.List()) != 0 || len(hub.roster.UnconfirmedEntries()) == 0 {
+		t.Fatalf("expected the claims parked unresolved, got listed=%+v unconfirmed=%+v", hub.roster.List(), hub.roster.UnconfirmedEntries())
 	}
 	select {
-	case got := <-client.Notifications():
+	case got := <-hub.client.Notifications():
 		if got.Method == appwire.NotifyEvenerThreadResync {
 			t.Fatalf("an unresolved claim was announced gone: %s", got.Params)
 		}
@@ -699,22 +543,49 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 	}
 
 	// The claim is gone altogether: now the daemon is gone.
-	if err := os.Remove(filepath.Join(runDir, strconv.Itoa(claim.PID)+".json")); err != nil {
+	if err := os.Remove(filepath.Join(hub.runDir, strconv.Itoa(claim.PID)+".json")); err != nil {
 		t.Fatal(err)
 	}
-	roster.Refresh()
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case got := <-client.Notifications():
-			if got.Method != appwire.NotifyEvenerThreadResync {
-				continue
-			}
-			return
-		case <-deadline:
-			t.Fatal("no resync once the claim was gone altogether")
-		}
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "before", "local:before", 10*time.Second)
+}
+
+// subscribedHub is a hub over one rendezvous entry with a client subscribed to
+// that entry's session: the shape every "the daemon left" test starts from.
+type subscribedHub struct {
+	runDir string
+	roster *hubcore.Roster
+	client *appwire.Client
+}
+
+// openSubscribedHub writes entry into a fresh rendezvous directory, builds a
+// hub over a roster of it (with identity, if given, standing in for the
+// host's process inspection), and subscribes a client to the entry's session.
+func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry, identity func(rendezvous.Entry) hubcore.ProcessIdentity) subscribedHub {
+	t.Helper()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	if identity != nil {
+		roster.SetProcessIdentity(identity)
 	}
+	roster.Refresh()
+	if _, ok := roster.Find(entry.SessionID); !ok {
+		t.Fatalf("the daemon %q was not confirmed into the roster", entry.SessionID)
+	}
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	t.Cleanup(wire.Close)
+	client := dialHubRPC(t, wire)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + entry.SessionID, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	return subscribedHub{runDir: runDir, roster: roster, client: client}
 }
 
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {

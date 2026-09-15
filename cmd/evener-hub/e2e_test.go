@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,10 +59,16 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
+	awaitHandStartedDaemonListed(ctx, t, client, daemonDir)
+}
 
-	// The daemon's own working directory is what identifies it: the hub
-	// spawned nothing here, so a thread carrying that CWD can only have come
-	// from the rendezvous entry the daemon wrote.
+// awaitHandStartedDaemonListed polls thread/list until the roster lists the
+// daemon running in daemonDir, and returns its thread. The daemon's own
+// working directory is what identifies it: the hub spawned nothing, so a
+// thread carrying that CWD can only have come from the rendezvous entry the
+// daemon wrote.
+func awaitHandStartedDaemonListed(ctx context.Context, t *testing.T, client *appwire.Client, daemonDir string) appwire.Thread {
+	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	var listed []appwire.Thread
 	for time.Now().Before(deadline) {
@@ -82,11 +87,12 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 			if thread.Evener.Ref == "" {
 				t.Fatalf("the roster listed the daemon with no ref, so nothing can address it: %#v", thread)
 			}
-			return
+			return thread
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	t.Fatalf("the hub roster never listed the hand-started daemon at %s. thread/list last returned %d threads: %#v", daemonDir, len(listed), listed)
+	return appwire.Thread{}
 }
 
 func TestE2E_LayeredLaunchConfig(t *testing.T) {
@@ -257,26 +263,8 @@ func TestE2E_DaemonExitTellsSubscriberToReread(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	client := stack.dialRPC(ctx, t)
-
-	var ref, threadID string
-	deadline := time.Now().Add(30 * time.Second)
-	for ref == "" {
-		if time.Now().After(deadline) {
-			t.Fatalf("the hub roster never listed the hand-started daemon at %s", daemonDir)
-		}
-		list, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
-		if err != nil {
-			t.Fatalf("thread/list: %v", err)
-		}
-		for _, thread := range list.Data {
-			if thread.CWD == daemonDir {
-				ref, threadID = thread.Evener.Ref, thread.ID
-			}
-		}
-		if ref == "" {
-			time.Sleep(200 * time.Millisecond)
-		}
-	}
+	listed := awaitHandStartedDaemonListed(ctx, t, client, daemonDir)
+	ref, threadID := listed.Evener.Ref, listed.ID
 	if _, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true}); err != nil {
 		t.Fatalf("thread/read subscribe: %v", err)
 	}
@@ -318,30 +306,7 @@ func TestE2E_DaemonExitTellsSubscriberToReread(t *testing.T) {
 		t.Fatal("daemon did not exit after thread/shutdown")
 	}
 
-	resyncDeadline := time.After(15 * time.Second)
-	var seen []string
-	for resync := false; !resync; {
-		select {
-		case notification, ok := <-client.Notifications():
-			if !ok {
-				t.Fatalf("hub connection closed before any resync; saw %v", seen)
-			}
-			seen = append(seen, notification.Method)
-			if notification.Method != appwire.NotifyEvenerThreadResync {
-				continue
-			}
-			var params appwire.ThreadResyncParams
-			if err := json.Unmarshal(notification.Params, &params); err != nil {
-				t.Fatalf("decode resync: %v", err)
-			}
-			if params.Ref != ref {
-				t.Fatalf("resync for %q, want %q", params.Ref, ref)
-			}
-			resync = true
-		case <-resyncDeadline:
-			t.Fatalf("no evener/thread/resync for %s within 15s of the daemon exiting; saw %v", ref, seen)
-		}
-	}
+	awaitRelayResync(t, client.Notifications(), threadID, ref, 15*time.Second)
 
 	read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref, Subscribe: true})
 	if err != nil {

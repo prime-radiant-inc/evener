@@ -7271,16 +7271,41 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 		if got.Method != appwire.NotifyEvenerThreadResync {
 			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
 		}
-		var params appwire.ThreadResyncParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("unmarshal thread resync: %v", err)
-		}
-		want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
-		if params != want {
-			t.Fatalf("thread resync params=%+v, want %+v", params, want)
-		}
+		expectResyncParams(t, got, wantThreadID, wantRef)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for thread resync after relay recovery")
+	}
+}
+
+// awaitRelayResync is expectRelayResync for a client that also receives other
+// traffic (navigation invalidations, status frames): those are skipped, and
+// the resync may take as long as timeout to arrive.
+func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case got := <-notifications:
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			expectResyncParams(t, got, wantThreadID, wantRef)
+			return
+		case <-deadline:
+			t.Fatalf("no thread resync for %s within %v", wantRef, timeout)
+		}
+	}
+}
+
+func expectResyncParams(t *testing.T, got appwire.Notification, wantThreadID, wantRef string) {
+	t.Helper()
+	var params appwire.ThreadResyncParams
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatalf("unmarshal thread resync: %v", err)
+	}
+	want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
+	if params != want {
+		t.Fatalf("thread resync params=%+v, want %+v", params, want)
 	}
 }
 

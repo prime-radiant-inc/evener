@@ -24,13 +24,11 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// processIdentity is what the host can say about the process a rendezvous
-// entry names: gone (signal 0 fails) is NotOwner; a process that answers is
-// asked, through the verifier force-stop binds to, whether it is still the
-// daemon that wrote the entry. The hub is never a daemon, so a file naming
-// the hub's own PID is a stale one whose PID the hub reused. An entry a
-// daemon wrote without the fields verification needs, or a host that cannot
-// inspect, answers Unknown, and liveness alone decides as it always has.
+// processIdentity is ProcessIdentity's unix reading (see that type for why the
+// roster asks): a dead process is NotOwner; a live one is judged by
+// daemonprocess.Identify. The hub is never a daemon, so a file naming the hub's
+// own PID is a stale one whose PID the hub reused. An entry without the fields
+// verification needs answers Unknown.
 func processIdentity(entry rendezvous.Entry) ProcessIdentity {
 	if !processAlive(entry.PID) {
 		return ProcessNotOwner

@@ -1646,17 +1646,27 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	}
 }
 
-// exitedPID is the PID of a process that has already exited: a rendezvous
-// file naming it is a crashed daemon's on any host. A fixed number (4242 was
-// the habit) is dead on one machine and somebody's live process on another -
-// on a GitHub runner it was, and a hub with no roster of its own probes the
-// file's PID against the real process table, so the "dead daemon" fixture
-// read as a live one there.
+// exitedPID is the PID of a fixture process that has already exited: a
+// rendezvous file naming it is a crashed daemon's on any host. A fixed number
+// is dead on one machine and somebody's live process on another - on a
+// GitHub runner it was - and the roster probes the file's PID against the
+// real process table.
 func exitedPID(t *testing.T) int {
 	t.Helper()
-	exited := exec.Command("true")
-	if err := exited.Run(); err != nil {
-		t.Fatalf("run a process to completion: %v", err)
+	command := exec.CommandContext(t.Context(), "cat")
+	input, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	return exited.Process.Pid
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	process := &fixtureExitProcess{input: input, command: command}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return command.Process.Pid
 }
