@@ -1177,7 +1177,7 @@ test("the flow's own recovery read carries its commitment and leaves the flow us
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: "endpointConflict" },
     );
   });
   client.on("evener/instance/list", () => structuredClone(fingerprintList("fp-2025")));
@@ -1201,12 +1201,12 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
   await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
   // The name moves between this flow's check and the write. The client cannot
   // see that window, so the hub refuses the asserted endpoint (appwire.Conflict
-  // with evenerErrorInfo "conflict").
+  // with evenerErrorInfo "endpointConflict").
   client.on("evener/auth/apiKey/set", () => {
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: "endpointConflict" },
     );
   });
   // What the recovery re-read finds: the moved endpoint, nothing stored.
@@ -1296,12 +1296,12 @@ test("a refused assertion is reported as a changed connection, not an endpoint f
   await user.type(screen.getByLabelText("API key"), "sk-ant-draft");
   scriptSave(client, savedList("anthropic", { endpointFingerprint: "fp-reviewed" }));
   // The hub refuses the asserted endpoint (appwire.Conflict with evenerErrorInfo
-  // "conflict"): the name no longer resolves to the endpoint the flow reviewed.
+  // "endpointConflict"): the name no longer resolves to the endpoint the flow reviewed.
   client.on("evener/auth/test", () => {
     throw new WireError(
       "anthropic no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
       -32013,
-      { evenerErrorInfo: "conflict" },
+      { evenerErrorInfo: "endpointConflict" },
     );
   });
 

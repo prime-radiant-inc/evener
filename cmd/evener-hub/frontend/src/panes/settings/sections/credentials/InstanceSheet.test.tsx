@@ -806,7 +806,7 @@ describe("the form", () => {
     });
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", () => {
-      throw new WireError("the endpoint moved", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("the endpoint moved", -32013, { evenerErrorInfo: "endpointConflict" });
     });
     fake.on("evener/instance/list", () => ({ instances: [moved], availableProviders: [OPENAI] }));
     connectionStore.getState().connect(fake);
@@ -818,6 +818,25 @@ describe("the form", () => {
     // Re-anchored to the endpoint now on screen, and clean again.
     expect(field("Base URL").value).toBe("https://gw.example.test/v2");
     expect(saveButton().disabled).toBe(true);
+  });
+
+  // A rename onto a name another instance holds is appwire.Conflict too
+  // (evenerErrorInfo "conflict"), and it is NOT a moved endpoint: the sheet
+  // must surface the hub's own message and keep the typed rename rather than
+  // reseed the form and blame a concurrent change.
+  test("a rename collision keeps the draft and shows the hub's own message", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError('instance "work2" already exists', -32013, { evenerErrorInfo: "conflict" });
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(field("Name").value).toBe("work2");
   });
 
   test("emptying Base URL shows the reset note and sends clearBaseUrl", async () => {

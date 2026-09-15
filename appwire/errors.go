@@ -19,6 +19,7 @@ const (
 	ErrorProviderUnavailable       ErrorInfo = "providerUnavailable"
 	ErrorSessionUnavailable        ErrorInfo = "sessionUnavailable"
 	ErrorConflict                  ErrorInfo = "conflict"
+	ErrorEndpointConflict          ErrorInfo = "endpointConflict"
 	ErrorActionUnavailable         ErrorInfo = "actionUnavailable"
 	ErrorHubLaunch                 ErrorInfo = "hubLaunch"
 	ErrorQueuedDrainPartial        ErrorInfo = "queuedDrainPartial"
@@ -124,6 +125,18 @@ func Conflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorConflict},
+	}
+}
+
+// EndpointConflict is Conflict for a client that asserted a destination the name
+// no longer resolves to. It carries its own evenerErrorInfo so a client that
+// recovers by re-reading the destination keys on this value alone: a rename onto
+// a taken name, or any other Conflict, must not read as a moved endpoint.
+func EndpointConflict(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorEndpointConflict},
 	}
 }
 

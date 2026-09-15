@@ -110,16 +110,18 @@ it("asserts nothing for a row the hub could not key", () => {
 
 it("recognizes the hub's endpoint refusal, and only that", () => {
   const conflict = new WireError("moved", -32013, {
-    evenerErrorInfo: "conflict",
+    evenerErrorInfo: "endpointConflict",
   });
   expect(isEndpointConflict(conflict)).toBe(true);
   expect(isEndpointConflict(new WireError("boom", -32000))).toBe(false);
   expect(isEndpointConflict(new Error("boom"))).toBe(false);
+  // A rename onto a taken name is a Conflict too, and is not a moved endpoint.
+  expect(isEndpointConflict(new WireError("instance already exists", -32013, { evenerErrorInfo: "conflict" }))).toBe(false);
 });
 
 it("claims a moved connection only for a rejected edit", () => {
   const conflict = new WireError("moved", -32013, {
-    evenerErrorInfo: "conflict",
+    evenerErrorInfo: "endpointConflict",
   });
   expect(endpointConflictFor(conflict, true)).toBe(ENDPOINT_CHANGED_MESSAGE);
   // A create asserts no destination, so its conflict is a name collision and

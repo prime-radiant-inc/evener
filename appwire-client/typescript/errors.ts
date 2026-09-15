@@ -45,12 +45,15 @@ export function isStaleCursorError(error: unknown): boolean {
 }
 
 // isEndpointConflict reports whether a rejection is the hub refusing a
-// destination the caller asserted (appwire.Conflict: data.evenerErrorInfo
-// "conflict"): the name no longer resolves where the caller was told it does.
-// The web credential flows and the native provider editor both present it as a
-// changed connection rather than a failure of the endpoint itself.
+// destination the caller asserted (appwire.EndpointConflict: code -32013 with
+// data.evenerErrorInfo "endpointConflict"): the name no longer resolves where the
+// caller was told it does. The discriminator is that string, never the code: a
+// rename onto a taken name is also a Conflict, and a client recovering by
+// re-reading the destination must not read that as a moved endpoint. The web
+// credential flows and the native provider editor both present it as a changed
+// connection rather than a failure of the endpoint itself.
 export function isEndpointConflict(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+  return err instanceof WireError && err.evenerErrorInfo === "endpointConflict";
 }
 
 // sessionActionHeadline names the step that actually died.

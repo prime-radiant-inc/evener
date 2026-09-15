@@ -65,6 +65,12 @@ func TestInstances_EditRefusesAMovedEndpoint(t *testing.T) {
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("Edit with a stale assertion = %v, want an appwire Conflict", err)
 	}
+	// The discriminator, not the code, is what a client recovers on: a rename
+	// onto a taken name is also a Conflict and must not read as a moved
+	// endpoint.
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorEndpointConflict {
+		t.Fatalf("refusal data = %#v, want evenerErrorInfo %q", wireErr.Data, appwire.ErrorEndpointConflict)
+	}
 	msg := err.Error()
 	if !strings.Contains(msg, "save again") {
 		t.Fatalf("refusal %q does not tell the user to save again", msg)

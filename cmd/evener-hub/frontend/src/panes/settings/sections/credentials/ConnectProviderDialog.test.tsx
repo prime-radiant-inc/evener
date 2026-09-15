@@ -975,7 +975,7 @@ describe("ConnectProviderDialog", () => {
     // state the row settles into rather than a loading purgatory.
     fake.on("evener/instance/list", () => listing);
     fake.on("evener/auth/test", () => {
-      throw new WireError("instance changed", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("instance changed", -32013, { evenerErrorInfo: "endpointConflict" });
     });
     render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
     const chooser = await screen.findByRole("dialog", { name: "Connect provider" });

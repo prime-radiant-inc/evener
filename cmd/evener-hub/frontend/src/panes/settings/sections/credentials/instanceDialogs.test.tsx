@@ -1140,7 +1140,7 @@ describe("ApiKeyDialog", () => {
   // The guard above only sees a change the client's listing already reflects.
   // A move that lands between that listing and the write is invisible here -
   // the hub is the one that sees it, and it refuses the assertion
-  // (appwire.Conflict: -32013 with evenerErrorInfo "conflict"). That refusal is
+  // (appwire.Conflict: -32013 with evenerErrorInfo "endpointConflict"). That refusal is
   // the same change, so it gets the same recovery the local guard makes: drop
   // the secret, re-read the listing, and re-anchor to the row now on screen, so
   // the retype the message asks for asserts the destination the user can
@@ -1157,7 +1157,7 @@ describe("ApiKeyDialog", () => {
         throw new WireError(
           "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
           -32013,
-          { evenerErrorInfo: "conflict" },
+          { evenerErrorInfo: "endpointConflict" },
         );
       }
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -1241,7 +1241,7 @@ describe("ApiKeyDialog", () => {
       throw new WireError(
         "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
         -32013,
-        { evenerErrorInfo: "conflict" },
+        { evenerErrorInfo: "endpointConflict" },
       );
     });
     resetToastStoreForTests();

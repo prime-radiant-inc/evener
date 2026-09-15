@@ -157,11 +157,12 @@ export function safeCredentialTestMessage(status: string): string {
 }
 
 // isEndpointConflict is the shared predicate from the AppWire error module
-// (appwire.Conflict: data.evenerErrorInfo "conflict"): the name no longer
-// resolves where the client asserting it was told it does. Every credential flow
-// presents this as a changed connection rather than a failure of the endpoint
-// itself; the native provider editor calls the same function. Re-exported here
-// so the section's importers keep one credential-token vocabulary.
+// (appwire.EndpointConflict: data.evenerErrorInfo "endpointConflict"): the name
+// no longer resolves where the client asserting it was told it does. Every
+// credential flow presents this as a changed connection rather than a failure of
+// the endpoint itself; the native provider editor calls the same function.
+// Re-exported here so the section's importers keep one credential-token
+// vocabulary.
 export { isEndpointConflict } from "../../../../protocol/errors";
 
 // ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub

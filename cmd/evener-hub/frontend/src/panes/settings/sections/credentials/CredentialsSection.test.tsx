@@ -606,7 +606,7 @@ describe("credential verification", () => {
       return { instances: [WORK_FP], availableProviders: [] };
     });
     fake.on("evener/auth/test", () => {
-      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: "conflict" });
+      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: "endpointConflict" });
     });
     render(
       <>
