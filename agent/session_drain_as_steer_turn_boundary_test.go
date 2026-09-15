@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,9 +339,11 @@ func TestStopInTheCarrierClaimWindowParksTheSteerForTheNextUserRun(t *testing.T)
 // claimed it again -- a loop of model turns bounded only by the writer
 // eventually poisoning.
 //
-// The contract: the carrier reports that it delivered nothing (its announced
-// turn fails, no model request is made), the input settles idle with the
-// steer back in the queue, and the next wake -- not this input -- retries.
+// The contract, the same as a queued message whose append fails: the carrier
+// reports that it delivered nothing (its announced turn fails, no model
+// request is made), the input ends with that error and the session idle, the
+// steer stays accepted in the queue, and the next wake -- not this input --
+// carries it.
 func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 	adapter := newHeldLegAdapter()
 	var s *Session
@@ -379,8 +382,8 @@ func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 
 	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
 	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
+	if err := awaitInput(t, done); err == nil || !strings.Contains(err.Error(), "stays queued") {
+		t.Fatalf("ProcessInput returned %v, want the carrier's failure: its steering was not recorded", err)
 	}
 
 	if got := len(adapter.Requests()); got != 1 {
@@ -435,8 +438,8 @@ func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 		}
 	}
 	mu.Unlock()
-	if carrierOpenings != 1 || turnFailures != 1 || inputEnd != "input_complete:idle" {
-		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier turn, failed once, ending idle (transitions: %s)",
+	if carrierOpenings != 1 || turnFailures != 1 || !strings.HasPrefix(inputEnd, "turn_failed:") {
+		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier turn, failed once, ending the input as a failed turn (transitions: %s)",
 			carrierOpenings, turnFailures, inputEnd, strings.Join(transitions, " "))
 	}
 }
@@ -448,6 +451,8 @@ func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 type steerRefusingFS struct {
 	afero.Fs
 	marker []byte
+	// refusals counts the writes refused.
+	refusals atomic.Int32
 	// onRefuse, when set, runs on the refusing write before it fails -- the
 	// moment the steer is claimed and its append is about to fail.
 	onRefuse func()
@@ -468,6 +473,7 @@ func (fs *steerRefusingFS) OpenFile(name string, flag int, mode os.FileMode) (af
 
 func (file *steerRefusingFile) Write(p []byte) (int, error) {
 	if bytes.Contains(p, file.fs.marker) {
+		file.fs.refusals.Add(1)
 		if file.fs.onRefuse != nil {
 			file.fs.onRefuse()
 		}
@@ -544,110 +550,6 @@ func carrierTestConfig(dir string, claimed func(string)) SessionConfig {
 			noSyncJobStore:         true,
 			steeringCarrierClaimed: claimed,
 		},
-	}
-}
-
-// TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput is review
-// round 2's first finding on #1329: the no-reclaim guard was recomputed per
-// iteration, so a queued message (or a notification, or a goal turn) running
-// after the failed carrier reset it, and the iteration after that claimed the
-// same steer again -- one more failed carrier per intervening turn. The
-// failure is latched for the whole input; the retry stays the next wake's.
-//
-// The disk here refuses the steer's bytes for good, so the queued turn that
-// runs after the failed carrier cannot carry it either (a queued turn drains
-// steering at its start): the steer is still pending when that turn ends,
-// which is exactly the state that provoked the second claim.
-func TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// A message queued while the carrier is claimed runs as the next
-		// turn of this same input.
-		queueOneMutation(t, s, "cm-queued-third", "third message")
-	})))
-	attachSteerRefusingFS(t, s, "second pass")
-
-	var mu sync.Mutex
-	var seen []events.SessionEvent
-	drained := make(chan struct{})
-	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
-		mu.Lock()
-		seen = append(seen, ev)
-		mu.Unlock()
-	}, func() { close(drained) })
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-
-	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	requests := adapter.Requests()
-	if len(requests) != 2 || !requestContainsText(requests[1], "third message") {
-		t.Fatalf("provider requests = %d, want 2: the held leg and the queued message's turn, and no carrier's", len(requests))
-	}
-	if pending, ok := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "accepted" {
-		t.Fatalf("the refused steer is pending=%v state=%q, want accepted (still queued for the next wake)", ok, pending.ExecutionState)
-	}
-	s.Close()
-	<-drained
-	mu.Lock()
-	openings, failures, end := inputBoundary(seen, carrier)
-	transitions := boundaryTransitions(seen)
-	mu.Unlock()
-	if openings != 1 || failures != 1 || end != "input_complete:idle" {
-		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want the carrier claimed once for the whole input (transitions: %s)",
-			openings, failures, end, strings.Join(transitions, " "))
-	}
-}
-
-// TestSteeringCarrierAppendFailureReArmsTheWake is review round 3's first
-// finding on #1329. A carrier whose steer could not be recorded returns it to
-// the queue and ends the input idle; the retry was "the next wake's", but
-// nothing armed one. The daemon's acceptance-time wake is consumed by the
-// input that just failed (or by the one retry it parks behind it), so a
-// steer refused twice sat queued until an unrelated client action. The
-// failure now arms its own wake, with the backoff the wake path already
-// uses, so the session retries on its own.
-func TestSteeringCarrierAppendFailureReArmsTheWake(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	var fs *environmentSyncFailureFS
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		fs.mu.Lock()
-		fs.writeFailure = errors.New("injected: no space left on device")
-		fs.transferBeforeWriteFailure = 0
-		fs.mu.Unlock()
-	})))
-	fs = attachEnvironmentFailureFS(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	wakes := countingUserInputWake(s)
-
-	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	drainWakes(wakes) // the acceptance-time wake, consumed by the input that failed
-
-	select {
-	case <-wakes:
-	// TRIPWIRE: the first backoff is jobNotificationRetryInitialDelay (250ms); only a wake never armed gets here.
-	case <-time.After(5 * time.Second):
-		t.Fatal("no wake was armed for the returned steer: an idle session leaves it queued until an unrelated client action")
-	}
-	// The wake's retry delivers (the fault was one-shot).
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
-		t.Fatalf("the re-armed wake's retry: ran=%v err=%v", ran, err)
-	}
-	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
-		t.Fatalf("the retry made %d request(s) in total and did not carry the steer", len(requests))
 	}
 }
 
@@ -800,110 +702,6 @@ func TestRestoreReleasesACarrierClaimThatNeverRan(t *testing.T) {
 	if _, still := restored.clientMutations.snapshot().PendingExecutions["cm-carrier-crash"]; still {
 		t.Fatalf("the steer that owned carrier %s is still pending after the user's run; want it carried", carrier)
 	}
-}
-
-// TestAnyRecordedSteerResetsTheCarrierRetryBudget is review round 4's Low on
-// #1329: the backoff was cleared only when a carrier turn recorded its
-// steer. A user turn draining the same steer left the spent attempt on the
-// books for the next, unrelated carrier episode. (Round 7's rule L keeps a
-// later turn of the SAME input from draining it, so the user's next input
-// is the turn that carries it here.)
-func TestAnyRecordedSteerResetsTheCarrierRetryBudget(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	var fs *environmentSyncFailureFS
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// One refused append for the carrier.
-		fs.mu.Lock()
-		fs.writeFailure = errors.New("injected: no space left on device")
-		fs.transferBeforeWriteFailure = 0
-		fs.mu.Unlock()
-	})))
-	fs = attachEnvironmentFailureFS(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-
-	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := carrierRetryAttempts(s); got != 1 {
-		t.Fatalf("carrier retry attempts = %d after the failed carrier, want 1; this test is not in the state it means to be", got)
-	}
-	// The user's next input drains the returned steer at its start.
-	if _, err := s.ProcessInput(context.Background(), "third message", nil); err != nil {
-		t.Fatalf("second ProcessInput: %v", err)
-	}
-	requests := adapter.Requests()
-	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") || !requestContainsText(requests[1], "third message") {
-		t.Fatalf("provider requests = %d; want the next input to have carried the steer (this test is not in the state it means to be otherwise)", len(requests))
-	}
-	if got := carrierRetryAttempts(s); got != 0 {
-		t.Fatalf("carrier retry attempts = %d after the steer was recorded by the user's turn, want 0: the next carrier episode would inherit a spent budget", got)
-	}
-}
-
-// TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot is round 5's third
-// Medium: a claim refused by the store on a retry wake stood down like a
-// benign race, and the already-consumed wake left the steer stranded. A held
-// rail is the benign case and must stay a no-op.
-func TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot(t *testing.T) {
-	attemptsOf := func(s *Session) int {
-		s.steeringRetryMu.Lock()
-		defer s.steeringRetryMu.Unlock()
-		return s.steeringCarrierRetry.attempts
-	}
-	t.Run("store refuses the claim", func(t *testing.T) {
-		s := newQueuePersistTestSession(t, t.TempDir())
-		defer s.Close()
-		serveSession(t, s)
-		if err := s.ensureClientMutationStore(); err != nil {
-			t.Fatalf("ensureClientMutationStore: %v", err)
-		}
-		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-			ClientMutationID: "steer-claim-refused",
-			Input:            []appwire.InputItem{{Type: "text", Text: "claim me"}},
-		}); err != nil {
-			t.Fatalf("steer: %v", err)
-		}
-		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-			return errors.New("injected: store refuses the claim")
-		}
-		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
-			t.Fatalf("wake with a refused claim: ran=%v err=%v, want a stand-down", ran, err)
-		}
-		if got := attemptsOf(s); got != 1 {
-			t.Fatalf("carrier retry attempts = %d after the store refused the claim, want 1: the consumed wake leaves the steer stranded otherwise", got)
-		}
-	})
-	t.Run("held rail", func(t *testing.T) {
-		s := newQueuePersistTestSession(t, t.TempDir())
-		defer s.Close()
-		serveSession(t, s)
-		if err := s.ensureClientMutationStore(); err != nil {
-			t.Fatalf("ensureClientMutationStore: %v", err)
-		}
-		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-			ClientMutationID: "steer-parked",
-			Input:            []appwire.InputItem{{Type: "text", Text: "parked"}},
-		}); err != nil {
-			t.Fatalf("steer: %v", err)
-		}
-		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-			snapshot.SteeringHeld = true
-			return nil
-		}); err != nil {
-			t.Fatalf("park: %v", err)
-		}
-		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
-			t.Fatalf("wake against a held rail: ran=%v err=%v, want a stand-down", ran, err)
-		}
-		if got := attemptsOf(s); got != 0 {
-			t.Fatalf("carrier retry attempts = %d for a held rail, want 0: a parked steer waits for the user, not a timer", got)
-		}
-	})
 }
 
 // ---- review round 6: rows the table was missing ----
@@ -1094,11 +892,10 @@ func TestReleaseRetryReRunsTheTableAndWakes(t *testing.T) {
 	}
 }
 
-// TestInjectDrainedSteeringStopsAtTheFirstFailedAppend is round 6's fourth
-// Medium: the drain loop ignored consumeSteeringMessage's false, and since
-// the table had just put the failed steer back at the head of the queue,
-// the next iteration popped the same steer again -- one retry attempt per
-// peeked message, inside one turn, without the backoff.
+// TestInjectDrainedSteeringStopsAtTheFirstFailedAppend: the drain loop stops
+// at a failed append. The failed steer goes back to the head of the queue, so
+// a loop that carried on would pop the same steer again -- one attempt per
+// peeked message, inside one turn.
 func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
@@ -1106,7 +903,7 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
-	attachSteerRefusingFS(t, s, "first steer")
+	fs := attachSteerRefusingFS(t, s, "first steer")
 	for _, steer := range []struct{ id, text string }{{"steer-first", "first steer"}, {"steer-second", "second steer"}} {
 		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 			ClientMutationID: steer.id,
@@ -1119,11 +916,8 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	// runs inside acceptUserInput.
 	runningStartTurn(t, s, "running-turn", "do the thing")
 
-	s.steeringRetryMu.Lock()
-	attempts := s.steeringCarrierRetry.attempts
-	s.steeringRetryMu.Unlock()
-	if attempts != 1 {
-		t.Fatalf("carrier retry attempts = %d after one drain, want 1: the loop re-popped the failed steer", attempts)
+	if got := fs.refusals.Load(); got != 1 {
+		t.Fatalf("steer appends attempted = %d after one drain, want 1: the loop re-popped the failed steer", got)
 	}
 	snapshot := s.clientMutations.snapshot()
 	for _, id := range []string{"steer-first", "steer-second"} {
@@ -1136,48 +930,5 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	s.mu.Unlock()
 	if queued != 2 {
 		t.Fatalf("steering queue holds %d after the drain, want both steers still queued", queued)
-	}
-}
-
-// ---- review round 7: paths still deciding outside the table ----
-
-func carrierRetryAttempts(s *Session) int {
-	s.steeringRetryMu.Lock()
-	defer s.steeringRetryMu.Unlock()
-	return s.steeringCarrierRetry.attempts
-}
-
-// TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput is round 7's
-// Low: the drain loop's break is per invocation, and a later tool round in
-// the same input drains again -- a second attempt before the backoff.
-func TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput(t *testing.T) {
-	dir := t.TempDir()
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return communicateResponse(false, "working") },
-		func(llm.Request) llm.Response { return finalResponse("done") },
-	}})
-	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	attachSteerRefusingFS(t, s, "refused steer")
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-refused-twice",
-		Input:            []appwire.InputItem{{Type: "text", Text: "refused steer"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-
-	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := carrierRetryAttempts(s); got != 1 {
-		t.Fatalf("carrier retry attempts = %d after one input with a tool round, want 1: the tool round drained the refused steer again before the backoff", got)
 	}
 }

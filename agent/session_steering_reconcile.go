@@ -48,25 +48,3 @@ func reconcileClientSteering(snapshot *clientMutationSnapshot, recorded func(cli
 		snapshot.SteeringHeld = false
 	}
 }
-
-// latchSteeringDrainRefused records, for the input being processed, that a
-// steering append failed (rule L).
-func (s *Session) latchSteeringDrainRefused() {
-	s.steeringRetryMu.Lock()
-	s.steeringDrainRefused = true
-	s.steeringRetryMu.Unlock()
-}
-
-// steeringDrainRefusedThisInput reports rule L's latch.
-func (s *Session) steeringDrainRefusedThisInput() bool {
-	s.steeringRetryMu.Lock()
-	defer s.steeringRetryMu.Unlock()
-	return s.steeringDrainRefused
-}
-
-// clearSteeringDrainRefused opens the next input's first attempt (rule L).
-func (s *Session) clearSteeringDrainRefused() {
-	s.steeringRetryMu.Lock()
-	s.steeringDrainRefused = false
-	s.steeringRetryMu.Unlock()
-}

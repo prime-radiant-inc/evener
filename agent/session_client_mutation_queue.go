@@ -327,11 +327,10 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 		}
 		return nil
 	}); err != nil {
-		// Not a stand-down: the wake that asked is spent, and a refused write
-		// is the failure class the carrier retry exists for. A closed rail or
-		// an occupied slot returns nil above and arms nothing.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering retry claims again", err)})
-		s.scheduleSteeringCarrierRetry()
+		// A refused write: the steer stays accepted, which keeps the session
+		// from resting (hasRunnableUserSteering) until the next wake claims
+		// it. A closed rail or an occupied slot returns nil above.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		return "", false
 	}
 	return turnID, turnID != ""
@@ -647,58 +646,6 @@ func (s *Session) wakeForPendingSteering() {
 		return
 	}
 	s.wakePendingUserInput()
-}
-
-// scheduleSteeringCarrierRetry re-arms the pending-input wake for a steer a
-// carrier turn took and could not record (consumeSteeringMessage returned it
-// to accepted). The wake that accepted the steer is consumed by the input that
-// just failed, so without this an idle session leaves the steer queued until
-// an unrelated client action. Paced like the release retry: the delay doubles
-// from jobNotificationRetryInitialDelay to jobNotificationRetryMaxDelay, and
-// the loop is finite (steeringCarrierRetryLimit) because every attempt is a
-// failed carrier turn. The wake it arms is wakeForPendingSteering, which
-// stands down for a steer a Stop has parked or a turn has since carried.
-func (s *Session) scheduleSteeringCarrierRetry() {
-	s.steeringRetryMu.Lock()
-	if s.steeringCarrierRetry.attempts >= steeringCarrierRetryLimit {
-		s.steeringRetryMu.Unlock()
-		// Reset the budget for whatever fails next; this steer's episode is
-		// over and it waits for the user.
-		s.clearSteeringCarrierRetry()
-		s.emit(events.EventWarning, events.WarningData{
-			Message: fmt.Sprintf("steering could not be recorded after %d attempts; it stays queued until your next message", steeringCarrierRetryLimit),
-		})
-		return
-	}
-	delay := s.steeringCarrierRetry.delay
-	if delay <= 0 {
-		delay = jobNotificationRetryInitialDelay
-	}
-	s.steeringCarrierRetry.attempts++
-	s.steeringCarrierRetry.delay = min(delay*2, jobNotificationRetryMaxDelay)
-	s.steeringCarrierRetry.generation++
-	generation := s.steeringCarrierRetry.generation
-	s.steeringRetryMu.Unlock()
-
-	s.sclock().AfterFunc(delay, func() {
-		s.steeringRetryMu.Lock()
-		superseded := s.steeringCarrierRetry.generation != generation
-		s.steeringRetryMu.Unlock()
-		if superseded {
-			return
-		}
-		s.wakeForPendingSteering()
-	})
-}
-
-// clearSteeringCarrierRetry drops the backoff once a carrier recorded its
-// steer, and strands any timer still in flight.
-func (s *Session) clearSteeringCarrierRetry() {
-	s.steeringRetryMu.Lock()
-	s.steeringCarrierRetry = runningTurnReleaseRetryState{
-		generation: s.steeringCarrierRetry.generation + 1,
-	}
-	s.steeringRetryMu.Unlock()
 }
 
 // wakeForPendingQueuedInput is wakeForPendingSteering's counterpart for

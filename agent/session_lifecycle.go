@@ -1047,9 +1047,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// current objective, so a clear/retarget during the interleaved notification turn
 	// cannot run a stale continuation.
 	var haveDeferredCont bool
-	// A new input opens a new first attempt at recording steering (rule L of
-	// reconcileClientSteering's contract).
-	s.clearSteeringDrainRefused()
 	for {
 		// Fail closed on a transcript that has stopped accepting records, before
 		// every turn rather than once at admission. A turn from here would run
@@ -1289,13 +1286,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// reported the session idle and a wake reopens it (issue #1308). Only
 		// when nothing is queued: a queued message drains the steering itself.
 		// The claim refuses a held rail (a Stop parked the steer) and an
-		// occupied slot, the same gate the wake's claim uses.
-		// Rule L: an input whose steering append already failed does not
-		// claim a carrier again -- the retry belongs to the backoff timer,
-		// not to a loop here that would burn a model turn per attempt,
-		// whatever turn (queued, notification) ran in between.
+		// occupied slot, the same gate the wake's claim uses. A carrier whose
+		// append failed ends the input with an error (acceptSteeringCarrierInput)
+		// and never reaches this rung, so nothing here claims the same steer
+		// again.
 		var carrierTurnID string
-		if noFollowUpOrQueued && !s.steeringDrainRefusedThisInput() && s.hasPendingUserSteering() {
+		if noFollowUpOrQueued && s.hasPendingUserSteering() {
 			carrierTurnID, _ = s.claimSteeringCarrierTurn()
 			if carrierTurnID != "" && s.cfg.testOnly.steeringCarrierClaimed != nil {
 				s.cfg.testOnly.steeringCarrierClaimed(carrierTurnID)
@@ -1794,8 +1790,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// called ProcessInputKind, so onRunnable already handed it to the
 		// daemon and cancellation is wired before this point runs.
 		runningTurnID = steeringCarrierTurnIDFromContext(ctx)
-		if !s.acceptSteeringCarrierInput(ctx, runningTurnID) {
-			return "", false, nil
+		if proceed, err := s.acceptSteeringCarrierInput(ctx, runningTurnID); !proceed {
+			return "", false, err
 		}
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
 		return "", false, err
@@ -2552,14 +2548,17 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // its Applied receipt is the id that actually runs, which is what lets an
 // interrupt's fence match the turn it cancels.
 //
-// It returns false when nothing is left to deliver -- a race with a turn that
-// drained the steering first between the wake deciding to run and this call
-// -- so the caller can stand down without opening a turn that carries
-// nothing.
-func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) (proceed bool) {
+// It returns proceed=false with no error when nothing is left to deliver -- a
+// race with a turn that drained the steering first between the wake deciding
+// to run and this call -- so the caller can stand down without opening a turn
+// that carries nothing, and proceed=false with an error when the steer's
+// append failed: the turn is failed and the input ends, the same policy a
+// queued message whose append fails gets (acceptUserInput), with the steer
+// still accepted for the next wake to carry.
+func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) (proceed bool, err error) {
 	if !s.hasPendingUserSteering() {
 		s.finishNotificationNoop()
-		return false
+		return false, nil
 	}
 	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
 	// The announce precedes every content event of the turn, the same as
@@ -2578,12 +2577,12 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		// transcript append failed and it is back in the queue, accepted. A
 		// model request now would carry nothing, and a clean completion
 		// would let the drain ladder claim the same steer again, and again.
-		// Fail the turn already announced above and stand down.
-		s.emitTurnFailure(errorDataFromError(fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)))
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
-		return false
+		// Fail the turn already announced above and end the input.
+		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
+		s.emitTurnFailure(errorDataFromError(err))
+		return false, err
 	}
-	return true
+	return true, nil
 }
 
 func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {

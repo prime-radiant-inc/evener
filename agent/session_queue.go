@@ -1014,11 +1014,6 @@ func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(st
 // TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
 // behavior.
 func (s *Session) injectDrainedSteering() {
-	if s.steeringDrainRefusedThisInput() {
-		// Rule L: this input already spent its attempt; the carrier retry
-		// owns the next one, after the backoff.
-		return
-	}
 	for range s.peekSteeringForTurn() {
 		msg, ok := s.popSteeringHead()
 		if !ok {
@@ -1084,11 +1079,10 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		); err != nil {
 			// The steer did not land. The store never left accepted, so ending
 			// its in-flight window puts it back in the queue for the next turn
-			// that drains steering.
+			// that drains steering; until then it is runnable work
+			// (hasRunnableUserSteering) that keeps the session from resting.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			s.latchSteeringDrainRefused()
 			s.steeringLanded(msg.ClientMutationID)
-			s.scheduleSteeringCarrierRetry()
 			return false
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
@@ -1102,11 +1096,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			s.steeringInFlight[msg.ClientMutationID] = true
 			s.mu.Unlock()
 		} else {
-			// Incorporated: whatever carried it, the steer is in the transcript
-			// and the store agrees, so a carrier retry episode that may have
-			// been running for it is over.
 			s.steeringLanded(msg.ClientMutationID)
-			s.clearSteeringCarrierRetry()
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
