@@ -6074,6 +6074,53 @@ test("a local host choice omits source from the thread/start request", async () 
   expect(params).not.toHaveProperty("source");
 });
 
+// A draft can name a remote host while the manifest is not (yet) readable: a
+// reconnect reseeds the navigation store and the manifest is back in flight,
+// and the draft - which outlives the pane - still holds the chosen host. The
+// empty `sources` in that window is not evidence the host is gone, so the
+// submission must carry the draft's own source; reading the empty list as a
+// fallback would start the session locally with no indication (Component 06b).
+test("a draft naming a remote host submits it while the manifest is loading", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/loading-manifest");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  // The manifest drops back to in-flight (a reconnect reseeds the store): the
+  // draft keeps the host, only the manifest's sources are unavailable.
+  await act(async () => {
+    navigationStore.setState({
+      manifest: {
+        key: { kind: "manifest" },
+        data: null,
+        loadedRevision: null,
+        targetRevision: null,
+        forceToken: 0,
+        etag: null,
+        loading: true,
+        stale: false,
+        error: null,
+        generationID: "generation_test",
+      },
+    });
+  });
+
+  await user.type(promptField(), "keep the host");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+});
+
 // The hub keeps offline sources in the manifest (only the online flag flips),
 // so a host chosen while online stays present in the draft but must no longer
 // be submittable once it goes offline - otherwise thread/start is rejected

@@ -284,6 +284,15 @@ function SpawnForm({
   // local - so the draft, not the remembered host, must carry the choice.
   const chosenSource = sources.find((candidate) => candidate.id === source);
   const hostChoice = chosenSource?.online ? chosenSource.id : "local";
+  // `sources` is empty both while the manifest loads (and if it never arrives)
+  // and when it genuinely lists no remote host, so its emptiness is not
+  // evidence the draft's host is gone. Until the manifest lists the sources,
+  // the submission carries the draft's own value; only a settled manifest - the
+  // same `sources.length > 0` gate the write-back below uses - can confirm the
+  // fallback. Reading the loading window as a fallback would start the session
+  // locally with no indication while the draft still names a remote host
+  // (Component 06b review).
+  const submittedSource = sources.length > 0 ? hostChoice : source;
   useEffect(() => {
     // Guarded on a loaded manifest: while the sources are still in flight
     // hostChoice is a provisional "local", and rewriting the draft then would
@@ -1357,9 +1366,11 @@ function SpawnForm({
       reasoningEffort: scalars.reasoningEffort,
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
-      // Omitted for local (startThread drops "local" from the wire), so the
-      // single-host request stays identical to before the host picker existed.
-      source: hostChoice,
+      // The draft's own host until a settled manifest can confirm a fallback,
+      // then the resolved choice. Omitted for local (startThread drops "local"
+      // from the wire), so the single-host request stays identical to before
+      // the host picker existed.
+      source: submittedSource,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
