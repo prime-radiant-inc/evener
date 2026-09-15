@@ -149,6 +149,79 @@ func TestRemoteHubSourceListThreads(t *testing.T) {
 	}
 }
 
+// A controller request that names only other sources must not widen into an
+// unfiltered remote list: remapRemoteSourceIDs drops every entry, so the
+// request would otherwise be forwarded with no filter at all.
+func TestRemoteHubSourceListThreadsForeignFilterReturnsEmptyWithoutCall(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{{
+			ID:     "t1",
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:t1"},
+		}}}}
+	})
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{SourceIDs: []string{"other"}})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("Data = %+v, want an empty page", resp.Data)
+	}
+	for _, call := range calls() {
+		if call.method == appwire.MethodThreadList {
+			t.Fatalf("foreign-only filter was forwarded: %+v", calls())
+		}
+	}
+}
+
+// An unfiltered controller list is scoped to the remote hub's own "local"
+// namespace. Forwarding no SourceIDs makes a nested remote hub return its own
+// remote refs, which translateOut refuses and which abort the whole response.
+func TestRemoteHubSourceListThreadsUnfilteredScopesRemoteToLocal(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadListResponse{}}
+	})
+	if _, err := source.ListThreads(context.Background(), appwire.ThreadListParams{}); err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	var remote appwire.ThreadListParams
+	if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadList), &remote); err != nil {
+		t.Fatalf("decode remote params: %v", err)
+	}
+	if !slices.Equal(remote.SourceIDs, []string{remoteHubNamespace}) {
+		t.Fatalf("remote SourceIDs = %v, want [%s]", remote.SourceIDs, remoteHubNamespace)
+	}
+}
+
+func TestRemoteHubTransportTextRequiresTokenBoundary(t *testing.T) {
+	if remoteHubTransportText("internal error: eoffice closed unexpectedly") {
+		t.Fatal("bare eof substring was reclassified as a transport failure")
+	}
+	for _, text := range []string{"unexpected eof", "read: eof", "eof", "websocket: unexpected eof"} {
+		if !remoteHubTransportText(text) {
+			t.Fatalf("%q was not classified as a transport failure", text)
+		}
+	}
+}
+
+// mapCallError mirrors localDaemonCallError: a request deadline is the
+// caller's own context expiring, not host unavailability. The attach/dial step
+// keeps the localDaemonDialError mapping.
+func TestRemoteHubSourceCallErrorKeepsRequestDeadlineRaw(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	if err := source.mapCallError(context.DeadlineExceeded); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("mapCallError(deadline) = %v, want context.DeadlineExceeded", err)
+	}
+	if err := source.mapCallError(context.Canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("mapCallError(canceled) = %v, want context.Canceled", err)
+	}
+	connect := source.mapConnectError(context.DeadlineExceeded)
+	var wire appwire.WireError
+	if !errors.As(connect, &wire) || wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("mapConnectError(deadline) = %v, want SessionUnavailable", connect)
+	}
+}
+
 func TestRemoteHubSourceReadThread(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		if method != appwire.MethodThreadRead {

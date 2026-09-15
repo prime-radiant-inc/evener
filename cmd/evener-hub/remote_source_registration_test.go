@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
@@ -69,6 +70,10 @@ func TestNewHubSourceRegistrySkipsHostsWithoutClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
+	t.Cleanup(func() {
+		os.Stderr = original
+		_ = readEnd.Close()
+	})
 	os.Stderr = writeEnd
 	registry := newHubSourceRegistry(hubcore.WebConfig{
 		RemoteHosts: []hostreg.Host{
@@ -86,6 +91,16 @@ func TestNewHubSourceRegistrySkipsHostsWithoutClient(t *testing.T) {
 	diagnostic := string(data)
 	if !strings.Contains(diagnostic, "h1") || !strings.Contains(diagnostic, "h2") {
 		t.Fatalf("diagnostic = %q, want it to name both skipped hosts", diagnostic)
+	}
+}
+
+// A plain (non-subscribe) thread/read must not start a relay for a remote hub
+// source: startRelay calls SubscribeThread unconditionally, which is staged
+// until 05b, so the default relay policy would discard every successful read.
+func TestRemoteHubSourceDoesNotRelayPlainThreadRead(t *testing.T) {
+	source := appsource.NewRemoteHubSource("h1", nil, unusedRemoteHostClient)
+	if relayOnThreadRead(source) {
+		t.Fatal("RemoteHubSource relays a plain thread read; SubscribeThread is not implemented until 05b")
 	}
 }
 

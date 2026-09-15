@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 )
 
 // RemoteHubClientFunc returns an attached, initialized AppWire client for the
@@ -24,27 +28,47 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // "local:<thread>" namespace.
 //
 // This is component 05a: the read path (ID, ListThreads, ReadThread, ListTurns,
-// ListModels) plus registration. Subscription fan-out (05b), turn/thread
-// lifecycle mutations and mutation-unknown mapping (05c), and the capability
-// probe (05d) are staged; their interface methods exist and fail loudly until
-// then.
+// ListModels, and the item-mode paging seam) plus registration. Subscription
+// fan-out (05b), turn/thread lifecycle mutations and mutation-unknown mapping
+// (05c), and the capability probe (05d) are staged; their interface methods
+// exist and fail loudly until then.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
 // automatically.
 type RemoteHubSource struct {
-	id     string
+	id string
+	// roots is the host's configured [[hosts]].roots scoping. It is retained
+	// for the staged 05b/05c/05d lifecycle, mutation and capability work, which
+	// is the "advisory inputs to components 04/05" contract in
+	// hubcore.HostConfig; the 05a read path does not narrow by root.
 	roots  []string
 	client RemoteHubClientFunc
+
+	// itemPaging retains the opaque remote item cursor behind the
+	// controller-owned cursor minted for it, mirroring the bounded local-daemon
+	// snapshot: an evicted continuation degrades to a typed stale-cursor error
+	// instead of leaking the remote hub's cursor identity into the controller.
+	itemPaging remoteItemPagingCache
 }
 
-var _ Source = (*RemoteHubSource)(nil)
+var (
+	_ Source                  = (*RemoteHubSource)(nil)
+	_ ItemCandidateSource     = (*RemoteHubSource)(nil)
+	_ ItemReadCandidateSource = (*RemoteHubSource)(nil)
+)
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
 	return &RemoteHubSource{id: id, roots: roots, client: client}
 }
 
 func (s *RemoteHubSource) ID() string { return s.id }
+
+// RelayOnThreadRead reports that a plain thread/read must not start a relay.
+// SubscribeThread is staged until 05b, and the hub's default relay policy is
+// true, so without this override every successful remote read would be
+// discarded by startRelay's notImplemented SubscribeThread call.
+func (s *RemoteHubSource) RelayOnThreadRead() bool { return false }
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
@@ -54,7 +78,7 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return s.mapCallError(err)
+		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		return s.mapCallError(err)
@@ -66,12 +90,18 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 // transport-level failure (dial, EOF, reset, closed, timeout) becomes
 // SessionUnavailable so the hub's auto-resume gate can fire, while an
 // application-level WireError carrying a semantic code is preserved exactly.
+// A caller cancellation or deadline is the caller's own context expiring, not
+// host unavailability, so it stays raw exactly as localDaemonCallError leaves
+// it.
 func (s *RemoteHubSource) mapCallError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return s.transportUnavailable(err)
 	}
 	if wire.Code != appwire.CodeInternalError {
@@ -81,6 +111,22 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + wire.Message)
 	}
 	return err
+}
+
+// mapConnectError mirrors localDaemonDialError for the attach step: a timeout
+// or reset while opening the SSH channel is host unavailability, not a slow
+// request, so it is classified before the request-level mapping applies.
+func (s *RemoteHubSource) mapConnectError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if _, ok := errors.AsType[appwire.WireError](err); ok {
+		return s.mapCallError(err)
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	return s.transportUnavailable(err)
 }
 
 // transportUnavailable maps a non-wire transport failure. Caller cancellation
@@ -111,9 +157,12 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	return err
 }
 
+// remoteHubTransportText recognizes transport-shaped error text. "eof" is
+// matched as a standalone token only so an application message that merely
+// contains those letters is not reclassified as host unavailability.
 func remoteHubTransportText(lower string) bool {
 	switch {
-	case strings.Contains(lower, "eof"),
+	case containsWord(lower, "eof"),
 		strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "use of closed network connection"),
@@ -124,9 +173,42 @@ func remoteHubTransportText(lower string) bool {
 	}
 }
 
+// containsWord reports whether text contains word delimited by non-word bytes.
+func containsWord(text, word string) bool {
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], word)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		end := index + len(word)
+		if (index == 0 || !isWordByte(text[index-1])) && (end == len(text) || !isWordByte(text[end])) {
+			return true
+		}
+		offset = index + 1
+	}
+}
+
+func isWordByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+}
+
 func (s *RemoteHubSource) ListThreads(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	// The controller selected only other sources. remapRemoteSourceIDs would
+	// drop every entry and forward a request with no filter at all, so an
+	// explicit exclusion must never widen into an unfiltered list.
+	if len(params.SourceIDs) > 0 && !slices.Contains(params.SourceIDs, s.id) {
+		return appwire.ThreadListResponse{}, nil
+	}
 	remote := params
+	// Only this hub's own namespace is representable in a controller ref, so an
+	// unfiltered controller list is scoped to it: forwarding no filter lets a
+	// nested remote hub return its own remote refs, which translateOut refuses
+	// and which would otherwise abort the whole response.
 	remote.SourceIDs = remapRemoteSourceIDs(s.id, params.SourceIDs)
+	if len(remote.SourceIDs) == 0 {
+		remote.SourceIDs = []string{remoteHubNamespace}
+	}
 	var out appwire.ThreadListResponse
 	if err := s.call(ctx, appwire.MethodThreadList, remote, &out); err != nil {
 		return appwire.ThreadListResponse{}, err
@@ -170,6 +252,212 @@ func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelLi
 		return appwire.ModelListResponse{}, err
 	}
 	return out, nil
+}
+
+// remoteHubItemCursorProjectionVersion identifies cursor identities minted by
+// RemoteHubSource. It is independent of the remote hub's own projection fence.
+const remoteHubItemCursorProjectionVersion uint16 = 1
+
+var remoteHubItemIncarnationSequence atomic.Uint64
+
+// remoteItemPagingState retains the remote hub's opaque item cursor behind a
+// controller-owned cursor, keyed by the controller ref that cursor names.
+type remoteItemPagingState struct {
+	identity appitempaging.CursorIdentity
+	native   string
+}
+
+// remoteItemPagingCapacity bounds retained continuations. An evicted entry
+// turns its outstanding cursor into a typed stale error, exactly like the
+// bounded local-daemon item snapshot cache.
+const remoteItemPagingCapacity = 64
+
+type remoteItemPagingCache struct {
+	mu      sync.Mutex
+	entries map[string]remoteItemPagingState
+	order   []string
+}
+
+func (c *remoteItemPagingCache) put(key string, state remoteItemPagingState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]remoteItemPagingState)
+	}
+	if _, exists := c.entries[key]; !exists {
+		c.order = append(c.order, key)
+	}
+	c.entries[key] = state
+	for len(c.order) > remoteItemPagingCapacity {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+}
+
+func (c *remoteItemPagingCache) evict(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[key]; !exists {
+		return
+	}
+	delete(c.entries, key)
+	for index, candidate := range c.order {
+		if candidate == key {
+			c.order = append(c.order[:index], c.order[index+1:]...)
+			return
+		}
+	}
+}
+
+func (c *remoteItemPagingCache) peek(key string) (remoteItemPagingState, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state, ok := c.entries[key]
+	return state, ok
+}
+
+// remoteItemPagingKey is the controller-side ref that names one remote thread
+// in the controller namespace; it identifies both the retained continuation
+// and the identity fence minted into the controller's cursor.
+func remoteItemPagingKey(sourceID, threadID string) string {
+	return appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+}
+
+// ListItemCandidates serves the controller's item-mode turn page for a remote
+// thread. The remote hub's opaque cursor never reaches the controller: each
+// page mints (or continues) a controller-owned identity, and the remote cursor
+// is retained behind it.
+func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire.ThreadTurnsListParams) (ItemCandidateResult, error) {
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	remote := params
+	remote.Ref = ref.String()
+	remote.ThreadID = ref.ThreadID
+	remote.ItemLimit = itemLimit
+
+	if params.Cursor == "" {
+		remote.Cursor = ""
+		candidates, native, err := s.remoteItemPage(ctx, remote)
+		if err != nil {
+			return ItemCandidateResult{}, err
+		}
+		return s.recordRemoteItemPage(key, s.mintRemoteItemIdentity(key), candidates, native)
+	}
+
+	state, ok := s.itemPaging.peek(key)
+	if !ok || state.native == "" {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	before, err := appitempaging.DecodeCursor(params.Cursor, state.identity)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	// Packing can drop the oldest selected item after the cursor is minted, so
+	// the caller's boundary may be newer than the retained page boundary; the
+	// retained remote cursor is rebased onto the caller's boundary before it is
+	// replayed against the remote hub.
+	native, err := appitempaging.RebaseCursor(state.native, before)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	remote.Cursor = native
+	candidates, next, err := s.remoteItemPage(ctx, remote)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	return s.recordRemoteItemPage(key, state.identity, candidates, next)
+}
+
+// ReadItemCandidates materializes a remote item-mode thread read into the
+// private candidate contract. It issues its own read and mints the same
+// identity ItemCandidatesFromRead does.
+func (s *RemoteHubSource) ReadItemCandidates(ctx context.Context, params appwire.ThreadReadParams) (ItemCandidateResult, error) {
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	remote := params
+	remote.Ref = ref.String()
+	remote.ThreadID = ref.ThreadID
+	remote.IncludeTurns = true
+	var out appwire.ThreadReadResponse
+	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	return s.ItemCandidatesFromRead(ctx, params, out)
+}
+
+// ItemCandidatesFromRead converts an already-materialized remote item read
+// into the controller's candidate contract without issuing another read, so
+// the cursor minted from thread/read stays continuable through
+// thread/turns/list.
+func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params appwire.ThreadReadParams, response appwire.ThreadReadResponse) (ItemCandidateResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ItemCandidateResult{}, err
+	}
+	ref, err := s.toRemoteRef(params.Ref, params.ThreadID)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	return s.recordRemoteItemPage(key, s.mintRemoteItemIdentity(key), candidates, response.OlderCursor)
+}
+
+// remoteItemPage issues one remote item-mode turn page and returns its
+// positioned candidates and the remote cursor for the next older page.
+func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.ThreadTurnsListParams) ([]appitempaging.TranscriptItemCandidate, string, error) {
+	var out appwire.ThreadTurnsListResponse
+	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
+		return nil, "", err
+	}
+	candidates, err := appitempaging.CandidatesFromTurns(out.Data)
+	if err != nil {
+		return nil, "", err
+	}
+	return candidates, out.NextCursor, nil
+}
+
+// recordRemoteItemPage builds the controller window for one remote page and
+// retains the remote cursor behind the controller identity.
+func (s *RemoteHubSource) recordRemoteItemPage(key string, identity appitempaging.CursorIdentity, candidates []appitempaging.TranscriptItemCandidate, native string) (ItemCandidateResult, error) {
+	window := appitempaging.TranscriptItemWindow{Candidates: candidates}
+	if native == "" {
+		s.itemPaging.evict(key)
+		// The identity is returned even when the page is complete: packing can
+		// still drop the oldest item for size and needs an identity to mint a
+		// continuation cursor from, exactly as the local-daemon source does.
+		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
+	}
+	if len(candidates) == 0 {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
+	}
+	cursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	window.OlderCursor = cursor
+	s.itemPaging.put(key, remoteItemPagingState{identity: identity, native: native})
+	return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: false}, nil
+}
+
+func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.CursorIdentity {
+	return appitempaging.CursorIdentity{
+		ThreadRef:         key,
+		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
+		ProjectionVersion: remoteHubItemCursorProjectionVersion,
+	}
 }
 
 // notImplemented is the staged-method error for interface methods 05b/05c/05d
