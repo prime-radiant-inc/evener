@@ -12,6 +12,17 @@ import (
 // the same scheduling jitter before the relay's consumer has to be reading.
 const remoteHubSubBuffer = 128
 
+// remoteHubDrainReadAheadCap bounds the drain's read-ahead FIFO (see
+// drainLoop). It is expressed in subscription buffers: while one thread's
+// consumer is backpressured the drain may hold at most this many read-ahead
+// notifications before it stops buffering and drops the excess. The bound is
+// generous enough to cover a large initial-turn replay (~160 messages, see
+// appwire.NotificationBufferCap) plus scheduling jitter while a consumer is
+// briefly behind, yet small enough that a permanently-stuck consumer — a relay
+// that has not noticed a dead or slow browser, with sub.in and sub.out full —
+// cannot grow the controller's heap without limit.
+const remoteHubDrainReadAheadCap = remoteHubSubBuffer * 4
+
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
 //
@@ -177,6 +188,13 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 	// thread in buffer would park the drain, clientDone would never close, and
 	// every host subscription would stay attached to a dead client across
 	// reconnect.
+	//
+	// pending is bounded by remoteHubDrainReadAheadCap. At the cap the drain
+	// keeps reading the client's stream — stopping would hide a teardown and
+	// re-park the drain on the stalled send — but drops the overflow instead of
+	// buffering it, so a stuck consumer cannot grow the heap or bypass the
+	// appwire client's own bounded buffer. The drop is counted so the tradeoff
+	// is observable; see routeNotification.
 	var pending []appwire.Notification
 	for {
 		var notification appwire.Notification
@@ -214,8 +232,15 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // The blocking send also selects on the client's own stream, so a stream close
 // is observed rather than missed while a thread consumer holds up delivery.
 // Notifications read ahead are published to host-level consumers immediately, in
-// read order, and buffered in pending for later thread routing. It reports false
-// when the stream ended, so the caller runs the drain's teardown.
+// read order, and buffered in pending for later thread routing until pending
+// reaches remoteHubDrainReadAheadCap. The cap is an explicit overflow policy:
+// the drain must keep reading the client's stream — dropping out of the read
+// would hide a client teardown behind the stalled send and re-park the drain —
+// so once pending is full the overflowing notification is dropped and counted
+// in threadReadAheadDropped rather than buffered. That bounds a stuck
+// consumer's memory to the cap instead of letting it grow without limit, and
+// keeps the appwire client's bounded buffer in play rather than bypassed. It
+// reports false when the stream ended, so the caller runs the drain's teardown.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification, pending *[]appwire.Notification) bool {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
@@ -238,6 +263,10 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 				return false
 			}
 			s.publishHostNotification(client, next)
+			if len(*pending) >= remoteHubDrainReadAheadCap {
+				s.threadReadAheadDropped.Add(1)
+				continue
+			}
 			*pending = append(*pending, next)
 		}
 	}

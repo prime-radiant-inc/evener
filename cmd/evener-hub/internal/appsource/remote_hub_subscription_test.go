@@ -457,3 +457,114 @@ func TestRemoteHubSubscribeThreadErrorMapping(t *testing.T) {
 		t.Fatalf("message = %q, want it to name the host", wire.Message)
 	}
 }
+
+// stalledThreadReadAhead drives remote into the drain's read-ahead state and
+// returns the stalled thread's delivery channel. It subscribes a thread whose
+// consumer is deliberately never read, so out and in both fill and the shared
+// drain parks on the thread send, then pushes `pushed` thread notifications and
+// a host-level sentinel. The drain publishes host notifications in read order
+// as it consumes them, so receiving the sentinel proves every earlier
+// notification has been consumed from the client's stream — buffered in the
+// read-ahead FIFO or dropped.
+func stalledThreadReadAhead(t *testing.T, remote *pushableRemote, pushed int) <-chan appwire.Notification {
+	t.Helper()
+	ctx := t.Context()
+	subCtx, cancel := context.WithCancel(ctx)
+	t.Cleanup(cancel)
+
+	// Only the sentinel reaches the host consumer: thread notifications are
+	// filter-rejected, so the host subscription's own bounded buffer cannot park
+	// the drain first and the read-ahead is exercised through thread routing.
+	remote.source.SetHostNotificationFilter(func(method string) bool {
+		return method == appwire.NotifyEvenerAuthUpdated
+	})
+	sentinel, err := remote.source.SubscribeHostNotifications(subCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	_ = out
+
+	for i := range pushed {
+		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	if err := remote.push(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"}); err != nil {
+		t.Fatalf("push sentinel: %v", err)
+	}
+	select {
+	case <-sentinel:
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain never read the sentinel; read-ahead did not engage")
+	}
+	return out
+}
+
+// drainNotifications reads ch until it has been quiet for idle, returning how
+// many notifications arrived. The subscription never closes on its own, so a
+// quiet window is how the count terminates.
+func drainNotifications(ch <-chan appwire.Notification, idle time.Duration) int {
+	count := 0
+	deadline := time.After(30 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return count
+			}
+			count++
+		case <-time.After(idle):
+			return count
+		case <-deadline:
+			return count
+		}
+	}
+}
+
+// TestRemoteHubSourceDrainReadAheadIsBounded pins the round-five high finding:
+// while a thread consumer is backpressured the drain keeps reading the client's
+// stream (round four: so a client teardown is still observed), but its read-ahead
+// FIFO is bounded by remoteHubDrainReadAheadCap. Against the pre-fix drain every
+// pushed notification is retained and delivered once the consumer resumes; with
+// the bound the excess is dropped, so strictly fewer than were pushed arrive and
+// the drain does not grow without limit.
+func TestRemoteHubSourceDrainReadAheadIsBounded(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("unexpected method %q", method)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+	const pushed = remoteHubSubBuffer * 12
+	out := stalledThreadReadAhead(t, remote, pushed)
+
+	delivered := drainNotifications(out, time.Second)
+	if delivered >= pushed {
+		t.Fatalf("drain delivered all %d pushed notifications; its read-ahead FIFO is unbounded", delivered)
+	}
+	if delivered < remoteHubSubBuffer {
+		t.Fatalf("drain delivered only %d notifications; the bound must still deliver the buffered prefix", delivered)
+	}
+}
+
+// TestRemoteHubSourceDrainReadAheadDropsAreCounted pins the observability half
+// of the overflow policy: the notifications the drain drops at the cap are
+// counted, so a stuck consumer's silent loss is at least visible.
+func TestRemoteHubSourceDrainReadAheadDropsAreCounted(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("unexpected method %q", method)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+	stalledThreadReadAhead(t, remote, remoteHubSubBuffer*12)
+
+	if dropped := remote.source.threadReadAheadDropped.Load(); dropped == 0 {
+		t.Fatal("no read-ahead drop was counted against a stalled consumer that overflowed the cap")
+	}
+}

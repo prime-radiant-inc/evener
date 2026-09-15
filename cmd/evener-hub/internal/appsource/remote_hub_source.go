@@ -66,6 +66,13 @@ type RemoteHubSource struct {
 	// stalled consumer cannot stall thread routing; this counter makes the
 	// tradeoff observable.
 	hostNotifyDropped atomic.Int64
+	// threadReadAheadDropped counts thread notifications the shared drain
+	// dropped because a stalled thread consumer had already parked it with
+	// remoteHubDrainReadAheadCap notifications read ahead. Reading ahead is what
+	// keeps the drain independent of a thread consumer (so a client teardown is
+	// still observed), but it must not buffer without bound; the counter makes
+	// the explicit overflow policy observable.
+	threadReadAheadDropped atomic.Int64
 
 	// probeMu serializes HostCapabilities and guards probe, the last successful
 	// probe cached against the client it ran on.
@@ -312,13 +319,21 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // (HostRequestParams has none) and no admin method dedups, so the same loss is
 // "blocked". A semantic WireError keeps its code and message, exactly as on
 // AdminCall.
+//
+// Only a failure of client.Request is a possible lost response. A failure to
+// acquire the client — the host is offline, the attach is refused, the dial
+// fails — happens before any request frame is sent, so the mutation provably
+// did not reach the host and the outcome is not unknown. That failure maps
+// through mapCallError exactly as on AdminCall (SessionUnavailable for a dead
+// channel), which is a safe retry; reporting it as outcome-unknown/blocked
+// would discourage a retry that cannot double-apply anything.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return s.remoteHubAdminMutationCallError(err)
+		return s.mapCallError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		return s.remoteHubAdminMutationCallError(err)
