@@ -2139,6 +2139,9 @@ func parkedQueueModel(t *testing.T, client *appwire.Client, steer bool) hubModel
 	m.detail.Capabilities.Steer = steer
 	m.session.processing = false
 	m.sessionQueue = []string{"parked follow-up"}
+	// A harness label makes the composer render its production footer (the
+	// mode-aware hint bar) rather than the bare Keys fallback.
+	m.detail.SourceLabel = "evener"
 	if got := m.sessionComposerMode(); got != hubComposerModeSend {
 		t.Fatalf("composer mode=%v, want send", got)
 	}
@@ -2158,8 +2161,16 @@ func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	defer cleanup()
 
 	m := parkedQueueModel(t, client, true)
+	// Another client edited the queue: thread/queueChanged carries revision 7,
+	// and the drain must swap against that revision, not the one from hydrate.
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 1, Revision: 7, Preview: []string{"parked follow-up"}},
+	})
+	m.applyHubNotification(*queueChanged.Notification)
 	view := m.sessionView()
-	for _, want := range []string{"ctrl+s: run queue as steer", "enter: send", "QUEUE 1"} {
+	for _, want := range []string{"ctrl+s", "steer", "QUEUE 1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
 		}
@@ -2175,6 +2186,9 @@ func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	}
 	if drained[0].Ref != "local:01SEND" || len(drained[0].Input) != 0 {
 		t.Fatalf("drain params = %+v, want the parked queue of 01SEND with no composer text", drained[0])
+	}
+	if drained[0].ExpectedQueueRevision != 7 {
+		t.Fatalf("drain expectedQueueRevision = %d, want 7 (the revision thread/queueChanged carried)", drained[0].ExpectedQueueRevision)
 	}
 }
 

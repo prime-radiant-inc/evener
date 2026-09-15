@@ -420,6 +420,10 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 		return
 	}
 	m.sessionQueueRef = ref
+	// The wire's queue state is stored whole, revision included: a drain swaps
+	// against the revision the client last saw, and a queue another client
+	// edited since hydrate would otherwise be refused as a conflict.
+	m.detail.Queue = queue
 	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
 		return
