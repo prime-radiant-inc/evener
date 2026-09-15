@@ -1991,6 +1991,71 @@ func waitClosed(t *testing.T, ch *Channel) {
 	t.Fatal("channel was never closed")
 }
 
+// A configured BackoffMax bounds every reconnect delay, the first one included:
+// a maximum below BackoffBase must cap the initial retry, not only the later
+// ones nextBackoff has already doubled into it.
+func TestInitialReconnectDelayIsClampedToBackoffMax(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 10 * time.Millisecond
+	)
+	var mu sync.Mutex
+	var bridges []*fakeBridge
+	var sleeps []time.Duration
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(_ context.Context, _ []string, _ io.Writer) (Stdio, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			b := newFakeBridge(appwire.ProtocolVersion)
+			bridges = append(bridges, b)
+			return b.stdio, nil
+		},
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: baseDelay,
+		BackoffMax:  maxDelay,
+		sleep: func(_ context.Context, d time.Duration) error {
+			mu.Lock()
+			sleeps = append(sleeps, d)
+			mu.Unlock()
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	mu.Lock()
+	if len(bridges) != 1 {
+		mu.Unlock()
+		t.Fatalf("bridges after initial attach = %d, want 1", len(bridges))
+	}
+	first := bridges[0]
+	mu.Unlock()
+
+	// Drop the link so the supervisor takes its first backoff sleep, the delay the
+	// clamp governs.
+	first.stdio.drop()
+	waitForEvent(t, events, EventDetached)
+	waitForEvent(t, events, EventAttached)
+
+	mu.Lock()
+	gotSleeps := append([]time.Duration(nil), sleeps...)
+	mu.Unlock()
+	if len(gotSleeps) == 0 {
+		t.Fatal("the supervisor never backed off")
+	}
+	if gotSleeps[0] != maxDelay {
+		t.Fatalf("first reconnect delay = %v, want %v: BackoffMax must clamp the initial delay", gotSleeps[0], maxDelay)
+	}
+}
+
 func TestReconnectBackoffAndFreshStartWithoutHubStart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	reg := testRegistry(t, host)

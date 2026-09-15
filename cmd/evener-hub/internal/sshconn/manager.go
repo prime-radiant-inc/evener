@@ -850,7 +850,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	// BackoffMax bounds every reconnect delay, the first one included: a caller
 	// that configures a maximum below the base must not have its first retry wait
 	// longer than the bound it asked for.
-	delay := m.opts.backoffBase()
+	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
 	for {
 		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
 			// Every transition is emitted under the lock, so a concurrent Ensure
