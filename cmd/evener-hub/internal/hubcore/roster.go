@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"maps"
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,7 +48,20 @@ type LiveEntry struct {
 	// CompletedJobs contains recent terminal non-agent jobs. Delegate jobs stay
 	// represented by descendant sessions for the same reason as RunningJobs.
 	CompletedJobs []appwire.EvenerJobInfo
-	Project       identifier.Project // canonical identity resolved at hub ingestion, when available
+	// Watches contains the live watches this daemon reports. The rows are this
+	// session's own; a receiver watch that two sessions can see is carried by
+	// each session's own diagnostics and is never aggregated across sessions,
+	// so a tree rollup cannot count one watch twice. An older daemon omits the
+	// source field entirely, which lands here as an empty list.
+	Watches []appwire.EvenerWatchInfo
+	// ChildWatches carries each listed in-process child's own live watches,
+	// keyed by child session ID. A child has no LiveEntry of its own (children
+	// are not independently routable), so without this a child row read its
+	// watches from a zero LiveEntry and showed none. The rows are the child's
+	// own, never merged across sessions, matching Watches' rollup rule. An older
+	// daemon that carries no per-child watches omits the entry entirely.
+	ChildWatches map[string][]appwire.EvenerWatchInfo
+	Project      identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -60,6 +75,8 @@ type ProbeResult struct {
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
 	CompletedJobs         []appwire.EvenerJobInfo
+	Watches               []appwire.EvenerWatchInfo
+	ChildWatches          map[string][]appwire.EvenerWatchInfo
 	OK                    bool
 }
 
@@ -87,6 +104,21 @@ func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 	return appwire.CloneEvenerJobs(in)
 }
 
+func cloneWatches(in []appwire.EvenerWatchInfo) []appwire.EvenerWatchInfo {
+	return appwire.CloneEvenerWatches(in)
+}
+
+func cloneChildWatches(in map[string][]appwire.EvenerWatchInfo) map[string][]appwire.EvenerWatchInfo {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]appwire.EvenerWatchInfo, len(in))
+	for childID, watches := range in {
+		out[childID] = appwire.CloneEvenerWatches(watches)
+	}
+	return out
+}
+
 func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out := in
 	out.ActiveFlags = append([]string(nil), in.ActiveFlags...)
@@ -94,6 +126,8 @@ func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
 	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
+	out.Watches = cloneWatches(in.Watches)
+	out.ChildWatches = cloneChildWatches(in.ChildWatches)
 	return out
 }
 
@@ -331,6 +365,11 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			// the sidebar renders for that child.
 			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
 			_, _ = h.Write([]byte{0})
+			// A child's watches render on the child's row, so a new watch, a
+			// delivery, or a flip to inactive on that child must bump the
+			// fingerprint just like the child's own state, or navigation never
+			// invalidates and the child keeps a stale watch list.
+			writeWatchFingerprint(h, bySess[id].ChildWatches[childID])
 		}
 		writeJobs := func(jobs []appwire.EvenerJobInfo) {
 			sort.SliceStable(jobs, func(i, j int) bool {
@@ -363,8 +402,73 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
 		writeJobs(completedJobs)
 		_, _ = h.Write([]byte{0})
+		// Watches are rendered on the session row, so any change the sidebar
+		// shows — a new watch, a delivery, a flip to inactive — must move the
+		// fingerprint or onChange never invalidates navigation. Sorted on a
+		// copy: a daemon listing its watches in another order is not a change.
+		writeWatchFingerprint(h, bySess[id].Watches)
 	}
 	return h.Sum64()
+}
+
+// writeWatchFingerprint folds one session's watch inventory into the roster
+// hash. Sorted on a copy: a daemon listing its watches in another order is not a
+// change. The same routine hashes a root's own Watches and each child's
+// ChildWatches, so the two can never cover different fields.
+func writeWatchFingerprint(h hash.Hash64, watches []appwire.EvenerWatchInfo) {
+	ordered := append([]appwire.EvenerWatchInfo(nil), watches...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
+	for _, watch := range ordered {
+		for _, field := range []string{
+			watch.ID, watch.Source, watch.Target, watch.SendTo, watch.Note,
+			watch.OutputMatch, watch.CreatedAt, watch.EndReason,
+		} {
+			_, _ = h.Write([]byte(field))
+			_, _ = h.Write([]byte{0})
+		}
+		if watch.WildcardEvents {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		if watch.Active {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strconv.Itoa(watch.Deliveries)))
+		_, _ = h.Write([]byte{0})
+		for _, cadence := range watch.Cadence {
+			_, _ = h.Write([]byte(cadence.Kind))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(strconv.FormatFloat(cadence.Seconds, 'g', -1, 64)))
+			_, _ = h.Write([]byte{0})
+			// The derived next-fire instant changes only when the ring or the
+			// interval changes (both already hashed above), but hashing it here
+			// keeps the field explicitly covered if its derivation ever moves.
+			_, _ = h.Write([]byte(cadence.DerivedNextFireAt))
+			_, _ = h.Write([]byte{0})
+			// Every throttles an event watch and Filter narrows what it
+			// matches, so either changing must move the fingerprint or the
+			// sidebar keeps a row whose cadence no longer matches. Null
+			// separators keep the field boundary unambiguous.
+			_, _ = h.Write([]byte(strconv.Itoa(cadence.Every)))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(cadence.Filter))
+			_, _ = h.Write([]byte{0})
+		}
+		for _, event := range watch.Events {
+			_, _ = h.Write([]byte(event))
+			_, _ = h.Write([]byte{0})
+		}
+		// DeliveryTimes feeds the activity panel's timeline, and the
+		// daemon-restore case rebuilds the ring empty. A delivery-only change
+		// (same count, new instants) must still move the fingerprint or that
+		// timeline never invalidates.
+		for _, at := range watch.DeliveryTimes {
+			_, _ = h.Write([]byte(at))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
+	}
 }
 
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.
@@ -941,6 +1045,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
 		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+		Watches:               cloneWatches(result.Watches),
+		ChildWatches:          cloneChildWatches(result.ChildWatches),
 	}
 }
 
@@ -1003,7 +1109,8 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 	result := ProbeResult{OK: true, SessionID: statusThreadID(root), Status: root.Status.Type,
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
-		RunningJobs: runningJobs, CompletedJobs: completedJobs}
+		RunningJobs: runningJobs, CompletedJobs: completedJobs,
+		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

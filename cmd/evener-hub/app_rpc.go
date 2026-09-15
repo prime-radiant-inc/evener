@@ -52,6 +52,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 					PendingAsk:    item.PendingAsk,
 					RunningJobs:   item.RunningJobs,
 					CompletedJobs: item.CompletedJobs,
+					Watches:       item.Watches,
 				}
 				entries = append(entries, entry)
 				// In-process descendants are addressed as their own AppWire
@@ -60,6 +61,12 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 					child := entry
 					child.OwnerSessionID = entry.SessionID
 					child.SessionID = childID
+					// The alias carries the child's OWN watches, sampled by
+					// the prober into ChildWatches. Inheriting the root
+					// entry's Watches would put the root's rows on the
+					// child row (and, for a read-only alias, they were
+					// suppressed anyway), losing the child's own.
+					child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
 					// The child's own projected status when the daemon carries
 					// it — inheriting the parent's status would render a
 					// settled delegate as working (or vice versa). "" (old

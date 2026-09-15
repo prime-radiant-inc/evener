@@ -227,7 +227,16 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return node.kind === "loading" || node.kind === "job";
+  return (
+    node.kind === "loading" ||
+    node.kind === "job" ||
+    // A watch row is a leaf with no disclosure of its own: the wire row
+    // (active, cadence, note) is the whole truth, exactly like a job row. An
+    // Enter must not persist an expansion override for a row that cannot
+    // expand.
+    node.kind === "watch" ||
+    (node.kind === "overflow" && node.passive === true)
+  );
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on

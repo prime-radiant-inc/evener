@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sidebar watches — all mockups</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --surface-0: #191918;
+        --surface-1: #232320;
+        --edge: #34342f;
+        --ink-hi: #f2f1eb;
+        --ink-mid: #b0afa6;
+        --ink-low: #99998f;
+        --accent: #3d9aff;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--surface-0);
+        color: var(--ink-hi);
+        font-family: "Inter Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .wrap { max-width: 1360px; margin: 0 auto; padding: 28px 24px 80px; }
+      h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 8px; }
+      .lede { color: var(--ink-mid); margin: 0 0 8px; max-width: 80ch; }
+      .note { color: var(--ink-low); margin: 0 0 28px; max-width: 80ch; font-size: 13px; }
+      h2 {
+        font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+        color: var(--ink-low); font-weight: 500;
+        border-top: 1px solid var(--edge); padding-top: 18px; margin: 40px 0 14px;
+      }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(600px, 1fr)); gap: 22px; }
+      .card {
+        background: var(--surface-1); border: 1px solid var(--edge); border-radius: 5px;
+        overflow: hidden; display: flex; flex-direction: column;
+      }
+      .card header { padding: 12px 14px 10px; border-bottom: 1px solid var(--edge); }
+      .card h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+      .card p { margin: 0; color: var(--ink-mid); font-size: 13px; }
+      .card .tag {
+        display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 3px;
+        border: 1px solid var(--edge); color: var(--ink-low);
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; vertical-align: 2px;
+      }
+      .card .tag.pick { border-color: var(--accent); color: var(--accent); }
+      .card .frame { height: 780px; background: var(--surface-0); border: 0; width: 100%; }
+      .card footer {
+        padding: 9px 14px; border-top: 1px solid var(--edge);
+        display: flex; gap: 14px; font-size: 13px;
+      }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .ask { margin-top: 40px; border-top: 1px solid var(--edge); padding-top: 18px; }
+      .ask ol { margin: 0; padding-left: 20px; color: var(--ink-mid); }
+      .ask li { margin: 7px 0; }
+      code { font-family: "JetBrains Mono Variable", ui-monospace, monospace; font-size: 12px; color: var(--ink-mid); }
+      .round1 { opacity: 0.96; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Sidebar watches — every mockup</h1>
+      <p class="lede">
+        Three round-1 directions and two round-2 proposals. Each tile below is the
+        real HTML, live in a frame; use “open full size” for the unscaled page, or
+        the screenshot for a fixed image.
+      </p>
+      <p class="note">
+        All frames render the dark theme; each page has its own light/dark toggle.
+        The worktree is on branch <code>sidebar-watches</code>; nothing here is
+        production code.
+      </p>
+
+      <h2>Round 3 — current</h2>
+      <div class="grid">
+        <div class="card">
+          <header>
+            <h3>Fluent activity <span class="tag pick">built on A</span></h3>
+            <p>
+              A's rail, kept: count on the summary line, inline watch rows in the
+              fold-out. The expanded view is rewritten as a composed block — the
+              watch's note as a sentence, its facts as a sentence, and its delivery
+              history drawn on a real time axis. Also contains the opt-in “next
+              firing” panel and what it would cost.
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/round-3-fluent.html" title="Round 3 fluent activity"></iframe>
+          <footer>
+            <a href="mockups/round-3-fluent.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/round-3-fluent-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+      </div>
+
+      <h2>Round 2 — the earlier pair</h2>
+      <div class="grid">
+        <div class="card">
+          <header>
+            <h3>Primary — “Watch rows” <span class="tag pick">recommended</span></h3>
+            <p>
+              Running work keeps the top of the Activity panel; watches get their
+              own group beneath it, and only an abnormal watch is promoted to
+              “Needs a look”. Count on the summary line, inline watch rows in the
+              fold-out. Includes the edge states: idle-with-only-a-watch, abnormal,
+              many, zero.
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/round-2-primary.html" title="Round 2 primary"></iframe>
+          <footer>
+            <a href="mockups/round-2-primary.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/round-2-primary-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+
+        <div class="card">
+          <header>
+            <h3>Variant — “Watches first”</h3>
+            <p>
+              Same rail. Watches lead the Activity panel, ordered by severity then
+              name, with running work below. Honours the ask most directly and is
+              the cheaper build (no new activity-tree row kind).
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/round-2-variant.html" title="Round 2 variant"></iframe>
+          <footer>
+            <a href="mockups/round-2-variant.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/round-2-variant-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+      </div>
+
+      <h2>Round 1 — the directions the reviews rejected or partly kept</h2>
+      <div class="grid">
+        <div class="card round1">
+          <header>
+            <h3>A — Inline glint</h3>
+            <p>
+              Watches are supporting cast: count on the summary line, one-line
+              watch rows in the fold-out, slim Watches group above retained
+              activity. Best visual craft of the three; the count never changes a
+              decision.
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/direction-a.html" title="Direction A"></iframe>
+          <footer>
+            <a href="mockups/direction-a.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/direction-a-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+
+        <div class="card round1">
+          <header>
+            <h3>B — Scheduled work</h3>
+            <p>
+              Watches as peers of jobs, one list ordered by “when it next does
+              something”, watches inline in the activity tree, ended watches fold
+              away. Best information hierarchy; its ordering key does not exist in
+              the runtime.
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/direction-b.html" title="Direction B"></iframe>
+          <footer>
+            <a href="mockups/direction-b.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/direction-b-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+
+        <div class="card round1">
+          <header>
+            <h3>C — Watchboard <span class="tag">rejected by all four</span></h3>
+            <p>
+              Watches get their own grammar: summary line leads with “next in 4m”,
+              cadence ticks, an “Armed” card band. Its countdown, ticks, progress
+              track and “×6h” have no backing data, and it drops the subagent
+              count to make room.
+            </p>
+          </header>
+          <iframe class="frame" src="mockups/direction-c.html" title="Direction C"></iframe>
+          <footer>
+            <a href="mockups/direction-c.html" target="_blank" rel="noopener">open full size</a>
+            <a href="screenshots/direction-c-dark.png" target="_blank" rel="noopener">screenshot</a>
+          </footer>
+        </div>
+      </div>
+
+      <div class="ask">
+        <h2 style="border: 0; padding: 0; margin: 0 0 10px">When you pick, these four are still open</h2>
+        <ol>
+          <li>May an idle session whose only pending work is a watch grow a second line?</li>
+          <li>Primary or variant — running work first, or watches first?</li>
+          <li>Always show the bare count, or let “1 watch needs a look” replace it when abnormal?</li>
+          <li>Confirm the backend watch projection is in scope — this is not frontend-only.</li>
+        </ol>
+        <p class="note" style="margin-top: 14px">
+          Full write-up: <a href="round-2.md" target="_blank" rel="noopener">round-2.md</a> ·
+          reviews: <a href="reviews/synthesis.md" target="_blank" rel="noopener">reviews/synthesis.md</a>
+        </p>
+      </div>
+    </div>
+  </body>
+</html>
