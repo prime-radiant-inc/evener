@@ -211,6 +211,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 		cp.TurnSlots = &ts
 	}
 	cp.Agents = append([]string(nil), d.Agents...)
+	cp.DelegateDiagnostics = append([]string(nil), d.DelegateDiagnostics...)
 	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
 	return &cp
 }

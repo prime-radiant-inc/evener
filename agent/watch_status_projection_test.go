@@ -266,7 +266,7 @@ func TestSessionDetailedStatusOrdersWatches(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
 	const timers = 8
-	for i := 0; i < timers; i++ {
+	for i := range timers {
 		if _, err := s.jobManager.configureWatch(watchArgs{
 			Operation: "create", Source: "self", Target: runtimeMessageAliasCaller,
 			AfterSeconds: 600, Note: "wake me",

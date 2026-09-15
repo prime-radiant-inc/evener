@@ -2541,7 +2541,10 @@ func sortWatchStatuses(statuses []WatchStatusInfo) {
 // aggregateWatchStatuses projects the watches every supplied manager holds that
 // are visible to receiverSessionID. Managers are deduped so two live sessions
 // sharing one manager do not double every row, and the result is ordered like
-// the single-manager projection.
+// the single-manager projection. Superseded as a production entry point by the
+// page walk's per-row aggregation (appendWatchStatusesByRow, inside
+// LiveWatchRowsForSessions); it is reached only from tests, which keep the
+// receiver-rollup contract pinned through it.
 func aggregateWatchStatuses(receiverSessionID string, managers []*jobManager) []WatchStatusInfo {
 	var statuses []WatchStatusInfo
 	seen := make(map[*jobManager]struct{}, len(managers))
@@ -2698,7 +2701,10 @@ func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo
 // This is sampled on read, not cached: watch state changes without a per-child
 // app event on this daemon, so the caller re-derives it on every list/read. The
 // walk itself is LiveWatchRowsForSessions', so a single-ID caller and a page
-// caller can never disagree about which sessions are answerable.
+// caller can never disagree about which sessions are answerable. The page walk is
+// the production entry point; this single-ID form and LiveWatchesForSession below
+// are reached only from tests, which pin the page's contracts through these
+// narrower seams.
 func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 	if s == nil || sessionID == "" || sessionID == s.ID() {
 		return nil
@@ -2711,8 +2717,16 @@ func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
 // per-thread app event. It is the broader sibling of LiveWatchesForDescendant:
 // that one keeps its narrower contract (the root is not its own descendant, so
 // it returns nil for the root), while this one also answers for the root's own
-// row -- the root's manager plus every manager that holds a receiver watch the
-// root owns, exactly the set Detail().Watches carries.
+// row, carrying every manager that holds a watch for that session -- including a
+// receiver watch a descendant session holds for it.
+//
+// This is NOT the set Session.DetailedStatus().Watches carries, and must not be
+// replaced by it: that facet is the session's own manager only, by the
+// envelope-sampling contract (a sampled method may take this session's mu and
+// nothing else, so it cannot reach a descendant's manager). The receiver rollup
+// therefore reaches a row from the LIST path (cmd/evener/serve.go), which samples
+// here. Dropping that sampling makes "watch my child's long-running job"
+// invisible on both sessions' rows.
 //
 // An empty answer for the root is non-nil: the caller merges only a nil answer
 // as "no fresh sample, leave the cached projection alone", so a non-nil empty

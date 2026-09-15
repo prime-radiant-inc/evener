@@ -186,6 +186,17 @@ describe("watchMeta", () => {
     });
     expect(watchMeta(w, NOW)).toBe("every 10m · armed");
   });
+
+  test("a cadence kind this build does not know still names its trigger", () => {
+    const w = watch({
+      cadence: [{ kind: "solar_flare", derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      deliveries: 0,
+    });
+    // The kind is named through the label's own fallback, and it gets no
+    // countdown even though the wire carried an instant: only the recognized
+    // clock kinds derive a next fire.
+    expect(watchMeta(w, NOW)).toBe("solar_flare · armed");
+  });
 });
 
 describe("watchFacts", () => {
@@ -210,6 +221,11 @@ describe("watchFacts", () => {
   test("a single delivery is singular", () => {
     const w = watch({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 1 });
     expect(watchFacts(w, NOW)).toBe(`Fires every 10m · armed ${armedLabel()} ago · 1 delivery`);
+  });
+
+  test("a cadence kind this build does not know still gets a fires segment", () => {
+    const w = watch({ cadence: [{ kind: "solar_flare" }], deliveries: 0 });
+    expect(watchFacts(w, NOW)).toBe(`Fires solar_flare · armed ${armedLabel()} ago · no deliveries yet`);
   });
 
   test("output watches name the target and the match", () => {
@@ -316,6 +332,15 @@ describe("watchIsScheduled", () => {
     // no-schedule line.
     expect(watchIsScheduled(watch())).toBe(false);
     expect(watchIsScheduled(watch({ events: [], cadence: [{ kind: "events" }] }))).toBe(false);
+  });
+
+  test("a cadence kind this build does not know still counts as a schedule", () => {
+    // The watch's own wire row says it fires on something this build cannot
+    // name or count down. Calling that "no schedule to draw here - this one
+    // fires when the job or event it watches says so" would be a claim the wire
+    // contradicts, so an unrecognized cadence counts as scheduled; the rows
+    // above still name the kind, and nothing tries to derive an instant from it.
+    expect(watchIsScheduled(watch({ cadence: [{ kind: "solar_flare" }] }))).toBe(true);
   });
 });
 

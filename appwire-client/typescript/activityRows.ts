@@ -109,6 +109,26 @@ function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
     .filter((label) => label !== "");
 }
 
+// The cadence kinds whose truth the wire already carries in its own field:
+// output_match for "output", and events/wildcard_events for "events". Their
+// labels come from those fields, so a cadence row of one of these kinds is never
+// named twice.
+const CONDITION_CADENCE_KINDS: ReadonlySet<string> = new Set(["output", "events"]);
+
+// The cadence rows that are neither a clock this build can count down nor a
+// condition it reads from another field: a kind a newer daemon added. They are
+// labeled through watchCadenceLabel's own fallback so the row still names what
+// the watch fires on, and they count as scheduled - the no-schedule line claims
+// the watch fires only when its job or event says so, which such a row
+// contradicts. Nothing derives an instant or a timeline from them, because only
+// the recognized clock kinds carry a period this build can place on a clock.
+function unattributedCadenceLabels(watch: NavigationWatchSummary): string[] {
+  return (watch.cadence ?? [])
+    .filter((cadence) => !CLOCK_CADENCE_KINDS.has(cadence.kind) && !CONDITION_CADENCE_KINDS.has(cadence.kind))
+    .map(watchCadenceLabel)
+    .filter((label) => label !== "");
+}
+
 // A watch is "scheduled" when it has ANY clock cadence, even when it also has
 // an output/event condition. A watch with no clock cadence at all - a pure
 // condition watch, but also an empty watch or an event watch with an empty
@@ -116,7 +136,7 @@ function clockCadenceLabels(watch: NavigationWatchSummary): string[] {
 // statement the no-schedule line makes. The condition fields therefore cannot
 // stand in for "scheduled": only the clock cadence labels decide it.
 export function watchIsScheduled(watch: NavigationWatchSummary): boolean {
-  return clockCadenceLabels(watch).length > 0;
+  return clockCadenceLabels(watch).length > 0 || unattributedCadenceLabels(watch).length > 0;
 }
 
 // The supplied delivery instants as epoch millis, oldest first. Unparseable
@@ -192,7 +212,7 @@ export function watchMeta(watch: NavigationWatchSummary, now?: number): string {
     const detail = eventCadenceDetail(watch);
     conditions.push(detail === "" ? "on events" : `on events ${detail}`);
   }
-  conditions.push(...clockCadenceLabels(watch));
+  conditions.push(...clockCadenceLabels(watch), ...unattributedCadenceLabels(watch));
   if (now !== undefined) {
     const nextFire = (watch.cadence ?? [])
       .map((cadence) => watchNextFireLabel(cadence, now))
@@ -221,8 +241,13 @@ export function watchFacts(watch: NavigationWatchSummary, now: number): string {
     segments.push(`Waiting on ${target}, matching ${watch.output_match ?? ""}`);
   }
   const clockCadence = clockCadenceLabels(watch).join(" · ");
-  if (clockCadence !== "") {
-    segments.push(`Fires ${clockCadence}`);
+  // The "last at" instant below stays keyed to the clock labels alone; this
+  // segment only has to name every cadence the watch actually carries.
+  const cadenceText = [clockCadence, unattributedCadenceLabels(watch).join(" · ")]
+    .filter((part) => part !== "")
+    .join(" · ");
+  if (cadenceText !== "") {
+    segments.push(`Fires ${cadenceText}`);
   }
   if (watch.wildcard_events === true || (watch.events?.length ?? 0) > 0) {
     const waiting = `Waiting on ${eventLabel(watch)}`;
