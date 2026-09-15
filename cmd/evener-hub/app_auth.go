@@ -377,6 +377,13 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. Only the key is threaded into the check below: the flow guard's
+	// empty capture is refused on the destination and the state root it reads,
+	// not on the resolution error.
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	// Asked again inside the lock: the check at the top of this call ran
 	// before the token exchange, which is a browser round trip long, and an
 	// instance mutation holds credMu exclusively while it rewrites
@@ -386,7 +393,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
-		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint); err != nil {
+		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -416,10 +423,17 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// same reason: the sign-out was confirmed for the row the client listed,
 	// and a name another client has re-pointed since belongs to a different
 	// instance.
+	//
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	codex := false
 	removed := false
 	if err := c.credentialWriteExclusive(func() error {
-		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		codex = c.instanceIsCodex(name)
@@ -590,6 +604,12 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	// Both refusals below ask what name authenticates with, and a rename can
 	// change the answer: it holds credMu exclusively while it re-keys
 	// providers.toml and reloads, so only a check inside that lock describes
@@ -626,7 +646,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if !c.nameIsConnectable(name) {
 			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
 		}
-		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.setCredential(name, params.Value)
@@ -648,12 +668,18 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 // exactly as it was.
 func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	// The endpoint check and the clear are one step, the way the set is: the
 	// clear was confirmed for the row the client listed, and a name another
 	// client has re-pointed since must not have its replacement instance's key
 	// removed.
 	if err := c.credentialWrite(func() error {
-		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.clearCredential(name)
@@ -802,6 +828,13 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. Only the key is threaded into the check below: the flow guard's
+	// empty capture is refused on the destination and the state root it reads,
+	// not on the resolution error.
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	// Re-checked under the lock for the same reason LoginComplete re-checks
 	// it: the poll's own exchange is the long step an instance mutation can
 	// land in.
@@ -809,7 +842,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		if err := c.requiresCodex(provider); err != nil {
 			return err
 		}
-		if err := c.verifyFlowEndpoint(provider, flow.EndpointFingerprint); err != nil {
+		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -941,6 +974,22 @@ func (c *hubAuthController) endpointFingerprintFor(name string) string {
 	return destinationFingerprint(c.stateDir, r, inst)
 }
 
+// endpointFingerprintForKey is endpointFingerprintFor over a key the caller
+// already resolved (destinationFingerprintKeyed). The credential writes resolve
+// the key once, before taking credMu, and check their assertion against that
+// key inside the lock: a resolution there can repair the key file (an
+// inter-process lock and a write), and a repair must not run while the
+// credential lock is held - List resolves its listing's key outside the same
+// lock for the same reason. Empty for the same reasons endpointFingerprintFor
+// is, plus a key the hub could not resolve.
+func (c *hubAuthController) endpointFingerprintForKey(name string, key []byte) string {
+	r, inst, ok := c.endpointInstanceFor(name)
+	if !ok {
+		return ""
+	}
+	return destinationFingerprintKeyed(key, r, inst)
+}
+
 // endpointHasDestination reports whether name has a destination this hub must
 // be able to check at all, whether or not it can key a fingerprint for it
 // right now: it resolves to an instance that is not hidden and carries a base
@@ -972,6 +1021,12 @@ func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpa
 // so between its check and this RPC the name can move to an endpoint the user
 // never reviewed - and then the secret would land there.
 //
+// This form resolves the fingerprint key through the same seam List resolves
+// its key with (resolveEndpointFingerprintKey) and delegates to
+// verifyEndpointFingerprintWithKey; the credential writes resolve the key
+// before taking credMu and call that form, so no resolution - and no repair of
+// the key file it can make - runs while that lock is held.
+//
 // An empty assertion is a client that was shown no endpoint. That is nothing to
 // check only while the hub itself has nothing to key with - no state root at
 // all, a bare controller - or can key a fingerprint: a state root that exists
@@ -980,13 +1035,26 @@ func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpa
 // let a concurrent endpoint change receive the credential with no verification
 // at all. There the write fails closed, with a refusal the user can act on.
 func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
+	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr)
+}
+
+// verifyEndpointFingerprintWithKey is verifyEndpointFingerprint over a key the
+// caller resolved before taking its credential lock, with keyErr the reason it
+// has none. The credential writes resolve the key before that lock and call
+// this form, because a resolution here could repair the key file (an
+// inter-process lock and a write) while every listing and credential op waited
+// on credMu. Threading the result in keeps the answer for every case: keyErr is
+// the failed resolution the empty assertion is refused for, and a key the hub
+// could not resolve is the empty current value an assertion is refused against.
+func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
 	if asserted == "" {
-		if _, err := endpointFingerprintKeyState(c.stateDir); err != nil {
+		if keyErr != nil {
 			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
 		}
 		return nil
 	}
-	current := c.endpointFingerprintFor(name)
+	current := c.endpointFingerprintForKey(name, key)
 	// A fingerprint the hub cannot match is a refusal, not a bypass: the client
 	// was shown an endpoint, and a hub that can no longer describe where the
 	// name points cannot say the credential would land there. Landing it anyway
@@ -1022,13 +1090,25 @@ func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) err
 // key now) is refused as before: the hub cannot say the record would land
 // where the flow was started.
 func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.verifyFlowEndpointWithKey(name, started, key)
+}
+
+// verifyFlowEndpointWithKey is verifyFlowEndpoint over a key the caller
+// resolved before taking its credential lock (verifyEndpointFingerprintWithKey
+// states why the resolution must not happen there). The empty capture's refusal
+// reads the destination and the state root rather than the key, so it is
+// untouched; a key the hub could not resolve leaves the empty current value the
+// comparison below refuses, exactly as the resolving wrapper's own resolution
+// produced it.
+func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
 	if started == "" {
 		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
 			return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
 		}
 		return nil
 	}
-	current := c.endpointFingerprintFor(name)
+	current := c.endpointFingerprintForKey(name, key)
 	// As verifyEndpointFingerprint reads it: a flow bound to an endpoint the hub
 	// can no longer describe is one whose record nobody can place, so it is
 	// refused rather than filed somewhere the user never signed in for.
@@ -1072,6 +1152,12 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	if err := c.credentialWrite(func() error {
 		// Asked again inside the lock, because it is the answer at the moment
 		// of the write that matters: a rename holds credMu exclusively while
@@ -1082,7 +1168,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		if err := c.requiresGCPADC(name); err != nil {
 			return err
 		}
-		if err := c.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
 		return c.setCredential(name, value)

@@ -5,6 +5,7 @@ import { threadStartedNotification } from "../protocol/testing/notifications";
 import type { AuthStatusResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
+import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -39,6 +40,9 @@ const LIST_RESPONSE: InstanceListResponse = {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -406,7 +410,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("setApiKey() calls evener/auth/apiKey/set and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     const result = await credentialsStore.getState().setApiKey("work", "sk-secret");
@@ -418,7 +422,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("clearStoredKey() calls evener/auth/apiKey/clear and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     const result = await credentialsStore.getState().clearStoredKey("work");
@@ -429,7 +433,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("logout() calls evener/auth/logout", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -455,7 +459,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("clearStoredKey() forwards the expected endpoint fingerprint when given one", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     await credentialsStore.getState().clearStoredKey("work", "fp-work");
@@ -464,7 +468,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("logout() forwards the expected endpoint fingerprint when given one", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -480,11 +484,11 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
       return { instances: [], availableProviders: [] };
     });
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -509,7 +513,12 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("loginComplete() calls evener/auth/login/complete", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/login/complete", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-1", redirectUrl: "https://redirect" });
+      expect(params).toEqual({
+        provider: "work",
+        flowId: "flow-1",
+        redirectUrl: "https://redirect",
+        originClientId: "test-tab",
+      });
       return {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
@@ -537,7 +546,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("devicePoll() calls evener/auth/device/poll", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-2" });
+      expect(params).toEqual({ provider: "work", flowId: "flow-2", originClientId: "test-tab" });
       return { state: "pending" };
     });
     const result = await credentialsStore.getState().devicePoll("work", "flow-2");
@@ -935,6 +944,82 @@ describe("notification-triggered refetch", () => {
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
     await vi.advanceTimersByTimeAsync(300);
     expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("an echo that names this page is consumed as its own", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The hub echoes the id this page's mutation carried, so the broadcast
+    // names this page as its originator: it is this client's own echo, and it
+    // coalesces with the store's post-save refresh instead of scheduling a
+    // second read on top of it.
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", activeSource: "store", originClientId: "test-tab" },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+
+    // Consumed by identity, not matched window-wide: the marker is gone, so a
+    // second same-provider notification is an unrelated client's change again.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("an echo that names another client leaves this page's marker alone", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // Another client's change names that client, so it is foreign however close
+    // it lands to this page's own mutation: the coalesced read carries a change
+    // this store did not make, so it must not take the self mark - marking it
+    // self would keep the guided flow's invalidation guard from seeing it.
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", activeSource: "store", originClientId: "tab-b" },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    // Anchored after the foreign read so this assertion can only be satisfied
+    // by a read the follow-up itself schedules.
+    const afterForeign = credentialsStore.getState().selfRefresh;
+
+    // The marker survived that foreign notification, so this page's own echo
+    // is still attributed to this page when it arrives without an id (an older
+    // hub). Under the provider-plus-window rule the notification above retired
+    // the marker, and this id-less echo would read as foreign - scheduling the
+    // read foreign-marked, so the self mark below would not move.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(afterForeign);
   });
 
   test("a second same-provider mutation's own echo still carries the self mark", async () => {

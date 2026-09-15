@@ -308,6 +308,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthApiKeySetParams`
@@ -317,6 +318,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthCredentialJsonSetParams`
@@ -326,6 +328,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollParams`
@@ -334,6 +337,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollResponse`
@@ -377,6 +381,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
 | `redirectUrl` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLoginCompleteResponse`
@@ -408,6 +413,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLogoutResponse`
@@ -502,6 +508,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `provider` | `string` | yes |  |
 | `activeSource` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `EvenerDelegateInfo`

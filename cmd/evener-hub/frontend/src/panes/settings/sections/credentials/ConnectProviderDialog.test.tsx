@@ -14,6 +14,7 @@ import type {
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
@@ -130,8 +131,18 @@ test("full-editor repair returns to the created connection and retained credenti
   expect(connected).toHaveBeenCalledWith("team-custom");
   expect(fake.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").map((call) => call.params)).toEqual([
-    { provider: "team-custom", value: "repair-draft", expectedEndpointFingerprint: "fp-fixture" },
-    { provider: "team-custom", value: "repair-draft", expectedEndpointFingerprint: "fp-fixture" },
+    {
+      provider: "team-custom",
+      value: "repair-draft",
+      expectedEndpointFingerprint: "fp-fixture",
+      originClientId: "test-tab",
+    },
+    {
+      provider: "team-custom",
+      value: "repair-draft",
+      expectedEndpointFingerprint: "fp-fixture",
+      originClientId: "test-tab",
+    },
   ]);
 });
 
@@ -330,6 +341,7 @@ test("a rename in full provider settings follows the guided flow back to the ren
     provider: "openai-renamed",
     value: "excursion-draft",
     expectedEndpointFingerprint: "fp-fixture",
+    originClientId: "test-tab",
   });
 });
 
@@ -461,6 +473,7 @@ test("a rename reported while no guided owner is mounted cannot re-point a fresh
     provider: "openai",
     value: "fresh-selection-key",
     expectedEndpointFingerprint: "fp-fixture",
+    originClientId: "test-tab",
   });
 });
 
@@ -600,6 +613,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -706,7 +722,7 @@ describe("ConnectProviderDialog", () => {
     }));
     connectionStore.getState().connect(fake);
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-test-value" });
+      expect(params).toEqual({ provider: "work", value: "sk-test-value", originClientId: "test-tab" });
       saved = true;
       return {
         provider: "work",
@@ -771,6 +787,7 @@ describe("ConnectProviderDialog", () => {
       provider: "work",
       value: "manage-key",
       expectedEndpointFingerprint: "fp-manage-open",
+      originClientId: "test-tab",
     });
   });
 
@@ -831,6 +848,7 @@ describe("ConnectProviderDialog", () => {
         provider: "personal",
         flowId: "redirect-flow",
         redirectUrl: "https://localhost/callback?code=ok",
+        originClientId: "test-tab",
       });
       return {
         status: {
@@ -1076,7 +1094,7 @@ describe("ConnectProviderDialog", () => {
       intervalSeconds: 1,
     }));
     fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "personal", flowId: "device-flow" });
+      expect(params).toEqual({ provider: "personal", flowId: "device-flow", originClientId: "test-tab" });
       return { state: "authorized" };
     });
     fake.on("evener/auth/test", () => ({ provider: "personal", status: "success", message: "ignored" }));
@@ -1363,7 +1381,7 @@ describe("ConnectProviderDialog", () => {
     }));
     connectionStore.getState().connect(fake);
     fake.on("evener/auth/credentialJson/set", (params) => {
-      expect(params).toEqual({ provider: "vertex", value: json });
+      expect(params).toEqual({ provider: "vertex", value: json, originClientId: "test-tab" });
       saved = true;
       return {
         provider: "vertex",

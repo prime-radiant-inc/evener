@@ -10,6 +10,7 @@ import type {
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts } from "../../../../widgets/toast/store";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -27,6 +28,9 @@ async function advanceTime(milliseconds: number): Promise<void> {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -100,7 +104,12 @@ describe("OAuthRedirectDialog", () => {
   test("submitting a redirect URL calls authLoginComplete and, on success, fetches + calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/login/complete", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-1", redirectUrl: "https://redirect?code=1" });
+      expect(params).toEqual({
+        provider: "work",
+        flowId: "flow-1",
+        redirectUrl: "https://redirect?code=1",
+        originClientId: "test-tab",
+      });
       return {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
@@ -326,7 +335,7 @@ describe("DeviceCodeDialog", () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
     fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-2" });
+      expect(params).toEqual({ provider: "work", flowId: "flow-2", originClientId: "test-tab" });
       return { state: "authorized" };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));

@@ -22,6 +22,19 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
   };
 }
 
+/** A row the hub cannot key: an endpoint the user can see and NO
+ * endpointFingerprint at all. The key is deleted rather than left out of the
+ * literal on purpose - the instance() helpers in the neighbouring suites stand
+ * in an `fp-fixture` default, and a row carrying a fingerprint takes the other
+ * arm of draftIdentity, proving nothing about the one this suite is written
+ * for. The absence is asserted in the tests that use it, so a helper that
+ * starts injecting one fails loudly instead of quietly retargeting them. */
+function unkeyable(fields: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
+  const row = instance(fields);
+  delete row.endpointFingerprint;
+  return row;
+}
+
 function noopHandlers() {
   return {
     onTestCredentials: vi.fn(),
@@ -960,6 +973,82 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
     expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
     expect(field("API key environment variable").value).toBe("");
+  });
+
+  // The hub cannot key every row: one whose endpoint it could not fingerprint
+  // serves no endpointFingerprint, and the digest is the only part of the
+  // identity two rows at different destinations differ in - baseUrl, protocol,
+  // surface and the credential fields are what a draft edits, so they are
+  // deliberately not identity on their own (DRAFT_IDENTITY_FIELDS). Built from
+  // name/provider/base/auth alone, then, a same-name replacement at another
+  // endpoint is the SAME identity, and the retained draft - typed against the
+  // endpoint that left - is written onto the replacement. Something the user
+  // can see has to stand in for the digest the hub could not compute.
+  test("an unkeyable same-name replacement at another endpoint does not inherit the draft", async () => {
+    const original = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://original.example/v1" });
+    const replacement = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://replacement.example/v2" });
+    // The premise: neither row serves a fingerprint, so nothing but the visible
+    // endpoint can tell them apart.
+    expect("endpointFingerprint" in original).toBe(false);
+    expect("endpointFingerprint" in replacement).toBe(false);
+
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(original, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "STALE_KEY");
+
+    // A concurrent change puts a different endpoint under the same name. The
+    // draft survives the swap (the reseed is per instance, not per listing), so
+    // the save is where the identity has to be checked.
+    await refreshList(fake, [replacement]);
+    expect(field("Base URL").value).toBe("https://original.example/v1");
+    expect(field("API key environment variable").value).toBe("STALE_KEY");
+
+    await user.click(saveButton());
+    // The stale draft must not reach the replacement through either write path.
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("replaced under the same name"));
+    // ...and the form re-anchors to the endpoint now on screen.
+    expect(field("Base URL").value).toBe("https://replacement.example/v2");
+    expect(field("API key environment variable").value).toBe("");
+  });
+
+  // The other half of the same fallback: a row that is still the one the draft
+  // was seeded from has to save as usual, fingerprint or not. Reading "no
+  // fingerprint" as "not the seeded instance" would turn fingerprinting being
+  // unavailable into an instance that can never be edited from this sheet.
+  test("an unkeyable row whose listing did not move still saves", async () => {
+    const row = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://original.example/v1" });
+    expect("endpointFingerprint" in row).toBe(false);
+
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({
+      instances: [{ ...row, apiKeyEnv: "PORTKEY_KEY" }],
+      availableProviders: [OPENAI],
+    }));
+    connectionStore.getState().connect(fake);
+    renderSheet(row, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "PORTKEY_KEY");
+
+    // The same row re-read: same visible endpoint, still no fingerprint. Its
+    // identity is unchanged, so nothing about the save is.
+    await refreshList(fake, [{ ...row }]);
+    expect(field("Base URL").value).toBe("https://original.example/v1");
+
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY" });
+    await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Reseeded from the instance the save answered with: clean again, showing
+    // what landed rather than a refusal.
+    expect(field("API key environment variable").value).toBe("PORTKEY_KEY");
+    expect(saveButton().disabled).toBe(true);
   });
 
   // The guard that keeps a rename's vanish from closing the sheet is spent by

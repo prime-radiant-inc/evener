@@ -153,7 +153,13 @@ const DRAFT_IDENTITY_FIELDS = ["name", "providerId", "base", "auth", "endpointFi
  * screen instead of writing edits typed for the old instance onto its
  * replacement. */
 function draftIdentity(entry: InstanceEntry): string {
-  return DRAFT_IDENTITY_FIELDS.map((field) => fieldValue(entry, field)).join("\u0000");
+  const fields = DRAFT_IDENTITY_FIELDS.map((field) => fieldValue(entry, field));
+  // A row the hub cannot key serves no fingerprint, and two such rows would
+  // otherwise share an identity: fall back to the endpoint the user can see, so
+  // a same-name replacement at a different destination is still a different
+  // instance even while fingerprinting is unavailable.
+  if (fieldValue(entry, "endpointFingerprint") === "") fields.push(fieldValue(entry, "baseUrl"));
+  return fields.join("\u0000");
 }
 
 /** Whether a rename carried `base` over unchanged. Renaming a curated-shadow

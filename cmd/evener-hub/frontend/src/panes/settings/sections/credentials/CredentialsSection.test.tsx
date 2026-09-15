@@ -12,6 +12,7 @@ import type {
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
@@ -78,6 +79,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -857,7 +861,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -941,7 +945,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     });
     fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "shadowed" });
+      expect(params).toEqual({ provider: "shadowed", originClientId: "test-tab" });
       return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     render(
@@ -978,7 +982,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     });
     fake.on("evener/instance/list", () => ({ instances: [VERTEX], availableProviders: [] }));
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "vertex" });
+      expect(params).toEqual({ provider: "vertex", originClientId: "test-tab" });
       return {
         provider: "vertex",
         supported: true,
@@ -1039,7 +1043,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -1074,7 +1078,11 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     });
     fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "shadowed", expectedEndpointFingerprint: "fp-shadowed" });
+      expect(params).toEqual({
+        provider: "shadowed",
+        expectedEndpointFingerprint: "fp-shadowed",
+        originClientId: "test-tab",
+      });
       return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     render(
@@ -1265,7 +1273,12 @@ describe("credential dialogs against a moving endpoint", () => {
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
     fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret", expectedEndpointFingerprint: "fp-original" });
+      expect(params).toEqual({
+        provider: "work",
+        value: "sk-secret",
+        expectedEndpointFingerprint: "fp-original",
+        originClientId: "test-tab",
+      });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     render(

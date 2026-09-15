@@ -10,6 +10,7 @@ import type {
 } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
@@ -69,6 +70,9 @@ const VERTEX_EXPRESS = provider({
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -803,7 +807,7 @@ describe("ApiKeyDialog", () => {
   test("a non-empty key calls authApiKeySet, refreshes, toasts, and calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
@@ -867,7 +871,12 @@ describe("ApiKeyDialog", () => {
   test("an unchanged destination submits the captured fingerprint", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret", expectedEndpointFingerprint: "fp-original" });
+      expect(params).toEqual({
+        provider: "work",
+        value: "sk-secret",
+        expectedEndpointFingerprint: "fp-original",
+        originClientId: "test-tab",
+      });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
@@ -946,6 +955,7 @@ describe("ApiKeyDialog", () => {
         provider: "work",
         value: "sk-secret-again",
         expectedEndpointFingerprint: "fp-new",
+        originClientId: "test-tab",
       }),
     );
     expect(onSuccess).toHaveBeenCalled();
@@ -1011,7 +1021,7 @@ describe("ApiKeyDialog", () => {
   test("a row with no destination still submits with no assertion", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
@@ -1120,6 +1130,7 @@ describe("ApiKeyDialog", () => {
         provider: "work",
         value: "sk-secret-again",
         expectedEndpointFingerprint: "fp-changed",
+        originClientId: "test-tab",
       }),
     );
     expect(onSuccess).toHaveBeenCalled();
@@ -1223,7 +1234,7 @@ describe("CredentialJsonDialog", () => {
     const fake = connectFakeClient();
     const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
     fake.on("evener/auth/credentialJson/set", (params) => {
-      expect(params).toEqual({ provider: "vertex", value: json });
+      expect(params).toEqual({ provider: "vertex", value: json, originClientId: "test-tab" });
       return { provider: "vertex", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));

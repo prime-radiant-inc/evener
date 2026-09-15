@@ -60,23 +60,27 @@ export interface AttentionSummary {
 export interface AuthApiKeyClearParams {
   provider: string;
   expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
   expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
   expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollParams {
   provider: string;
   flowId: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollResponse {
@@ -105,6 +109,7 @@ export interface AuthLoginCompleteParams {
   provider: string;
   flowId: string;
   redirectUrl: string;
+  originClientId?: string;
 }
 
 export interface AuthLoginCompleteResponse {
@@ -124,6 +129,7 @@ export interface AuthLoginStartResponse {
 export interface AuthLogoutParams {
   provider: string;
   expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthLogoutResponse {
@@ -217,6 +223,7 @@ export interface EmptyResponse {
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  originClientId?: string;
 }
 
 export interface EvenerDelegateInfo {

@@ -37,6 +37,7 @@ import type {
   ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
+import { ownClientId } from "./mutationClientIdentity";
 
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
@@ -241,6 +242,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       const result = await client.request("evener/auth/apiKey/set", {
         provider,
         value,
+        // The hub echoes this into the evener/auth/updated broadcast, so this page
+        // attributes its own echo by identity rather than provider plus timing.
+        originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
       // The store owns the post-mutation listing refresh: the caller that
@@ -266,6 +270,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       const result = await client.request("evener/auth/credentialJson/set", {
         provider,
         value,
+        // The hub echoes this into the evener/auth/updated broadcast, so this page
+        // attributes its own echo by identity rather than provider plus timing.
+        originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
       completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
@@ -283,6 +290,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     try {
       const result = await client.request("evener/auth/apiKey/clear", {
         provider,
+        // The hub echoes this into the evener/auth/updated broadcast, so this page
+        // attributes its own echo by identity rather than provider plus timing.
+        originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
       completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
@@ -300,6 +310,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     try {
       const result = await client.request("evener/auth/logout", {
         provider,
+        // The hub echoes this into the evener/auth/updated broadcast, so this page
+        // attributes its own echo by identity rather than provider plus timing.
+        originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
       completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
@@ -320,7 +333,13 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
-      const result = await client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
+      // The origin id rides along so the hub's echo names this page as its originator.
+      const result = await client.request("evener/auth/login/complete", {
+        provider,
+        flowId,
+        redirectUrl,
+        originClientId: ownClientId(),
+      });
       completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
       return result;
     } catch (err) {
@@ -339,7 +358,11 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
-      const resp = await client.request("evener/auth/device/poll", { provider, flowId });
+      const resp = await client.request("evener/auth/device/poll", {
+        provider,
+        flowId,
+        originClientId: ownClientId(),
+      });
       // Only an authorized poll broadcasts evener/auth/updated; a routine
       // pending/expired tick must not keep the marker armed, or a poll loop
       // would silence unrelated same-provider changes tick after tick. An
@@ -517,29 +540,28 @@ function completeLocalAuthMutation(provider: string, generation: number): void {
 // stamp - the mutation's issue time, or the RPC response that re-stamped it -
 // older than the window) counts as no marker at all and is dropped whole.
 //
-// The correlation is provider + the marker's latest stamp (the issue, then
-// the RPC response once it lands - see completeLocalAuthMutation), and that is
-// as exact as the wire allows: evener/auth/updated carries only {provider,
-// activeSource} (types.gen.ts), with no originator id - the hub's
-// notifyAuthUpdated broadcasts to every client alike (app_rpc.go). A corner
-// remains: another client's same-provider change arriving inside the window is
-// read as this client's own echo. It is deliberately not resolved by treating
-// same-provider notifications as foreign, which would make the originator's
-// own echo look foreign and re-invalidate a successful guided save (the
-// round-8 defect); narrowing the window instead would miss the echo that
-// arrives late. Exact attribution needs an origin id on the auth mutation
-// RPCs, echoed back in the broadcast - a wire change, not a frontend one. The
-// residual is bounded: a matched notification still re-reads the listing
-// (round 20), so only the guided flow's invalidation is skipped, and only for
-// a same-provider change landing within two seconds of this client's own
-// mutation's latest stamp - re-stamping on the response widens that blind spot
-// by the response's own latency, the cost of not misreading a slow hub's late
-// echo as foreign.
-function consumeOwnAuthEcho(provider: string | undefined): boolean {
+// The broadcast carries the id the originating mutation sent, so an echo is
+// attributed by identity first: a notification whose originClientId is this
+// page's own is its echo, and one naming a different client is foreign however
+// close in time. That retires the old same-provider corner, where another
+// client's change inside the window was read as this client's own echo. The
+// provider-plus-latest-stamp rule stays for a notification with no id - an
+// older build, or a mutation made from the TUI - where it is still as exact as
+// that wire allows, and where the residual stays bounded the way it always
+// was: a matched notification still re-reads the listing (round 20), so only
+// the guided flow's invalidation is skipped, and only within two seconds of
+// this client's own mutation's latest stamp.
+function consumeOwnAuthEcho(provider: string | undefined, originClientId: string | undefined): boolean {
   if (provider === undefined) return false;
   const marker = localAuthMutations.get(provider);
   if (marker === undefined) return false;
-  if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
+  const echoedId = originClientId ?? "";
+  if (echoedId !== "") {
+    // The hub said whose change this is: only this page's own echo consumes one
+    // of its markers, so a foreign change no longer retires the marker of a
+    // mutation whose echo is still in flight.
+    if (echoedId !== ownClientId()) return false;
+  } else if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
     localAuthMutations.delete(provider); // stale: no marker, no echo of ours left
     return false;
   }
@@ -587,7 +609,7 @@ function handleNotification(n: AnyNotification): void {
   // refresh has already run - without this the foreign change would stay
   // invisible until something else refetched. The self mark keeps the guided
   // flow from invalidating on the coalesced read while the listing moves.
-  scheduleRefetch(consumeOwnAuthEcho(n.params.provider));
+  scheduleRefetch(consumeOwnAuthEcho(n.params.provider, n.params.originClientId));
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {

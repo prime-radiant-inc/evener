@@ -480,6 +480,15 @@ func fingerprintKeyDiagnostic(keyErr error) string {
 	return fmt.Sprintf("%s: %v (endpoint fingerprints are unavailable until it can be read or written)", endpointFingerprintKeyFile, keyErr)
 }
 
+// endpointFingerprintKeyModeAccepted reports whether a key file's mode keeps the
+// key to its owner. The hub writes 0600, but a stricter mode is not corruption:
+// an operator who tightens the file to 0400 (or narrows it to 0700) has made it
+// no less secret, and refusing it would repair the file - rotating the key and
+// invalidating every endpoint fingerprint clients already hold.
+func endpointFingerprintKeyModeAccepted(perm os.FileMode) bool {
+	return perm&0o077 == 0 && perm&0o400 != 0
+}
+
 // readEndpointFingerprintKey returns the key at path, refusing a file this hub
 // must not treat as its own secret. The fingerprints' whole guarantee is that
 // only a holder of the key can recompute them (see endpointFingerprint), so a
@@ -506,8 +515,8 @@ func readEndpointFingerprintKey(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	if perm, judged := endpointFingerprintKeyMode(info); judged && perm != 0o600 {
-		return nil, fmt.Errorf("%s is %04o, want 0600", path, perm)
+	if perm, judged := endpointFingerprintKeyMode(info); judged && !endpointFingerprintKeyModeAccepted(perm) {
+		return nil, fmt.Errorf("%s is %04o, want an owner-only mode with owner read set (0600 or stricter)", path, perm)
 	}
 	if uid, known := fileOwnerUID(info); known && uid != endpointFingerprintKeyOwner() {
 		return nil, fmt.Errorf("%s is owned by uid %d, not by uid %d", path, uid, endpointFingerprintKeyOwner())
@@ -1193,6 +1202,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.Name))
 	}
 
+	// The fingerprint key is resolved once, before either lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and the removal below holds mu and credMu exclusively, so a repair there
+	// would hold every listing and credential op behind it. One key for the
+	// whole removal, so the assertion under the locks is checked against the
+	// key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.authStateDir())
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// The lookup names what this call deletes - the authored entry, the
@@ -1240,7 +1257,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// under it, or an edit to its base_url) is refused rather than having its
 	// replacement instance removed. Asked here, under the exclusive lock, so it
 	// describes the instance the cleanup below acts on.
-	if err := c.auth.verifyEndpointFingerprint(name, params.ExpectedEndpointFingerprint); err != nil {
+	if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 		return err
 	}
 

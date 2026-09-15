@@ -2284,6 +2284,12 @@ type AuthLoginCompleteParams struct {
 	Provider    string `json:"provider"`
 	FlowID      string `json:"flowId"`
 	RedirectURL string `json:"redirectUrl"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this login completion triggers, so the
+	// originator can recognize its own echo by id instead of by provider plus
+	// timing. Optional: empty (an older build, the TUI) leaves the broadcast
+	// without an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 type AuthLoginCompleteResponse struct {
@@ -2300,6 +2306,12 @@ type AuthLogoutParams struct {
 	// instance. Empty asserts nothing, which is what a client that never saw
 	// an endpoint sends.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this logout triggers, so the originator
+	// can recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 type AuthLogoutResponse struct {
@@ -2590,13 +2602,22 @@ type EvenerJobParams struct {
 }
 
 // EvenerAuthUpdatedParams is the params shape for the evener/auth/updated
-// notification. Both fields are absent when the broadcast follows a
-// provider-instance mutation, which no single provider/activeSource pair
-// honestly summarizes; clients treat this notification as payload-agnostic
-// ("credentials or instances changed, refetch") either way.
+// notification. Provider and ActiveSource are absent when the broadcast
+// follows a provider-instance mutation, which no single provider/activeSource
+// pair honestly summarizes; clients treat this notification as
+// payload-agnostic ("credentials or instances changed, refetch") either way.
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+	// OriginClientId is the echoed OriginClientId of the auth mutation that
+	// caused this broadcast - the identity of the client whose change it
+	// announces, so that client can recognize its own echo by id instead of
+	// by provider plus timing. Optional: a mutation from a client that sends
+	// none (an older build, the TUI) leaves the broadcast without an id, and
+	// a consumer matching a broadcast against its own mutation then falls
+	// back to provider-plus-timing correlation. Absent for a
+	// provider-instance broadcast, which echoes no auth mutation.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // NavigationTargetKind identifies one exact invalidation target variant.
@@ -2828,6 +2849,12 @@ type AuthApiKeySetParams struct {
 	// Empty asserts nothing, which is what a client that never saw an endpoint
 	// sends.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this write triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
@@ -2839,6 +2866,12 @@ type AuthApiKeyClearParams struct {
 	// listed, so a name another client has re-pointed since must not have its
 	// replacement instance's key removed. Empty asserts nothing.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this clear triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
@@ -2850,6 +2883,12 @@ type AuthCredentialJsonSetParams struct {
 	// ExpectedEndpointFingerprint is the endpoint this client showed the user
 	// for Provider, checked the same way as AuthApiKeySetParams's.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this write triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthDeviceStartParams is the params for evener/auth/device/start.
@@ -2873,6 +2912,12 @@ type AuthDeviceStartResponse struct {
 type AuthDevicePollParams struct {
 	Provider string `json:"provider"`
 	FlowID   string `json:"flowId"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast an authorized poll triggers, so the
+	// originator can recognize its own echo by id instead of by provider plus
+	// timing. Optional: empty (an older build, the TUI) leaves the broadcast
+	// without an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthDevicePollResponse reports one poll attempt. State is "pending",
