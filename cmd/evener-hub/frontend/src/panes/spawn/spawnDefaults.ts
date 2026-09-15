@@ -117,6 +117,14 @@ export interface SaveDefaultsInput {
   // Whether the chosen harness uses evener models (kind === "evener"). Gates
   // whether the model field is persisted at all (floor §1.9, spawn.js:92-98).
   harnessUsesEvenerModels: boolean;
+  // Whether this submit targets a remote source. A remote launch's cwd and
+  // model belong to the SELECTED HOST, not this controller, so they must not be
+  // written to the global scalar defaults a later LOCAL spawn consults: the
+  // remote cwd would default the next local Spawn to a path that usually does
+  // not exist here, and a host-only model would default the next local launch
+  // to a model this hub may not serve (Component 06b review, round seven). The
+  // per-project blob keyed by that cwd is still written.
+  remoteLaunch?: boolean;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -142,8 +150,13 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   else removeRaw(key);
 
-  if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
-  if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  // Global scalars are controller-wide defaults; a remote launch must not
+  // rewrite them (round seven). The per-project blob above stays keyed by the
+  // submitted cwd, so the remote project's own layer is still remembered.
+  if (!input.remoteLaunch) {
+    if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
+    if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  }
 }
 
 export type ModelValidity = "malformed" | "stale" | "unknown" | "valid";

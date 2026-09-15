@@ -5738,3 +5738,150 @@ test("a remote host does not pre-validate /reasoning-effort against the controll
   expect(params.input).toEqual([]);
   expect(screen.queryByText(/unknown value/)).toBeNull();
 });
+
+// --- remote target: model and cwd ownership (Component 06b, round seven) -----
+
+// The uncredentialed-default fallback reads THIS controller's model/list and
+// installs models[0] when launch/resolve names a default whose provider is not
+// launchable here. A remote target resolves its own default model from its own
+// host's credentials and catalog, so injecting the controller's pick would ride
+// thread/start and stop the selected host from resolving its own default.
+test("a remote host does not inherit the controller's uncredentialed-default fallback model", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" }, // openai is not launchable on THIS controller
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-fallback");
+  renderSpawn(fake);
+  // Select the remote host before the fallback's CATALOG_SETTLE_MS window can
+  // elapse, so this pins the remote-at-mount path.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  // Outlast the settle window: a still-armed fallback would fire in here.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  expect(modelTrigger().textContent).toContain("(default)");
+  expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // No controller-derived model is forwarded; the host resolves its own default.
+  expect(params.model).toBeUndefined();
+  expect(params.modelProvider).toBeUndefined();
+});
+
+// The same defect from the other direction: a fallback installed while the
+// target was local must be retired when the person switches to a remote host.
+// Only a still-fallback-derived value is cleared - a person's own pick is not.
+test("a controller-catalog fallback model is retired when the target becomes remote", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-fallback-flip");
+  renderSpawn(fake);
+  await settled();
+
+  // Local target: the fallback installs the controller's first launchable model.
+  await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
+
+  // Switching to a remote host retires it: it is the controller's model, not
+  // the selected host's.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
+  expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBeUndefined();
+});
+
+// /model takes RAW user text, unlike every other splitModelId caller (which
+// splits a provider/model catalog id that always contains a slash). "foo"
+// splits to provider "foo" with an empty model, which the selected host ignores
+// (its own model field stays empty) - the requested model was silently dropped.
+// It is refused pre-launch with the same unknown-value message the local path
+// uses.
+test("a remote /model value without a provider is refused before launch", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-bare-model");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "foo"/)).toBeTruthy());
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// A remote launch's cwd and model belong to the SELECTED HOST, not this
+// controller, so they must not be written to the global scalar defaults a later
+// LOCAL spawn reads - the remote cwd would default the next local Spawn to a
+// path that usually does not exist here.
+test("a remote launch does not persist its cwd as the controller's global working directory", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/srv/app");
+  renderSpawn(fake);
+  await settled();
+
+  // A model plus a cwd: both are host-scoped on a remote submit.
+  await act(async () => {
+    setDraftField(completionDraft("/srv/app"), "model", "openai/gpt-5");
+  });
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.cwd).toBe("/srv/app");
+  // The controller's global defaults a later LOCAL spawn consults are untouched.
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBeNull();
+});
