@@ -1910,7 +1910,16 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	if maxResults <= 0 {
 		maxResults = 100
 	}
-	res, err := e.ExecCommand(ctx, rg+" "+ShellEscapeArgs(args...), 10_000, e.RootDir, nil)
+	// ExecArgv, not ExecCommand: ripgrep gets a real argument vector, so no
+	// shell ever parses the pattern, directory, or glob filter. The old
+	// ExecCommand string rendered each token with shellquote.Literal (POSIX
+	// single quoting), but on Windows ExecCommand runs the line through
+	// cmd.exe, which treats a single quote as ordinary text and offers no
+	// reliable way to neutralize '&' or '%'. A pattern like "foo&whoami" or
+	// "%VAR%" therefore stayed live there. Portable and shell-free beats
+	// platform-specific quoting: with argv in hand there is nothing to
+	// escape on any platform.
+	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
 		// Best-effort cap: keep first maxResults lines.
 		lines := strings.Split(res.Stdout, "\n")
