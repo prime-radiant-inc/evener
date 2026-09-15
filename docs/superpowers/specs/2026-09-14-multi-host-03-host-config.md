@@ -24,7 +24,9 @@ not open connections, does not spawn SSH, and does not implement a source.
   remote hosts, because component 06's manifest caps `sources` at 64 including
   the `local` entry (`cmd/evener-hub/navigation_projection.go`). One host over
   the cap fails navigation for the entire hub, not just for the extra host, so
-  it is validated at load time.
+  it is validated at load time. (Implementation status: the shipped
+  `validateHostConfigs` builds a throwaway `hostreg.Registry` and has no count
+  check yet; the limit is the implementing PR's requirement.)
 - An in-memory `hostreg.Registry` built from the validated list, with add-time
   cycle rejection (duplicates/self-edges; see §"Source registration hook" and
   "Open questions" for the multi-hop deferral).

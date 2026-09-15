@@ -16,9 +16,13 @@ over an SSH channel with no additionally exposed port.
   other `evener hub` subcommands) that:
   1. resolves the hub's loopback address: `--addr host:port` when given,
      otherwise the host's own `hub.toml addr`, otherwise `127.0.0.1:9180`. A
-     wildcard bind address (`0.0.0.0`, `::`, or an empty host) is rewritten to
-     `127.0.0.1:<port>`, since a client running on the hub host always reaches
-     the hub over loopback even when the hub advertises a wildcard;
+     wildcard bind address is rewritten to loopback — an empty host, `0.0.0.0`,
+     and `localhost` become `127.0.0.1:<port>`, and the IPv6 wildcard `::`
+     becomes `::1:<port>` (a hub bound IPv6-only is not listening on IPv4, so
+     forcing the family would fail the dial). A client running on the hub host
+     always reaches the hub over loopback even when the hub advertises a
+     wildcard; `localhost` is rewritten to the literal `127.0.0.1` so a poisoned
+     resolver cannot aim the token-carrying dial off-host.
   2. reads the capability token from the host state root
      (`<stateRoot>/auth-token` — `hubedge.TokenFileName`; trimmed), taking the
      state root from the same `hub.toml` (or `--config path`) the hub itself
