@@ -1348,9 +1348,10 @@ describe("ActivityPanel", () => {
   });
 
   // The panel body owns the session's entity map (the same useEntityView the
-  // transcript uses) and hands it down the tree, so a delegate row's detail
-  // strip renders its id as a card trigger. The strip lives in the session
-  // chrome, outside the transcript subtree, so nothing else supplies the map.
+  // transcript uses) and republishes it to the tree through the entity-views
+  // context, so a delegate row's detail strip renders its id as a card
+  // trigger. The strip lives in the session chrome, outside the transcript
+  // subtree, so nothing else supplies the map.
   test("a delegate row's detail strip resolves its id through the session's entity map", async () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: activityTree() }));
