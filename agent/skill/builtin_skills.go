@@ -325,6 +325,11 @@ func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir str
 		if err != nil || now.Sub(info.ModTime()) < staleRetainedMaxAge {
 			continue
 		}
+		// Only a directory this user owns, with no group or other access, is ours
+		// to remove: the name is predictable enough for someone else to create.
+		if !cacheDirOwnedByCurrentUser(info) || !cacheDirHasPrivatePermissions(info) {
+			continue
+		}
 		path := filepath.Join(tmpBase, entry.Name())
 		if path == liveBase || (liveDir != "" && (path == filepath.Dir(liveDir) || path == liveDir)) {
 			// Never remove this process's own live copy.
@@ -334,15 +339,7 @@ func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir str
 		if !ok {
 			continue
 		}
-		// Release before removing: on Windows an open handle keeps a directory
-		// entry alive even with FILE_SHARE_DELETE, so holding them would make the
-		// base impossible to delete. A fallback base belongs to one process, and
-		// that owner is skipped above, so nothing legitimate can lease it in the
-		// gap between the release and the removal.
-		for _, lease := range leases {
-			_ = lease.Release()
-		}
-		_ = os.RemoveAll(path)
+		removeFallbackBase(path, leases)
 	}
 }
 
