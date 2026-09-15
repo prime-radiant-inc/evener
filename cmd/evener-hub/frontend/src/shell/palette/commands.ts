@@ -602,7 +602,14 @@ export function buildCommands(): Command[] {
       capability: "sharedNotes",
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
-        if (ctx.sessionRef) topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
+        if (!ctx.sessionRef) return;
+        // The notes bar lives inside the session pane: with a details or
+        // tasks pane focused, that pane may not even be mounted, and a
+        // notes-state change alone would look like a no-op. Focus (or open)
+        // the session pane first; the focus request waits for the panel to
+        // mount and take it, so a freshly opened pane still lands focus.
+        workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
       },
     },
     {
