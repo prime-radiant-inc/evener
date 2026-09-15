@@ -160,6 +160,13 @@ func (h *ProviderRegistry) Reload() error {
 	// instance a dead one's inventory, which is the same staleness the
 	// fetch tokens refuse; only the identity check cannot see it.
 	recreated := h.bumpNewIncarnations(r)
+	// A recreated name keeps no cached inventory at all: the snapshot a
+	// failed reload's fallback recorded for that name belongs to the
+	// incarnation the file no longer has, and leaving it here would let a
+	// later recovery hand it to whatever instance takes the name next.
+	for instance := range recreated {
+		delete(h.lastGoodLive, instance)
+	}
 	carryLive(old, r, recreated, oldIDs, newIDs)
 	// The fallback between a failure and its fix knew none of the
 	// explicit instances: re-apply the last-good snapshot for every
