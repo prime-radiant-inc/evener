@@ -24,6 +24,13 @@ func TestRemoteHubProbeAgainstRealHub(t *testing.T) {
 	// evener/instance/list when it has one, and the probe reads that surface.
 	server, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
 		ProvidersConfigPath: filepath.Join(t.TempDir(), "providers.toml"),
+		// LiveModels must be set: with it nil NewWebServer fills it with
+		// fetchLiveModels, which loads the ambient provider configuration and
+		// can issue live provider requests, making the probe's model/list read
+		// non-deterministic and network-dependent. The stub keeps it offline.
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			return []appwire.ModelDescriptor{{Provider: "fixture", Model: "hermetic"}}
+		},
 	})
 	t.Cleanup(server.Close)
 
@@ -44,5 +51,11 @@ func TestRemoteHubProbeAgainstRealHub(t *testing.T) {
 	}
 	if caps.HubSourceID != "local" {
 		t.Fatalf("HubSourceID = %q, want local", caps.HubSourceID)
+	}
+	// The deterministic stub served model/list: if the probe had fallen through
+	// to fetchLiveModels, the ambient environment's models (or none) would be
+	// here instead of the fixture's.
+	if len(caps.Models.Data) != 1 || caps.Models.Data[0].Model != "hermetic" {
+		t.Fatalf("Models = %+v, want the fixture's single hermetic model", caps.Models.Data)
 	}
 }

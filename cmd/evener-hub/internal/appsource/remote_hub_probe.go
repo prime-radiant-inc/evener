@@ -2,6 +2,9 @@ package appsource
 
 import (
 	"context"
+	"errors"
+	"maps"
+	"slices"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -44,8 +47,12 @@ type HostFacts struct {
 	Features        appwire.FeatureSet
 }
 
-// HostFactsFunc returns the preflight facts for a remote host.
-type HostFactsFunc func(ctx context.Context, host string) (HostFacts, error)
+// HostFactsFunc returns the preflight facts for a remote host's AppWire
+// connection. client is the exact generation HostCapabilities resolved and ran
+// its wire reads on, so an implementation must answer from that same generation
+// (or report that it changed) instead of racing a component-04 reconnect and
+// mixing two connections' worth of state into one snapshot.
+type HostFactsFunc func(ctx context.Context, host string, client *appwire.Client) (HostFacts, error)
 
 // remoteHubProbe is one successful probe cached against the client it ran on.
 // Keeping the client pointer lets HostCapabilities re-probe automatically when
@@ -102,13 +109,22 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		return HostCapabilities{}, err
 	}
 	if err := s.callOn(ctx, client, appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &caps.Instances); err != nil {
-		return HostCapabilities{}, err
+		// evener/instance/list is registered only when the hub has a providers
+		// config (no-user-layer mode registers no instance surface). A hub in
+		// that supported configuration is healthy but answers
+		// CodeMethodNotFound; that is not a probe failure, so leave
+		// caps.Instances empty and keep collecting the rest of the snapshot.
+		// Every other failure still aborts.
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
+			return HostCapabilities{}, err
+		}
 	}
 
 	// No facts seam means no preflight was wired; the preflight-owned fields
 	// stay zero-valued rather than being guessed from the wire.
 	if factsFn != nil {
-		facts, err := factsFn(ctx, s.id)
+		facts, err := factsFn(ctx, s.id, client)
 		if err != nil {
 			return HostCapabilities{}, s.mapCallError(err)
 		}
@@ -122,9 +138,9 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	caps.Roots = append([]string(nil), s.roots...)
 
 	s.probeMu.Lock()
-	s.probe = &remoteHubProbe{client: client, caps: caps}
+	s.probe = &remoteHubProbe{client: client, caps: caps.clone()}
 	s.probeMu.Unlock()
-	return caps, nil
+	return caps.clone(), nil
 }
 
 // cachedCapabilities returns the probe cached against client, if any. The
@@ -134,7 +150,85 @@ func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabi
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	if s.probe != nil && s.probe.client == client {
-		return s.probe.caps, true
+		return s.probe.caps.clone(), true
 	}
 	return HostCapabilities{}, false
+}
+
+// clone returns a deep copy of the snapshot: every slice and map a caller could
+// mutate is duplicated, so neither a cache hit nor a freshly published probe
+// shares a backing array with the stored value. Without it a caller editing a
+// returned Models.Data entry or Roots element in place would corrupt the cached
+// probe for every later caller.
+func (c HostCapabilities) clone() HostCapabilities {
+	out := c
+	out.LaunchGlobal = cloneLaunchConfigLayer(c.LaunchGlobal)
+	out.Models = cloneModelListResponse(c.Models)
+	out.Plugins = appwire.PluginListResponse{Plugins: slices.Clone(c.Plugins.Plugins)}
+	out.Auth = appwire.AuthListResponse{Providers: cloneAuthStatusResponses(c.Auth.Providers)}
+	out.Instances = cloneInstanceListResponse(c.Instances)
+	out.Roots = slices.Clone(c.Roots)
+	return out
+}
+
+func cloneLaunchConfigLayer(l appwire.LaunchConfigLayer) appwire.LaunchConfigLayer {
+	out := l
+	out.SkillsDirs = slices.Clone(l.SkillsDirs)
+	out.PluginDirs = slices.Clone(l.PluginDirs)
+	out.MCPConfigs = slices.Clone(l.MCPConfigs)
+	out.SystemPromptAppend = slices.Clone(l.SystemPromptAppend)
+	out.ModelFallbacks = slices.Clone(l.ModelFallbacks)
+	if l.EnabledPlugins != nil {
+		enabled := slices.Clone(*l.EnabledPlugins)
+		out.EnabledPlugins = &enabled
+	}
+	out.MCPs = slices.Clone(l.MCPs)
+	for i := range out.MCPs {
+		out.MCPs[i].Args = slices.Clone(out.MCPs[i].Args)
+	}
+	out.Env = maps.Clone(l.Env)
+	return out
+}
+
+func cloneModelListResponse(m appwire.ModelListResponse) appwire.ModelListResponse {
+	out := m
+	out.Data = cloneModelDescriptors(m.Data)
+	out.Diagnostics = slices.Clone(m.Diagnostics)
+	out.Recent = cloneModelDescriptors(m.Recent)
+	return out
+}
+
+func cloneModelDescriptors(in []appwire.ModelDescriptor) []appwire.ModelDescriptor {
+	out := slices.Clone(in)
+	for i := range out {
+		out[i].ReasoningEffortLevels = slices.Clone(out[i].ReasoningEffortLevels)
+		out[i].Warnings = slices.Clone(out[i].Warnings)
+	}
+	return out
+}
+
+func cloneAuthStatusResponses(in []appwire.AuthStatusResponse) []appwire.AuthStatusResponse {
+	out := slices.Clone(in)
+	for i := range out {
+		out[i].AuthModes = slices.Clone(out[i].AuthModes)
+	}
+	return out
+}
+
+func cloneInstanceListResponse(in appwire.InstanceListResponse) appwire.InstanceListResponse {
+	out := in
+	out.Instances = slices.Clone(in.Instances)
+	for i := range out.Instances {
+		out.Instances[i].AuthModes = slices.Clone(out.Instances[i].AuthModes)
+		out.Instances[i].Warnings = slices.Clone(out.Instances[i].Warnings)
+		out.Instances[i].Vars = maps.Clone(out.Instances[i].Vars)
+	}
+	out.AvailableProviders = slices.Clone(in.AvailableProviders)
+	for i := range out.AvailableProviders {
+		out.AvailableProviders[i].VarsEnv = slices.Clone(out.AvailableProviders[i].VarsEnv)
+		out.AvailableProviders[i].Vars = maps.Clone(out.AvailableProviders[i].Vars)
+		out.AvailableProviders[i].APIKeyEnv = slices.Clone(out.AvailableProviders[i].APIKeyEnv)
+	}
+	out.Diagnostics = slices.Clone(in.Diagnostics)
+	return out
 }
