@@ -25,7 +25,10 @@ export interface GitLocation {
   originUrl: string;
 }
 
-const EMPTY: GitLocation = { branch: "", originUrl: "" };
+// Frozen, because this one object is returned by reference from every
+// empty/error path: a caller that mutated it would corrupt every later "nothing
+// to show" result in the app.
+const EMPTY: GitLocation = Object.freeze({ branch: "", originUrl: "" });
 
 async function requestGitHead(client: AppwireClientLike, cwd: string, includeOrigin: boolean): Promise<GitLocation> {
   if (cwd.trim() === "") return EMPTY;

@@ -91,15 +91,17 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
             href={remote.repoUrl}
             target="_blank"
             rel="noopener noreferrer"
-            title={`Open ${remote.owner}/${remote.repo} on ${FORGE_LABELS[remote.forge]}`}
+            // The full reference lives on the anchor, not on the span inside it:
+            // a title on the span would shadow this one for any hover over the
+            // visible text, which is most of the link, and the tooltip would
+            // then only restate what is already on screen. This way the hover
+            // says both what the link does and the whole reference, which
+            // matters when the line is narrow enough to ellipsize it.
+            title={`Open ${remote.owner}/${remote.repo}#${branch} on ${FORGE_LABELS[remote.forge]}`}
             data-testid="composer-repo-link"
           >
             <ForgeMark forge={remote.forge} />
-            <span
-              className={CLASS.ref}
-              data-testid="composer-repo-ref"
-              title={`${remote.owner}/${remote.repo}#${branch}`}
-            >
+            <span className={CLASS.ref} data-testid="composer-repo-ref">
               {`${remote.owner}/${remote.repo}#${branch}`}
             </span>
           </a>

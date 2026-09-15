@@ -47,6 +47,11 @@ export const FORGE_LABELS: Readonly<Record<Forge, string>> = {
 // every real git remote in this form has a user (usually `git`).
 const SCP_LIKE = /^[^/@\s]+@([^/:\s]+):(.+)$/;
 
+// A URL scheme at the very start (RFC 3986: ALPHA *( ALPHA / DIGIT / "+" / "-"
+// / "." ) ":"). Used only to reject a scheme with no authority; a scp-like
+// `user@host:` prefix cannot match, since '@' is not a scheme character.
+const OPAQUE_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
+
 function stripGitSuffix(segment: string): string {
   return segment.endsWith(".git") ? segment.slice(0, -".git".length) : segment;
 }
@@ -84,6 +89,11 @@ export function parseRepoRemote(origin: string): RepoRemote | null {
   const cut = trimmed.search(/[?#]/);
   const clean = cut >= 0 ? trimmed.slice(0, cut) : trimmed;
   if (clean === "") return null;
+
+  // A scheme with no authority (`https:cred@host/path`) is the shape the hub
+  // rejects outright: neither side can tell which part of it is a credential.
+  // Reject it here too rather than reconstruct a link from it.
+  if (!clean.includes("://") && OPAQUE_SCHEME.test(clean)) return null;
 
   const split = splitHostAndPath(clean);
   if (!split) return null;
