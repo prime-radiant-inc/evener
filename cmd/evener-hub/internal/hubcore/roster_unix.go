@@ -27,8 +27,12 @@ func processAlive(pid int) bool {
 // processIdentity asks the same verifier force-stop binds to
 // (daemonprocess.Controller): process generation, owner, a `serve` argv, a
 // start no later than the rendezvous start time, and possession of the
-// session's API log. An entry a daemon wrote without the fields that
-// verification needs cannot be checked, and says so.
+// session's API log. Only positive evidence counts against the entry: the
+// process is gone (ErrExited) or is verifiably another process
+// (ErrNotDaemon). A verification that could not run or could not vouch - a
+// pidfd that will not open, a /proc read racing a closing descriptor on a
+// busy daemon, an entry a daemon wrote without the fields it needs - says
+// unknown, and liveness alone decides as it always has.
 func processIdentity(entry rendezvous.Entry) ProcessIdentity {
 	target := daemonprocess.Target{
 		PID:       entry.PID,
@@ -41,7 +45,10 @@ func processIdentity(entry rendezvous.Entry) ProcessIdentity {
 	}
 	process, err := daemonprocess.NewController().Open(target)
 	if err != nil {
-		return ProcessNotOwner
+		if errors.Is(err, daemonprocess.ErrExited) || errors.Is(err, daemonprocess.ErrNotDaemon) {
+			return ProcessNotOwner
+		}
+		return ProcessIdentityUnknown
 	}
 	_ = process.Close()
 	return ProcessOwnsEntry

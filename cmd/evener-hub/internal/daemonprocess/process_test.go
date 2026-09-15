@@ -206,3 +206,61 @@ func TestInspectionFailureAfterExitIsIdempotent(t *testing.T) {
 		t.Fatalf("Open did not report confirmed exit: %v", err)
 	}
 }
+
+// Refusals split by what they prove. A process whose owner, command or start
+// time is not the daemon's, or whose generation changed under inspection, is
+// positively another process: ErrNotDaemon. A refusal that only means the
+// inspection could not vouch for it (no generation read, no start time, the
+// log descriptor not seen, an inspection error) carries no such claim.
+func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
+	positive := []struct {
+		name   string
+		change func(*identity)
+	}{
+		{"wrong owner", func(v *identity) { v.uid++ }},
+		{"wrong command", func(v *identity) { v.argv = []string{"evener", "hub", "serve"} }},
+		{"missing argv", func(v *identity) { v.argv = nil }},
+		{"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }},
+	}
+	for _, tt := range positive {
+		t.Run("positive/"+tt.name, func(t *testing.T) {
+			k := &kernelProcess{facts: validIdentity()}
+			tt.change(&k.facts)
+			_, err := testController(k).Open(validTarget())
+			if !errors.Is(err, ErrNotDaemon) {
+				t.Fatalf("err = %v, want ErrNotDaemon", err)
+			}
+		})
+	}
+	indeterminate := []struct {
+		name   string
+		change func(*kernelProcess)
+	}{
+		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }},
+		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }},
+		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }},
+		{"inspection error", func(k *kernelProcess) { k.inspectErr = errors.New("fdinfo vanished") }},
+	}
+	for _, tt := range indeterminate {
+		t.Run("indeterminate/"+tt.name, func(t *testing.T) {
+			k := &kernelProcess{facts: validIdentity()}
+			tt.change(k)
+			_, err := testController(k).Open(validTarget())
+			if err == nil {
+				t.Fatal("unverified identity accepted")
+			}
+			if errors.Is(err, ErrNotDaemon) || errors.Is(err, ErrExited) {
+				t.Fatalf("err = %v claims positive evidence it does not have", err)
+			}
+		})
+	}
+	t.Run("positive/generation changed", func(t *testing.T) {
+		a := validIdentity()
+		b := a
+		b.generation = "generation-b"
+		k := &kernelProcess{facts: b, snapshots: []identity{a, b}}
+		if _, err := testController(k).Open(validTarget()); !errors.Is(err, ErrNotDaemon) {
+			t.Fatalf("err = %v, want ErrNotDaemon", err)
+		}
+	})
+}
