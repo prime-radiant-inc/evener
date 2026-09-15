@@ -129,7 +129,6 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	}
 }
 
-// TestDeployTargetEmptyResolvesRemotePATH covers the empty evener_path case:
 // TestInstallerRefForMapsBuildChannel pins acceptance criterion 16: the installer
 // artifact reference is derived from buildinfo.BuildChannel(), and
 // buildinfo.Version() (a short SHA, possibly -dirty) is never passed as a tag.
@@ -1001,7 +1000,7 @@ func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
-	got, err := m.deployTarget(context.Background(), host)
+	got, err := m.deployTarget(context.Background(), host, Preflight{})
 	if err != nil {
 		t.Fatalf("deployTarget: %v (the first line of `command -v` output must be the path)", err)
 	}
@@ -1164,5 +1163,134 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 	}
 	if !launched {
 		t.Fatal("the installed hub was never started")
+	}
+}
+
+// TestDeployInstallerPreservesExistingHubTarget pins the fix for the default
+// deploy path: with no configured evener_path the installer must replace the
+// binary the host's hub actually runs, not an unrelated ~/.local/bin/evener.
+// Restart identity validation compares the running hub's canonical executable to
+// the manager's target, so deploying to a different path made every upgrade of a
+// hub installed elsewhere fail.
+func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
+	origSHA, origDirty, origChannel, origTag := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() {
+		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag = origSHA, origDirty, origChannel, origTag
+	})
+	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag = "newsha", "", "release", "v1.2.3"
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // no evener_path
+	var installerJoined string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			// The running hub lives at /usr/local/bin, not the installer default.
+			return []byte("/usr/local/bin/evener hub -addr 127.0.0.1:9180\n"), nil
+		case strings.Contains(joined, "evener_resolve /usr/local/bin/evener"):
+			return []byte("/usr/local/bin/evener\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/usr/local/bin/evener\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "curl -fsSL"):
+			installerJoined = joined
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
+
+	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	if err != nil {
+		t.Fatalf("deployInstaller: %v", err)
+	}
+	if target != "/usr/local/bin/evener" {
+		t.Fatalf("run target = %q, want the existing hub's executable /usr/local/bin/evener", target)
+	}
+	if !strings.Contains(installerJoined, "BINDIR="+shellQuote("/usr/local/bin")) {
+		t.Fatalf("installer did not target the existing install dir: %q", installerJoined)
+	}
+}
+
+// TestDeployPushCreatesMissingEvenerPathTarget proves a push deploy can provision
+// a fresh host: an evener_path whose file has not been installed yet is a
+// creatable target, not a resolution failure. The existing symlink and directory
+// guards still hold (createTargetCommand only fires when the path does not exist).
+func TestDeployPushCreatesMissingEvenerPathTarget(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	var pushJoined string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			// The file is not installed yet.
+			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, "if [ -e "):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			pushJoined = joined
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			return os.WriteFile(out, []byte("x"), 0o755)
+		},
+	})
+
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v (a not-yet-installed evener_path must be creatable)", err)
+	}
+	if !strings.Contains(pushJoined, pushBinaryRemote("/opt/evener/bin/evener")) {
+		t.Fatalf("push = %q, want an install at the creatable target", pushJoined)
+	}
+}
+
+// TestDeployPushFallsBackToDefaultTargetOnFreshHost proves a push deploy with no
+// evener_path and no evener on the host PATH still installs somewhere: the
+// installer's own default ~/.local/bin/evener, whose directory the deploy
+// creates. Without this a fresh host could never be provisioned by the push path.
+func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var pushJoined string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "command -v evener"):
+			return []byte(evenerPathMissingMarker + "\n"), nil
+		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve"):
+			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, "if [ -e "):
+			return []byte("/home/dev/.local/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			pushJoined = joined
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
+
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); err != nil {
+		t.Fatalf("deploy: %v (a fresh host with no evener must be provisionable)", err)
+	}
+	if !strings.Contains(pushJoined, pushBinaryRemote("/home/dev/.local/bin/evener")) {
+		t.Fatalf("push = %q, want the installer default target", pushJoined)
 	}
 }

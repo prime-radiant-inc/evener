@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -587,28 +588,65 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced h
 	}
 
 	// Validate before killing: the process merely holds the hub's port, which a
-	// port collision could make an unrelated service. Only a recovered
-	// `evener hub` invocation whose --addr agrees with the probed port is
-	// restarted; anything else is refused rather than guessed at.
+	// port collision — or a second hub on a different loopback address — could
+	// make something other than the hub this host is configured for. Compare the
+	// FULL normalized bind address, not just the port: a hub on 127.0.0.1:9180
+	// does not own a host configured for 127.0.0.2:9180 and must not be killed.
+	//
+	// An invocation with no --addr bound whatever the host's hub.toml or the hub
+	// default selects, and the controller cannot read that config. Only the hub
+	// default is therefore provably this endpoint; a non-default configured
+	// address is refused rather than assumed.
 	argv, err := m.recoverHubArgv(ctx, host, pid)
 	if err != nil {
 		return err
 	}
-	if a, ok := hubAddrFlag(argv); ok {
-		ap, ok := argvHubPort(a)
-		if !ok {
-			// An unparsable recovered address must not be defaulted onto :9180:
-			// that would agree with a default-port host and let this kill a
-			// listener the recovered invocation did not own.
-			return fmt.Errorf("%w: host %q pid %s was launched with unparsable --addr %q; refusing to restart it",
-				ErrRestart, host.Name, pid, a)
+	expectedAddr := loopbackAddr(m.hostAddr(host))
+	// Inspect the listener's actual bound address first: it is authoritative,
+	// where the recovered --addr (or its absence) is only a proxy. A probe that
+	// cannot run (no lsof -F support) falls back to the recovered address, so such
+	// a host is no worse off than before.
+	addrs, aerr := m.hubListenerAddrs(ctx, host, pid, port)
+	if aerr == nil && len(addrs) > 0 {
+		owned := false
+		for _, a := range addrs {
+			if listenerOwnsAddr(a, expectedAddr) {
+				owned = true
+				break
+			}
 		}
-		if ap != port {
-			return fmt.Errorf("%w: host %q pid %s listens on :%s but was launched with --addr %q; refusing to restart it",
-				ErrRestart, host.Name, pid, port, a)
+		if !owned {
+			return fmt.Errorf("%w: host %q pid %s listens on %s but does not own the configured endpoint %s; refusing to restart it",
+				ErrRestart, host.Name, pid, strings.Join(addrs, ", "), expectedAddr)
 		}
+		return m.stopAndRelaunch(ctx, host, port, pid, argv, replaced)
 	}
+	recoveredAddr, hasAddr := hubAddrFlag(argv)
+	if !hasAddr {
+		recoveredAddr = defaultHubAddr
+	}
+	if _, ok := argvHubPort(recoveredAddr); !ok {
+		// An unparsable recovered address must not be defaulted onto :9180:
+		// that would agree with a default-port host and let this kill a
+		// listener the recovered invocation did not own.
+		return fmt.Errorf("%w: host %q pid %s was launched with unparsable --addr %q; refusing to restart it",
+			ErrRestart, host.Name, pid, recoveredAddr)
+	}
+	if norm := loopbackAddr(recoveredAddr); norm != expectedAddr {
+		if hasAddr {
+			return fmt.Errorf("%w: host %q pid %s was launched with --addr %q (listens on %s) but the configured endpoint is %s; refusing to restart it",
+				ErrRestart, host.Name, pid, recoveredAddr, norm, expectedAddr)
+		}
+		return fmt.Errorf("%w: host %q pid %s was launched with no --addr (hub default %s) but the configured endpoint is %s; refusing to restart it",
+			ErrRestart, host.Name, pid, norm, expectedAddr)
+	}
+	return m.stopAndRelaunch(ctx, host, port, pid, argv, replaced)
+}
 
+// stopAndRelaunch is the half of restartBare that runs once the listener has been
+// proved to be the hub this host is configured for: it recovers the log
+// destination, stops the old process, and relaunches the recovered argv detached.
+func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, pid string, argv []string, replaced hubIdentity) error {
 	logPath := ""
 	if lout, lerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+shellQuote(pid)+" -a -d 1,2"), nil); lerr == nil {
 		logPath, _ = parseLogPath(lout)
@@ -671,6 +709,58 @@ func (m *Manager) hubListenerPIDs(ctx context.Context, host hostreg.Host, port s
 		}
 	}
 	return pids, nil
+}
+
+// listenerAddrRemote builds the remote command that prints the local addresses
+// pid listens on for port, one per lsof -F `n` field. It uses lsof's field
+// output so a NAME containing spaces cannot be misread, and translates lsof's
+// no-match exit (1) into an empty answer so the caller does not treat a raced
+// listener as a transport failure.
+func listenerAddrRemote(pid, port string) string {
+	q := shellQuote(":" + port)
+	return "lsof -nP -p " + shellQuote(pid) + " -a -iTCP" + q + " -sTCP:LISTEN -F n; s=$?; if [ $s -eq 1 ]; then exit 0; fi; exit $s"
+}
+
+// hubListenerAddrs returns the local addresses pid listens on for port. An empty
+// slice means lsof matched no socket (the process may have exited), which the
+// caller reads as "not proved to own the endpoint".
+func (m *Manager) hubListenerAddrs(ctx context.Context, host hostreg.Host, pid, port string) ([]string, error) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerAddrRemote(pid, port)), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: host %q could not inspect listener %s on :%s: %w: %s", ErrRestart, host.Name, pid, port, err, tail(out))
+	}
+	var addrs []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "n") {
+			continue
+		}
+		if a := strings.TrimPrefix(line, "n"); a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	return addrs, nil
+}
+
+// listenerOwnsAddr reports whether a local listening address owns the configured
+// endpoint: the same normalized host:port, or a wildcard bind (which serves every
+// local address) on the same port. Comparing the full address, not the port
+// alone, is what stops a hub on 127.0.0.1:9180 being killed for a host
+// configured for 127.0.0.2:9180.
+func listenerOwnsAddr(local, configured string) bool {
+	lh, lp, err := net.SplitHostPort(local)
+	if err != nil {
+		return false
+	}
+	_, cp, err := net.SplitHostPort(configured)
+	if err != nil || lp != cp {
+		return false
+	}
+	switch lh {
+	case "", "*", "0.0.0.0", "::":
+		return true
+	}
+	return loopbackAddr(local) == loopbackAddr(configured)
 }
 
 // findHubPID returns the single pid listening on the hub's port, using lsof
@@ -820,6 +910,23 @@ func parseHubHealth(out []byte) (hubIdentity, bool) {
 // hub is already stopped by then, so the wrong relaunch would leave the host
 // with no hub and recovery would retry the same broken command. Fail closed.
 func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
+	argv, err := m.recoverHubArgvRaw(ctx, host, pid)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
+		return nil, err
+	}
+	return argv, nil
+}
+
+// recoverHubArgvRaw is recoverHubArgv without the executable-identity check: it
+// recovers and validates a plausible `evener hub` invocation but does not
+// require its executable to be the manager's configured target. The deploy path
+// uses it to learn where an existing hub is installed so it can install the
+// controller's build over that same file; the restart path uses recoverHubArgv,
+// which keeps the identity check.
+func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
 	if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubArgvRemote(pid)), nil); err == nil && len(out) > 0 {
 		argv, ok := splitNullArgv(out)
 		if !ok {
@@ -828,9 +935,6 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 		}
 		if err := validateHubArgv(argv); err != nil {
 			return nil, fmt.Errorf("%w: host %q pid %s: %w", ErrRestart, host.Name, pid, err)
-		}
-		if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
-			return nil, err
 		}
 		return argv, nil
 	}
@@ -851,10 +955,43 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 	if err != nil {
 		return nil, fmt.Errorf("%w: host %q pid %s: %w (command line %q)", ErrRestart, host.Name, pid, err, cmdline)
 	}
-	if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
-		return nil, err
-	}
 	return argv, nil
+}
+
+// currentHubExecutable resolves the canonical path of the executable of the hub
+// currently listening on the host's configured endpoint, or "" when no single
+// hub listener can be identified. It reports no error: an unidentifiable or
+// unprobeable hub is a missing preservation hint, not a reason to fail a deploy.
+func (m *Manager) currentHubExecutable(ctx context.Context, host hostreg.Host) string {
+	pids, err := m.hubListenerPIDs(ctx, host, hubPort(m.hostAddr(host)))
+	if err != nil || len(pids) != 1 {
+		return ""
+	}
+	argv, err := m.recoverHubArgvRaw(ctx, host, pids[0])
+	if err != nil {
+		return ""
+	}
+	exe, err := m.resolveExecutableName(ctx, host, argv[0])
+	if err != nil {
+		return ""
+	}
+	resolved, err := m.resolveRemotePath(ctx, host, exe)
+	if err != nil {
+		return ""
+	}
+	return resolved
+}
+
+// installableEvenerBasename reports whether install.sh ships a binary with this
+// basename (evener and evener-dev). A deploy cannot preserve an install location
+// the installer does not produce.
+func installableEvenerBasename(p string) bool {
+	switch path.Base(strings.TrimSpace(p)) {
+	case "evener", "evener-dev":
+		return true
+	default:
+		return false
+	}
 }
 
 // hubExecutableMatches proves a recovered hub argv[0] is the executable the

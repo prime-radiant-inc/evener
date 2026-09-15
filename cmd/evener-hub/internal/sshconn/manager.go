@@ -835,7 +835,16 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// common attach path pays nothing extra.
 	hubPresent := runningKnown
 	if !hubPresent && m.deployRequired(host.Name, facts, expected) {
-		present, err := m.hubIsPresent(ctx, host, facts)
+		// Bound the hub-presence probe like every other phase: hubIsPresent issues
+		// real ssh commands (systemctl list-units / launchctl list, then lsof) and
+		// otherwise inherits the attempt context, which for a supervisor reconnect is
+		// only WithCancel(m.baseCtx) with no deadline. A remote command that hangs
+		// (systemctl blocked on a stuck dbus, lsof stuck on NFS) would then hold the
+		// per-host lock forever and stall every later Ensure and reconnect for the
+		// host — exactly what attemptLimit exists to prevent.
+		presentCtx, cancelPresent := context.WithTimeout(ctx, m.opts.attemptLimit())
+		present, err := m.hubIsPresent(presentCtx, host, facts)
+		cancelPresent()
 		if err != nil {
 			return nil, err
 		}
@@ -1499,6 +1508,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrHostNotFound),
 		errors.Is(err, ErrHostAddr),
 		errors.Is(err, ErrPreflightDecode),
+		errors.Is(err, errExecutableMissing),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:

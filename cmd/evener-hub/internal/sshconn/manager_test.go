@@ -1746,6 +1746,74 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	if isTerminal(ErrSSHAuth) {
 		t.Fatal("ErrSSHAuth must not be terminal: the refusal cannot be attributed to ssh")
 	}
+	if !isTerminal(errExecutableMissing) {
+		t.Fatal("errExecutableMissing is not terminal: with no deploy configured nothing can ever install the missing binary, so retrying forever cannot succeed")
+	}
+}
+
+// TestEnsureBoundsHubIsPresent proves the hub-presence probe is bounded like
+// every other phase of ensureOnce. hubIsPresent issues real ssh commands
+// (systemctl list-units, then lsof); before the fix it inherited the attempt
+// context, which for a supervisor reconnect has no deadline, so a hung remote
+// command held the per-host lock forever. The fake hangs the supervisor probe and
+// the test asserts ensureOnce still returns.
+func TestEnsureBoundsHubIsPresent(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	probing := make(chan struct{}, 4)
+	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			// A mismatching on-disk build puts a deploy on the table, which is the
+			// only path that runs the hub-presence probe.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "api/health"):
+			return nil, errors.New("curl: (7) Failed to connect")
+		case strings.Contains(joined, "list-units"):
+			select {
+			case probing <- struct{}{}:
+			default:
+			}
+			// Block until the probe's own context expires: a real command stuck on
+			// a dead dbus behaves this way.
+			<-ctx.Done()
+			return nil, ctx.Err()
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		attemptTimeout:            100 * time.Millisecond,
+		BuildBinary:               writeStageBinary,
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := m.ensureOnce(context.Background(), host, false)
+		errCh <- err
+	}()
+	select {
+	case <-probing:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ensureOnce never reached the hub-presence supervisor probe")
+	}
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("ensureOnce returned nil; the hung hub-presence probe must surface a failure")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ensureOnce did not return: hubIsPresent ran on an unbounded context and held the host lock")
+	}
 }
 
 // Manager.Close tears every channel down, and a consumer installed a source on

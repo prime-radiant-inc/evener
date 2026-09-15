@@ -1009,6 +1009,176 @@ func TestRestartBareRefusesAddrMismatch(t *testing.T) {
 	}
 }
 
+// TestRestartBareRefusesSamePortDifferentHost proves restart validates the FULL
+// normalized bind address, not just the port: a hub on 127.0.0.1:9180 does not
+// own a host configured for 127.0.0.2:9180, so it must be refused rather than
+// killed.
+func TestRestartBareRefusesSamePortDifferentHost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.2:9180"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for a hub bound to a different loopback address", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:9180") || !strings.Contains(err.Error(), "127.0.0.2:9180") {
+		t.Fatalf("error does not name both endpoints: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+			t.Fatalf("a hub on a different address was killed: %v", argv)
+		}
+	}
+}
+
+// TestRestartBareRefusesDefaultAddrAtNonDefaultEndpoint proves an invocation with
+// no --addr is refused when the configured endpoint is not the hub default: the
+// controller cannot read the host's hub.toml, so it cannot prove such a process
+// owns 127.0.0.2:9180 rather than the default 127.0.0.1:9180.
+func TestRestartBareRefusesDefaultAddrAtNonDefaultEndpoint(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.2:9180"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for a no---addr hub at a non-default endpoint", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:9180") || !strings.Contains(err.Error(), "127.0.0.2:9180") {
+		t.Fatalf("error does not name both the hub default and the configured endpoint: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+			t.Fatalf("a hub at the default address was killed for a non-default endpoint: %v", argv)
+		}
+	}
+}
+
+// TestRestartBareInspectsListenerAddress proves the restart inspects the
+// listener's ACTUAL bound address rather than trusting the recovered argv alone:
+// a hub whose invocation carries no --addr (its bind came from hub.toml, which
+// the controller cannot read) is restarted when its socket owns the configured
+// endpoint.
+func TestRestartBareInspectsListenerAddress(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.2:9180"}
+	killed := false
+	var relaunchArgv []string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :9180"):
+			if killed {
+				return []byte(noListenerMarker + "\n"), nil
+			}
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub\n"), nil // no --addr
+		case strings.Contains(joined, "-F n"):
+			return []byte("n127.0.0.2:9180\n"), nil
+		case strings.Contains(joined, "lsof -p 4242 -a -d 1,2"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunchArgv = append([]string(nil), argv...)
+			return nil, nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+		t.Fatalf("restartBare: %v (a listener owning the configured endpoint must restart)", err)
+	}
+	if !killed {
+		t.Fatal("the hub owning the configured endpoint was not stopped")
+	}
+	if len(relaunchArgv) == 0 {
+		t.Fatal("the hub was not relaunched")
+	}
+}
+
+// TestRestartBareListenerAddressBeatsRecoveredAddr proves the inspected socket
+// address is authoritative: a recovered --addr that agrees with the configured
+// endpoint is not enough when the socket shows the process is bound elsewhere.
+func TestRestartBareListenerAddressBeatsRecoveredAddr(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.2:9180"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.2:9180\n"), nil
+		case strings.Contains(joined, "-F n"):
+			return []byte("n127.0.0.1:9180\n"), nil
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart when the socket does not own the configured endpoint", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:9180") || !strings.Contains(err.Error(), "127.0.0.2:9180") {
+		t.Fatalf("error does not name the listener and the configured endpoint: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+			t.Fatalf("a listener bound elsewhere was killed: %v", argv)
+		}
+	}
+}
+
 // TestTokenizeCommandLine covers the recovered-argv tokenizer: quotes and
 // escapes are honored, and a line that is not a simple exec is refused.
 func TestTokenizeCommandLine(t *testing.T) {
@@ -1074,7 +1244,6 @@ func TestHubArgvFromCommandLine(t *testing.T) {
 	}
 }
 
-// TestHubAddrFlag proves the --addr/-addr spellings are both recovered.
 // TestHubExecutableMatchesCanonicalTarget proves the restart identifies the hub
 // by the canonical recovered executable compared to the configured target. A
 // hardcoded `path.Base(argv[0]) == "evener"` refused every valid custom
@@ -1195,6 +1364,7 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 	})
 }
 
+// TestHubAddrFlag proves the --addr/-addr spellings are both recovered.
 func TestHubAddrFlag(t *testing.T) {
 	cases := []struct {
 		argv []string
@@ -1450,10 +1620,6 @@ func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
 	}
 }
 
-// TestEnsureNoRestartWhenNoHubAnswersTheProbe pins the deliberate choice for the
-// High fix: when no hub answers /api/health, ensureOnce does not invent a restart.
-// It attaches as before (with a matching on-disk version) and lets the existing
-// attach failure/retry behavior apply.
 // TestReconnectNeverStartsAStoppedHub proves the bootstrap start is gated to an
 // explicit attach request: a reconnect (explicit=false) to a host whose hub does
 // not answer starts nothing, even though an explicit Ensure on the same host

@@ -252,7 +252,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 // installs it at the host's evener path. The existing binary is untouched unless
 // the push fully succeeds.
 func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) error {
-	target, err := m.deployTarget(ctx, host)
+	target, err := m.deployTarget(ctx, host, facts)
 	if err != nil {
 		return err
 	}
@@ -286,30 +286,63 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 
 // deployTarget resolves the absolute remote path the binary is installed to:
 // the registry's evener_path when set (whose directory must already exist),
-// otherwise whatever `evener` resolves to on the remote PATH.
-func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, error) {
+// otherwise whatever `evener` resolves to on the remote PATH, else the
+// installer's default ~/.local/bin/evener. A not-yet-installed file is a
+// creatable target, so a push deploy can provision a fresh host.
+func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		dir := path.Dir(p)
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellQuote(dir)), nil)
 		if err != nil {
 			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
-		return m.resolveDeployTarget(ctx, host, p)
+		// A push deploy must be able to provision a fresh host: an evener_path
+		// whose file has not been installed yet is a creatable target, not an
+		// error. The resolver still follows an existing symlink and still refuses
+		// a directory, but canonicalizes a not-yet-existent file from its
+		// (existing) parent directory.
+		return m.resolveDeployOrCreateTarget(ctx, host, p)
 	}
 
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
+	p, err := m.evenerOnPath(ctx, host)
 	if err != nil {
-		return "", fmt.Errorf("%w: host %q evener not found on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
+		return "", err
 	}
-	// First line only: `command -v` prints one path, but taking all of TrimSpace
-	// would fold any trailing noise (a multi-line wrapper) into the path and then
-	// hand it to the resolver as one argument. resolveDeployTarget already reads
-	// its own output this way.
-	p := firstLine(string(out))
 	if p == "" {
-		return "", fmt.Errorf("%w: host %q evener not found on PATH", ErrDeploy, host.Name)
+		// No evener on the non-interactive PATH either. Fall back to the
+		// installer's own default location and create its directory, so a push
+		// deploy can still bring up a host that has no evener installed at all.
+		home := strings.TrimSpace(facts.Home)
+		if home == "" {
+			return "", fmt.Errorf("%w: host %q has no evener_path, no evener on PATH, and preflight found no HOME to resolve the installer default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
+		}
+		p = path.Join(home, ".local", "bin", "evener")
+		dir := path.Dir(p)
+		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "mkdir -p "+shellQuote(dir)), nil); err != nil {
+			return "", fmt.Errorf("%w: host %q create install directory %q: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
+		}
 	}
-	return m.resolveDeployTarget(ctx, host, p)
+	return m.resolveDeployOrCreateTarget(ctx, host, p)
+}
+
+// evenerPathMissingMarker distinguishes "no evener on PATH" from a transport
+// failure. `command -v` fails with no output when the name is missing, which is
+// otherwise indistinguishable from a failed ssh command.
+const evenerPathMissingMarker = "__sshconn_no_evener__"
+
+// evenerOnPath returns the path `command -v evener` resolves to on the host's
+// non-interactive PATH, or "" when the host has no evener there. A transport
+// failure is surfaced rather than read as an absent binary.
+func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, error) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener || echo "+evenerPathMissingMarker), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
+	}
+	p := firstLine(string(out))
+	if p == "" || p == evenerPathMissingMarker {
+		return "", nil
+	}
+	return p, nil
 }
 
 // resolvePathScript is a POSIX-sh path resolver that prints the real path a file
@@ -365,6 +398,41 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 		return "", fmt.Errorf("%w: host %q install path %q does not resolve to a real file", ErrDeploy, host.Name, p)
 	}
 	return resolved, nil
+}
+
+// resolveDeployOrCreateTarget resolves p to the real file it names, or, when p
+// does not exist yet, to the canonical path at which a push will create it.
+// This is what lets a push deploy provision a fresh host whose evener_path file
+// has not been installed yet. An existing directory is still refused: the
+// creatable fallback only fires for a path that does not exist at all, so the
+// atomic mv can never move the staged binary inside a directory and leave the
+// real executable un-upgraded.
+func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.Host, p string) (string, error) {
+	resolved, err := m.resolveDeployTarget(ctx, host, p)
+	if err == nil {
+		return resolved, nil
+	}
+	out, cerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, createTargetCommand(p)), nil)
+	if cerr != nil {
+		return "", err
+	}
+	created := firstLine(string(out))
+	if created == "" {
+		return "", err
+	}
+	return created, nil
+}
+
+// createTargetCommand canonicalizes the path a not-yet-installed evener will be
+// created at. It refuses an existing path (a directory, a dangling symlink, or a
+// file the resolver could not handle) and a path whose parent directory does not
+// exist, so it only ever enables creating a genuinely new file under an existing
+// directory.
+func createTargetCommand(p string) string {
+	q := shellQuote(p)
+	return "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
+		"d=$(cd -P \"$(dirname \"$p\")\" 2>/dev/null && pwd) || exit 1; " +
+		"printf '%s\\n' \"$d/${p##*/}\""
 }
 
 // pushBinaryRemote builds the remote command that installs a pushed binary: it
@@ -478,6 +546,19 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
+	// With no configured evener_path, preserve the install location the host
+	// already uses: install the controller's build over the running hub's own
+	// executable (or over whatever `evener` resolves to on PATH) so the relaunch
+	// argv and any supervisor unit keep pointing at the upgraded binary. Deploying
+	// to an unrelated default instead makes restart identity validation refuse the
+	// hub it was meant to replace, while a supervisor keeps restarting the old
+	// executable — the upgrade never lands. installerDirs turns the preserved path
+	// into BINDIR so install.sh writes exactly there.
+	if strings.TrimSpace(host.EvenerPath) == "" {
+		if existing := m.existingInstallableEvener(ctx, host); existing != "" {
+			host.EvenerPath = existing
+		}
+	}
 	bindir, shareBindir, runTarget, err := installerDirs(host, facts)
 	if err != nil {
 		return "", err
@@ -502,4 +583,25 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact does not match the controller's build)", ErrDeploy, host.Name, lc.Version, want)
 	}
 	return runTarget, nil
+}
+
+// existingInstallableEvener resolves the canonical path of the evener the host
+// already has installed — the running hub's own executable first, then whatever
+// `evener` resolves to on the remote PATH — or "" when none can be identified or
+// the found binary has a basename install.sh does not ship. It is how a deploy
+// with no configured evener_path keeps the existing install location instead of
+// writing to an unrelated default.
+func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Host) string {
+	if exe := m.currentHubExecutable(ctx, host); installableEvenerBasename(exe) {
+		return exe
+	}
+	p, err := m.evenerOnPath(ctx, host)
+	if err != nil || p == "" {
+		return ""
+	}
+	resolved, err := m.resolveRemotePath(ctx, host, p)
+	if err != nil || !installableEvenerBasename(resolved) {
+		return ""
+	}
+	return resolved
 }
