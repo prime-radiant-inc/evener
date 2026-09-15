@@ -85,14 +85,27 @@ function sources(dir, found = []) {
   return found;
 }
 
-export function consumerValueImports(repoRoot) {
-  const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
+// What this repository's consumers do with each published specifier: the
+// runtime VALUES they name, and whether they reach the module at all.
+//
+// The two are different questions. A consumer whose only use is
+// `export * as ns from "pkg"`, or a type-only import, names no runtime value
+// and still needs the module to resolve -- so a specifier can be legitimately
+// used with an empty value list, and requiring a non-empty one failed
+// qualification over a consumer that was doing nothing wrong.
+export function consumerPackageUsage(repoRoot) {
+  const usage = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, { values: new Set(), used: false }]));
   const problems = [];
   for (const tree of CONSUMER_TREES) {
     for (const file of sources(join(repoRoot, tree))) {
-      const found = packageValuesIn(parse(file, readFileSync(file, "utf8")), relative(repoRoot, file), problems);
+      const source = parse(file, readFileSync(file, "utf8"));
+      for (const site of moduleSpecifierSites(ts, source)) {
+        const entry = usage.get(site.text);
+        if (entry) entry.used = true;
+      }
+      const found = packageValuesIn(source, relative(repoRoot, file), problems);
       for (const [specifier, names] of found) {
-        for (const name of names) bySpecifier.get(specifier).add(name);
+        for (const name of names) usage.get(specifier).values.add(name);
       }
     }
   }
@@ -105,5 +118,50 @@ export function consumerValueImports(repoRoot) {
       ].join("\n"),
     );
   }
-  return new Map([...bySpecifier].map(([specifier, names]) => [specifier, [...names].sort()]));
+  return new Map(
+    [...usage].map(([specifier, entry]) => [specifier, { values: [...entry.values].sort(), used: entry.used }]),
+  );
+}
+
+// The value lists alone, for callers that only ask what the tarball must
+// provide.
+export function consumerValueImports(repoRoot) {
+  return new Map([...consumerPackageUsage(repoRoot)].map(([specifier, entry]) => [specifier, entry.values]));
+}
+
+// Whether resolve-check.mjs still says what the consumers do. A specifier the
+// consumers name values from must be imported by name, every one of them; a
+// specifier they only reach as a module must still be imported some way, so
+// running the fixture proves it resolves; and one nothing uses must still be
+// proved, since the package publishes it either way.
+export function describeResolveCheckDrift(fixtureSource, fixtureName, usage) {
+  const declaredValues = packageValuesIn(fixtureSource, fixtureName, []);
+  const reached = new Set(
+    moduleSpecifierSites(ts, fixtureSource)
+      .filter((site) => !site.typeOnly)
+      .map((site) => site.text),
+  );
+  const problems = [];
+  for (const [specifier, entry] of usage) {
+    const declared = [...declaredValues.get(specifier)].sort();
+    if (entry.values.length > 0) {
+      if (declared.join("\u0000") !== entry.values.join("\u0000")) {
+        problems.push(
+          `${fixtureName}'s imports from ${specifier} have drifted from what this repository's consumers import: it names ${JSON.stringify(declared)}, they import ${JSON.stringify(entry.values)}`,
+        );
+      }
+      continue;
+    }
+    if (declared.length > 0) {
+      problems.push(
+        `${fixtureName} imports ${JSON.stringify(declared)} from ${specifier}, which no consumer takes a value from`,
+      );
+    }
+    if (!reached.has(specifier)) {
+      problems.push(
+        `${fixtureName} does not load ${specifier} at all, so running it proves nothing about that specifier`,
+      );
+    }
+  }
+  return problems.join("\n");
 }

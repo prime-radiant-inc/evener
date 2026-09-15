@@ -2,8 +2,11 @@
 // consumers take from this package, and what resolve-check.mjs says they take.
 // Both readings decide whether `make test-api-package` passes, so the shapes a
 // hand-written regex used to miss are the ones worth pinning.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { expect, test } from "vitest";
-import { packageValuesIn, parse } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, describeResolveCheckDrift, packageValuesIn, parse } from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
@@ -106,4 +109,76 @@ test("a namespace re-export of the package is accounted for, not refused", () =>
   expect(problemsFor(`export * from "${ROOT}";\n`)).toEqual([
     `fixture.ts: export-star-from of ${ROOT} names no binding this check can account for`,
   ]);
+});
+
+// A consumer tree, as consumerPackageUsage walks one.
+function consumerTree(files) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-consumer-usage-"));
+  for (const [relative, contents] of Object.entries(files)) {
+    const full = path.join(root, relative);
+    mkdirSync(path.dirname(full), { recursive: true });
+    writeFileSync(full, contents);
+  }
+  for (const tree of ["mobile-native", "mobile/src", "cmd/evener-hub/frontend/src"]) {
+    mkdirSync(path.join(root, tree), { recursive: true });
+  }
+  return root;
+}
+
+test("a consumer that only re-exports the module names no value but does use it", () => {
+  const root = consumerTree({
+    "mobile/src/state.ts": `export * as everything from "${ROOT}";\n`,
+  });
+  try {
+    const usage = consumerPackageUsage(root);
+    expect(usage.get(ROOT)).toEqual({ values: [], used: true });
+    expect(usage.get(DOC_CONTENT)).toEqual({ values: [], used: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a consumer whose only use is type-only names no value but does use it", () => {
+  const root = consumerTree({
+    "mobile/src/state.ts": `import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`,
+  });
+  try {
+    expect(consumerPackageUsage(root).get(ROOT)).toEqual({ values: [], used: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a specifier no consumer takes a value from qualifies as long as the fixture loads it", () => {
+  const usage = new Map([
+    [ROOT, { values: ["errorText"], used: true }],
+    [DOC_CONTENT, { values: [], used: true }],
+  ]);
+  const loaded = parse(
+    "resolve-check.mjs",
+    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
+  );
+  expect(describeResolveCheckDrift(loaded, "resolve-check.mjs", usage)).toEqual("");
+
+  // ... but it has to load it somehow, or running the fixture proves nothing.
+  const missing = parse("resolve-check.mjs", `import { errorText } from "${ROOT}";\nvoid errorText;\n`);
+  expect(describeResolveCheckDrift(missing, "resolve-check.mjs", usage)).toMatch(/does not load .*docContent at all/);
+});
+
+test("a specifier consumers DO name values from still has to name every one", () => {
+  const usage = new Map([
+    [ROOT, { values: ["errorText", "formatElapsed"], used: true }],
+    [DOC_CONTENT, { values: [], used: true }],
+  ]);
+  const short = parse(
+    "resolve-check.mjs",
+    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
+  );
+  expect(describeResolveCheckDrift(short, "resolve-check.mjs", usage)).toMatch(/have drifted/);
+
+  const extra = parse(
+    "resolve-check.mjs",
+    `import { errorText } from "${ROOT}";\nimport { readDocFile } from "${DOC_CONTENT}";\nvoid errorText;\nvoid readDocFile;\n`,
+  );
+  expect(describeResolveCheckDrift(extra, "resolve-check.mjs", usage)).toMatch(/no consumer takes a value from/);
 });

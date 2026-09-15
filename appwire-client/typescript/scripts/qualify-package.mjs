@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerValueImports, PACKAGE_SPECIFIERS, packageValuesIn, parse } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, describeResolveCheckDrift, parse } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -610,18 +610,13 @@ function runConsumerResolveCheck() {
   // Parsed, not matched: the fixture may take one specifier across several
   // statements, in either quote style, with the type-only members split off,
   // and a regex that reads only the first clause would quietly check half a
-  // list. packageValuesIn is the same reader the consumer scan uses.
-  const declared = packageValuesIn(parse(fixturePath, readFileSync(fixturePath, "utf8")), fixture, []);
-  const imported = consumerValueImports(resolve(packageDir, "..", ".."));
-  for (const specifier of PACKAGE_SPECIFIERS) {
-    const names = [...declared.get(specifier)].sort();
-    assert(names.length > 0, `${fixture} no longer imports anything from ${specifier}`);
-    assert.deepEqual(
-      names,
-      imported.get(specifier),
-      `${fixture}'s imports from ${specifier} have drifted from what this repository's consumers import; update the fixture`,
-    );
-  }
+  // list. The comparison lives beside the derivation it compares against.
+  const drift = describeResolveCheckDrift(
+    parse(fixturePath, readFileSync(fixturePath, "utf8")),
+    fixture,
+    consumerPackageUsage(resolve(packageDir, "..", "..")),
+  );
+  assert(drift === "", `${drift}\nUpdate ${fixture} to say what the consumers do.`);
   copyFileSync(fixturePath, join(consumerDir, fixture));
   run(process.execPath, [join(consumerDir, fixture)], consumerDir);
 }
