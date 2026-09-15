@@ -5628,3 +5628,113 @@ test("a remote launch the selected host cannot serve reports that host's own fai
   await screen.findByText("Start failed: provider credentials missing for anthropic");
   expect(window.location.pathname).not.toContain("/s/");
 });
+
+// The plugin preview is the CONTROLLER's own inspection (evener/plugin/preview
+// answers for this hub's host). A remote launch runs on the selected source's
+// own hub, which resolves its own plugins, so a controller-local "this plugin
+// is unavailable" must not disable Start or refuse the submit for a remote
+// target - the selection is forwarded and the selected hub validates it at
+// start, the same authority model the launch already follows for cwd,
+// providers and models.
+test("a remote host submission is not blocked by controller-local plugin issues", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/plugin/preview", ({ launchOverrides }) =>
+      launchOverrides?.enabledPlugins?.includes("alpha")
+        ? { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] }
+        : SPAWN_PLUGIN_PREVIEW,
+    ),
+  );
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-plugins");
+  renderSpawn(fake);
+  await settled();
+
+  // An explicit selection the CONTROLLER's preview reports as unavailable:
+  // local Start is disabled by that controller-local reading.
+  await act(async () => {
+    setDraftField(completionDraft("/tmp/remote-plugins"), "pluginSelection", {
+      mode: "explicit",
+      names: ["alpha"],
+    });
+  });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  // The same controller-local issue must not gate a remote launch.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // The selection is forwarded verbatim for the selected hub to validate.
+  expect(params.launchOverrides).toMatchObject({ enabledPlugins: ["alpha"] });
+});
+
+// The model and effort catalogs the form validates against (model/list, the
+// model ladder) belong to THIS controller. A value supported only by the
+// selected host must not be refused locally - the value rides thread/start and
+// the remote hub validates it.
+test("a remote host does not pre-validate /model against the controller catalog", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-model");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // A model absent from the controller's catalog: a local target would toast
+  // `unknown value` and never reach thread/start.
+  await user.type(promptField(), "/model buildbox-only/model-x");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.modelProvider).toBe("buildbox-only");
+  expect(params.model).toBe("model-x");
+  // The builtin is consumed, not forwarded as a literal first turn.
+  expect(params.input).toEqual([]);
+  expect(screen.queryByText(/unknown value/)).toBeNull();
+});
+
+test("a remote host does not pre-validate /reasoning-effort against the controller ladder", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-effort");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // A level outside the controller's ladder: a local target would toast
+  // `unknown value` and never reach thread/start.
+  await user.type(promptField(), "/reasoning-effort ultra");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.reasoningEffort).toBe("ultra");
+  expect(params.input).toEqual([]);
+  expect(screen.queryByText(/unknown value/)).toBeNull();
+});
