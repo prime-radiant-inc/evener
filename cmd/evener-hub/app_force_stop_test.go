@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -272,6 +273,12 @@ func TestForceStopRejectsDiscoveryChangeDuringLockedRevalidation(t *testing.T) {
 
 // A failed ancillary discovery refresh cannot undo the verified exit.
 func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
+	// Keep this top-level test sequential: captureHubLog uses the shared logger.
+	// Compare the entire output so unrelated or repeated warnings also fail.
+	logged := captureHubLog(t)
+	flags := log.Flags()
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetFlags(flags) })
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: "owner"})
 	roster := hubcore.NewRoster(runDir, failedRPCProber{})
@@ -298,6 +305,10 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 	}
 	if err := roster.RefreshAndWait(t.Context()); err == nil {
 		t.Fatal("fixture did not fail discovery")
+	}
+	const expected = "daemon stopped; roster refresh remains incomplete: decode rendezvous 4243.json: unexpected end of JSON input\n"
+	if got := logged.String(); got != expected {
+		t.Fatalf("expected exactly one incomplete-roster warning, got %q", got)
 	}
 }
 

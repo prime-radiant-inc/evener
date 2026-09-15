@@ -346,6 +346,8 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", logSessionID, nil)
 	requestDone := trace.stage(ctx, "request")
 	defer func() { requestDone(resumeErr) }()
+	var cleanupErr error
+	var activeResume *hubcore.ActiveResume
 	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -382,24 +384,47 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		if err != nil {
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
 		}
+		if err := cfg.ResumeLocks.ResumeCleanupError(aliases); err != nil {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable(err.Error())
+		}
 		epochs := make(map[string]uint64, len(aliases))
 		for _, id := range aliases {
 			epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, "", id)
 		}
 		epochs[requestedID] = epoch
+		active, err := cfg.ResumeLocks.RegisterResume(ctx, target, aliases, epochs)
+		if err != nil {
+			if errors.Is(err, hubcore.ErrResumeInvalidated) {
+				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable(err.Error())}
+			}
+			return appwire.ThreadResumeResponse{}, err
+		}
+		activeResume = active
+		ctx = active.Context()
+		// Register before waiting for ownership; complete after every subsequent
+		// defer has released ownership and the launcher has confirmed cleanup.
+		defer func() { active.Complete(cleanupErr) }()
 		// Use force stop's sorted ownership order, retaining the original mutexes.
 		lockDone := trace.stage(ctx, "lock_wait")
-		for _, id := range aliases {
-			cfg.ResumeLocks.For(id).Lock()
-		}
-		lockDone(nil)
-		heldDone := trace.stage(ctx, "lock_held")
+		var acquired []string
+		var heldDone func(error)
 		defer func() {
-			for _, id := range slices.Backward(aliases) {
+			for _, id := range slices.Backward(acquired) {
 				cfg.ResumeLocks.For(id).Unlock()
 			}
-			heldDone(nil)
+			if heldDone != nil {
+				heldDone(nil)
+			}
 		}()
+		for _, id := range aliases {
+			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+				lockDone(err)
+				return appwire.ThreadResumeResponse{}, err
+			}
+			acquired = append(acquired, id)
+		}
+		lockDone(nil)
+		heldDone = trace.stage(ctx, "lock_held")
 		for _, id := range aliases {
 			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
 				return appwire.ThreadResumeResponse{}, err
@@ -513,11 +538,20 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 				return hubResumedThreadResponse(ctx, cfg, sources, le.SessionID, le.ThreadID)
 			}
 		}
+		if state := cfg.ResumeLocks.RecoveryState(sessionID); state.ResumeRequired && !state.ExitConfirmed {
+			return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+		}
 	}
+	resumeReq.CompletionOwned = !automatic
+	resumeReq.ActiveResume = activeResume
 	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	resumeDone(err)
 	if err != nil {
+		var cleanup *resumeCleanupError
+		if errors.As(err, &cleanup) {
+			cleanupErr = cleanup
+		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
 	if cfg.Roster != nil {
