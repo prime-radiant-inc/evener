@@ -170,9 +170,12 @@ func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) a
 // stripRemoteImageRoutes removes hub-relative image routes from a thread whose
 // images live on another hub. A relative route is meaningful only against the
 // origin that minted it: left on a remote thread, it would make the browser
-// request this hub's own /s/<session>/images/<sha> route for a session this hub
-// does not have. External URLs are untouched, because the browser resolves them
-// against their own origin.
+// request this hub's own route for a session this hub does not have. The remote
+// hub mints both /s/<session>/images/<sha> (stamped by stampThreadImageURLs) and
+// /doc/image?session=<session>&path=<rel> (attached to file-backed output images
+// by outputImagesForToolCall/resolveOutputImageFile), so any root-relative path
+// must be neutralized, not just the /s/... one. External URLs and data: URLs are
+// untouched, because the browser resolves them against their own origin.
 func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
 	for turnIndex := range thread.Turns {
 		items := thread.Turns[turnIndex].Items
@@ -192,11 +195,15 @@ func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
 	return thread
 }
 
-// isHubRelativeImageRoute reports whether raw is a root-relative session image
-// route of the form this hub mints (/s/<session>/images/<sha>).
+// isHubRelativeImageRoute reports whether raw is an origin-relative image route
+// of the form a hub mints for itself, e.g. /s/<session>/images/<sha> or
+// /doc/image?session=<session>&path=<rel>. A leading slash makes a URL resolve
+// against the serving origin, so it is meaningful only on the hub that minted
+// it. A network-path reference (//host/...) and scheme URLs (http:, https:,
+// data:, ...) name their own origin and are left untouched.
 func isHubRelativeImageRoute(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
-	return strings.HasPrefix(trimmed, "/s/") && strings.Contains(trimmed, "/images/")
+	return strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "//")
 }
 
 func relayOnThreadRead(source appsource.Source) bool {

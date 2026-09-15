@@ -645,14 +645,17 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 }
 
 // remotePositionsAdjacent reports whether newer is the position immediately
-// after older. Item-mode positions are (entry, item) pairs, so the successor of
-// an item is the next item of the same entry or the first item of the next
-// entry.
+// after older. Item-mode positions are (entry, item) pairs, and an entry can
+// project several items, so the successor of an item is the next item of the
+// same entry or the first item (item 0) of the next entry. A cross-entry page
+// that begins mid-entry (item > 0) leaves the earlier items of the previous
+// entry unobserved, so it is not adjacent and must fail closed as stale rather
+// than retain a holed window.
 func remotePositionsAdjacent(older, newer appwire.ThreadItemPosition) bool {
 	if older.Entry == newer.Entry {
 		return newer.Item == older.Item+1
 	}
-	return newer.Entry == older.Entry+1
+	return newer.Entry == older.Entry+1 && newer.Item == 0
 }
 
 // remoteRetainedCandidatesExceedBounds reports whether a merged retained window
@@ -667,10 +670,41 @@ func remoteRetainedCandidatesExceedBounds(candidates []appitempaging.TranscriptI
 func remoteItemCandidatesBytes(candidates []appitempaging.TranscriptItemCandidate) int {
 	total := 0
 	for _, candidate := range candidates {
-		item := candidate.Item
-		total += len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
+		total += remoteItemCandidateBytes(candidate)
 	}
 	return total
+}
+
+// remoteItemCandidateBytes approximates one candidate's transcript payload.
+func remoteItemCandidateBytes(candidate appitempaging.TranscriptItemCandidate) int {
+	item := candidate.Item
+	return len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
+}
+
+// remoteTrimCandidatesToBound returns the newest suffix of candidates that fits
+// remoteItemPagingCandidateCapacity and remoteItemPagingByteCapacity. The newest
+// candidate is always kept even when it alone exceeds the byte budget, mirroring
+// the packer's rule of retaining the nearest item past its soft result limit, so
+// an oversized item cannot empty the window. Without this, a single page that
+// exceeds the bound would be retained wholesale and the documented window bound
+// would not hold.
+func remoteTrimCandidatesToBound(candidates []appitempaging.TranscriptItemCandidate) []appitempaging.TranscriptItemCandidate {
+	if !remoteRetainedCandidatesExceedBounds(candidates) {
+		return candidates
+	}
+	start := len(candidates) - 1
+	bytes := 0
+	for start >= 0 {
+		if start < len(candidates)-1 {
+			next := remoteItemCandidateBytes(candidates[start])
+			if len(candidates)-start > remoteItemPagingCandidateCapacity || bytes+next > remoteItemPagingByteCapacity {
+				break
+			}
+		}
+		bytes += remoteItemCandidateBytes(candidates[start])
+		start--
+	}
+	return candidates[start+1:]
 }
 
 // recordRemoteItemPage builds the controller window for one remote page and
@@ -691,11 +725,13 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	if !compatible || remoteRetainedCandidatesExceedBounds(merged) {
 		// The fresh page contradicts the retained window, or the union would
 		// exceed the retained bound, so the accumulated history cannot be served
-		// soundly: rotate the incarnation and retain only this page. The cursor
-		// minted below stays live; boundaries older than the bounded window fail
-		// closed as stale rather than being answered from a truncated history.
+		// soundly: rotate the incarnation and retain only this page, trimmed to
+		// the newest candidates that fit the bound when the page alone exceeds it.
+		// The cursor minted below stays live while its boundary is retained;
+		// boundaries older than the bounded window fail closed as stale rather
+		// than being answered from a truncated history.
 		identity = s.mintRemoteItemIdentity(key)
-		merged = append([]appitempaging.TranscriptItemCandidate(nil), candidates...)
+		merged = append([]appitempaging.TranscriptItemCandidate(nil), remoteTrimCandidatesToBound(candidates)...)
 		head, hasHead = remoteItemPageHead(merged)
 	}
 	window := appitempaging.TranscriptItemWindow{Candidates: candidates}
