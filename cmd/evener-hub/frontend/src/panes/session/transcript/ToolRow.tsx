@@ -59,11 +59,11 @@
 //
 // A row with no intent is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
-import { findEntityIds } from "@evener/appwire-client";
-import { Fragment, type ReactNode, useId } from "react";
+import { Fragment, type ReactNode, useId, useMemo } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
+import { type EntityTextSegment, segmentEntityIds } from "./entitySegments";
 import styles from "./toolcallitem.module.css";
 
 const CLASS = {
@@ -166,21 +166,13 @@ export function statedIntentOf(item: { description?: string }): string | undefin
  * An id is ONE `<EntityRef>` node wherever it lands - never a pair of text runs
  * straddling the head/tail clamp, and never clipped (a clipped id with an
  * ellipsis inside it is not even detectable as an id, so no card could attach
- * to it). This mirrors `findEntityIds`' own contract: the ids it detects are
- * exactly the ones that resolve to a card. */
-type SummarySegment = { kind: "text"; text: string } | { kind: "entity"; id: string };
+ * to it). The segmentation itself is shared with EntityText (entitySegments);
+ * each caller maps its segments to its own nodes. */
+type SummarySegment = EntityTextSegment;
 
 /** Splits a summary string into its text and entity segments, in order. */
 function summarySegments(text: string): SummarySegment[] {
-  const segments: SummarySegment[] = [];
-  let cursor = 0;
-  for (const match of findEntityIds(text)) {
-    if (match.start > cursor) segments.push({ kind: "text", text: text.slice(cursor, match.start) });
-    segments.push({ kind: "entity", id: match.id });
-    cursor = match.end;
-  }
-  if (cursor < text.length) segments.push({ kind: "text", text: text.slice(cursor) });
-  return segments;
+  return segmentEntityIds(text);
 }
 
 /** A segment's length in code POINTS, never UTF-16 units: a cut through a
@@ -190,9 +182,15 @@ function segmentLength(segment: SummarySegment): number {
   return Array.from(segment.kind === "entity" ? segment.id : segment.text).length;
 }
 
+/** One entity id's span within the summary, in code POINTS. */
+interface EntitySpan {
+  start: number;
+  end: number;
+}
+
 /** Each entity's code-point span, so a cut can be kept out of every one. */
-function entitySpans(segments: SummarySegment[]): Array<{ start: number; end: number }> {
-  const spans: Array<{ start: number; end: number }> = [];
+function entitySpans(segments: SummarySegment[]): EntitySpan[] {
+  const spans: EntitySpan[] = [];
   let offset = 0;
   for (const segment of segments) {
     const length = segmentLength(segment);
@@ -200,6 +198,28 @@ function entitySpans(segments: SummarySegment[]): Array<{ start: number; end: nu
     offset += length;
   }
   return spans;
+}
+
+/** Every cut input for one segmented summary, derived once and carried
+ * together: the summary's code-point characters, their total, and each
+ * entity's span. The cuts below read these instead of re-walking the segments,
+ * and no caller derives any of them a second time. */
+interface SummaryMeasure {
+  chars: string[];
+  total: number;
+  spans: EntitySpan[];
+}
+
+function measureSummary(text: string, segments: SummarySegment[]): SummaryMeasure {
+  const chars = Array.from(text);
+  return { chars, total: chars.length, spans: entitySpans(segments) };
+}
+
+/** The one span a cut falls STRICTLY inside, if any: a cut on a span's edge is
+ * already outside that id, and id spans never overlap (findEntityIds skips
+ * past each id it matches). */
+function spanContaining(spans: EntitySpan[], cut: number): EntitySpan | undefined {
+  return spans.find((span) => span.start < cut && cut < span.end);
 }
 
 /** The collapsed second line's middle-truncation cut (in code points): head
@@ -218,20 +238,15 @@ function entitySpans(segments: SummarySegment[]): Array<{ start: number; end: nu
  * its start) so the whole id stays on one side as one node. An edge that would
  * empty the head or the tail is never chosen - a one-sided split is not a
  * middle truncation. */
-function middleTruncationCut(segments: SummarySegment[], total: number): number {
-  const spans = entitySpans(segments);
-  const containing = (cut: number) => spans.find((span) => cut > span.start && cut < span.end);
+function middleTruncationCut(measure: SummaryMeasure): number {
+  const { total, spans } = measure;
   let cut = Math.ceil(total * 0.6);
-  const straddled = containing(cut);
+  const straddled = spanContaining(spans, cut);
   if (straddled) {
-    const toStart = cut - straddled.start;
-    const toEnd = straddled.end - cut;
-    cut =
-      toStart <= toEnd && straddled.start > 0
-        ? straddled.start
-        : straddled.end < total
-          ? straddled.end
-          : straddled.start;
+    const preferStart = cut - straddled.start <= straddled.end - cut && straddled.start > 0;
+    // A snap to the id's end would empty the tail, so the start is then the
+    // only cut left; ties and a start with no head snap there too.
+    cut = preferStart || straddled.end >= total ? straddled.start : straddled.end;
   }
   return cut;
 }
@@ -239,14 +254,12 @@ function middleTruncationCut(segments: SummarySegment[], total: number): number 
 /** Walks an entity-safe cut left off any boundary whitespace - and, if that
  * walk enters an id, back to that id's start - so no character the browser
  * would collapse sits at a span edge and no id is ever split. */
-function walkOffWhitespace(text: string, segments: SummarySegment[], cut: number): number {
-  const chars = Array.from(text);
-  const total = chars.length;
-  const spans = entitySpans(segments);
+function walkOffWhitespace(measure: SummaryMeasure, cut: number): number {
+  const { chars, total, spans } = measure;
   const isSpace = (index: number) => /\s/.test(chars[index] ?? "");
   let position = cut;
   while (position > 0 && position < total) {
-    const inside = spans.find((span) => position > span.start && position < span.end);
+    const inside = spanContaining(spans, position);
     if (inside) {
       position = inside.start;
       continue;
@@ -262,8 +275,8 @@ function walkOffWhitespace(text: string, segments: SummarySegment[], cut: number
 
 /** The collapsed line's middle-truncation cut over atomic segments: ~60% of the
  * code points, never inside an id and never adjacent to whitespace. */
-function middleSplit(text: string, segments: SummarySegment[]): number {
-  return walkOffWhitespace(text, segments, middleTruncationCut(segments, Array.from(text).length));
+function middleSplit(measure: SummaryMeasure): number {
+  return walkOffWhitespace(measure, middleTruncationCut(measure));
 }
 
 /** Splits the segment list at a code-point boundary, preserving order. The cut
@@ -297,14 +310,8 @@ function splitSegments(segments: SummarySegment[], cut: number): [SummarySegment
  * descriptor that ends its anchor mid-id is a bug, and this keeps the id ONE
  * node anyway (extending to its end is the faithful reading - the anchor names
  * everything up to the id it opens). */
-function entitySafeCut(segments: SummarySegment[], cut: number): number {
-  let offset = 0;
-  for (const segment of segments) {
-    const end = offset + segmentLength(segment);
-    if (segment.kind === "entity" && cut > offset && cut < end) return end;
-    offset = end;
-  }
-  return cut;
+function entitySafeCut(measure: SummaryMeasure, cut: number): number {
+  return spanContaining(measure.spans, cut)?.end ?? cut;
 }
 
 /** Renders a run of segments: each id as ONE embedded `<EntityRef>` (embedded
@@ -367,6 +374,32 @@ function linkifySummary(text: string, href: string | undefined): ReactNode {
   );
 }
 
+/** The inline-affordance control's seat: the entity-safe cut (in code points)
+ * it trails, and the segments split at it - everything the control follows,
+ * and everything after it. */
+interface AnchorSeat {
+  cut: number;
+  before: SummarySegment[];
+  after: SummarySegment[];
+}
+
+/** Every cut one summary's rendering needs, all derived from the ONE
+ * measurement: the collapsed line's middle-truncation cut, and the trailing
+ * control's seat when `trailingAfter` anchors it. Each is absent exactly when
+ * its render path does not exist. */
+interface SummaryCuts {
+  clampCut: number | undefined;
+  anchor: AnchorSeat | undefined;
+}
+
+/** Seats the inline-affordance control at `cut` (code points), snapping out of
+ * any id first so the id stays whole on one side of the control. */
+function seatAnchor(segments: SummarySegment[], measure: SummaryMeasure, cut: number): AnchorSeat {
+  const safeCut = entitySafeCut(measure, cut);
+  const [before, after] = splitSegments(segments, safeCut);
+  return { cut: safeCut, before, after };
+}
+
 export function ToolRow({
   summary,
   summaryLink,
@@ -403,10 +436,11 @@ export function ToolRow({
   // false as present would render an empty span and, on the expandable
   // branch, suppress the fallback label with nothing left to name the row.
   const hasStatus = status !== undefined && status !== null && status !== false;
-  // The inline-affordance anchor (trailingAfter): split the summary into the
-  // text up to the anchor's end and the rest, so the trailing control can
-  // ride BETWEEN them. Undefined when there is no trailing control, no
-  // anchor, or the anchor is not a literal PREFIX of summary.
+  const hasTrailing = trailing !== undefined && trailing !== null;
+  // The inline-affordance anchor (trailingAfter): the code-point cut the
+  // trailing control rides at, so it sits BETWEEN the text up to the anchor's
+  // end and the rest. Undefined when there is no trailing control, no anchor,
+  // or the anchor is not a literal PREFIX of summary.
   //
   // This is a prefix check (startsWith), never a substring search: searching
   // for the anchor anywhere in summary is ambiguous whenever the anchor text
@@ -416,21 +450,31 @@ export function ToolRow({
   // "lines" collides with it). A from-the-start prefix has no direction left
   // to be ambiguous in: the caller supplies the complete prefix it means, not
   // a fragment ToolRow has to go find (kata ledger #97).
-  const anchorSplit = ((): [before: string, after: string] | undefined => {
-    if (trailing === undefined || trailing === null || trailingAfter === undefined) return undefined;
+  const anchorCut = useMemo((): number | undefined => {
+    if (!hasTrailing || trailingAfter === undefined) return undefined;
     if (!summary.startsWith(trailingAfter)) return undefined;
-    return [trailingAfter, summary.slice(trailingAfter.length)];
-  })();
+    return Array.from(trailingAfter).length;
+  }, [hasTrailing, summary, trailingAfter]);
   // The summary decomposed into atomic segments (text runs and entity ids), so
   // both the middle-truncation split and the inline-affordance anchor can place
   // their cuts BETWEEN segments - an id is one node on one side, never split.
-  const segments = summarySegments(summary);
-  const clampCut = middleSplit(summary, segments);
-  // The anchor's cut is a code-point offset into the same segment list (it is
-  // a literal prefix of summary by construction).
-  const anchorCut = anchorSplit === undefined ? undefined : entitySafeCut(segments, Array.from(anchorSplit[0]).length);
-  const [anchorBefore, anchorAfter]: [SummarySegment[], SummarySegment[]] =
-    anchorCut === undefined ? [[], []] : splitSegments(segments, anchorCut);
+  // Memoized on `summary`, all it reads: live rows re-render per item update,
+  // and this segmentation is the row's expensive derivation.
+  const segments = useMemo(() => summarySegments(summary), [summary]);
+  // The cuts the summary's own rendering needs, derived in ONE measurement.
+  // Only the paths that cut pay for it: a row that neither clamps (a no-intent
+  // or expanded row) nor anchors a trailing control reads the full summary.
+  const needsClampedSummary = hasIntent && !expanded;
+  const cuts = useMemo((): SummaryCuts | undefined => {
+    if (!needsClampedSummary && anchorCut === undefined) return undefined;
+    const measure = measureSummary(summary, segments);
+    return {
+      clampCut: needsClampedSummary ? middleSplit(measure) : undefined,
+      anchor: anchorCut === undefined ? undefined : seatAnchor(segments, measure, anchorCut),
+    };
+  }, [anchorCut, needsClampedSummary, segments, summary]);
+  const clip = cuts?.clampCut;
+  const anchor = cuts?.anchor;
   // The chevron rides INLINE at the end of the headline text (see the grammar
   // above): inside the intent when there is one, otherwise inside the summary.
   // The intent-only Open form moves it after the sibling control below so Open
@@ -477,23 +521,26 @@ export function ToolRow({
   // siblings in exactly that visual order. data-intent-trailing is the
   // stylesheet hook that keeps all three on line 1.
   const intentLineTrailing =
-    hasIntent && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
+    hasIntent && !hasSummary && anchor === undefined && hasTrailing ? (
       <span className={CLASS.intentTrailing} data-testid="tool-row-intent-trailing">
         {trailing}
       </span>
     ) : null;
   const showIntentTrailing = intentLineTrailing !== null;
   // The collapsed second line's middle-truncation, WITH the inline-affordance
-  // variant: when anchorSplit places the trailing control mid-summary, the
+  // variant: when the anchor seats the trailing control mid-summary, the
   // control becomes a flex item of the clamped line between the anchor's end
   // and the remaining meta (read_file: ".../sheet.test.tsx [open] · lines
   // 1-260"). An anchor ending inside the clamped head puts the control right
   // after the head; one ending inside the tail (a long path spans the
   // truncation cut) keeps the path's visible tail whole and puts the control
   // between it and the meta. Either way every character renders exactly once.
+  // A row that discards the clamp (no intent, or expanded) returns above
+  // without deriving any of this.
   const clampedSummary = ((): ReactNode => {
-    const [headSegments, tailSegments] = splitSegments(segments, clampCut);
-    if (anchorSplit === undefined) {
+    if (clip === undefined) return null;
+    const [headSegments, tailSegments] = splitSegments(segments, clip);
+    if (anchor === undefined) {
       return (
         <>
           <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
@@ -505,24 +552,24 @@ export function ToolRow({
         </>
       );
     }
-    if (anchorCut !== undefined && anchorCut <= clampCut) {
+    if (anchor.cut <= clip) {
       return (
         <>
           <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
-            {summarySegmentNodes(anchorBefore, undefined)}
+            {summarySegmentNodes(anchor.before, undefined)}
           </span>
           <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
             {trailing}
           </span>
           <span className={`${CLASS.clampedTail} ${CLASS.summaryMeta}`} data-testid="tool-row-summary-tail">
-            {summarySegmentNodes(anchorAfter, undefined)}
+            {summarySegmentNodes(anchor.after, undefined)}
           </span>
         </>
       );
     }
     // The anchor sits past the truncation cut: the path/id the control opens
     // stays whole in the tail, and the control rides between it and the meta.
-    const [midSegments, metaSegments] = splitSegments(tailSegments, (anchorCut ?? clampCut) - clampCut);
+    const [midSegments, metaSegments] = splitSegments(tailSegments, anchor.cut - clip);
     return (
       <>
         <span className={CLASS.clampedHead} data-testid="tool-row-summary-head">
@@ -567,13 +614,13 @@ export function ToolRow({
         >
           {hasIntent && !expanded ? (
             clampedSummary
-          ) : anchorSplit !== undefined ? (
+          ) : anchor !== undefined ? (
             <>
-              {summarySegmentNodes(anchorBefore, summaryLink)}
+              {summarySegmentNodes(anchor.before, summaryLink)}
               <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
                 {trailing}
               </span>
-              {summarySegmentNodes(anchorAfter, summaryLink)}
+              {summarySegmentNodes(anchor.after, summaryLink)}
             </>
           ) : (
             summarySegmentNodes(segments, summaryLink)
@@ -582,14 +629,14 @@ export function ToolRow({
           {/* Affordances ride the TOOL-CALL line (see the grammar above):
               inline at the end of the summary text, so with an intent present
               they sit on the demoted second line - not the rationale line.
-              Skipped when anchorSplit already placed the control mid-summary. */}
-          {hasIntent && trailing && anchorSplit === undefined ? (
+              Skipped when the anchor already placed the control mid-summary. */}
+          {hasIntent && trailing && anchor === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
         </span>
       )}
       {!hasIntent && !hasSummary && chevron}
-      {(!hasIntent || !hasSummary) && anchorSplit === undefined ? trailing : null}
+      {(!hasIntent || !hasSummary) && anchor === undefined ? trailing : null}
     </>
   );
 
@@ -636,18 +683,18 @@ export function ToolRow({
         >
           {hasIntent && !expanded ? (
             clampedSummary
-          ) : anchorSplit !== undefined ? (
+          ) : anchor !== undefined ? (
             <>
-              {summarySegmentNodes(anchorBefore, summaryLink)}
+              {summarySegmentNodes(anchor.before, summaryLink)}
               <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
                 {trailing}
               </span>
-              {summarySegmentNodes(anchorAfter, summaryLink)}
+              {summarySegmentNodes(anchor.after, summaryLink)}
             </>
           ) : (
             summarySegmentNodes(segments, summaryLink)
           )}
-          {hasIntent && trailing && anchorSplit === undefined ? (
+          {hasIntent && trailing && anchor === undefined ? (
             <span className={CLASS.summaryTrailing}>{trailing}</span>
           ) : null}
           {/* The two-level body chevron rides inline at the end of the summary
@@ -662,7 +709,7 @@ export function ToolRow({
           intent-only row never reaches this fallback: its control rides the
           disclosure line via intentLineTrailing (the summaryLine div below
           only mounts when there is no such slot). */}
-      {!hasIntent && anchorSplit === undefined ? trailing : null}
+      {!hasIntent && anchor === undefined ? trailing : null}
     </>
   );
   // The accessible name for a body disclosure trigger: the failure prefix
