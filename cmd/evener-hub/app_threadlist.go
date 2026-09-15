@@ -144,6 +144,17 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 func annotateThreadProjects(threads []appwire.Thread) {
 	projects := make(map[string]identifier.Project)
 	for i := range threads {
+		// A remote hub source's threads name another machine's filesystem. Using
+		// this hub's ResolveProject on that CWD would stamp a controller-local
+		// project identity over the one the remote hub already computed, grouping
+		// the thread under the wrong project and aiming project-scoped actions at a
+		// controller-local path. Only a local thread's CWD describes a path this
+		// hub can resolve; a remote thread keeps the remote's ProjectID/ProjectPath.
+		// This mirrors the locality gate on past metadata (mergePastMetadataForList)
+		// and file-backed image enrichment (EnrichThreadFileBackedImages).
+		if threadListSourceID("local", threads[i]) != "local" {
+			continue
+		}
 		path := strings.TrimSpace(threads[i].CWD)
 		if path == "" {
 			continue
