@@ -963,28 +963,50 @@ class Driver {
     );
   }
 
-  // A POSITIVE turn-end barrier. steerVisible reads the daemon's own status
-  // (Composer.tsx's busy = isTurnActive(status.type, activeTurnId)). Every
-  // hold in the choreography is armed only after this barrier, because a hold
-  // captures the NEXT provider request — arming it while the previous
-  // scenario's turn still has an undispatched leg (a drain's steering leg,
-  // which the daemon only sends after the held first leg returns) would steal
-  // that leg: the captured request never completes, the turn never ends, and
-  // the next submit silently routes to the client-side queue (observed on a
-  // loaded box as exactly that: the steered input sitting in the queue strip
-  // and the input-visibility wait timing out).
+  // A POSITIVE turn-end barrier. Every hold in the choreography is armed only
+  // after this barrier, because a hold captures the NEXT provider request —
+  // arming it while the previous scenario's turn still has an undispatched leg
+  // (a drain's steering leg, which the daemon only sends after the held first
+  // leg returns) would steal that leg: the captured request never completes,
+  // the turn never ends, and the next submit silently routes to the
+  // client-side queue (observed on a loaded box as exactly that: the steered
+  // input sitting in the queue strip and the input-visibility wait timing
+  // out).
   //
-  // A single not-busy poll is NOT enough: the daemon reports not-busy in the
-  // gap between the previous turn's last leg completing and the next leg
-  // (the drained steering message) being dispatched, and under load that gap
-  // widens until a bare poll lands in it. The barrier therefore requires the
-  // idle reading to SETTLE (waitPage's settleMs) before it releases.
-  // Reply waits cannot substitute on their own: a drain produces a reply per
-  // leg, and the first leg's reply arrives while the drain leg is still
-  // pending.
+  // `steerVisible === false` alone is NOT an authoritative idle condition: it
+  // is the DERIVED busy predicate (Composer.tsx's busy = isTurnActive(
+  // status.type, activeTurnId) = status.type === "active" && activeTurnId), so
+  // it is ALSO false when the wire reports an ACTIVE session with no
+  // activeTurnId — which is exactly what a session holding queued/steering
+  // work reports, and precisely where the drain's undispatched leg lives. The
+  // barrier therefore gates on two authoritative readings instead of that
+  // derived flag:
+  //   1. the session's RAW wire status, which Cadence renders straight onto its
+  //      aria-label ("Working" ⟺ status.type === "active"); the barrier only
+  //      releases when the session is demonstrably not working; and
+  //   2. queue/pending-work emptiness — the status row's queue indicator
+  //      renders only while queueDepth > 0, so its absence is an empty queue.
+  // A session still working, or still holding queued work, cannot release the
+  // barrier even though its busy flag reads false.
+  //
+  // The idle reading must still SETTLE (waitPage's settleMs) before it
+  // releases: a single not-idle-looking poll can land in the gap between the
+  // previous turn's last leg completing and the next leg being dispatched,
+  // which widens under load. Reply waits cannot substitute on their own: a
+  // drain produces a reply per leg, and the first leg's reply arrives while
+  // the drain leg is still pending.
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
     await this.waitPage(
-      `(() => { const state = ${this.composerStateExpr(ref)}; return state && state.steerVisible === false ? true : null; })()`,
+      `(() => {
+        const pane = ${this.paneScopeExpr(ref)};
+        if (!pane) return null;
+        const state = ${this.composerStateExpr(ref)};
+        if (!state || state.steerVisible !== false) return null;
+        const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
+        if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
+        if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
+        return true;
+      })()`,
       {
         timeoutMs,
         settleMs: TURN_IDLE_SETTLE_MS,
@@ -1064,7 +1086,10 @@ class Driver {
   // the useful question when it fails is not "how long did we wait" but
   // "which of a late render, a queue-routed submit, or a wrong-session pane
   // happened" — and that is only answerable from the page, not the label.
-  async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS } = {}) {
+  // `ref` names the session whose composer the timeout dump reads; it
+  // defaults to sessionA (this helper's current call site) so a reuse for
+  // sessionB reports B's composer, not A's.
+  async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
     try {
       await this.waitPage(
         `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)})) ? true : null)()`,
@@ -1074,7 +1099,7 @@ class Driver {
       const [blocks, queue, composer] = await Promise.all([
         evaluate(this.send, this.transcriptBlocksExpr()).catch((e) => `turn-block read failed: ${e}`),
         evaluate(this.send, this.queueStripExpr()).catch((e) => `queue read failed: ${e}`),
-        this.composerState(this.sessionA).catch((e) => `composer read failed: ${e}`),
+        this.composerState(ref).catch((e) => `composer read failed: ${e}`),
       ]);
       throw new Error(
         `${error instanceof Error ? error.message : String(error)}\n` +
