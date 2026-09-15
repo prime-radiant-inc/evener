@@ -505,12 +505,20 @@ type retainedScratchPool struct {
 // replacement and silently lose continuity with the original durable artifacts.
 // It also rejects contradictory mappings — a binding without an id, a duplicate
 // binding/reference, a slot that names an unpinned directory or a different
-// kind, or a consumer role that names a binding absent from the manifest.
+// kind, or a consumer role that names a binding absent from the manifest — and
+// an owning binding that no consumer role names: installScratchRetentionFor
+// publishes a binding and its pinned, lease-owning slots before it publishes the
+// consumer that maps a session onto them, so a crash in that window leaves an
+// allocation nothing would adopt, and restore would silently mint a replacement
+// instead of resuming in the retained directory.
 //
 // It deliberately does not require every reference to be mapped by a binding:
 // a backswap whose target already owns the incoming kind leaves the incoming
 // allocation a "historical" pinned reference with no owning slot, and restore
-// must preserve it (see TestRetirementSharedChildScratchBindingsRestore).
+// must preserve it (see TestRetirementSharedChildScratchBindingsRestore). It
+// likewise preserves a binding that owns no slot — a backswap empties the source
+// binding and moves its roles to the target — because a binding that owns
+// nothing cannot lose an allocation.
 func validateRetainedScratchGraph(manifest sandbox.ScratchManifest) error {
 	refKinds := make(map[string]string, len(manifest.References))
 	for _, ref := range manifest.References {
@@ -553,6 +561,7 @@ func validateRetainedScratchGraph(manifest sandbox.ScratchManifest) error {
 			}
 		}
 	}
+	referenced := make(map[string]struct{}, len(manifest.Bindings))
 	for _, consumer := range manifest.Consumers {
 		roles := []string{consumer.CurrentBindingID, consumer.ParentSharedBindingID, consumer.WorktreeRestoreBindingID}
 		roles = append(roles, consumer.AbandonedBindingIDs...)
@@ -563,6 +572,21 @@ func validateRetainedScratchGraph(manifest sandbox.ScratchManifest) error {
 			if _, ok := bindingIDs[id]; !ok {
 				return fmt.Errorf("retention consumer %q references unknown binding %q", consumer.SessionID, id)
 			}
+			referenced[id] = struct{}{}
+		}
+	}
+	// Every binding that owns a lease-owning slot must be named by some consumer
+	// role, or its allocation can never be adopted on restore. Bindings that own
+	// no slot are historical leftovers and are kept.
+	for _, binding := range manifest.Bindings {
+		if _, ok := referenced[binding.BindingID]; ok {
+			continue
+		}
+		for kind, slot := range binding.Slots {
+			if !slot.OwnsLease {
+				continue
+			}
+			return fmt.Errorf("retention binding %q owns slot %q but no consumer role references it", binding.BindingID, kind)
 		}
 	}
 	return nil

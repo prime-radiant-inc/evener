@@ -369,8 +369,18 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The retained allocation is published as the session's OWN installed
+	// binding, not as an extra one. Production re-points a session's consumer
+	// only inside stageScratchSwapBinding, which moves the owning slots off the
+	// source binding in the same transaction, so a binding that keeps a
+	// lease-owning slot always keeps a consumer role. Minting a second binding
+	// and re-pointing root.id at it would orphan the session's real binding,
+	// which no production path does.
+	if len(manifest.Bindings) != 1 || len(manifest.Consumers) != 1 {
+		t.Fatalf("fixture expected the session's single installed binding: %+v", manifest)
+	}
 	binding := sandbox.ScratchBinding{
-		BindingID:      "E0",
+		BindingID:      manifest.Bindings[0].BindingID,
 		OwnerSessionID: root.id,
 		WorkingDir:     dir,
 		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
@@ -378,8 +388,8 @@ func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
 	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
 		[]sandbox.ScratchBinding{binding},
 		[]sandbox.ScratchConsumerBinding{
-			{SessionID: root.id, CurrentBindingID: "E0"},
-			{SessionID: "child-consumer", CurrentBindingID: "E0"},
+			{SessionID: root.id, CurrentBindingID: binding.BindingID},
+			{SessionID: "child-consumer", CurrentBindingID: binding.BindingID},
 		}); err != nil {
 		t.Fatal(err)
 	}
@@ -1829,15 +1839,25 @@ func TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The retained allocation is published as the session's OWN installed
+	// binding, not as an extra one. Production re-points a session's consumer
+	// only inside stageScratchSwapBinding, which moves the owning slots off the
+	// source binding in the same transaction, so a binding that keeps a
+	// lease-owning slot always keeps a consumer role. Minting a second binding
+	// and re-pointing root.id at it would orphan the session's real binding,
+	// which no production path does.
+	if len(manifest.Bindings) != 1 || len(manifest.Consumers) != 1 {
+		t.Fatalf("fixture expected the session's single installed binding: %+v", manifest)
+	}
 	binding := sandbox.ScratchBinding{
-		BindingID:      "E0",
+		BindingID:      manifest.Bindings[0].BindingID,
 		OwnerSessionID: root.id,
 		WorkingDir:     dir,
 		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
 	}
 	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
 		[]sandbox.ScratchBinding{binding},
-		[]sandbox.ScratchConsumerBinding{{SessionID: root.id, CurrentBindingID: "E0"}}); err != nil {
+		[]sandbox.ScratchConsumerBinding{{SessionID: root.id, CurrentBindingID: binding.BindingID}}); err != nil {
 		t.Fatal(err)
 	}
 	// Release the live lease so prepareRetainedScratch can reacquire the handle.

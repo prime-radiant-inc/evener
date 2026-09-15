@@ -972,6 +972,149 @@ func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 	}
 }
 
+// TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer covers the
+// crash window installScratchRetentionFor leaves open: it calls
+// env.SetScratchRetentionBinding and env.PinOwnedScratch — publishing the
+// binding, its directory pin and its lease-owning slots — BEFORE
+// sandbox.UpsertScratchBinding publishes the consumer that maps a session onto
+// it. A crash in between leaves a binding that owns the retained allocation and
+// no consumer role naming it. Nothing then adopts that allocation: restore
+// prepares a pool, finds no consumer for the binding, and initialization mints
+// a replacement scratch while the original durable allocation stays pinned but
+// never adopted. Restore must refuse this manifest instead of silently losing
+// the session's scratch.
+func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T) {
+	stateDir := t.TempDir()
+	base := t.TempDir()
+	workDir := t.TempDir()
+	const rootID = "crashed-owning-binding"
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
+	scratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	binding := sandbox.ScratchBinding{
+		BindingID:      "B0",
+		OwnerSessionID: rootID,
+		WorkingDir:     workDir,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true},
+		},
+	}
+	// UpsertScratchBindingOnly is the real writer PinOwnedScratch uses: it
+	// publishes the binding and every owning slot without touching consumers.
+	if err := sandbox.UpsertScratchBindingOnly(owner, binding); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Bindings) != 1 || len(manifest.Consumers) != 0 {
+		t.Fatalf("fixture manifest = %+v, want one binding and no consumer", manifest)
+	}
+	if slot := manifest.Bindings[0].Slots[sandbox.ScratchKindUnsandboxed]; !slot.OwnsLease {
+		t.Fatalf("fixture binding slot = %+v, want a lease-owning slot", slot)
+	}
+
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	root.stateDir = stateDir
+	root.id = rootID
+	root.delegateRootSessionID = ""
+	if err := root.prepareRetainedScratch(); err == nil {
+		t.Fatal("restore prepared a manifest whose retained allocation no consumer can adopt")
+	}
+}
+
+// TestRetirementRestorePreservesHistoricalEmptyBinding is the companion to the
+// test above: requiring a consumer of every binding would be wrong. A real
+// environment swap empties and re-points the source binding in one transaction:
+// stageScratchSwapBinding (session_scratch_retention.go:118) writes the target's
+// new slots and the consumer's new current binding id, and deletes each moved
+// kind from the source record, in a single UpdateScratchBindings call
+// (session_scratch_retention.go:182-196). The consumer role that names the
+// emptied source — the parked worktree-restore role — is only published
+// afterwards by registerScratchConsumerRoles (session_env_swap.go:211), so the
+// window between the two legitimately holds an empty binding that no consumer
+// role names. TestRetirementResumedWorktreeKeepsBindingIdentityAcrossBackswap
+// asserts the emptied side of that shape (the pre-swap binding keeps no
+// lease-owning slot). Such a binding owns nothing, so no allocation can be lost
+// by keeping it; restore must still succeed and adopt the real allocation
+// through the owning binding.
+func TestRetirementRestorePreservesHistoricalEmptyBinding(t *testing.T) {
+	stateDir := t.TempDir()
+	base := t.TempDir()
+	workDir := t.TempDir()
+	const rootID = "resumed-backswap-root"
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootID}
+	scratch, err := sandbox.NewSessionScratch(base, workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	owning := sandbox.ScratchBinding{
+		BindingID:      "current-env",
+		OwnerSessionID: rootID,
+		WorkingDir:     workDir,
+		Slots: map[string]sandbox.ScratchSlot{
+			sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true},
+		},
+	}
+	consumer := sandbox.ScratchConsumerBinding{SessionID: rootID, CurrentBindingID: owning.BindingID}
+	if err := sandbox.UpsertScratchBinding(owner, owning, consumer); err != nil {
+		t.Fatal(err)
+	}
+	historical := sandbox.ScratchBinding{BindingID: "emptied-source", OwnerSessionID: rootID, WorkingDir: workDir}
+	if err := sandbox.UpsertScratchBindingOnly(owner, historical); err != nil {
+		t.Fatalf("publish the historical empty binding: %v", err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Bindings) != 2 || len(manifest.Consumers) != 1 {
+		t.Fatalf("fixture manifest = %+v, want two bindings and one consumer", manifest)
+	}
+
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	root.stateDir = stateDir
+	root.id = rootID
+	root.delegateRootSessionID = ""
+	if err := root.prepareRetainedScratch(); err != nil {
+		t.Fatalf("restore rejected a historical empty binding: %v", err)
+	}
+	pool := root.retainedScratch.Load()
+	if pool == nil {
+		t.Fatal("restore published no pool")
+	}
+	if _, ok := pool.bindings["emptied-source"]; !ok {
+		t.Fatalf("historical empty binding absent from the pool: %+v", pool.bindings)
+	}
+	if got := pool.consumers[rootID].CurrentBindingID; got != owning.BindingID {
+		t.Fatalf("consumer current binding = %q, want %q", got, owning.BindingID)
+	}
+	if _, ok := pool.handles[filepath.Clean(scratch.Dir)]; !ok {
+		t.Fatalf("retained allocation was not reacquired: %+v", pool.handles)
+	}
+}
+
 // TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath is H1: a resumed
 // root whose persisted binding owns a sandbox-allocated scratch must resume in
 // THAT directory. Resume provisions the sandbox before retained-scratch adoption

@@ -293,7 +293,70 @@ func (s *SessionScratch) Pin(owner ScratchOwner, ref ScratchReference) error {
 	}
 	manifest.References = append(manifest.References, canonicalRef)
 	manifest.Revision++
-	return writeScratchRetention(owner, manifest)
+	if err := writeScratchRetention(owner, manifest); err != nil {
+		// The pin must not outlive the reference that was supposed to publish
+		// it: ReleaseScratchRetention only removes pins listed in
+		// manifest.References, so an unreferenced pin would hold the directory
+		// against collection forever. Roll it back before reporting the
+		// failure. The original error is returned unwrapped when the rollback
+		// succeeds; both causes are reported when it does not.
+		if rollbackErr := rollbackUnpublishedScratchPin(owner, dir, canonicalRef.Kind); rollbackErr != nil {
+			return errors.Join(err, rollbackErr)
+		}
+		return err
+	}
+	return nil
+}
+
+// rollbackUnpublishedScratchPin undoes the directory pin of a Pin call whose
+// manifest publication failed, restoring the pre-Pin state so the allocation is
+// collectible again. It is called with the manifest lock held.
+//
+// The durable manifest is re-read first. atomicWritePrivateFile fsyncs the
+// containing directory last, so writeScratchRetention can report an error after
+// the manifest rename already committed; the pin is then the only protection of
+// a directory the committed manifest does reference, and removing it would be
+// exactly the unsafe trade — a directory collectible while the manifest still
+// claims it — that the pin-before-reference ordering exists to prevent. A
+// published reference therefore leaves the pin alone.
+//
+// A pin is removed only when it is this owner's own pin for dir and kind,
+// mirroring ReleaseScratchRetention: a pin that was replaced by another owner is
+// left for the collector rather than deleted on doubt. Since references are
+// added and removed only under this lock, an unreferenced pin for this owner's
+// own directory is always an orphan left by an interrupted publication — either
+// this call's or a predecessor's — and removing it can only undo that
+// interruption, never unprotect a claimed directory.
+func rollbackUnpublishedScratchPin(owner ScratchOwner, dir, kind string) error {
+	current, err := loadScratchRetention(owner)
+	if err != nil {
+		return fmt.Errorf("sandbox: confirm rollback of retention pin for %q: %w", dir, err)
+	}
+	for _, ref := range current.References {
+		refDir, err := canonicalScratchPath(ref.Dir)
+		if err != nil {
+			return fmt.Errorf("sandbox: confirm rollback of retention pin for %q: %w", dir, err)
+		}
+		if refDir == dir && ref.Kind == kind {
+			// The reference was committed despite the reported error.
+			return nil
+		}
+	}
+	pin, pinErr := readScratchDirectoryPin(dir)
+	switch {
+	case pinErr == nil && pin.Owner == owner && filepath.Clean(pin.Dir) == dir && pin.Kind == kind:
+		if removeErr := os.Remove(filepath.Join(dir, scratchPinName)); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("sandbox: roll back retention pin for %q: %w", dir, removeErr)
+		}
+		return nil
+	case os.IsNotExist(pinErr):
+		// Already absent; nothing to undo.
+		return nil
+	case pinErr != nil:
+		return fmt.Errorf("sandbox: retention pin for %q is unreadable; left in place: %w", dir, pinErr)
+	default:
+		return fmt.Errorf("sandbox: retention pin for %q does not identify this owner's pin for the directory and kind; left in place", dir)
+	}
 }
 
 // UpdateScratchBindings replaces only the supplied binding/consumer records in

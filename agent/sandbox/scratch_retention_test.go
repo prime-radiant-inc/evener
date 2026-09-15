@@ -317,6 +317,104 @@ func TestScratchRetentionPinBeforeReferenceOrdering(t *testing.T) {
 	}
 }
 
+// TestScratchRetentionFailedManifestPublicationRemovesThePin is the regression
+// test for the unreclaimable-pin leak. Pin writes the directory pin FIRST (so a
+// concurrent collector cannot collect the directory in the window before the
+// manifest reference exists) and publishes the reference second. When that
+// publication fails after the pin is durable, the pin used to survive with no
+// manifest reference, and ReleaseScratchRetention only removes pins listed in
+// manifest.References, so the directory stayed pinned against collection
+// forever. A failed publication must leave the allocation exactly as the failed
+// call found it: no pin, no reference, and therefore collectible again.
+//
+// The failure is a real filesystem condition, not a hook: a successful first Pin
+// creates the retention directory, lock and manifest, and chmod'ing that
+// directory to 0o500 leaves acquireScratchRetentionLock working (the lock file
+// already exists and the search bit is intact) and writeScratchDirectoryPin
+// working (a pin lives in the scratch directory) while
+// atomicWritePrivateFile's os.CreateTemp of the manifest temp file fails EACCES.
+func TestScratchRetentionFailedManifestPublicationRemovesThePin(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only retention directory cannot be created as root")
+	}
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	// A first successful pin creates the retention directory, its lock and the
+	// manifest the second call will fail to extend.
+	existing := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	failing, err := NewSessionScratch(base, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = failing.Cleanup() })
+	retentionDir := scratchRetentionDir(owner)
+	if err := os.Chmod(retentionDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(retentionDir, 0o700) })
+
+	err = failing.Pin(owner, ScratchReference{Dir: failing.Dir, Kind: ScratchKindUnsandboxed})
+	if err == nil {
+		t.Fatal("Pin succeeded although the manifest could not be published")
+	}
+	pinPath := filepath.Join(failing.Dir, scratchPinName)
+	if _, statErr := os.Stat(pinPath); !os.IsNotExist(statErr) {
+		t.Fatalf("a failed manifest publication left the pin %q behind: the directory is pinned against collection and no manifest reference lets ReleaseScratchRetention reclaim it (stat err = %v)", pinPath, statErr)
+	}
+	manifest, err := LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.References) != 1 || filepath.Clean(manifest.References[0].Dir) != filepath.Clean(existing.Dir) {
+		t.Fatalf("failed publication changed the manifest references: %+v", manifest.References)
+	}
+	// The preexisting pin the failed call was never allowed to touch is intact.
+	if pin, pinErr := readScratchDirectoryPin(existing.Dir); pinErr != nil || pin.Owner != owner {
+		t.Fatalf("failed publication damaged the preexisting pin: %+v err=%v", pin, pinErr)
+	}
+	// The consequence: ordinary age-based collection can now reclaim the
+	// directory, which it could not while the orphan pin outlived the call.
+	if err := failing.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().Add(-2 * crashedSessionScratchMaxAge)
+	if err := os.Chtimes(failing.Dir, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := SweepCrashedSessionScratch(workspace); err != nil {
+		t.Fatalf("sweep after the failed publication: %v", err)
+	}
+	if _, statErr := os.Stat(failing.Dir); !os.IsNotExist(statErr) {
+		t.Fatalf("the directory orphaned by the failed publication was not reclaimed: %v", statErr)
+	}
+}
+
+// TestScratchRetentionRollbackKeepsAPublishedPin proves the rollback's
+// published-reference guard: atomicWritePrivateFile commits the manifest rename
+// before it fsyncs the containing directory, so a writeScratchRetention error
+// can arrive after the reference is already durable. Removing the pin then would
+// leave a directory collectible while the manifest still claims it, so the
+// rollback must re-read the manifest and leave a published pin exactly as it is.
+func TestScratchRetentionRollbackKeepsAPublishedPin(t *testing.T) {
+	base, workspace := scratchRetentionBase(t)
+	owner := retentionOwner(t)
+	scratch := pinnedScratch(t, base, workspace, owner, ScratchKindSandbox)
+	dir, err := canonicalScratchPath(scratch.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rollbackUnpublishedScratchPin(owner, dir, ScratchKindSandbox); err != nil {
+		t.Fatalf("rollback reported an error for a published pin: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, scratchPinName)); statErr != nil {
+		t.Fatalf("rollback removed a pin the manifest still references: %v", statErr)
+	}
+	retained, retainErr := scratchDirectoryRetained(dir)
+	if retainErr != nil || !retained {
+		t.Fatalf("published directory = retained %v err %v, want retained with no diagnostic", retained, retainErr)
+	}
+}
+
 func retentionOwner(t *testing.T) ScratchOwner {
 	t.Helper()
 	return ScratchOwner{StateDir: t.TempDir(), RootSessionID: identifier.MustNewSessionID()}
