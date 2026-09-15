@@ -143,28 +143,31 @@ is empty (`app_threadlifecycle.go`:
 `sourceID := strings.TrimSpace(params.Source); if sourceID == "" { sourceID =
 launchSourceID(params) }`).
 
-**The legacy fallback must not name a configured host.** `launchSourceID` treats
-any non-empty, non-`evener` harness string as a source ID, so a harness value
-that happens to equal a configured host name (say a harness literally named
-`m4`) would silently retarget the spawn to that remote host. The required
-contract is therefore: when `Source` is empty and the harness fallback yields a
-value that names a configured host source, the start is refused
-(`InvalidParams`) rather than routed there; alternatively the harness-as-source
-fallback is retired outright. **Implementation status:** the shipped 06a
-`hubThreadStart` resolves the fallback unconditionally
+**The harness must not name a configured host.** `launchSourceID` treats any
+non-empty, non-`evener` harness string as a source ID, so a harness value that
+happens to equal a configured host name (say a harness literally named `m4`)
+would silently retarget the spawn to that remote host — whether it arrives on
+the fallback path (`Source` empty) or is forwarded alongside a set `Source`.
+The required contract is therefore: a harness value that names a configured host
+source is refused (`InvalidParams`) rather than routed or forwarded; the
+harness-as-source fallback is likewise refused/retired outright. **Implementation
+status:** the shipped 06a `hubThreadStart` resolves the fallback unconditionally
 (`multi-host-pr06a-fleet-view-go`, **pending merge, not on `main`**), so this
 refusal is a requirement, not a present fact.
 
-**The field — and the legacy harness — are controller-only and must not reach
-the remote hub.** `ThreadStartParams.Source` names a source in the controller's
-registry; the remote hub would resolve the same string against its own registry
-(wrong target or `spawn source is not available`). The legacy `Harness` field
-carries the same hazard: `launchSourceID` reads any non-empty, non-`evener`
-harness as a source ID. `RemoteHubSource.StartThread` therefore clears **both**
-`Source` and `Harness` before forwarding (component 05, §"Registration and
-default-source selection"), so a host picker read on the wire never changes what
-the remote hub does: the chosen host is expressed by which `RemoteHubSource`
-handled the start.
+**The host selector is controller-only; the harness is preserved.** The
+`Source` field names a source in the controller's registry; the remote hub would
+resolve the same string against its own registry (wrong target or `spawn source
+is not available`). `RemoteHubSource.StartThread` therefore clears `Source`
+before forwarding (component 05, §"Registration and default-source selection").
+`Harness` is **not** a controller host selector to discard: it is the caller's
+harness/backend selection, which the remote's own `launchSourceID` reads to
+choose the backend, so it is forwarded verbatim (or explicitly translated);
+clearing it — or overwriting it with `"evener"` — would silently start the
+remote's default backend instead of the caller's choice. The safety that justified
+clearing it is instead provided by the refusal above: a harness naming a
+configured host source never reaches the remote. The chosen host is expressed by
+which `RemoteHubSource` handled the start.
 
 ## Implementation approach
 
@@ -210,9 +213,14 @@ only `local`, so the fan-out currently degenerates to one source.
   last-known-good rows the cache already holds; a never-attached host has none,
   which is correct — nothing has asked for its sessions yet. The synchronous
   fallback walk (`remoteThreadFetch` when no cache is configured) obeys the same
-  gate. **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
-  (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate; the
-  gate is the implementing PR's requirement, not a present fact.
+  gate. The gate must not be a check followed by an `Ensure`-backed resolver: it
+  must read through the **attached-only client lookup** (component 05,
+  §"Method-coverage analysis"), so a host that disconnects between the check and
+  the call is skipped rather than re-attached by a background read.
+  **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
+  (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate and its
+  resolver is wired to `Ensure`; both the gate and the attached-only lookup are
+  the implementing PR's requirement, not a present fact.
 - **Tree ingestion**: `navigationSnapshotInputs` folds cached remote threads
   into the same `metas`/`live` inputs as local sessions
   (`web_api_tree.go`).
@@ -235,7 +243,10 @@ only `local`, so the fan-out currently degenerates to one source.
   controller's filesystem. Every grouping/project key that can see a remote row
   carries the row's `ref.SourceID`, so identical paths on separate hosts stay
   separate projects. The group-id consumers (project favorites, archive keys)
-  inherit the host qualification.
+  inherit the host qualification. This holds on **every** path that can see a
+  remote row — thread listing, the background snapshot, tree ingestion, and
+  metadata/archive/favorite handling — and none of them may pass a remote row
+  through the controller-side `ResolveProject`.
 - **Manifest source list**: `apiTreeSources`
   (`web_api_tree.go`) is consumed by `navigation_service.go` and
   projected via `navigationSources` into `NavigationManifest.Sources`
@@ -317,6 +328,20 @@ only `local`, so the fan-out currently degenerates to one source.
   `thread/start` params in `startThread` (`startThread.ts`), which is the
   canonical launch seam. `panes/spawn/schema.ts` may need the new field's
   default only if it participates in the effective launch-config preview.
+- **Host-dependent discovery must use the selected host.** Routing only
+  `thread/start` through the picker is not enough. The form's other calls —
+  model discovery (`model/list`), harness discovery (`evener/harnesses/list`),
+  path completion/validation (`evener/paths/complete`), launch
+  resolution/schema (`evener/launch/resolve`), recent projects
+  (`evener/projects/recent`), and the spawn slash catalog
+  (`evener/spawn/slashCatalog`) — are host-dependent and must be issued against
+  the selected source, not left controller-scoped, or a remote launch is
+  validated against the wrong machine (a controller-local path accepted for a
+  remote spawn, the controller's model/harness list). The selected source is
+  the calls' selector (the same source/harness selector the server-side
+  handlers already resolve), and a remote working directory must be validated
+  on the remote filesystem, not the controller's. Until this lands, the picker
+  must not present a remote host as fully usable.
 - **Source list source**: the manifest already carries `sources` and the
   navigation store already holds it (`stores/navigation/store.ts`,
   validated at `store.ts` and `stores/navigation/codec.ts`), but
@@ -330,6 +355,16 @@ only `local`, so the fan-out currently degenerates to one source.
   contract at `railNodes.ts`). Add a host badge/tooltip for rows whose
   `host_id` is not `"local"`, and a dormant/offline visual for dormant rows.
   Keep this to a label, not a tree re-layout.
+- **Connecting a configured host**: a configured host that has never been
+  attached has no user-facing way to become usable — `Online` is attachment
+  state (above), the picker disables offline hosts, and host-scoped actions are
+  refused until a channel exists — so a mere `[[hosts]]` entry is dead in the
+  UI. The first host action (selecting the host in the picker, or an explicit
+  "Connect"/"Attach" affordance on the host) must initiate attachment through
+  component 04's `Ensure` and surface its progress and failure: an attach flips
+  `Online` (via the attach event, §2b) and makes the host selectable, and a
+  failure shows the manager's error (the offline refusal below), not a silently
+  disabled control. Nothing else attaches a host on the user's behalf.
 - **Action gating**: a session row on an offline host must not offer host
   actions. The server-side `Rename` flag already excludes non-local rows
   (`web_api_tree.go`), so at minimum the read-only host rows
@@ -388,8 +423,10 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
   remote ref on an offline host resolves to the registered-but-offline source,
   so the refusal belongs in the source/connection layer and must surface
   unchanged.
-- **Start on an offline host**: the picker must disable offline hosts; if a
-  request still arrives, `hubThreadStart`'s source branch returns
+- **Start on an offline host**: the picker must disable offline hosts *for a
+  spawn* and offer the connect action instead (above) — a never-attached host is
+  therefore reachable, not dead UI. If a start request still arrives,
+  `hubThreadStart`'s source branch returns
   `Unavailable("spawn source is not available: <id>")`
   (`app_threadlifecycle.go`) — confirm and keep that contract.
 - **Source removed / unknown ref**: `Registry.SourceForRef` returns
@@ -480,6 +517,15 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    resolved against the controller's filesystem; the refresh attaches no host
    that was not already attached (assert no `Ensure`/`ListThreads` on an
    unattached source).
+9. A configured-but-never-attached host is not dead UI: its first host action
+   initiates attachment (component 04's `Ensure`) and surfaces progress and
+   failure; on success the host reports `Online:true` and is selectable for a
+   spawn, and no other path attaches a host implicitly.
+10. Every host-dependent discovery/validation call the spawn form makes (model,
+    harness, path completion/validation, launch resolution, recent projects,
+    slash catalog) is issued against the selected host, so a remote launch is
+    validated against the remote's filesystem and capabilities, not the
+    controller's.
 
 ## PR size estimate (LOC)
 

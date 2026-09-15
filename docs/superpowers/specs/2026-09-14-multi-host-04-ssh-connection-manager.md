@@ -109,6 +109,11 @@ func (m *Manager) Attached(name string) bool
 type Channel struct { /* host, facts, stdio, transport, client, drop/lifecycle channels */ }
 
 func (c *Channel) Client() *appwire.Client      // initialized AppWire client
+// Handshake returns the InitializeResponse captured at attach: ProtocolVersion,
+// ServerInfo (hub name/version), SourceID ("local"), and Features. appwire.Client
+// keeps its own copy of Features privately and exposes no accessor, so component
+// 05's capability probe reads the handshake facts from here, not from the client.
+func (c *Channel) Handshake() appwire.InitializeResponse
 func (c *Channel) Transport() appwire.Transport // StreamTransport over ssh stdio
 func (c *Channel) Preflight() Preflight         // GOOS/GOARCH, HOME, resolved config/state roots
 func (c *Channel) Host() hostreg.Host           // the registry entry it was built from
@@ -126,7 +131,7 @@ type Options struct {
     ClientVersion       string        // default buildinfo.Version()
     BackoffBase         time.Duration // default 500ms
     BackoffMax          time.Duration // default 30s
-    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock (non-reentrant: never call Ensure; connection state only)
+    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock: must not block and never call Ensure (non-reentrant, connection state only)
     BuildBinary         func(ctx context.Context, goos, goarch, out string) error // nil = localBuild
     HubAddr             string        // fallback host hub loopback address when the entry sets no addr; default 127.0.0.1:9180
 }
@@ -367,7 +372,11 @@ The manager is **lazy and event-publishing, not a registry owner**:
      (`appwire/client.go`) here means the *running* hub speaks another protocol
      while the on-disk binary preflighted clean: restart the hub once and
      re-attach (§5). Only a mismatch that survives that restart is terminal
-     `ErrProtocolIncompatible`.
+     `ErrProtocolIncompatible`. The `InitializeResponse` this returns is kept on
+     the `Channel` and exposed through `Channel.Handshake()` (above), so
+     component 05's capability probe reads protocol, hub version, `SourceID`, and
+     features from the channel instead of re-running `initialize` (which is
+     `ScopeConnection` and must be the first request on a connection).
 - **Context ownership is split, and that split is normative.** `Ensure(ctx, …)`
   uses the caller's `ctx` only for *this attempt* — preflight, the `Initialize`
   handshake, and any deploy/restart — bounded by `attemptLimit()` and, for the
@@ -541,6 +550,16 @@ Two paths, chosen per host (open question: which wins when both are viable):
   The installer downloads a release archive and verifies it against
   `checksums.txt` (`install.sh:88-130`) and refuses an unverified archive; it
   requires host network access, which the push path does not.
+  **The fallback must be pinned to the controller's exact expected version.**
+  The controller is the version authority (§5), so it must invoke the installer
+  with `EVENER_INSTALL_VERSION=<controller buildinfo.Version()>` — never the
+  script's own `latest` default (`install.sh:19`, `version=${EVENER_INSTALL_VERSION:-latest}`),
+  which may resolve to a build that fails the protocol/version check the moment
+  it is attached. After the installer runs, the same on-host `/api/health` probe
+  and identity check below must confirm the *pinned* version before attachment; a
+  host where the installer cannot be pinned (an unstamped `"dev"` controller has
+  no version to pin, §"Dev builds must not auto-match") or resolves the wrong
+  version is a **failed verification** (`ErrDeploy`), never an attach.
 
 - **Push target resolution (shipped).** A push must install to the absolute path
   of the executable the host will *run*, or version auto-match deploys the new
@@ -690,8 +709,9 @@ deploy landed.
   `flock` on `hub.lock` (`main.go`; `hostlock.go`) — an **`flock`,
   not a PID file**: the lock cannot be read to find or signal the process, and
   breaking it is never allowed. **Identify before killing:** the port alone is
-  not identity, so a restart refuses unless all of these hold, and refusal is
-  `ErrRestart` naming the mismatch with no kill and no relaunch:
+  not identity, so a restart refuses unless all of these hold **and the signal
+  re-validates the same identity in the same remote command that signals**, and
+  refusal is `ErrRestart` naming the mismatch with no kill and no relaunch:
 
   1. exactly **one** process is listening on the configured address (two or more
      candidates means the address is wrong — e.g. a port collision with an
@@ -719,6 +739,15 @@ deploy landed.
      and the spike's m4 bound `*:9180` — stranding a host whose binary was
      already replaced. The same normalization applies to the supervisor "owns the
      configured address" check below.
+  5. the identity is **re-validated at signal time**: the pid, argv, effective
+     user, and socket from checks 1–4 are re-read in the *same* remote command
+     that issues the signal (a guarded compare-and-kill), and the signal goes out
+     only on a full match. A mismatch — including any field that cannot be
+     re-read — refuses with `ErrRestart`, no kill, no relaunch. This shrinks the
+     PID-reuse window but is still check-then-act; only a host-side helper that
+     pins the process's start identity (a `pidfd`, or a start time re-compared at
+     signal time) closes it, and one of the two is the required implementation —
+     the bare unguarded `kill` is not acceptable (see the limit below).
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub

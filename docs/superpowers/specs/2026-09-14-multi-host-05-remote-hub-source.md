@@ -230,7 +230,7 @@ Probe calls and their types:
 
 | Probe field | Call | Type |
 |---|---|---|
-| protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, kept as `Client.Features()`) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go`) |
+| protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, captured by component 04 and exposed via `Channel.Handshake()`; `appwire.Client` has no `Features()` accessor) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go`) |
 | OS/arch | component-04 preflight (no RPC — see gap above) | — |
 | effective launch config | `evener/launch/resolve` per root, or `evener/launch/getLayer` `layer:"global"` | `LaunchConfigResolved` (`appwire/types.go`) |
 | available models | `model/list` | `ModelListResponse` (`appwire/types.go`) |
@@ -244,9 +244,15 @@ provider; keep it out of the attach probe and expose it as an explicit refresh.
 
 `initialize` is `ScopeConnection` and "must be the first request" on a
 connection (`appwire/protocol.go`), so the probe cannot re-run it on the
-already-initialized channel that component 04 handed over. Component 04 supplies
-those three fields through the facts seam (preflight `protocol`/`version`, and
-the feature set captured from the attach handshake); the probe makes the five
+already-initialized channel that component 04 handed over. Component 04 must
+therefore **expose the handshake facts**: `Ensure` captures the
+`InitializeResponse` and the `Channel` returns it from a handshake accessor
+(component 04, `Channel.Handshake()`) carrying `ProtocolVersion`,
+`ServerInfo` (hub name/version), `SourceID`, and `Features`. `appwire.Client`
+keeps its own `Features` copy privately and exposes no accessor, so the probe
+must not look for one on the client. Preflight supplies OS/arch and its own
+protocol/version for the version-match decision; the probe reads
+protocol/version/source/features from the handshake accessor, and makes the five
 AppWire reads in the table above and nothing else.
 
 ### Registration and default-source selection
@@ -304,31 +310,40 @@ configured host source be refused, or the harness-as-source fallback retired
 (component 06, §"Write contract (session targeting)").
 
 **The host selector is controller-only and is stripped at the remote
-boundary.** `ThreadStartParams.Source` names a source in the *controller's*
-registry; the remote hub would resolve the same string against *its own*
-registry and fail ("spawn source is not available: <name>") or target the wrong
-source. The legacy `Harness` field carries the same hazard: `launchSourceID`
-reads any non-empty, non-`evener` harness as a source ID, so a forwarded request
-that still carries a controller-side harness can route to a nonexistent or
-unintended source on the remote hub. `RemoteHubSource.StartThread` must
-therefore clear **both** `Source` and `Harness` before forwarding (component
-05c's `remote_hub_mutations.go`):
+boundary; the harness is the backend selection and is preserved.**
+`ThreadStartParams.Source` names a source in the *controller's* registry; the
+remote hub would resolve the same string against *its own* registry and fail
+("spawn source is not available: <name>") or target the wrong source, so
+`RemoteHubSource.StartThread` clears `Source` before forwarding (component 05c's
+`remote_hub_mutations.go`). `Harness` must **not** be cleared or overwritten: it
+is the caller's harness/backend selection, not a controller host selector — the
+remote's own `launchSourceID` reads it to choose the backend — so replacing it
+(clearing it, or the shipped `remote.Harness = "evener"`) silently starts the
+remote's default backend instead of the one the caller picked. The controller
+therefore forwards `Harness` **verbatim** (or translates it to the remote's
+equivalent), having already refused a harness value that names a configured host
+source (component 06, §"Write contract (session targeting)") so the legacy
+harness-as-source fallback can never retarget the call to another host. Where
+the remote offers no source for that harness, it fails with its own "spawn
+source is not available" — an explicit error, never a silent substitution.
 
 ```go
 remote := params
-// Source and Harness name sources in the controller's registry; the remote hub
-// would resolve them against its own, so both are cleared before forwarding.
+// Source names a source in the controller's registry and would be misresolved
+// against the remote's, so it is cleared. Harness is the caller's backend
+// selection and is forwarded verbatim; a harness naming a controller host was
+// already refused controller-side (component 06).
 remote.Source = ""
-remote.Harness = ""
 ```
 
 The controller's chosen host is expressed purely by *which*
 `RemoteHubSource` handled the call; the remote hub sees a plain `thread/start`
-with its own default routing. No other `Source` method carries a host selector:
-every other method addresses an existing thread by `Ref`, which is translated
-(above). **Implementation status:** the shipped 05c `StartThread` forwards
-`params` verbatim today — it clears neither field — so clearing both is the 05c
-requirement, not a present fact.
+with its own default routing when the harness is empty. No other `Source` method
+carries a host selector: every other method addresses an existing thread by
+`Ref`, which is translated (above). **Implementation status:** the shipped 05c
+`StartThread` (`remote_hub_mutations.go`) rewrites `remote.Harness = "evener"`
+and does not clear `Source` at all; forwarding the harness and clearing `Source`
+is the 05c requirement, not a present fact.
 
 `hubThreadResume` already routes a non-local ref to its source
 (`app_threadlifecycle.go`), so resuming a remote session by
@@ -411,9 +426,17 @@ implementing PR's contract:
   to each fresh client's drain (the same per-call client resolution that
   re-probes capabilities). A consumer is removed by unregistering from the
   source, or is told its client ended, exactly as `subs`/`drains` are today
-  (§"Reconnect handoff"). Because the source resolves the client per call, the
-  fresh drain starts when the next call (the admin request, or the relay's
-  re-subscribe) resolves the new client — the documented laziness.
+  (§"Reconnect handoff"). **A reconnect must not lose the gap.** Per-call
+  resolution is fine for a *request-driven* source, but a notification consumer
+  must not wait for the next call: notifications the replacement client emits
+  between its installation and that next call would be dropped, leaving the
+  fleet/admin views stale until something else happens to resolve the client.
+  Component 04 emits `EventAttached` when it installs the replacement channel
+  (component 04, §"Client handoff"), so the source must start the fresh client's
+  drain — and re-bind every registered consumer — **on that event**, not only on
+  the next resolution. Where a drain cannot be started (no event wired), a
+  consumer must reconcile its state explicitly after a reconnect rather than
+  assume no notifications were missed.
 
 A consumer callback must not be able to stall thread subscriptions: the broker
 hands each consumer its own buffered channel or dispatches on its own goroutine,
@@ -482,9 +505,20 @@ unattached host rather than calling `ListThreads` on it; only a request that
 genuinely targets the host reaches `Ensure`. Without this gate the ticker would
 eagerly attach every configured host, contradicting the lazy manager
 (component 04, §"Channel lifecycle states") and the attachment-based `Online`
-(component 06, §"Read contract"). **Implementation status:** this gate is the
-implementing PR's requirement; the shipped `refreshRemoteThreadSnapshot`
-(`web_api_tree.go`) has no attachment gate.
+(component 06, §"Read contract"). **The gate must not be check-then-`Ensure`.**
+A snapshot that reads `Online() == true` and then calls a resolver wired to
+`Ensure` can still attach: if the host disconnects between the check and the
+call, `Ensure` dials it again, so a "non-dialing" snapshot reconnects or attaches
+a host nobody asked for. Component 04 must therefore also provide an
+**attached-only client lookup** — a `Manager` accessor that returns the current
+client only while a live channel is installed, and reports "not attached"
+without dialing (e.g. `ClientIfAttached(host) (*appwire.Client, bool)`) — and
+component 06's snapshot must use that, not the `Ensure`-backed resolver, so the
+check and the request cannot disagree. **Implementation status:** both the gate
+and the attached-only lookup are the implementing PR's requirement; the shipped
+`refreshRemoteThreadSnapshot` (`web_api_tree.go`) iterates `s.sources.All()` with
+no attachment gate, and `RemoteHubClientFunc` is wired to `Ensure`, so neither
+exists yet.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote

@@ -97,7 +97,10 @@ Symmetric in the other direction; `Close` ends both.
 - **Invalid JSON on a line → the unmarshal error, and the transport does not
   poison itself.** The offending line has been fully consumed, so a later `Recv`
   reads the *following* line; nothing in the transport closes the stream. That
-  is deliberate — see the caller contract below.
+  is deliberate — see the caller contract below. This non-poisoning is about
+  **frame alignment** (the delimiter was found, so the next line starts where it
+  should), not about the stream still being usable at the connection level: the
+  caller contract below makes the error terminal for the channel regardless.
 - **Torn frame → `io.ErrUnexpectedEOF`, poisoned.** A stream that ends mid-frame
   (a partial write on the peer) is not a short message: the delimiter is
   required, so `readLine` reports `io.ErrUnexpectedEOF` and poisons the
@@ -150,7 +153,10 @@ corrupt stream"):
   `ErrStreamFrameTooLarge` again (the transport is poisoned) and a later `Send`
   does too; an oversize **write** returns the sentinel without poisoning, so a
   smaller message still goes out; after an invalid JSON line, the next `Recv`
-  can still read the next frame. `errors.Is` must match the exported sentinel on
+  can still read the next frame (a property of the transport in isolation — the
+  line was fully consumed, so alignment is intact — and **not** a licence for a
+  caller to resume: the §"Contract for callers" above still makes that error
+  terminal for the channel). `errors.Is` must match the exported sentinel on
   both paths. Add: a stream that ends mid-frame reports `io.ErrUnexpectedEOF`
   and stays poisoned; a clean end reports `io.EOF`; `Close` latches
   `ErrStreamClosed`, so a `Recv` after `Close` does not deliver a prefetched
