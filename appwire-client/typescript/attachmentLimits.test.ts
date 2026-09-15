@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./limits";
+import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 
 // parity-m5-composer.md §G: max 8 attachments, max 8 MiB per file, the
 // 8-count cap cumulative across the whole composer session (paste + drag +

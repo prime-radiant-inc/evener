@@ -1,5 +1,4 @@
-import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
-import type { InputAttachment } from "@evener/appwire-client";
+import { MAX_ATTACHMENTS, type InputAttachment } from "@evener/appwire-client";
 
 /** Immutable local image identity plus its composer marker. Bytes live separately. */
 export interface DraftImage {

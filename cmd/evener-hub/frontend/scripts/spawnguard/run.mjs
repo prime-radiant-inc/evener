@@ -22,7 +22,7 @@ import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady }
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const WIDTHS = [320, 390, 899, 900, 1440];
-// The staging cap (attachments/limits.ts MAX_ATTACHMENTS), so the row is
+// The staging cap (the package's attachmentLimits MAX_ATTACHMENTS), so the row is
 // measured at the widest the product allows it to get.
 const STAGED_ATTACHMENTS = 8;
 const TILE_PX = 80;
