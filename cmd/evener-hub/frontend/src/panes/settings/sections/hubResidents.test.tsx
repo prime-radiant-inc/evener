@@ -1652,3 +1652,76 @@ test("Retire now button is keyboard-focusable", async () => {
   retireBtn.focus();
   expect(document.activeElement).toBe(retireBtn);
 });
+
+// ─── Effective timeout: a sub-second value must not read as disabled ─────────
+
+test("a sub-second timeout does not render as the disabled zero sentinel", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/daemon/list", () => ({
+    defaultTimeoutMillis: 3600000,
+    daemons: [
+      {
+        identity: { ref: "local:subsecond", pid: 302, startedAt: "2026-09-10T00:00:00Z", generation: "gen-sub" },
+        name: "Subsecond timeout",
+        protocol: "evener-appwire-v5",
+        compatibility: "compatible",
+        archived: false,
+        probeState: "current",
+        // daemon_idle_timeout is a duration, so hub.toml can express a
+        // sub-second deadline. The daemon treats timeoutMillis === 0 as
+        // "automatic retirement disabled", so flooring 500ms to "0s" tells an
+        // operator retirement is off while it is actually armed.
+        lifecycle: { phase: "resident", timeoutMillis: 500, blockers: [] },
+        canRetire: true,
+        canForceStop: true,
+      },
+    ],
+  }));
+  render(<HubResidents />);
+
+  const row = await screen.findByRole("row", { name: /Subsecond timeout/ });
+  const cells = within(row).getAllByRole("cell");
+  // Column 3 (0-indexed) = Effective timeout.
+  expect(cells[3]!.textContent).toBe("<1s");
+});
+
+// ─── Empty state survives a poll ─────────────────────────────────────────────
+
+test("the empty state survives a background poll instead of blanking", async () => {
+  vi.useFakeTimers();
+  const fake = connectFakeClient();
+  let calls = 0;
+  let releasePoll!: () => void;
+  fake.on("evener/daemon/list", () => {
+    calls += 1;
+    if (calls === 1) {
+      return { defaultTimeoutMillis: 3600000, daemons: [] };
+    }
+    // Hold the poll open so loading stays true: that is the state the panel
+    // blanked in.
+    return new Promise<DaemonListResponse>((resolve) => {
+      releasePoll = () => resolve({ defaultTimeoutMillis: 3600000, daemons: [] });
+    });
+  });
+
+  render(<HubResidents />);
+  await act(async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+
+  expect(screen.queryByTestId("empty-state")).not.toBeNull();
+
+  // The store sets loading=true at the start of every load, and the component
+  // polls every 2s. With zero daemons the populated-table branch is not taken
+  // either, so gating the empty state on !loading leaves nothing rendered.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+  });
+  expect(screen.queryByTestId("empty-state")).not.toBeNull();
+
+  await act(async () => {
+    releasePoll();
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  });
+  expect(screen.queryByTestId("empty-state")).not.toBeNull();
+});

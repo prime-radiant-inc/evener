@@ -53,6 +53,12 @@ const CLASS = {
 function formatTimeout(ms: number | null | undefined): string {
   if (ms == null) return "unknown";
   if (ms === 0) return "disabled";
+  // A positive timeout below one second must not floor into the "disabled"
+  // sentinel. daemon_idle_timeout is a duration, so hub.toml can express a
+  // sub-second deadline, and the daemon reads timeoutMillis === 0 as
+  // "automatic retirement disabled" — rendering 500ms as "0s" would tell an
+  // operator retirement is off while it is actually armed.
+  if (ms < 1000) return "<1s";
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -305,7 +311,10 @@ export function HubResidents() {
       {loading && data === null && <Skeleton lines={3} />}
 
       {/* Empty state when the list loaded but no daemons were found */}
-      {data !== null && data.daemons.length === 0 && !loading && (
+      {/* Deliberately NOT gated on !loading, matching the table path below:
+          the store sets loading on every 2s poll, and with zero daemons there
+          is no skeleton to fall back to, so the gate blanked the panel. */}
+      {data !== null && data.daemons.length === 0 && (
         <EmptyState title="No resident daemons" hint="No daemons found in the hub's rendezvous directory." />
       )}
 
