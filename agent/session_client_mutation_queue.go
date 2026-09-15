@@ -1363,13 +1363,7 @@ func (s *Session) recordClientMutationFailure(
 				s.history = append(s.history, turn)
 			},
 		); err != nil {
-			if !entryIsRecorded(err) {
-				return fmt.Errorf("append failed client start input: %w", err)
-			}
-			// The record is in the transcript, so the recovery turn happened:
-			// failing the restore would strand a session whose own history
-			// holds it, and a retry would write it a second time.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			return fmt.Errorf("append failed client start input: %w", err)
 		}
 		if err := s.clientMutationFailureFault("after_user"); err != nil {
 			return err

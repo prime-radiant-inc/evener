@@ -2006,3 +2006,81 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 		t.Fatalf("reuse notices after the retry = %d, want 1: the durable notice must not be re-appended", got)
 	}
 }
+
+// plantReminderReceipt stages one delivered handoff whose selection authorized
+// no reload, the shape preparation answers with a complete inventory reminder.
+func plantReminderReceipt(s *Session, publicationID string) {
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "absent"},
+			PublicationID: publicationID,
+		},
+	}}
+	s.mu.Unlock()
+}
+
+// TestSkillReloadReminder_RetainedWriteConsumesItsReceipt: the reminder turn's
+// write kept its whole line, so every returning reader finds the reminder.
+// Reading that as "not recorded" leaves the receipt pending, and the next
+// preparation appends the same inventory a second time over the one already in
+// the transcript.
+func TestSkillReloadReminder_RetainedWriteConsumesItsReceipt(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_retained_reminder", nil))
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	const publication = "pub-retained-reminder"
+	plantReminderReceipt(s, publication)
+	fs := retainTranscriptWrites(t, s, publication)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	_, _, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("preparation reported failure for a reminder the transcript holds: %v", err)
+	}
+	if !fs.failed.Load() {
+		t.Fatal("test setup: no write was retained")
+	}
+	if staged <= 0 {
+		t.Fatalf("the reminder turn is in the transcript but preparation staged %d input tokens", staged)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("handoffs after a recorded reminder = %+v, want the receipt consumed", handoffs)
+	}
+}
+
+// TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff: consuming a
+// reminder receipt is only real once the metadata that records the consumption
+// is durable. Dropping the handoff from memory before the save means a failed
+// save loses it to the next autosave, which writes a snapshot that has
+// forgotten a reminder no restart can then deliver.
+func TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot())
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	const publication = "pub-consumption-save-failure"
+	plantReminderReceipt(s, publication)
+
+	repair := breakSessionMetaPath(t, s)
+	err := s.consumeSkillReloadReminders(map[string]bool{publication: true})
+	repair()
+	if err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	handoffs := pendingHandoffsSnapshot(s)
+	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != publication {
+		t.Fatalf("handoffs after the failed save = %+v, want the reminder's receipt still pending", handoffs)
+	}
+}

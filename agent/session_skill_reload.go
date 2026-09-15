@@ -366,6 +366,9 @@ func (s *Session) consumeSkillReloadReminders(publications map[string]bool) erro
 		return nil
 	}
 	s.mu.Lock()
+	// removeSkillCompactionHandoffsLocked filters in place, so the restore copy
+	// has to be taken before it runs.
+	restore := slices.Clone(s.skillLifecycle.PendingHandoffs)
 	removed := s.removeSkillCompactionHandoffsLocked(publications)
 	if removed {
 		s.skillLifecycle.Revision++
@@ -375,6 +378,16 @@ func (s *Session) consumeSkillReloadReminders(publications map[string]bool) erro
 		return nil
 	}
 	if err := s.saveMeta(); err != nil {
+		// The consumption only happened once the metadata recording it is
+		// durable. Dropping the handoffs on a failed save loses them to the
+		// next autosave, which would write a snapshot that has forgotten
+		// reminders no restart can then deliver; putting them back leaves the
+		// obligation pending, which a retry or a restart settles by delivering
+		// the reminder again.
+		s.mu.Lock()
+		s.skillLifecycle.PendingHandoffs = restore
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
 		return err
 	}

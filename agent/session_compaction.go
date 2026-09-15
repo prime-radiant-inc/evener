@@ -860,15 +860,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if !anchor && marker {
 				continue
 			}
-			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
-			// Landed means the record is in the file, which a retained entry
-			// is (entryIsRecorded, the same rule the hook completions'
-			// write-and-decide follows): the failure is still reported, it
-			// just no longer decides that the record does not exist. A marker
-			// a returning reader will anchor on must dispatch its effects
-			// here, or the live session and that reader disagree about
-			// whether the compaction happened.
-			if !entryIsRecorded(compactionTurnWriteErrs[i]) {
+			var landedHere bool
+			landedHere, compactionTurnWriteErrs[i] = s.writeFoldRecordLocked(turn)
+			if !landedHere {
 				continue
 			}
 			compactionTurnLanded[i] = true
@@ -1155,6 +1149,25 @@ func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []preCompa
 	return records
 }
 
+// writeFoldRecordLocked writes one record the fold owns — a compaction layer's,
+// a marker, a steering turn it injected — and answers the only question the
+// transaction has about it: is it a record in the file. A write that failed
+// with its whole line in the file is one, and its effects are owed like any
+// other record's: the marker a returning reader anchors on must dispatch what
+// it dispatches, or the live session and that reader disagree about whether
+// the compaction happened.
+//
+// This is the transaction's own encoding of the rule the append/write pair
+// helpers settle for every other producer. It cannot settle it the same way —
+// reporting inside the transcript door would fire a notification hook while
+// this fold holds the lock that hook's own records need — so the error is
+// carried out to flush, where reporting is safe, and no caller of this
+// function has to ask about the sentinel.
+func (s *Session) writeFoldRecordLocked(turn schema.Turn) (recorded bool, err error) {
+	err = s.writeTranscriptLocked(turn)
+	return entryIsRecorded(err), err
+}
+
 // writeSteeringTurnRecordsLocked appends the records' turns to the
 // transcript. Callers hold attentionMu (the publication transaction's
 // transcript-commit phase). The returned errors align with records; they are
@@ -1170,8 +1183,9 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 			errs[i] = appendTurn(record.turn)
 			continue
 		}
-		errs[i] = s.writeTranscriptLocked(record.turn)
-		if !entryIsRecorded(errs[i]) {
+		var recorded bool
+		recorded, errs[i] = s.writeFoldRecordLocked(record.turn)
+		if !recorded {
 			continue
 		}
 		// The fold's steering is a turn of the published history like any

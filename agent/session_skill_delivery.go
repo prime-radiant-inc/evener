@@ -250,12 +250,6 @@ func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
 	)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("recording a skill carrier turn failed", err))
-		if entryIsRecorded(err) {
-			// The carrier is in the transcript and in the history, so the
-			// obligation it settles is settled: reporting failure here keeps
-			// it pending and delivers the same skill body twice.
-			return nil
-		}
 	}
 	return err
 }

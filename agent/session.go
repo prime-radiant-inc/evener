@@ -1954,18 +1954,34 @@ func newTurnPair(kind schema.TurnKind, live, persisted llm.Message) (liveTurn, p
 // deliberately retain the private evidence the persisted projection replaces
 // with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+	}()
+	if err != nil && entryIsRecorded(err) {
+		// A write that failed with its whole line in the file leaves a record
+		// every returning reader finds, so the pair is committed (above) and
+		// everything the caller does after a successful append is owed too.
+		// The failure is reported HERE, once, outside the transcript door —
+		// the warning fires a notification hook, which must not run while this
+		// session holds the lock that hook's own records need — and nil is
+		// returned. transcript.ErrEntryRetained does not cross this boundary:
+		// a non-nil error from a durable append means the transcript has no
+		// record, so every caller's plain error path is right by construction
+		// and none of them has to know the sentinel exists.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return nil
+	}
+	return err
 }
 
+// appendTurnAfterTranscriptWriteLocked commits the pair for any write whose
+// entry is a record in the file — including one that reported failure and kept
+// its line. It returns that failure unchanged for its wrapper to report and
+// settle; inside the transcript door is the wrong place to fire a notification
+// hook.
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
-	// The entry decides, here as everywhere else (entryOutcome): a write that
-	// failed with its whole line in the file leaves a record every returning
-	// reader finds, so the in-memory half of the pair is owed. Dropping it
-	// would leave the turn readable on disk and absent from the history a fold
-	// copies from — the next marker then discards it with nothing standing in
-	// for it, and the session that kept running never had it either.
 	return s.appendTurnAfterTranscriptWriteCommitting(persisted, write, appendLocked, entryIsRecorded)
 }
 

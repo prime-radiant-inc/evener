@@ -1040,16 +1040,10 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
+			_ = s.returnClaimedSteering(msg.ClientMutationID)
+			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			if !entryIsRecorded(err) {
-				// No record: the steering never happened, so it goes back to
-				// the queue to be delivered again. A RETAINED entry did
-				// happen — a returning reader finds it — and returning that
-				// one would deliver the same steering twice.
-				_ = s.returnClaimedSteering(msg.ClientMutationID)
-				s.reflectDurableClientSteering()
-				return false
-			}
+			return false
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
@@ -1096,17 +1090,13 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		func() error { return s.appendClientMutationTranscriptLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
+		// The prominent record did not persist. Put the steering back so a
+		// later drain retries the failure instead of silently dropping it.
+		s.mu.Lock()
+		s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
+		s.mu.Unlock()
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
-		if !entryIsRecorded(err) {
-			// The prominent record did not persist. Put the steering back so a
-			// later drain retries the failure instead of silently dropping it.
-			s.mu.Lock()
-			s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
-			s.mu.Unlock()
-			return
-		}
-		// The record is in the transcript: a retry would write the same
-		// failure turn again and re-announce it.
+		return
 	}
 	s.emit(events.EventError, errorDataFromError(cause))
 	if msg.ClientMutationID == "" {

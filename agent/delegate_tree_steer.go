@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -486,13 +485,7 @@ func (s *Session) appendDelegateSteeringDurablyWithMetadata(message, stableTurnI
 		func() error { return s.writeTranscriptDurableLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
-		if !entryIsRecorded(err) {
-			return delegateTranscriptEntry{}, err
-		}
-		// The steering is in the transcript and in the history: the claim it
-		// belongs to has to complete, or the delegate is told the message was
-		// never delivered while every reader can see that it was.
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return delegateTranscriptEntry{}, err
 	}
 	return delegateTranscriptEntry{entryID: turn.StableTurnID, timestamp: turn.Timestamp}, nil
 }

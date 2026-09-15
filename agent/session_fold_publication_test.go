@@ -3406,9 +3406,14 @@ func TestFoldPublication_ATurnRetainedByItsWriteSurvivesTheNextMarker(t *testing
 		}
 	}
 	msg := llm.User(retained)
-	err = s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg)
-	if err == nil || !errors.Is(err, transcript.ErrEntryRetained) {
-		t.Fatalf("append error = %v, want one carrying ErrEntryRetained", err)
+	// The durable append settles a retained entry itself: the record is in the
+	// file, so the pair is committed, the failure is reported as a warning and
+	// nothing about the sentinel reaches the caller.
+	if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+		t.Fatalf("append error = %v, want none: the transcript holds the record", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no write was retained")
 	}
 	if indexOfTurnText(currentHistory(t, s), retained) < 0 {
 		t.Fatal("the turn is in the transcript and not in the history: a reader would find a turn the session never had")

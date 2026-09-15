@@ -1186,22 +1186,15 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 			})
 		}
 	}
-	writeErr := s.appendTurnAfterTranscriptWrite(
+	if err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
 		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
 		func() { s.history = append(s.history, liveTurn) },
-	)
-	if writeErr != nil && !entryIsRecorded(writeErr) {
+	); err != nil {
 		abortDelegateToolCallDeliveryCommits(commits)
-		return writeErr
+		return err
 	}
-	// A recorded turn carries the delivery commits inside it, so the
-	// deliveries it names have to complete: aborting them would leave the
-	// durable round claiming work the delegate store rolled back.
 	var completionErrs []error
-	if writeErr != nil {
-		completionErrs = append(completionErrs, writeErr)
-	}
 	requeue := false
 	for _, binding := range commits {
 		if binding.commit == nil {
