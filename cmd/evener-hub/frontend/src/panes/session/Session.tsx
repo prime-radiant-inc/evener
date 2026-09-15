@@ -523,18 +523,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         </div>
       }
     >
-      <TopNotesPanel sessionRef={ref} model={model} />
-      <SandboxEscalationRail sessionRef={ref} />
-      {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
-        <ColdStartSkeleton />
-      ) : isDormantTranscript(model.turns) ? (
-        <EmptyTranscript
-          active={model.status.type === "active"}
-          restartRequired={model.status.type === "restartRequired"}
-        />
-      ) : (
-        transcript
-      )}
+      <div className={styles.contentColumn}>
+        <TopNotesPanel sessionRef={ref} model={model} />
+        <SandboxEscalationRail sessionRef={ref} />
+        {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
+          <ColdStartSkeleton />
+        ) : isDormantTranscript(model.turns) ? (
+          <EmptyTranscript
+            active={model.status.type === "active"}
+            restartRequired={model.status.type === "restartRequired"}
+          />
+        ) : (
+          transcript
+        )}
+      </div>
     </PaneScaffold>
   );
 }
