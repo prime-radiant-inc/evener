@@ -989,8 +989,10 @@ func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("Ensure reported success after Close")
+		// Close canceling the preflight is the manager being finished, not a
+		// retryable transport failure: Ensure must report it as such.
+		if !errors.Is(err, ErrManagerClosed) {
+			t.Fatalf("Ensure after Close = %v, want ErrManagerClosed", err)
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("Close did not cancel the in-flight initial attach")
@@ -1530,9 +1532,11 @@ func TestReconnectAuthFailureDoesNotRetry(t *testing.T) {
 				return newFakeBridge(appwire.ProtocolVersion).stdio, nil
 			}
 			// Reconnect: ssh exits before the handshake with a BatchMode auth
-			// failure on stderr, which the attach path classifies as ErrSSHAuth.
+			// failure on stderr and ssh's own exit status, which the attach path
+			// classifies as terminal ErrSSHAuth.
 			_, _ = stderr.Write([]byte("bob@alpha.example: Permission denied (publickey).\n"))
 			b := newFakeBridge(appwire.ProtocolVersion)
+			b.stdio.waitErr = exitStatus(t, 255)
 			b.stdio.drop()
 			return b.stdio, nil
 		},
@@ -1607,4 +1611,227 @@ func equalArgv(a, b []string) bool {
 
 func containsToken(argv []string, token string) bool {
 	return slices.Contains(argv, token)
+}
+
+// The attach handshake gets ssh's diagnostics and the remote command's stderr on
+// the same sink, so the text alone cannot separate them. Like the one-shot
+// preflight path, an authentication refusal is only terminal when ssh itself
+// exited with its own status; a remote program's exit carrying the marker stays
+// retryable, so the reconnect loop is not stopped for good over it.
+func TestAttachAuthClassificationRequiresSSHExitStatus(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	const marker = "bob@alpha.example: Permission denied (publickey).\n"
+	cases := []struct {
+		name    string
+		waitErr error
+		wantErr error
+	}{
+		{"ssh's own exit 255 with the marker is terminal", exitStatus(t, 255), ErrSSHAuth},
+		{"a remote program's exit with the marker stays retryable", exitStatus(t, 1), ErrSSHStart},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{
+				runFn: cannedRun(nil),
+				startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
+					// ssh spawns, forwards the marker, then exits before the handshake
+					// can complete, so the bridge's stdout closes under Initialize.
+					_, _ = stderr.Write([]byte(marker))
+					b := newFakeBridge(appwire.ProtocolVersion)
+					b.stdio.waitErr = tc.waitErr
+					b.stdio.drop()
+					return b.stdio, nil
+				},
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			_, err := m.Ensure(context.Background(), "alpha")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Manager.Close owns every supervisor it started: it must not return while one
+// is still running, or a consumer that treats Close as terminal could observe a
+// lifecycle event (here, the supervisor's Disconnected) after Close returned.
+func TestCloseWaitsForSupervisors(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		// Deliberately ignores ctx: models a supervisor still running when Close is
+		// called, so Close has to wait for it rather than return ahead of it.
+		sleep: func(context.Context, time.Duration) error {
+			enterOnce.Do(func() { close(sleepEntered) })
+			<-release
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	defer releaseOnce.Do(func() { close(release) })
+
+	ch.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never entered its backoff sleep")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- m.Close() }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a supervisor was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned after the supervisor finished")
+	}
+}
+
+// Close canceling an in-flight handshake is a closed manager, not a host
+// failure: consumers shutting down must not receive an EventFailed for it, the
+// same way the early isClosed return of Ensure emits nothing.
+func TestCloseDuringHandshakeEmitsNoFailedEvent(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	entered := make(chan struct{})
+	var once sync.Once
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			once.Do(func() { close(entered) })
+			return newSilentBridge().stdio, nil
+		},
+	}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:           func(ev Event) { events <- ev },
+		initializeTimeout: 30 * time.Second,
+		attemptTimeout:    30 * time.Second,
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attach never reached the runner")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrManagerClosed) {
+			t.Fatalf("Ensure = %v, want ErrManagerClosed", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close did not end the in-flight handshake")
+	}
+	assertNoFailedEvent(t, events)
+}
+
+// Same for the supervisor's own reconnect attempt: Close canceling its handshake
+// is not a terminal host failure, so shutdown must not announce an EventFailed.
+func TestCloseDuringReconnectHandshakeEmitsNoFailedEvent(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+
+	var mu sync.Mutex
+	startCalls := 0
+	reconnectEntered := make(chan struct{})
+	var enteredOnce sync.Once
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(_ context.Context, _ []string, _ io.Writer) (Stdio, error) {
+			mu.Lock()
+			startCalls++
+			call := startCalls
+			mu.Unlock()
+			if call == 1 {
+				return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+			}
+			enteredOnce.Do(func() { close(reconnectEntered) })
+			return newSilentBridge().stdio, nil
+		},
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:           func(ev Event) { events <- ev },
+		BackoffBase:       time.Millisecond,
+		BackoffMax:        time.Millisecond,
+		sleep:             func(context.Context, time.Duration) error { return nil },
+		jitter:            func(d time.Duration) time.Duration { return d },
+		initializeTimeout: 30 * time.Second,
+		attemptTimeout:    30 * time.Second,
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch.markLost()
+	select {
+	case <-reconnectEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never started a reconnect attach")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// The supervisor announces its terminal Disconnected after the failed attach,
+	// so read up to that event: whether or not Close waited for it, a spurious
+	// EventFailed would necessarily precede it and be caught here.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventFailed {
+				t.Fatalf("shutdown surfaced a spurious EventFailed: %+v", ev)
+			}
+			if ev.Kind == EventState && ev.State == StateDisconnected {
+				deadline = nil
+			}
+		case <-deadline:
+			t.Fatal("the supervisor never announced its terminal state")
+		}
+		if deadline == nil {
+			break
+		}
+	}
+	if cur := m.currentChannel("alpha"); cur != nil {
+		t.Fatalf("closed manager kept a channel: %v", cur)
+	}
+}
+
+func assertNoFailedEvent(t *testing.T, events <-chan Event) {
+	t.Helper()
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventFailed {
+				t.Fatalf("shutdown surfaced a spurious EventFailed: %+v", ev)
+			}
+			continue
+		default:
+		}
+		return
+	}
 }

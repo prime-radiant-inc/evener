@@ -65,6 +65,10 @@ type fakeStdio struct {
 	inR  *io.PipeReader
 	outW *io.PipeWriter
 
+	// waitErr is what Wait reports, standing in for the child's exit status: a
+	// *exec.ExitError with ssh's own 255 is what makes an attach handshake's auth
+	// refusal terminal (see exitStatus).
+	waitErr  error
 	killOnce sync.Once
 	waitDone chan struct{}
 }
@@ -85,7 +89,7 @@ func (s *fakeStdio) Kill() error {
 
 func (s *fakeStdio) Wait() error {
 	<-s.waitDone
-	return nil
+	return s.waitErr
 }
 
 // drop simulates the SSH link dying without a deliberate Close: the server stops
