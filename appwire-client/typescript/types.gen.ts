@@ -59,21 +59,28 @@ export interface AttentionSummary {
 
 export interface AuthApiKeyClearParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollParams {
   provider: string;
   flowId: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollResponse {
@@ -102,6 +109,7 @@ export interface AuthLoginCompleteParams {
   provider: string;
   flowId: string;
   redirectUrl: string;
+  originClientId?: string;
 }
 
 export interface AuthLoginCompleteResponse {
@@ -120,6 +128,8 @@ export interface AuthLoginStartResponse {
 
 export interface AuthLogoutParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthLogoutResponse {
@@ -152,6 +162,7 @@ export interface AuthStatusResponse {
 
 export interface AuthTestParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthTestResponse {
@@ -270,6 +281,7 @@ export interface EmptyResponse {
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  originClientId?: string;
 }
 
 export interface EvenerDelegateInfo {
@@ -337,6 +349,7 @@ export interface EvenerDiagnostics {
   hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
+  watches?: EvenerWatchInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
   delegateDiagnostics?: string[];
@@ -495,6 +508,31 @@ export interface EvenerUsage {
   totalTokens?: number;
 }
 
+export interface EvenerWatchCadence {
+  kind: string;
+  seconds?: number;
+  derivedNextFireAt?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface EvenerWatchInfo {
+  id: string;
+  source: string;
+  target?: string;
+  sendTo?: string;
+  note?: string;
+  cadence?: EvenerWatchCadence[];
+  outputMatch?: string;
+  events?: string[];
+  wildcardEvents?: boolean;
+  deliveries: number;
+  deliveryTimes?: string[];
+  createdAt: string;
+  active: boolean;
+  endReason?: string;
+}
+
 export interface FavoriteSetParams {
   kind: string;
   id: string;
@@ -635,6 +673,7 @@ export interface InstanceEntry {
   surface?: string;
   auth: string;
   baseUrl?: string;
+  endpointFingerprint?: string;
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
@@ -662,6 +701,7 @@ export interface InstanceListResponse {
 
 export interface InstanceRemoveParams {
   name: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceSetDefaultParams {
@@ -1283,8 +1323,11 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  omitted_watches?: number;
+  omitted_armed_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
+  watches?: NavigationWatchSummary[];
   children: NavigationSessionSummary[];
 }
 
@@ -1297,6 +1340,31 @@ export interface NavigationSnapshot {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
+}
+
+export interface NavigationWatchCadence {
+  kind: string;
+  seconds?: number;
+  derived_next_fire_at?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface NavigationWatchSummary {
+  id: string;
+  source: string;
+  target?: string;
+  send_to?: string;
+  note?: string;
+  cadence?: NavigationWatchCadence[];
+  output_match?: string;
+  events?: string[];
+  wildcard_events?: boolean;
+  deliveries: number;
+  delivery_times?: string[];
+  created_at: string;
+  active: boolean;
+  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {
@@ -1492,6 +1560,8 @@ export interface ProviderDescriptor {
   vars?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
+  authModes?: string[];
+  setup?: InstanceEntry;
 }
 
 export interface QueueState {

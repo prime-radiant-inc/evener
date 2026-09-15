@@ -111,6 +111,10 @@ type mainDeps struct {
 	listen          func(context.Context, string, string) (net.Listener, error)
 	serve           func(context.Context, hubHTTPServer) error
 	afterWeb        func(*WebServer)
+	// stdin/stdout carry the process streams the `attach` subcommand bridges to
+	// the hub's loopback AppWire edge. The normal hub command ignores them.
+	stdin  io.Reader
+	stdout io.Writer
 }
 
 func defaultMainDeps() mainDeps {
@@ -127,12 +131,21 @@ func defaultMainDeps() mainDeps {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
 		},
-		serve: serveHub,
+		serve:  serveHub,
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
 	}
 }
 
-func Run(args []string, _ io.Reader, _ io.Writer, stderr io.Writer) int {
-	if err := hubRunMain(args, stderr, defaultMainDeps()); err != nil && !errors.Is(err, flag.ErrHelp) {
+func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
+	deps := defaultMainDeps()
+	if stdin != nil {
+		deps.stdin = stdin
+	}
+	if stdout != nil {
+		deps.stdout = stdout
+	}
+	if err := hubRunMain(args, stderr, deps); err != nil && !errors.Is(err, flag.ErrHelp) {
 		return 1
 	}
 	return 0
@@ -144,6 +157,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		if arg == "--version" || arg == "-version" {
 			return printVersionInfo(stderr)
 		}
+	}
+
+	// `attach` is a client-mode subcommand; it shares the deps seam but none of
+	// the hub startup path (no config dirs, no hostlock, no listener), so it is
+	// dispatched before the normal hub flag parsing.
+	if len(args) > 0 && args[0] == "attach" {
+		return runAttach(args[1:], stderr, deps)
 	}
 
 	opts, err := parseHubOptions(args, stderr)
@@ -535,6 +555,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()
+		_, _ = fmt.Fprintf(stderr, "\nSubcommands:\n")
+		_, _ = fmt.Fprintf(stderr, "  attach --stdio\tproxy AppWire between the hub's loopback /rpc and stdin/stdout\n")
 		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}

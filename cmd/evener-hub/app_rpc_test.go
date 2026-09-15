@@ -42,6 +42,59 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// A hub thread/list child alias must carry the child's own watches, which the
+// daemon prober samples into LiveEntry.ChildWatches, while the root alias keeps
+// only its own. Before this, each alias inherited the root roster entry, so a
+// child row carried the root's watches (and, as a read-only alias, had its
+// diagnostics suppressed anyway) and the child's own were lost entirely.
+func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       4242,
+			SessionID: "sess_root",
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			Protocol:  appwire.ProtocolVersion,
+		},
+		SessionID:             "sess_root",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"sess_child", "sess_bare_child"},
+		RunningSubagentStates: map[string]string{"sess_child": appwire.ThreadStatusIdle, "sess_bare_child": appwire.ThreadStatusIdle},
+		Watches:               []appwire.EvenerWatchInfo{{ID: "watch-root", Source: "timer", Events: []string{"output"}}},
+		ChildWatches: map[string][]appwire.EvenerWatchInfo{
+			"sess_child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+		},
+	})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	source, ok := registry.Source("local")
+	if !ok {
+		t.Fatal("local source missing")
+	}
+	response, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	threads := map[string]appwire.Thread{}
+	for _, thread := range response.Data {
+		threads[thread.ID] = thread
+	}
+	root, child, bare := threads["sess_root"], threads["sess_child"], threads["sess_bare_child"]
+	if root.ID == "" || child.ID == "" || bare.ID == "" {
+		t.Fatalf("thread list = %+v, want root, child and bare child", response.Data)
+	}
+	// The root alias is unchanged: only its own watch.
+	if root.Evener.Diagnostics == nil || len(root.Evener.Diagnostics.Watches) != 1 || root.Evener.Diagnostics.Watches[0].ID != "watch-root" {
+		t.Fatalf("root diagnostics = %+v, want only its own watch", root.Evener.Diagnostics)
+	}
+	// The child alias carries the child's own watch, never the root's.
+	if child.Evener.Diagnostics == nil || len(child.Evener.Diagnostics.Watches) != 1 || child.Evener.Diagnostics.Watches[0].ID != "watch-child" {
+		t.Fatalf("child diagnostics = %+v, want the child's own watch", child.Evener.Diagnostics)
+	}
+	// A read-only child with no watches still has no diagnostics at all.
+	if bare.Evener.Diagnostics != nil {
+		t.Fatalf("bare child diagnostics = %+v, want none", bare.Evener.Diagnostics)
+	}
+}
+
 func TestHubRPCPluginPreviewRoute(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
 	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))

@@ -7,11 +7,11 @@ import type { MutationIntent } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../../stores/threads";
 import {
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   useBlockedMutationEntries,
 } from "./pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 function queueIntent(targetRef: string, text: string): MutationIntent {
   const input = [{ type: "text" as const, text }];

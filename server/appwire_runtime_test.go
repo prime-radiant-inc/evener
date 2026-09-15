@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -251,6 +252,81 @@ func TestAppDiagnosticsFromDetailedStatus_PreservesPluginPresence(t *testing.T) 
 	}
 	if _, ok := wire["plugins"]; ok {
 		t.Fatalf("nil plugins must remain absent: %s", raw)
+	}
+}
+
+// TestAppDiagnosticsFromDetailedStatus_ProjectsWatches proves the structured
+// watch rows reach the wire verbatim, including the cadence list, and that the
+// projection copies the mutable event slice rather than aliasing agent state.
+func TestAppDiagnosticsFromDetailedStatus_ProjectsWatches(t *testing.T) {
+	ds := DetailedStatus{Watches: []agent.WatchStatusInfo{{
+		ID:          "w1",
+		Source:      "self",
+		Target:      "caller",
+		SendTo:      "caller",
+		Note:        "wake me",
+		Cadence:     []agent.WatchCadenceInfo{{Kind: "after", Seconds: 600}, {Kind: "events"}},
+		OutputMatch: "",
+		Events:      []string{"assistant.tool"},
+		Deliveries:  3,
+		DeliveryTimes: []string{
+			"1970-01-01T00:16:40Z",
+			"1970-01-01T00:16:41Z",
+		},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+		EndReason: "",
+	}}}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.Watches) != 1 {
+		t.Fatalf("Watches = %+v, want 1 row", got.Watches)
+	}
+	w := got.Watches[0]
+	if w.ID != "w1" || w.Source != "self" || w.Target != "caller" || w.SendTo != "caller" ||
+		w.Note != "wake me" || w.Deliveries != 3 || w.CreatedAt != "1970-01-01T00:16:40Z" || !w.Active {
+		t.Fatalf("watch row = %+v, want the projected fields", w)
+	}
+	wantCadence := []appwire.EvenerWatchCadence{{Kind: "after", Seconds: 600}, {Kind: "events"}}
+	if !reflect.DeepEqual(w.Cadence, wantCadence) {
+		t.Fatalf("Cadence = %+v, want %+v", w.Cadence, wantCadence)
+	}
+	if !reflect.DeepEqual(w.Events, []string{"assistant.tool"}) {
+		t.Fatalf("Events = %+v, want [assistant.tool]", w.Events)
+	}
+	wantDeliveryTimes := []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"}
+	if !reflect.DeepEqual(w.DeliveryTimes, wantDeliveryTimes) {
+		t.Fatalf("DeliveryTimes = %+v, want %+v", w.DeliveryTimes, wantDeliveryTimes)
+	}
+	got.Watches[0].Events[0] = "mutated"
+	if ds.Watches[0].Events[0] != "assistant.tool" {
+		t.Fatal("projection aliased the agent event slice")
+	}
+	got.Watches[0].DeliveryTimes[0] = "mutated"
+	if ds.Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" {
+		t.Fatal("projection aliased the agent delivery-time slice")
+	}
+}
+
+// TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter proves the
+// events cadence's every-Nth count and filter summary survive the wire
+// projection: without the carry a throttled or filtered event watch would be
+// indistinguishable from one that fires on every matching event.
+func TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter(t *testing.T) {
+	ds := DetailedStatus{Watches: []agent.WatchStatusInfo{{
+		ID:        "w2",
+		Source:    "self",
+		Cadence:   []agent.WatchCadenceInfo{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}},
+		Events:    []string{"assistant.tool"},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+	}}}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.Watches) != 1 {
+		t.Fatalf("Watches = %+v, want 1 row", got.Watches)
+	}
+	wantCadence := []appwire.EvenerWatchCadence{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}}
+	if !reflect.DeepEqual(got.Watches[0].Cadence, wantCadence) {
+		t.Fatalf("Cadence = %+v, want %+v", got.Watches[0].Cadence, wantCadence)
 	}
 }
 

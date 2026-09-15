@@ -22,20 +22,29 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { friendlyErrorMessage } from "../../../../protocol/errors";
 import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, Dialog, EmptyState, Loader, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
+import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import { groupByProvider, safeCredentialTestResult } from "./credentialLabels";
+import {
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  groupByProvider,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
@@ -52,12 +61,22 @@ const CLASS = {
 
 type OpenEditor =
   | { kind: "add" }
-  | { kind: "apiKey"; name: string }
-  | { kind: "credentialJson"; name: string }
+  | { kind: "apiKey"; name: string; expectedEndpointFingerprint?: string }
+  | { kind: "credentialJson"; name: string; expectedEndpointFingerprint?: string }
   | OAuthEditor
   | null;
 
-type PendingConfirm = { kind: "clear" | "clearStoredKey" | "remove"; name: string } | null;
+// expectedEndpointFingerprint is the endpoint the confirm was opened against,
+// captured from the row the user acted on. A concurrent client can put a
+// different instance under the name while the dialog is open, and the hub uses
+// this to refuse clearing or removing the replacement. Undefined when the row
+// showed no endpoint, so an old listing asserts nothing rather than an empty
+// value.
+type PendingConfirm = {
+  kind: "clear" | "clearStoredKey" | "remove";
+  name: string;
+  expectedEndpointFingerprint?: string;
+} | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
@@ -84,10 +103,44 @@ export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
+  /** The connector's escape must retain the full editor, not reopen itself. */
+  // fullEditor selects the raw add-instance entry (the form that authors
+  // providers.toml) instead of the guided connector. Only
+  // ConnectProviderDialog's own "Full provider settings" view passes it; the
+  // Settings pane renders the section without it so its header action opens the
+  // guided flow, which is the reachable path to the full editor from there.
+  fullEditor?: boolean;
+  /** Reports a successful rename from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection kept
+   * mounted behind the full settings view - can follow it instead of searching
+   * for the old one. */
+  onInstanceRenamed?: (from: string, to: string) => void;
+  /** Reports a successful removal from this section's own instance sheet, so a
+   * caller that holds a name for the same instance - the guided connection
+   * kept mounted behind the full settings view - can drop its retained editing
+   * state: an instance later recreated under the same name is a new entity. */
+  onInstanceRemoved?: (name: string) => void;
 }
 
-export function CredentialsSection(_props: CredentialsSectionProps) {
+export function CredentialsSection({
+  fullEditor = false,
+  onInstanceRenamed,
+  onInstanceRemoved,
+}: CredentialsSectionProps) {
   const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
+  const [connecting, setConnecting] = useState(false);
+  // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
+  // it through the shared hook keeps ConnectProviderDialog out of this module's
+  // static graph, which is what keeps it in its own chunk and its failure
+  // handling detectable. A static import here closed the cycle
+  // CredentialsSection -> ConnectProviderDialog -> CredentialsSection, which
+  // collapsed the two into one chunk (roborev round 5).
+  const {
+    Dialog: ConnectProviderDialog,
+    version: connectDialogVersion,
+    retry: retryConnectDialog,
+    reloadAvailable: connectDialogReloadAvailable,
+  } = useConnectProviderDialogChunk();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
@@ -134,9 +187,23 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     }
   }
 
+  // instanceFingerprint is where the listing the row was read from says the
+  // name resolves. The probe asserts it, so the hub can refuse a check whose
+  // name was re-pointed since that read.
+  function instanceFingerprint(name: string): string | undefined {
+    return instances.find((candidate) => candidate.name === name)?.endpointFingerprint;
+  }
+
   async function handleTestCredentials(name: string): Promise<void> {
     const version = instanceVersion.current;
     if (credentialTests[name]?.version === version && credentialTests[name]?.pending) return;
+    // A destination the hub cannot fingerprint has no assertion to send, and an
+    // unasserted probe dials whatever the name resolves to now: refuse it here
+    // rather than let the hub check a destination the user never reviewed.
+    if (fingerprintUnavailable(instances.find((row) => row.name === name))) {
+      toast.push("error", FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+      return;
+    }
     setCredentialTests((current) => ({ ...current, [name]: { version, pending: true } }));
     // A result lands only on the request that is still pending for the
     // instance list it was started against: a refreshed list bumps the
@@ -150,29 +217,87 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       }));
     }
     try {
-      settle(await credentialsStore.getState().testCredentials(name));
-    } catch {
+      settle(await credentialsStore.getState().testCredentials(name, instanceFingerprint(name)));
+    } catch (err) {
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // listing was read, so there is no honest test result to show. Clear
+        // the pending test, say why, and re-read the listing so a retry asserts
+        // the destination now on screen.
+        setCredentialTests((current) => ({ ...current, [name]: { version, pending: false } }));
+        toast.push("error", ENDPOINT_CHANGED_TEST_MESSAGE);
+        void fetch().catch(() => {});
+        return;
+      }
       settle({ provider: name, status: "endpoint_failure", message: "" });
     }
   }
 
   async function handleConfirmedAction(): Promise<void> {
     if (!pendingConfirm) return;
-    const { kind, name } = pendingConfirm;
+    const { kind, name, expectedEndpointFingerprint } = pendingConfirm;
     setConfirmBusy(true);
     try {
       if (kind === "clear") {
-        await credentialsStore.getState().logout(name);
-        await credentialsStore.getState().fetch();
+        await credentialsStore.getState().logout(name, expectedEndpointFingerprint);
+        await refreshListingAfterMutation();
         toast.push("success", `Credentials cleared for ${name}`);
       } else if (kind === "clearStoredKey") {
         const label = clearsCredentialJson(name) ? "Stored credential JSON" : "Stored key";
-        await credentialsStore.getState().clearStoredKey(name);
-        await credentialsStore.getState().fetch();
+        await credentialsStore.getState().clearStoredKey(name, expectedEndpointFingerprint);
+        await refreshListingAfterMutation();
         toast.push("success", `${label} cleared for ${name}`);
       } else {
-        await credentialsStore.getState().remove(name);
-        toast.push("success", `Removed instance ${name}`);
+        const applied = await credentialsStore.getState().remove(name, expectedEndpointFingerprint);
+        // The store's own listing IS the applied response when the removal won
+        // the race, so it can be checked directly; only a superseded removal
+        // has to be re-read. Either way the row must be gone from the listing
+        // before the removal is reported, or the guided owner's reset fires on
+        // a listing that never lost it. What must be gone is the *authored*
+        // row: a name the environment also supplies comes back as an implicit
+        // instance the moment the authored entry is removed, and requiring the
+        // name itself to vanish would report a removal that happened as
+        // unconfirmed.
+        const removed = (instances: InstanceEntry[]) =>
+          !instances.some((instance) => instance.name === name && !instance.implicit);
+        const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
+        if (!confirmed) {
+          // Close the confirm dialog with the failure: the row is gone on the
+          // host, so re-issuing the remove can only fail on a missing instance.
+          setPendingConfirm(null);
+          toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
+          // A superseded verdict is not a failure: the removal's RPC resolved
+          // and only its response was discarded, so the entry left the host,
+          // and the listing that still shows it is one this client read before
+          // the removal landed. The guided owner has to hear about it anyway -
+          // what it retains for this name (a typed credential draft, a saved or
+          // configured verdict) describes an instance that no longer exists,
+          // and a name recreated under it would inherit that state. The applied
+          // path is the opposite case: the hub's own response still held an
+          // authored row, so the removal did not happen and is not reported.
+          if (!applied) onInstanceRemoved?.(name);
+          return;
+        }
+        // The authored entry is gone, but the environment can still supply
+        // access under this name, and the row that remains in the listing says
+        // so. "Removed instance X" alone would read as "no access under this
+        // name any more", which is not what the hub's own listing reports.
+        const stillSupplied = credentialsStore
+          .getState()
+          .instances.some((instance) => instance.name === name && instance.implicit);
+        // The name can survive the removal as an environment-supplied implicit
+        // row, and a sheet left open on it would keep the removed instance's
+        // dirty draft attached to a row the user never edited - a save from it
+        // would author a new override out of that draft. Close the selection:
+        // the replacement row (if any) opens fresh.
+        setSelectedInstance(null);
+        toast.push(
+          "success",
+          stillSupplied
+            ? `Removed instance ${name}; environment access for it is still active`
+            : `Removed instance ${name}`,
+        );
+        onInstanceRemoved?.(name);
       }
       setPendingConfirm(null);
     } catch (err) {
@@ -216,11 +341,40 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   return (
     <div className={CLASS.root}>
       <div className={CLASS.headerRow}>
-        <Button onClick={() => setOpenEditor({ kind: "add" })} disabled={writesRefused}>
-          + Add provider instance
+        {/* Only the raw add-instance action authors providers.toml, so only it
+            is gated by the write refusal. The guided connector stays reachable:
+            its credential writes go to the credential store (a different file),
+            and a registry whose user layer failed to load still serves the
+            curated/implicit providers it did read (cmd/evener-hub/main_test.go's
+            broken-layer case), so disabling the entry point would hide a path
+            that works. The connector's own configuration step surfaces the
+            refusal when it needs a config write. */}
+        <Button
+          onClick={() => (fullEditor ? setOpenEditor({ kind: "add" }) : setConnecting(true))}
+          disabled={fullEditor && writesRefused}
+        >
+          {fullEditor ? "+ Add provider instance" : "Connect provider"}
         </Button>
       </div>
 
+      {connecting && (
+        <ConnectProviderDialogBoundary
+          key={connectDialogVersion}
+          onRetry={retryConnectDialog}
+          reloadAvailable={connectDialogReloadAvailable}
+          onClose={() => setConnecting(false)}
+        >
+          <Suspense
+            fallback={
+              <Dialog open onClose={() => setConnecting(false)} title="Connect provider">
+                <Loader label="Loading…" />
+              </Dialog>
+            }
+          >
+            <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
+          </Suspense>
+        </ConnectProviderDialogBoundary>
+      )}
       <Diagnostics diagnostics={diagnostics} />
 
       {loading && <Skeleton />}
@@ -256,18 +410,59 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         name={selectedInstance}
         writesRefused={writesRefused}
         onClose={() => setSelectedInstance(null)}
-        onSetApiKey={() => openEditorFromSheet((name) => setOpenEditor({ kind: "apiKey", name }))}
-        onSetCredentialJson={() => openEditorFromSheet((name) => setOpenEditor({ kind: "credentialJson", name }))}
+        onSetApiKey={() =>
+          openEditorFromSheet((name) =>
+            // Capture the row's endpoint identity now, beside the name: the
+            // dialog submits this value, so a concurrent change cannot update
+            // its destination out from under the already-entered secret.
+            setOpenEditor({
+              kind: "apiKey",
+              name,
+              expectedEndpointFingerprint: findInstance(name)?.endpointFingerprint,
+            }),
+          )
+        }
+        onSetCredentialJson={() =>
+          openEditorFromSheet((name) =>
+            setOpenEditor({
+              kind: "credentialJson",
+              name,
+              expectedEndpointFingerprint: findInstance(name)?.endpointFingerprint,
+            }),
+          )
+        }
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
-        onRenamed={setSelectedInstance}
+        onRenamed={(next) => {
+          const previous = selectedInstance;
+          setSelectedInstance(next);
+          if (previous !== null && previous !== next) onInstanceRenamed?.(previous, next);
+        }}
         onClear={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "clear", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "clear",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onClearStoredKey={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "clearStoredKey", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "clearStoredKey",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onRemove={() => {
-          if (selectedInstance !== null) setPendingConfirm({ kind: "remove", name: selectedInstance });
+          if (selectedInstance !== null) {
+            setPendingConfirm({
+              kind: "remove",
+              name: selectedInstance,
+              expectedEndpointFingerprint: findInstance(selectedInstance)?.endpointFingerprint,
+            });
+          }
         }}
         onSetDefault={() => {
           if (selectedInstance !== null) void handleSetDefault(selectedInstance);
@@ -293,13 +488,25 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       {openEditor?.kind === "apiKey" &&
         (() => {
           const target = findInstance(openEditor.name);
-          return target ? <ApiKeyDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} /> : null;
+          return target ? (
+            <ApiKeyDialog
+              instance={target}
+              expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+              onCancel={closeEditor}
+              onSuccess={closeEditor}
+            />
+          ) : null;
         })()}
       {openEditor?.kind === "credentialJson" &&
         (() => {
           const target = findInstance(openEditor.name);
           return target ? (
-            <CredentialJsonDialog instance={target} onCancel={closeEditor} onSuccess={closeEditor} />
+            <CredentialJsonDialog
+              instance={target}
+              expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+              onCancel={closeEditor}
+              onSuccess={closeEditor}
+            />
           ) : null;
         })()}
       {openEditor?.kind === "oauth-redirect" && (

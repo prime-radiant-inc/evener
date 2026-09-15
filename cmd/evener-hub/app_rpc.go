@@ -38,6 +38,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					PendingAsk:    item.PendingAsk,
 					RunningJobs:   item.RunningJobs,
 					CompletedJobs: item.CompletedJobs,
+					Watches:       item.Watches,
 				}
 				entries = append(entries, entry)
 				// In-process descendants are addressed as their own AppWire
@@ -46,6 +47,12 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 					child := entry
 					child.OwnerSessionID = entry.SessionID
 					child.SessionID = childID
+					// The alias carries the child's OWN watches, sampled by
+					// the prober into ChildWatches. Inheriting the root
+					// entry's Watches would put the root's rows on the
+					// child row (and, for a read-only alias, they were
+					// suppressed anyway), losing the child's own.
+					child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
 					// The child's own projected status when the daemon carries
 					// it — inheriting the parent's status would render a
 					// settled delegate as working (or vice versa). "" (old
@@ -926,14 +933,14 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -943,21 +950,21 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeySet(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeyClear(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.CredentialJsonSet(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -967,7 +974,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authDevicePoll(authController, ctx, params)
 		if err == nil && resp.State == "authorized" {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -1266,16 +1273,27 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.Command
 }
 
 // notifyAuthUpdated broadcasts a evener/auth/updated notification to all connected clients.
-func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) {
+// originClientId is the originating client's own id, echoed back from the
+// mutation that produced this broadcast; empty when the caller sent none.
+func notifyAuthUpdated(server *appserver.Server, provider, activeSource, originClientId string) {
 	// Still map[string]string, not appwire.EvenerAuthUpdatedParams (kcb5):
 	// provider/activeSource (from AuthStatus) are legitimately empty when no
 	// provider is active, but this map always emits both keys anyway; both
 	// fields are tagged `omitempty` on the struct, so a typed literal would
 	// drop them whenever blank. Not provably byte-identical; left as a map.
-	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, map[string]string{
+	payload := map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
-	})
+	}
+	// The originator id rides along only when the caller sent one. An empty
+	// value (the TUI, an older web build) must leave the payload exactly as it
+	// was before the field existed: consumers with no id on the notification
+	// keep their provider-plus-timing fallback, and one that would see an
+	// empty-string id would attribute nothing.
+	if originClientId != "" {
+		payload["originClientId"] = originClientId
+	}
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, payload)
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all

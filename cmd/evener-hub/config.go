@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 )
@@ -22,6 +23,26 @@ var configReadFile = os.ReadFile
 type ProviderConfig struct {
 	Name   string   `toml:"name"`
 	Models []string `toml:"models"`
+}
+
+// HostConfig is one [[hosts]] entry: a controller's connection entry for a
+// remote hub. Name is the source ID used in refs and URLs; SSH is the
+// destination passed to ssh (component 04), and User overrides its user.
+// EvenerPath and Roots are advisory inputs to components 04/05.
+type HostConfig struct {
+	Name string `toml:"name"`
+	SSH  string `toml:"ssh"`
+	User string `toml:"user"`
+	// EvenerPath is the host binary's absolute path, when it is not on PATH.
+	EvenerPath string `toml:"evener_path"`
+	// ConfigPath is the host hub's hub.toml, when it is not at the default
+	// location, so the bridge attaches with the host's own configuration.
+	ConfigPath string `toml:"config_path"`
+	// Addr is the host hub's listen address, when it is not the default. The
+	// manager needs it to restart the hub and to health-check it after a deploy,
+	// where a wrong default would probe or kill the wrong listener.
+	Addr  string   `toml:"addr"`
+	Roots []string `toml:"roots"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -38,6 +59,7 @@ type Config struct {
 	SpawnTimeout       time.Duration    `toml:"spawn_timeout"`
 	PastResultsPerPage int              `toml:"past_results_per_page"`
 	Providers          []ProviderConfig `toml:"providers"`
+	Hosts              []HostConfig     `toml:"hosts"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -140,10 +162,51 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.DaemonIdleTimeout < 0 {
 		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)
 	}
+	if err := validateHostConfigs(cfg.Hosts); err != nil {
+		return cfg, fmt.Errorf("validate hosts: %w", err)
+	}
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
 		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
 	}
 	return cfg, nil
+}
+
+// validateHostConfigs normalizes and validates the [[hosts]] list by building a
+// throwaway registry, so name grammar, duplicate names, reserved "local", the
+// ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
+// checked by the single source of truth in hostreg. No host is registered
+// anywhere: this is pure validation.
+//
+// It rewrites hosts IN PLACE with the normalized values. hostreg trims before it
+// stores, so validating a copy would let ssh = "  m4.local  " pass here and then
+// reach consumers untrimmed — exactly the unresolvable-host hazard the registry
+// normalization exists to prevent.
+func validateHostConfigs(hosts []HostConfig) error {
+	if len(hosts) == 0 {
+		return nil
+	}
+	entries := make([]hostreg.Host, 0, len(hosts))
+	for i, h := range hosts {
+		entry := hostreg.Normalize(hostreg.Host{
+			Name:       h.Name,
+			SSH:        h.SSH,
+			User:       h.User,
+			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
+			Roots:      h.Roots,
+		})
+		hosts[i].SSH = entry.SSH
+		hosts[i].Name = entry.Name
+		hosts[i].User = entry.User
+		hosts[i].EvenerPath = entry.EvenerPath
+		hosts[i].ConfigPath = entry.ConfigPath
+		hosts[i].Addr = entry.Addr
+		hosts[i].Roots = entry.Roots
+		entries = append(entries, entry)
+	}
+	_, err := hostreg.New(entries)
+	return err
 }
 
 // validateMobileBaseURL accepts only an HTTP(S) origin. The pairing endpoint

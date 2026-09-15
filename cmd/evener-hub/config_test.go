@@ -2,15 +2,168 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 )
+
+func TestLoadConfig_Hosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		toml    string
+		wantErr error
+		check   func(*testing.T, Config)
+	}{
+		{
+			name: "absent hosts table yields zero hosts",
+			toml: `addr = "127.0.0.1:9180"`,
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 0 {
+					t.Fatalf("Hosts = %+v, want none", cfg.Hosts)
+				}
+			},
+		},
+		{
+			name: "one valid host decodes every field",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nuser = \"jesse\"\nevener_path = \"/usr/local/bin/evener\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9280\"\nroots = [\"/Users/jesse/src\"]\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 {
+					t.Fatalf("Hosts = %+v, want 1", cfg.Hosts)
+				}
+				got := cfg.Hosts[0]
+				if got.Name != "m4" || got.SSH != "m4.local" || got.User != "jesse" ||
+					got.EvenerPath != "/usr/local/bin/evener" ||
+					got.ConfigPath != "/etc/evener/hub.toml" || got.Addr != "127.0.0.1:9280" ||
+					len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
+					t.Fatalf("host mismatch: %+v", got)
+				}
+			},
+		},
+		{
+			// Validation trims, so the values LoadConfig hands out must be the
+			// trimmed ones: otherwise a padded ssh passes validation and then
+			// reaches consumers in a form they cannot resolve.
+			//
+			// This asserts EVERY field on purpose. validateHostConfigs maps
+			// HostConfig to hostreg.Host and copies the normalized values back by
+			// hand, so a field added to one side but not the other would silently
+			// pass validation while reaching consumers un-normalized — the bug
+			// this function exists to prevent. A new field belongs in this fixture.
+			name: "padded values come back normalized",
+			toml: "[[hosts]]\nname = \"  m4  \"\nssh = \"  m4.local  \"\nuser = \"  jesse  \"\nevener_path = \"  /usr/local/bin/evener  \"\nconfig_path = \"  /etc/evener/hub.toml  \"\naddr = \"  127.0.0.1:9280  \"\nroots = [\"  /Users/jesse/src  \"]\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 {
+					t.Fatalf("Hosts = %+v, want 1", cfg.Hosts)
+				}
+				got := cfg.Hosts[0]
+				if got.Name != "m4" || got.SSH != "m4.local" || got.User != "jesse" ||
+					got.EvenerPath != "/usr/local/bin/evener" ||
+					got.ConfigPath != "/etc/evener/hub.toml" || got.Addr != "127.0.0.1:9280" ||
+					len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
+					t.Fatalf("LoadConfig returned an unnormalized host: %+v", got)
+				}
+			},
+		},
+		{
+			name:    "duplicate names",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\n\n[[hosts]]\nname = \"m4\"\nssh = \"m4b.local\"\n",
+			wantErr: hostreg.ErrDuplicateHost,
+		},
+		{
+			name:    "reserved local",
+			toml:    "[[hosts]]\nname = \"local\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrReservedName,
+		},
+		{
+			name:    "dotdot alone",
+			toml:    "[[hosts]]\nname = \"..\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrInvalidName,
+		},
+		{
+			name:    "dotdot inside",
+			toml:    "[[hosts]]\nname = \"a..b\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrInvalidName,
+		},
+		{
+			name:    "slash in name",
+			toml:    "[[hosts]]\nname = \"a/b\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrInvalidName,
+		},
+		{
+			name:    "space in name",
+			toml:    "[[hosts]]\nname = \"a b\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrInvalidName,
+		},
+		{
+			name:    "colon in name",
+			toml:    "[[hosts]]\nname = \"a:b\"\nssh = \"h\"\n",
+			wantErr: hostreg.ErrInvalidName,
+		},
+		{
+			name:    "empty ssh",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"  \"\n",
+			wantErr: hostreg.ErrMissingSSH,
+		},
+		{
+			name:    "user with ssh already carrying a user",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"u@h\"\nuser = \"jesse\"\n",
+			wantErr: hostreg.ErrAmbiguousSSHUser,
+		},
+		{
+			name:    "empty root",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"h\"\nroots = [\"ok\", \" \"]\n",
+			wantErr: hostreg.ErrEmptyRoot,
+		},
+		{
+			name: "multiple hosts preserve order",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\n\n[[hosts]]\nname = \"studio\"\nssh = \"studio.local\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 2 {
+					t.Fatalf("Hosts = %+v, want 2", cfg.Hosts)
+				}
+				if cfg.Hosts[0].Name != "m4" || cfg.Hosts[1].Name != "studio" {
+					t.Fatalf("host order: %+v", cfg.Hosts)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.toml")
+			if err := os.WriteFile(path, []byte(tt.toml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("LoadConfig error = %v, want errors.Is %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadConfig: %v", err)
+			}
+			tt.check(t, cfg)
+		})
+	}
+}
+
+func TestLoadConfig_MissingFileHasZeroHosts(t *testing.T) {
+	cfg, err := LoadConfig(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfig missing: %v", err)
+	}
+	if len(cfg.Hosts) != 0 {
+		t.Fatalf("Hosts = %+v, want none for a missing hub.toml", cfg.Hosts)
+	}
+}
 
 func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
