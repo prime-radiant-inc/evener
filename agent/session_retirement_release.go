@@ -254,14 +254,23 @@ func (s *Session) releaseChildRuntimeForRetirement(ctx context.Context) error {
 // session can be restored at its original paths. It never writes the Released
 // tombstone and never removes a durable pin.
 func (s *Session) releaseRetirementScratch() {
-	if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok {
-		local.RetainSessionScratch()
-	}
 	s.mu.Lock()
-	parked := s.worktreeRestoreEnv
+	current := s.env
+	parentShared := s.parentSharedEnv
 	abandoned := append([]*execenv.LocalExecutionEnvironment(nil), s.abandonedEnvs...)
 	s.mu.Unlock()
-	if parked != nil {
+	// The current environment belongs to this session except when it is a child
+	// still holding its live parent's own object (parentSharedEnv); releasing
+	// that lease here would take the scratch off an environment the parent is
+	// still working in. A root and a child on an environment built for it have
+	// parentSharedEnv nil or distinct, so this guard skips nothing for them.
+	if local, ok := current.(*execenv.LocalExecutionEnvironment); ok && !sameEnvironment(current, parentShared) {
+		local.RetainSessionScratch()
+	}
+	// The parked environment is the parent's own for a child that started on it
+	// and then entered a worktree; ownedParkedWorktreeEnvironment names the
+	// parked object this session owns and returns nil for that shared one.
+	if parked, ok := s.ownedParkedWorktreeEnvironment().(*execenv.LocalExecutionEnvironment); ok {
 		parked.RetainSessionScratch()
 	}
 	for _, env := range abandoned {
