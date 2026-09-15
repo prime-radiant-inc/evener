@@ -391,8 +391,8 @@ func contextWindowOf(prof *provider.Profile) int {
 
 // resolvedTargetOf returns the profile's resolved registry row, or the zero row
 // when there is no profile: the estimator then falls back to the names the turns
-// carry, which is how these paths accounted before the profile-aware
-// undercounting rule.
+// carry, exactly as the targetless estimator did before the profile-aware
+// accounting.
 func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
 	if prof == nil {
 		return registry.Resolved{}
