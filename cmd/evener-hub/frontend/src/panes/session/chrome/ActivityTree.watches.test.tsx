@@ -2,12 +2,12 @@
 // accessible name, expand/collapse through a real button, and the expanded
 // note/facts/no-schedule detail. Real props, real component - no mocks of the
 // subject and no snapshot-only assertions.
+
+import type { ActivityTree as ActivityTreeData, NavigationWatchSummary } from "@evener/appwire-client";
+import { formatClockTime } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
-import { formatClockTime } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { watchDurationLabel } from "../../../shell/rail/RailRow";
 import { ActivityTree } from "./ActivityTree";
 

@@ -11,7 +11,7 @@
 // never edits the draft's prose: the names ride their own list, and the wire
 // assembles them as skill items AFTER the ordinary text/attachment items.
 
-import { canonicalSkillNames } from "../../../protocol/composerInput";
+import { canonicalSkillNames } from "@evener/appwire-client";
 
 /**
  * Appends a canonical name unless it is already selected (dedup by name). The

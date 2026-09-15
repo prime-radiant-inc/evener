@@ -1,6 +1,6 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { ClientProvider } from "../../../shell/clientContext";
 import { RepoLocation } from "./RepoLocation";
 

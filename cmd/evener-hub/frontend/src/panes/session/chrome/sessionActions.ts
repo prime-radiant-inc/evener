@@ -2,7 +2,7 @@
 // menu item has no specific transcript message as its context (unlike the
 // legacy per-message fork-into-composer, issue #42), so it forks from the
 // most recent turn that actually carries a userMessage item.
-import type { ThreadModel } from "../../../protocol/model";
+import type { ThreadModel } from "@evener/appwire-client";
 
 export interface LastUserMessage {
   turnId: string;

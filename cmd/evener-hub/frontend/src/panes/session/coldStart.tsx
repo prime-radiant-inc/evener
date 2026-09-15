@@ -1,4 +1,4 @@
-import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "../../protocol/model";
+import { SYSTEM_PRELUDE_TURN_ID, type ThreadModel, type TurnModel } from "@evener/appwire-client";
 import { Skeleton } from "../../widgets";
 import { useAwaitingFirstFrameSend, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import styles from "./session.module.css";

@@ -1,7 +1,6 @@
+import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
-import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { readSeenWatermark, writeSeenWatermark } from "./seenWatermark";
 import { useSeenDivider } from "./useSeenDivider";
 

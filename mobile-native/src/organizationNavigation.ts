@@ -2,7 +2,7 @@ import type {
 	NavigationProjectCatalog,
 	NavigationProjectSummary,
 	NavigationSessionLocation,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { navigationReadback } from "./navigationReadback";

@@ -1,4 +1,4 @@
-import type { NavigationDelta, NavigationReadBase, NavigationSnapshot } from "../../protocol/types.gen";
+import type { NavigationDelta, NavigationReadBase, NavigationSnapshot } from "@evener/appwire-client";
 import {
   type NavigationGraph,
   type NavigationGraphContainer,

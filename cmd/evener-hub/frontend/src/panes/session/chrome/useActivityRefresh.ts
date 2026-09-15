@@ -1,5 +1,5 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
-import type { ThreadModel } from "../../../protocol/model";
 import { EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,

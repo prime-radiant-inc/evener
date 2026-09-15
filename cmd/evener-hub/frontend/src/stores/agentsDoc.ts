@@ -13,11 +13,11 @@
 //
 // requireClient() throws outside any try/catch, matching stores/credentials.ts:
 // "no client connected" is a programmer error, not a state to degrade into.
+
+import type { AgentsDocResponse, AnyNotification, AppwireClientLike } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { errorText } from "../protocol/errors";
-import type { AgentsDocResponse, AnyNotification } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
 function requireClient(): AppwireClientLike {

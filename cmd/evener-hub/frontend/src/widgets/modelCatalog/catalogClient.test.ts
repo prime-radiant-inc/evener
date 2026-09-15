@@ -1,6 +1,6 @@
+import type { ModelListResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { ModelListResponse } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { fetchModelCatalog, modelListToCatalog } from "./catalogClient";
 

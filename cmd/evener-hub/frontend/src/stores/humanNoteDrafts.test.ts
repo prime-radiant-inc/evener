@@ -1,9 +1,8 @@
+import type { NotesHumanSetParams, ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../protocol/model";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { NotesHumanSetParams, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import {
   acknowledgeHumanNote,

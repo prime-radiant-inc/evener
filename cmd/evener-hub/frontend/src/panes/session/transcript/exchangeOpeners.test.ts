@@ -1,5 +1,5 @@
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 
 function item(id: string, type: string): ItemModel {

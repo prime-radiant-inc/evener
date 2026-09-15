@@ -1,7 +1,7 @@
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { translateAttachmentMarkers } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { translateAttachmentMarkers } from "../../../protocol/attachmentMarkers";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";

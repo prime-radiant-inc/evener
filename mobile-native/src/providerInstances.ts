@@ -1,11 +1,11 @@
 import { safeCredentialTestResult } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
-import { sessionActionError } from "../../appwire-client/typescript/errors";
+import { sessionActionError } from "@evener/appwire-client";
 import type {
   AuthTestResponse,
   InstanceCreateParams,
   InstanceEditParams,
   InstanceListResponse,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface ProviderState {

@@ -1,10 +1,16 @@
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
+  type ActivityDelegate,
   type ActivityDelegateRow,
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
+  type ActivitySessionNode,
+  type ActivityTree as ActivityTreeData,
   type ActivityWatchRow,
+  activityDelegateBranch,
   activityDelegateState,
+  activityNodeID,
   buildActivityRows,
   buildWatchRows,
   type EntityView,
@@ -27,14 +33,6 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  type ActivityDelegate,
-  type ActivitySessionNode,
-  type ActivityTree as ActivityTreeData,
-  activityDelegateBranch,
-  activityNodeID,
-} from "../../../protocol/activityData";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
 import { openSessionByRef } from "../../../shell/sessionPlacement";

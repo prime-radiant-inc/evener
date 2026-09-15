@@ -8,7 +8,7 @@ import type {
   LaunchOption,
   LaunchOptionSchemaResponse,
   MCPServerSpec,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
 
 // The per-field working value the advanced UI holds, keyed by the option's
 // wireField (the LaunchConfigLayer key). `value` is a string for scalar controls

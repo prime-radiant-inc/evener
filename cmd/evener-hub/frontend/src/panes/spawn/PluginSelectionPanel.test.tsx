@@ -1,7 +1,7 @@
+import type { PluginPreviewResponse } from "@evener/appwire-client";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { PluginPreviewResponse } from "../../protocol/types.gen";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 
 const preview: PluginPreviewResponse = {

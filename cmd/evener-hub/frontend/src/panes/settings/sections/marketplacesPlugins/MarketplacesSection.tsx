@@ -5,9 +5,10 @@
 // why `expandedMarketplaces` now flows to the sheet (Refresh's own "if the
 // node is currently expanded, immediately reload it" behavior, §12b) rather
 // than here.
+
+import type { MarketplaceSourceInput } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { type FormEvent, useId, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

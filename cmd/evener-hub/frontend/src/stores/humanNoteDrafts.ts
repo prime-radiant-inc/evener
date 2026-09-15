@@ -1,7 +1,7 @@
+import type { ThreadModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { sessionActionError } from "../protocol/errors";
-import type { ThreadModel } from "../protocol/model";
 import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 

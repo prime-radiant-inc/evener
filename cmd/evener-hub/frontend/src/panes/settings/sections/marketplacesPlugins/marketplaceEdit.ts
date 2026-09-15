@@ -7,7 +7,7 @@
 // shows its URL under Git URL and keeps that kind until the user picks a
 // different one; stored padding is not an edit; a blanked field is an
 // unfinished edit, not a change) are pinned without rendering anything.
-import type { MarketplaceEditParams, MarketplaceEntry, MarketplaceSourceInput } from "../../../../protocol/types.gen";
+import type { MarketplaceEditParams, MarketplaceEntry, MarketplaceSourceInput } from "@evener/appwire-client";
 
 export type MarketplaceSourceKind = "url" | "github" | "directory";
 

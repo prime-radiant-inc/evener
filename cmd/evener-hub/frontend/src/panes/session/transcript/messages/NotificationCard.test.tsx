@@ -1,14 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../../protocol/activityData";
-import type { ItemModel } from "../../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { navigationStore } from "../../../../stores/navigation/store";
 import { keyID } from "../../../../stores/navigation/types";

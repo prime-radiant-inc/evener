@@ -10,8 +10,9 @@
 // The list rendering is this widget's own rather than a shared generic
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
+
+import { friendlyLaunchErrorMessage } from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).

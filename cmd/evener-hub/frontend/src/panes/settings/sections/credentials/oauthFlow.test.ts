@@ -1,5 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";

@@ -1,8 +1,8 @@
+import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { HubSection } from "./hub";
