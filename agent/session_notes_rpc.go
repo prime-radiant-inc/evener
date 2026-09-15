@@ -864,18 +864,6 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 	s.notesLastProjected = ""
 }
 
-// escapeNotesHistoryTurns returns history with every NOTES_CONTEXT turn replaced
-// by its model-facing escaped copy. A history built from a persisted source — a
-// resumed transcript, or a forked delegate's inherited prefix — carries the raw
-// block, which is only safe for display there: the raw block is what the
-// transcript must keep so renderers and tool output show the user's real text,
-// but model context must receive the escaped copy (see escapeNotesContextBlock),
-// or a note carrying the closing tag regains the harness framing on every
-// request the session serves. origins is the journal's steering provenance by
-// client mutation id, which decides a steering turn that keeps no kind of its
-// own (see steeringOrigins); nil means no record is in reach, and every steering
-// turn is then decided by its own kind and the write-path text shape. The input
-// is not modified.
 // humanNoteSteerPrefix opens the steering text a shared-notes update carries.
 // It is the last-resort marker for a record that persisted neither a
 // SteeringKind nor a mutation method -- see steeringOrigin.isHumanNoteSteer.
@@ -976,6 +964,18 @@ func steeringOriginForTurn(turn schema.Turn, origins map[string]steeringOrigin) 
 	return recorded
 }
 
+// escapeNotesHistoryTurns returns history with every NOTES_CONTEXT turn replaced
+// by its model-facing escaped copy. A history built from a persisted source — a
+// resumed transcript, or a forked delegate's inherited prefix — carries the raw
+// block, which is only safe for display there: the raw block is what the
+// transcript must keep so renderers and tool output show the user's real text,
+// but model context must receive the escaped copy (see escapeNotesContextBlock),
+// or a note carrying the closing tag regains the harness framing on every
+// request the session serves. origins is the journal's steering provenance by
+// client mutation id, which decides a steering turn that keeps no kind of its
+// own (see steeringOrigins); nil means no record is in reach, and every steering
+// turn is then decided by its own kind and the write-path text shape. The input
+// is not modified.
 func escapeNotesHistoryTurns(history []schema.Turn, origins map[string]steeringOrigin) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
