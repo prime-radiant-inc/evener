@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -35,6 +37,12 @@ type attachOptions struct {
 	addr       string
 	configPath string
 }
+
+// attachDialTimeout bounds the WebSocket handshake. A hub that accepts the TCP
+// connection but never completes the upgrade would otherwise hang the bridge
+// forever with no way out; the pump that follows is bounded by the caller's
+// context (a signal), not by this.
+const attachDialTimeout = 15 * time.Second
 
 func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) {
 	opts := attachOptions{configPath: DefaultConfigPath()}
@@ -98,7 +106,11 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 		stdout = os.Stdout
 	}
 	stream := appwire.NewStreamTransport(newStdioStream(stdin, stdout))
-	if err := proxyAppWire(context.Background(), addr, token, stream); err != nil {
+	// A signal ends the bridge: the pump is one long-lived call, so without this
+	// an operator could not stop an attached bridge except by killing it.
+	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := proxyAppWire(ctx, addr, token, stream); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
@@ -115,7 +127,9 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 		header.Set("Authorization", "Bearer "+token)
 	}
 	hubURL := "ws://" + addr + "/rpc"
-	ws, err := appwire.DialWebSocketWithHeaders(ctx, hubURL, http.DefaultClient, header)
+	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
+	defer cancel()
+	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, http.DefaultClient, header)
 	if err != nil {
 		return fmt.Errorf("no hub at %s: %w", addr, err)
 	}
@@ -188,15 +202,19 @@ func readAuthToken(hubStateRoot string) (string, error) {
 
 // loopbackAddr rewrites a wildcard bind address to loopback, since a client
 // running on the hub host reaches the hub over loopback even when the hub
-// advertises 0.0.0.0 or ::. Non-wildcard addresses pass through unchanged.
+// advertises 0.0.0.0 or ::. The IPv6 wildcard maps to ::1 rather than
+// 127.0.0.1: a hub bound IPv6-only is not listening on IPv4, so forcing the
+// family there would fail the dial. Non-wildcard addresses pass through.
 func loopbackAddr(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return addr
 	}
 	switch host {
-	case "", "0.0.0.0", "::":
+	case "", "0.0.0.0":
 		return net.JoinHostPort("127.0.0.1", port)
+	case "::":
+		return net.JoinHostPort("::1", port)
 	}
 	return addr
 }

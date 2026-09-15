@@ -2,7 +2,6 @@ package hub
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -27,7 +26,20 @@ import (
 // stdout was a framed AppWire Message.
 func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
-	httpSrv := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	// Capture the upgrade request's Authorization header: the bridge must send
+	// the hub's bearer token. Without this the round trip passes even if the
+	// header is dropped or malformed, because the test handler behind the
+	// AuthGuard never inspects it.
+	var authMu sync.Mutex
+	var authHeader string
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authMu.Lock()
+		if authHeader == "" {
+			authHeader = r.Header.Get("Authorization")
+		}
+		authMu.Unlock()
+		server.ServeWebSocket(w, r)
+	}))
 	defer httpSrv.Close()
 	addr := strings.TrimPrefix(httpSrv.URL, "http://")
 
@@ -35,8 +47,7 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	recorder := &attachRecordingConn{ReadWriteCloser: bridgeEnd}
 	stream := appwire.NewStreamTransport(recorder)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	bridgeErr := make(chan error, 1)
 	go func() { bridgeErr <- proxyAppWire(ctx, addr, "test-token", stream) }()
 
@@ -70,6 +81,13 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	stdout := recorder.buf.String()
 	recorder.mu.Unlock()
 	assertOnlyAppWireFrames(t, stdout)
+
+	authMu.Lock()
+	gotAuth := authHeader
+	authMu.Unlock()
+	if gotAuth != "Bearer test-token" {
+		t.Fatalf("bridge authorization = %q, want %q", gotAuth, "Bearer test-token")
+	}
 }
 
 // TestAttachBridgeErrorWritesNothingToStdout pins the stdout-discipline hard
@@ -81,16 +99,14 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 	if _, err := hubedge.LoadOrCreateAuthToken(root); err != nil {
 		t.Fatalf("seed auth token: %v", err)
 	}
-	// Bind then release a port so the dial fails fast with "connection
-	// refused" rather than depending on some unrelated service's absence.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// A live listener that answers the upgrade with a plain HTTP error. The dial
+	// then fails deterministically, without the bind-then-release race where
+	// another process could claim the freed port.
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not a websocket endpoint", http.StatusInternalServerError)
+	}))
+	defer deadSrv.Close()
+	addr := strings.TrimPrefix(deadSrv.URL, "http://")
 
 	var stdout, stderr bytes.Buffer
 	deps := defaultMainDeps()
@@ -100,7 +116,7 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 		return Config{Addr: addr, HubStateRoot: root}, nil
 	}
 
-	err = runAttach([]string{"--stdio", "--config", filepath.Join(root, "hub.toml")}, &stderr, deps)
+	err := runAttach([]string{"--stdio", "--config", filepath.Join(root, "hub.toml")}, &stderr, deps)
 	if err == nil {
 		t.Fatal("attach to a hub-less address succeeded")
 	}
@@ -133,7 +149,7 @@ func TestLoopbackAddrRewritesWildcardBinds(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"127.0.0.1:9180", "127.0.0.1:9180"},
 		{"0.0.0.0:9180", "127.0.0.1:9180"},
-		{"[::]:9180", "127.0.0.1:9180"},
+		{"[::]:9180", "[::1]:9180"},
 		{"192.168.1.5:9180", "192.168.1.5:9180"},
 	} {
 		if got := loopbackAddr(tc.in); got != tc.want {
