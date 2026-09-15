@@ -25,7 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { moduleSpecifierSites, parseSource } from "./module-specifiers.mjs";
 import { resolveSourceFile } from "./resolve-source.mjs";
-import { SKIPPED_DIRS, SOURCE_EXTENSIONS } from "./source-files.mjs";
+import { CONSUMER_TREES, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "./source-files.mjs";
 
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -47,11 +47,9 @@ function layoutOf(root) {
     root,
     packageDir: path.join(root, "appwire-client", "typescript"),
     seamDir: path.join(frontendDir, "src", "protocol"),
-    trees: [
-      { label: "web", dir: path.join(frontendDir, "src") },
-      { label: "mobile-native", dir: path.join(root, "mobile-native") },
-      { label: "mobile/src", dir: path.join(root, "mobile", "src") },
-    ],
+    // The trees are the shared list; the label a count is printed under is the
+    // tree's own relative path.
+    trees: CONSUMER_TREES.map((rel) => ({ label: rel, dir: path.join(root, rel) })),
   };
 }
 

@@ -13,7 +13,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
 import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
-import { isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
+import { CONSUMER_TREES, isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
 
@@ -69,7 +69,6 @@ export function packageValuesIn(source, file, problems, accept = NAMES_NO_VALUE_
   return bySpecifier;
 }
 
-const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "evener-hub", "frontend", "src")];
 // Tests are not shipped and are not consumers of the tarball, which the
 // isTestFile filter below handles. Directory names are not the place to say so:
 // skipping every directory called `testing` also skipped the app's own

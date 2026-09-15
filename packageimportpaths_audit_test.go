@@ -5,10 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
-	"slices"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -311,50 +308,5 @@ func TestPackageImportPathsCheckExemptsResolverConfigsByPathNotBasename(t *testi
 	}
 	if !strings.Contains(output, "src/metro.config.js") {
 		t.Fatalf("the gate named no offending file; wanted src/metro.config.js in:\n%s", output)
-	}
-}
-
-// The grep gate is a shell script, so it cannot import the shared extension and
-// skipped-directory lists the rewriter and the value-import derivation read
-// from scripts/sdk/source-files.mjs -- it carries its own copy in bash arrays.
-// An extension one sweeps and the other skips, or a directory one descends and
-// the other does not, is a file that reaches the package by path in one of
-// them silently, so the two encodings are asserted equal here.
-func TestPackageImportPathsCheckSweepsTheSharedExtensionsAndSkipsTheSharedDirs(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	read := func(rel string) string {
-		raw, readErr := os.ReadFile(filepath.Join(wd, rel))
-		if readErr != nil {
-			t.Fatalf("reading %s: %v", rel, readErr)
-		}
-		return string(raw)
-	}
-	tokens := func(source, pattern string) []string {
-		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
-		if match == nil {
-			t.Fatalf("no list found with %q", pattern)
-		}
-		found := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`).FindAllString(match[1], -1)
-		sort.Strings(found)
-		return found
-	}
-	gate := read(filepath.Join("scripts", "sdk", "package-import-paths-check.sh"))
-	shared := read(filepath.Join("scripts", "sdk", "source-files.mjs"))
-
-	// The shell writes extensions without the leading dot; the JS list has it.
-	// Tokenizing to word characters drops the dot and the quotes from both.
-	gateExts := tokens(gate, `(?m)^extensions=\(([^)]*)\)`)
-	sharedExts := tokens(shared, `SOURCE_EXTENSIONS = \[([^\]]*)\]`)
-	if !slices.Equal(gateExts, sharedExts) {
-		t.Fatalf("the gate sweeps %v and the shared list is %v; they have to be the same extensions", gateExts, sharedExts)
-	}
-
-	gateDirs := tokens(gate, `(?m)^skip_dirs=\(([^)]*)\)`)
-	sharedDirs := tokens(shared, `SKIPPED_DIRS = new Set\(\[([^\]]*)\]`)
-	if !slices.Equal(gateDirs, sharedDirs) {
-		t.Fatalf("the gate skips %v and the shared list is %v; they have to be the same directories", gateDirs, sharedDirs)
 	}
 }

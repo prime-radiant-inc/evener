@@ -18,7 +18,14 @@
 # gate's own Go test passes it.
 set -euo pipefail
 
-root="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
+# The extensions swept, directories skipped, and app trees covered come from
+# source-files.mjs's own source: one plain env file, so this bash sweep cannot
+# drift from the JavaScript sweeps that import the same lists.
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=source-files.env
+. "${script_dir}/source-files.env"
+
+root="$(cd -- "${script_dir}/../.." && pwd)"
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 	--root)
@@ -37,17 +44,11 @@ while [ "$#" -gt 0 ]; do
 done
 cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
 
-trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
-
-# The extensions swept and the directories skipped are the resolvers' lists,
-# not the ones that happen to exist today: the file this gate exists to catch
-# is one nobody has written yet. Kept equal to the shared SOURCE_EXTENSIONS and
-# SKIPPED_DIRS in scripts/sdk/source-files.mjs.
-extensions=(ts tsx mts cts js jsx mjs cjs)
-skip_dirs=(node_modules dist build ios android __snapshots__ .git)
+# shellcheck disable=SC2206  # deliberate word-split of the env's space lists
+trees=(${consumer_trees})
 sources=()
-for extension in "${extensions[@]}"; do sources+=(--include="*.${extension}"); done
-for dir in "${skip_dirs[@]}"; do sources+=(--exclude-dir="${dir}"); done
+for extension in ${extensions}; do sources+=(--include="*.${extension}"); done
+for dir in ${skip_dirs}; do sources+=(--exclude-dir="${dir}"); done
 
 # The files that legitimately carry the path: the resolver configs that map the
 # name onto it, and the test that proves they do. Exempted by exact relative

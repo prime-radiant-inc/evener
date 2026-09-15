@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
+import { CONSUMER_TREES } from "../../../scripts/sdk/source-files.mjs";
 import { consumerPackageUsage, describeResolveCheckDrift, packageValuesIn, parse } from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
@@ -119,7 +120,7 @@ function consumerTree(files) {
     mkdirSync(path.dirname(full), { recursive: true });
     writeFileSync(full, contents);
   }
-  for (const tree of ["mobile-native", "mobile/src", "cmd/evener-hub/frontend/src"]) {
+  for (const tree of CONSUMER_TREES) {
     mkdirSync(path.join(root, tree), { recursive: true });
   }
   return root;
