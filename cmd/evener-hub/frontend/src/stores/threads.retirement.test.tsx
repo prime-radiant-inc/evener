@@ -25,16 +25,16 @@ import {
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
-import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "../protocol/client";
-import { FAKE_INITIALIZE_RESULT } from "../protocol/testing/fakeSocket";
-import type { WebSocketLike } from "../protocol/transport";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
+import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
 import type {
   AnyNotification,
   Thread,
   ThreadCapabilities,
   ThreadReadResponse,
   TurnStartParams,
-} from "../protocol/types.gen";
+  WebSocketLike,
+} from "@evener/appwire-client";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

@@ -1,12 +1,10 @@
+import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ActivityTree } from "../../../../protocol/activityData";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
-import type { ItemModel } from "../../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 afterEach(() => {

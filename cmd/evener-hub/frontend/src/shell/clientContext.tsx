@@ -6,8 +6,9 @@
 // reaching into connectionStore.getState().client, which exists only as a
 // seam for stores that have no connect() path of their own (see
 // stores/connection.ts).
+
+import type { AppwireClientLike } from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext } from "react";
-import type { AppwireClientLike } from "../protocol/clientLike";
 
 const ClientContext = createContext<AppwireClientLike | null>(null);
 

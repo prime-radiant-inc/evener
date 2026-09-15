@@ -8,20 +8,21 @@
 // outside the transcript subtree whose render context carries that map - and
 // the delegate line names a real entity.
 
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
   type ActivityWatchRow,
+  activityDelegateDiagnostics,
   activityDelegateState,
   type EntityView,
+  formatClockTime,
+  splitMandate,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
 } from "@evener/appwire-client";
-import { Fragment, type JSX, useEffect, useState } from "react";
-import { activityDelegateDiagnostics } from "../../../protocol/activityData";
-import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
+import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -100,7 +101,11 @@ function keyedInstants(instants: number[]): Array<{ millis: number; key: string 
 // lands where now actually is. Nothing here implies a drop or a future firing -
 // the only instants drawn are the ones the wire actually carried.
 function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
-  const instants = watchDeliveryInstants(watch);
+  // The ring is bounded (32 instants) but this strip re-renders on every tick
+  // while its row is open, so parse and sort it once per watch identity instead
+  // of on every render. A tick hands this component the same watch object, so
+  // the ring is parsed and sorted only when the watch's data actually changes.
+  const instants = useMemo(() => watchDeliveryInstants(watch), [watch]);
   if (instants.length === 0) return null;
   const dots = keyedInstants(instants);
   const earliest = instants[0] ?? 0;
@@ -416,11 +421,13 @@ export function ActivityRowDetail({
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
-// It is the one watch surface that reads the tree clock: a caller with its own
-// ticking clock (the pane chrome) passes `now`, and the standalone pane passes
-// nothing and falls back to the tree's live context. Reading it HERE, rather
-// than in the row, is what keeps a collapsed watch row from re-rendering on
-// every tick with identical output.
+// It is the one watch surface that reads the tree clock, and in production the
+// tick has exactly one source: TreeNowContext. ActivityTree renders
+// <ActivityWatchDetail row={row} /> with no clock prop, so this strip never
+// follows the chrome's clock. The optional `now` is a deterministic seam for
+// direct tests, not a second production clock source. Reading the clock HERE,
+// rather than in the row, is what keeps a collapsed watch row from re-rendering
+// on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
   const contextNow = useTreeNow();

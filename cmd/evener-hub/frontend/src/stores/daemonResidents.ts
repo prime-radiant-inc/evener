@@ -16,8 +16,8 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { errorText } from "../protocol/errors";
-import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "../protocol/types.gen";
+import { errorText } from "@evener/appwire-client";
+import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { connectionStore } from "./connection";
 
 export interface DaemonResidentsStoreState {

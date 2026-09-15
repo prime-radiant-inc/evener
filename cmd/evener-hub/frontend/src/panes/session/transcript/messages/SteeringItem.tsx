@@ -22,8 +22,9 @@
 // Daemon-sourced steering images are never rendered as thumbnails - only ever as
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
+
+import type { SteeringKind } from "@evener/appwire-client";
 import { memo } from "react";
-import type { SteeringKind } from "../../../../protocol/types.gen";
 import { Chevron, SteeringGlyph } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";

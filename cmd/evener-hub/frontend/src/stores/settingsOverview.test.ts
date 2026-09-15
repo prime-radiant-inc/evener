@@ -1,7 +1,7 @@
+import type { SettingsOverviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { SettingsOverviewResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import {
   resetSettingsOverviewStoreForTests,

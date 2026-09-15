@@ -1,5 +1,5 @@
+import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { LaunchConfigLayer, LaunchOption } from "../../../../protocol/types.gen";
 import {
   buildFormState,
   collectConfig,

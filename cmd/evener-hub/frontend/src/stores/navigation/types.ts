@@ -1,5 +1,5 @@
-import { WireError } from "../../protocol/errors";
-import type { NavigationInvalidationTarget, NavigationReadBase } from "../../protocol/types.gen";
+import type { NavigationInvalidationTarget, NavigationReadBase } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import type { DecodedNavigationResponse, NormalizedResource } from "./codec";
 
 const NAVIGATION_UNAVAILABLE_CODE = -32014;

@@ -27,8 +27,8 @@ const RETRY_DRAFT = "retirement harness retry draft";
 const RETRY_TURN_ID = "turn_retirement_retry";
 
 import Session from "../panes/session/Session";
-import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "../protocol/client";
-import type { InitializeResponse } from "../protocol/types.gen";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
+import type { InitializeResponse } from "@evener/appwire-client";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";

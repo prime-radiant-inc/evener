@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { InstanceEntry } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
 import {
   activeSourceLabel,
   credentialLayers,

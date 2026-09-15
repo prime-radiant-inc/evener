@@ -318,15 +318,11 @@ browser-specific gate in its web job.
 
 ### Frontend setup boundary
 
-`make test-web` is deterministic after the frontend dependencies are installed.
-Establishing that install may require npm/network access or an existing
-compatible worktree install, so an unavailable setup is a reported prerequisite
-failure rather than a deterministic test pass. `make test-web-browser` also
-needs Chrome/Chromium and a working Go toolchain: its `retirementguard` npm
-script runs the isolated `TestRetirementBrowser` fixture, which starts the Hub
-and drives the guard against it. A cold module cache can therefore also require
-network access to download modules, and a missing browser or Go toolchain is
-likewise a reported prerequisite failure rather than a deterministic test pass.
+`make test-web` and `make test-web-browser` are deterministic after the
+frontend dependencies are installed. Establishing that install may require
+npm/network access or an existing compatible worktree install, so an
+unavailable setup is a reported prerequisite failure rather than a
+deterministic test pass.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -454,10 +450,10 @@ exists to protect. Wiring real enforcement into CI needs the durations sourced
 from the gate's own run instead of a second one. Deciding how to do that is an
 open follow-up (kata b6rv).
 
-## The Seven Browser Guards, and Why There Are Seven
+## The Browser Guards, and Why There Are Six
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Six checks in
+of frontend defect is structurally invisible to `vitest`. Five checks in
 `cmd/evener-hub/frontend` cover it, and the split matters:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
@@ -476,31 +472,17 @@ of frontend defect is structurally invisible to `vitest`. Six checks in
   jump-to-latest pill must appear on a scroll away from the bottom, and
   clicking it must land at the true bottom of the settled geometry and stay
   there.
-- **`npm run retirementguard`** drives the real Session pane and Composer
-  through a real `AppwireClient` against a real Hub/scripted-daemon fixture,
-  and proves the selected-thread recovery contract: the transcript and unsent
-  draft survive the daemon retiring and being replaced, submitting the draft
-  produces exactly one user turn, late old-generation frames cannot overwrite
-  the replacement, a lost start reply retries the same mutation ID once,
-  unavailable queue/steer/settings retain unsent input without auto-resuming,
-  and a Hub socket that stayed connected throughout recovers. Unlike the other
-  five, its runner is invoked by `npm run retirementguard`, which runs the
-  isolated `TestRetirementBrowser` Go fixture; `make test-web-browser` calls
-  that npm script.
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
 modes; the fifth covers scroll behavior, which only exists inside a real
-virtualization engine with real measurements; the sixth covers the recovery
-lifecycle, where a browser driving the real client over a real socket is the
-only observer that can prove the transcript and draft the user actually sees
-survive a daemon replacement. The second exists because the first could not
-have caught the bug that prompted it. Hand-authored markup freezes whatever was
-current when the case was written, so restoring the old glyph would have left
-the guard green while the app broke.
+virtualization engine with real measurements. The second exists because the
+first could not have caught the bug that prompted it. Hand-authored markup
+freezes whatever was current when the case was written, so restoring the old
+glyph would have left the guard green while the app broke.
 
-The seventh guard is a different KIND of check, and that is why it exists
-separately rather than as a seventh `scripts/<guard>/run.mjs` case:
+The sixth guard is a different KIND of check, and that is why it exists
+separately rather than as a sixth `scripts/<guard>/run.mjs` case:
 
 - **`web-skillguard`** (`make test-web-browser`'s last step;
   `cmd/evener-hub/skill_composer_browser_test.go` driving
@@ -515,13 +497,13 @@ separately rather than as a seventh `scripts/<guard>/run.mjs` case:
   behavior through real DOM gestures; the Go test asserts what the daemons
   ACTUALLY received (provider request payloads, `<skill-context>` documents,
   durable transcripts, held-turn choreography through the fixture's control
-  IPC). The other guards above test the frontend against scripted fixtures;
-  this one is the only place the frontend's skill contract is tested against
-  the daemons and hub that must honor it. It needs the BUILT frontend (the hub
+  IPC). The five guards above test the frontend against scripted stores; this
+  one is the only place the frontend's skill contract is tested against the
+  daemons and hub that must honor it. It needs the BUILT frontend (the hub
   serves the embedded dist), so `test-web-browser.sh` builds it when missing
   rather than skipping.
 
-All seven are owned by `make test-web-browser`, which is required by the CI web
+All six are owned by `make test-web-browser`, which is required by the CI web
 job and remains separate from `make lint` and `make test` because it needs
 Chrome.
 
@@ -1097,7 +1079,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | Deterministic after Node dependencies are installed; each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
 | `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium; each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend (built automatically when dist is missing). | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
-| `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, and the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider. | Bundling, native tests, shared-session tests or native typechecking fail. |
+| `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, shared-session tests, native typechecking, or script module resolution fail. |
 | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies; qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |

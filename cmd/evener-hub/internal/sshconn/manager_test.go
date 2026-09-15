@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -3512,5 +3513,53 @@ func TestNotificationOverflowMarksTheLinkLost(t *testing.T) {
 	}
 	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
 		t.Fatalf("the manager kept offering a channel whose reader is gone: %v, %v", client, ok)
+	}
+}
+
+// ConnectTimeout is exported and can be set near the representable maximum. The
+// attempt limit multiplies it by four and adds the initialize timeout, so a
+// large value must saturate rather than overflow: a negative attempt limit
+// becomes an already-expired context, so the attempt would fail instantly
+// instead of bounding one reconnect attempt.
+func TestAttemptLimitSaturatesOnHugeConnectTimeout(t *testing.T) {
+	for _, ct := range []time.Duration{
+		time.Duration(math.MaxInt64),
+		time.Duration(math.MaxInt64) / 4,
+		time.Duration(math.MaxInt64)/4 + 1,
+		time.Duration(math.MaxInt64) / 8,
+	} {
+		got := Options{ConnectTimeout: ct}.attemptLimit()
+		if got <= 0 {
+			t.Fatalf("attemptLimit with ConnectTimeout=%v = %v, want a positive duration", ct, got)
+		}
+		if got < ct {
+			t.Fatalf("attemptLimit with ConnectTimeout=%v = %v, want at least the connect timeout", ct, got)
+		}
+	}
+}
+
+// nextBackoff doubles the reconnect delay. A caller can seed it near the
+// representable maximum through BackoffBase/BackoffMax, where the doubling
+// overflows; the result must stay positive and bounded by limit, never wrap to
+// a negative duration that fires the sleep timer immediately and spins the
+// reconnect loop.
+func TestNextBackoffSaturatesInsteadOfOverflowing(t *testing.T) {
+	const maxDur = time.Duration(math.MaxInt64)
+	for _, tc := range []struct {
+		delay, limit time.Duration
+	}{
+		{maxDur, maxDur},
+		{maxDur / 2, maxDur},
+		{maxDur/2 + 1, maxDur},
+		{maxDur/2 + 1, time.Second},
+		{time.Second, maxDur},
+	} {
+		got := nextBackoff(tc.delay, tc.limit)
+		if got <= 0 {
+			t.Fatalf("nextBackoff(%v, %v) = %v, want a positive duration", tc.delay, tc.limit, got)
+		}
+		if tc.limit > 0 && got > tc.limit {
+			t.Fatalf("nextBackoff(%v, %v) = %v, want at most the limit", tc.delay, tc.limit, got)
+		}
 	}
 }

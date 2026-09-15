@@ -12,13 +12,13 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
   DaemonIdentity,
   DaemonListResponse,
   DaemonResident,
   DaemonRetireResponse,
-} from "../../../protocol/types.gen";
+} from "@evener/appwire-client";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { HubResidents } from "./hubResidents";

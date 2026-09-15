@@ -4,7 +4,7 @@ import type {
   TranscriptDisplayContent as WireContent,
   TranscriptDisplayDefault as WireDefault,
   TranscriptDisplayDefaults as WireDefaults,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
 
 export type ContentLevel = "chat" | "intent" | "tools" | "activity" | "full";
 export type TranscriptLevel = ContentLevel;

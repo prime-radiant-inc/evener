@@ -63,6 +63,13 @@ export default defineConfig({
       // one fails loudly here rather than resolving to a second copy.
       "@testing-library/react": path.join(__dirname, "node_modules", "@testing-library", "react"),
       react: path.join(__dirname, "node_modules", "react"),
+      // The package has its own node_modules once `npm ci --prefix
+      // appwire-client/typescript` has run for `make test-api-package`, and
+      // typescript is one of its devDependencies - so locally this alias looks
+      // redundant and CI's web job, which installs only this app, fails
+      // without it. scripts/package-test-files.mjs now holds every bare
+      // specifier in the package's test graph against the keys of this block.
+      typescript: path.join(__dirname, "node_modules", "typescript"),
     },
   },
   server: {

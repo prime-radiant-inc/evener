@@ -1,8 +1,8 @@
+import type { AuthStatusResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { AuthStatusResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";

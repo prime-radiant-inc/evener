@@ -18,8 +18,8 @@
 // hints forward from a previous render.
 
 import { useCallback, useEffect, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "../../../protocol/types.gen";
+import { friendlyErrorMessage } from "@evener/appwire-client";
+import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

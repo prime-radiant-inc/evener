@@ -6,17 +6,13 @@
 // the keyboard-navigable results list, the inline error strip, and the help
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
+
+import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
+import { errorText, isHubLaunchError } from "@evener/appwire-client";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
-import { errorText, isHubLaunchError } from "../../protocol/errors";
-import type {
-  CommandDescriptor,
-  NavigationSessionSummary,
-  SearchResponse,
-  SearchResult,
-} from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
 import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";

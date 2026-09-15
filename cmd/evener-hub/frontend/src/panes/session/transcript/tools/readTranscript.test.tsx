@@ -1,6 +1,6 @@
+import type { ItemModel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel } from "../../../../protocol/model";
 import { toolRendererFor } from "../toolRenderers";
 import "./readTranscript";
 

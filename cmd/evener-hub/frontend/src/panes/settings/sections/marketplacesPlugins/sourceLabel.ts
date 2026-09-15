@@ -2,7 +2,7 @@
 // MarketplacesSection shows beside each registered marketplace's name -
 // ported verbatim from templates/partials/settings/plugins-manager.html's
 // own sourceLabel() (parity-m7-settings.md §12b).
-import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
+import type { MarketplaceSourceInput } from "@evener/appwire-client";
 
 export function sourceLabel(source: MarketplaceSourceInput): string {
   switch (source.kind) {

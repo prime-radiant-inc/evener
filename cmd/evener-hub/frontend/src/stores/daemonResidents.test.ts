@@ -7,8 +7,8 @@
 
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "../protocol/types.gen";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { connectionStore } from "./connection";
 import {
   _clearDaemonResidentsInflightForTests,
