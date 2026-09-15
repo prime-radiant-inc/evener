@@ -243,6 +243,33 @@ func TestClassifyFavoriteDecisions_ProjectUsesCanonicalIdentity(t *testing.T) {
 	assertFavoriteClassification(t, got, legacyKey, FavoriteDecisionDormant)
 }
 
+// Two hosts' projects may share an ID. A favorite decision is stored under
+// (source, project ID), so classification must match each host's own authority
+// instead of collapsing both onto the bare ID and marking the ID ambiguous.
+func TestClassifyFavoriteDecisions_ProjectDistinguishesSources(t *testing.T) {
+	const projectID = "shared-project"
+	decision := ArchiveKey{Kind: "project", ID: projectID, Source: "host-a"}
+	authority := FavoriteAuthority{Projects: []FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+		{ID: projectID, Source: "host-b", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/b\x00host-b"},
+	}}
+
+	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{decision: true}, authority)
+	assertFavoriteClassification(t, got, decision, FavoriteDecisionValid)
+	if !got.Presentation[decision] {
+		t.Fatalf("source-qualified favorite was not presented: %#v", got.Presentation)
+	}
+
+	// A source with no authority for that ID stays dormant rather than borrowing
+	// another host's authority.
+	unknown := ArchiveKey{Kind: "project", ID: projectID, Source: "host-c"}
+	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{unknown: true}, authority)
+	assertFavoriteClassification(t, got, unknown, FavoriteDecisionDormant)
+	if got.Presentation[unknown] {
+		t.Fatalf("unknown source favorite was presented: %#v", got.Presentation)
+	}
+}
+
 func TestLocalSessionDecisionAliasesUsesAuthorityAndExcludesRemoteRefs(t *testing.T) {
 	const sessionID = "canonical-session"
 	authority := FavoriteAuthority{Sessions: []FavoriteSessionAuthority{{

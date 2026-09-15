@@ -39,6 +39,11 @@ type FavoriteProjectAuthority struct {
 	ID       string
 	Quality  FavoriteAuthorityQuality
 	ClaimKey string
+	// Source is the normalized owning source of the project identity: "" for the
+	// controller's own projects and the host name for a remote one. Two hosts'
+	// projects may share an ID, so classification matches the decision key's
+	// source as well as its ID instead of collapsing every host onto the bare ID.
+	Source string
 }
 
 // FavoriteNodeKind identifies the current, collision-checked kind of a
@@ -106,8 +111,14 @@ type favoriteSessionIndex struct {
 }
 
 type favoriteProjectIndex struct {
-	byID         map[string][]FavoriteProjectAuthority
-	ambiguousIDs map[string]bool
+	byKey         map[projectDecisionKey][]FavoriteProjectAuthority
+	ambiguousKeys map[projectDecisionKey]bool
+}
+
+// projectDecisionKey is the source-qualified identity of a project decision.
+type projectDecisionKey struct {
+	source string
+	id     string
 }
 
 type favoriteNodeIndex struct {
@@ -196,16 +207,17 @@ func indexFavoriteSessions(authorities []FavoriteSessionAuthority) favoriteSessi
 
 func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProjectIndex {
 	index := favoriteProjectIndex{
-		byID:         make(map[string][]FavoriteProjectAuthority, len(authorities)),
-		ambiguousIDs: make(map[string]bool),
+		byKey:         make(map[projectDecisionKey][]FavoriteProjectAuthority, len(authorities)),
+		ambiguousKeys: make(map[projectDecisionKey]bool),
 	}
 	for _, authority := range authorities {
 		if authority.ID == "" {
 			continue
 		}
-		index.byID[authority.ID] = append(index.byID[authority.ID], authority)
+		key := projectDecisionKey{source: NormalizeDecisionSource(authority.Source), id: authority.ID}
+		index.byKey[key] = append(index.byKey[key], authority)
 	}
-	for id, authorities := range index.byID {
+	for key, authorities := range index.byKey {
 		if len(authorities) <= 1 {
 			continue
 		}
@@ -218,7 +230,7 @@ func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProje
 			claimKeys[authority.ClaimKey] = struct{}{}
 		}
 		if len(claimKeys) > 1 || len(claimKeys) == 1 && authorities[0].ClaimKey == "" {
-			index.ambiguousIDs[id] = true
+			index.ambiguousKeys[key] = true
 		}
 	}
 	return index
@@ -323,8 +335,9 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 }
 
 func classifyFavoriteProject(key ArchiveKey, projects favoriteProjectIndex) FavoriteDecisionClassification {
-	authorities := projects.byID[key.ID]
-	if len(authorities) != 1 || projects.ambiguousIDs[key.ID] {
+	decisionKey := projectDecisionKey{source: NormalizeDecisionSource(key.Source), id: key.ID}
+	authorities := projects.byKey[decisionKey]
+	if len(authorities) != 1 || projects.ambiguousKeys[decisionKey] {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
 	if authorities[0].Quality != FavoriteAuthorityComplete {

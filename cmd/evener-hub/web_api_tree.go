@@ -126,6 +126,34 @@ func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[h
 	return projects
 }
 
+// projectFavoriteKey is the source-qualified key under which a project favorite
+// is registered in navigationBuildInputs.ProjectFavorite. Controller-local
+// projects keep their bare ID so existing consumers are unaffected; a remote
+// source is prefixed with the host name, so two hosts' projects that share an
+// ID do not collide.
+func projectFavoriteKey(source, id string) string {
+	if source == "" {
+		return id
+	}
+	return source + "\x00" + id
+}
+
+// projectFavoriteForSources reports whether any source that owns the project
+// holds a favorite decision for it. A project with no recorded sources is the
+// controller's own, so it is checked under the bare key.
+func projectFavoriteForSources(favorites map[string]bool, project hubcore.TreeProject) bool {
+	sources := project.Sources
+	if len(sources) == 0 {
+		sources = []string{""}
+	}
+	for _, source := range sources {
+		if favorites[projectFavoriteKey(source, project.Key)] {
+			return true
+		}
+	}
+	return false
+}
+
 // memoTree returns the memoized tree projection retained by mutation handlers
 // that still need it. AppWire navigation reads are owned by NavigationService,
 // whose webNavigationSource captures a fresh source snapshot.
@@ -211,7 +239,7 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	projectFavoriteByID := make(map[string]bool, len(projectFavorites))
 	for key, favorite := range projectFavorites {
 		if key.Kind == "project" && favorite {
-			projectFavoriteByID[key.ID] = true
+			projectFavoriteByID[projectFavoriteKey(key.Source, key.ID)] = true
 		}
 	}
 	var indexRenameable func([]hubcore.TreeNode)
@@ -1038,7 +1066,12 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 					previous.Quality = mergeFavoriteAuthorityQuality(previous.Quality, quality)
 					claims[key] = previous
 				} else {
-					claims[key] = hubcore.FavoriteProjectAuthority{ID: project.ID, Quality: quality, ClaimKey: claimKey}
+					claims[key] = hubcore.FavoriteProjectAuthority{
+						ID:       project.ID,
+						Quality:  quality,
+						ClaimKey: claimKey,
+						Source:   hubcore.NormalizeDecisionSource(source),
+					}
 				}
 			}
 		}

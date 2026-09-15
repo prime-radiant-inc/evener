@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/afero"
@@ -23,8 +24,11 @@ type ArchiveKey struct {
 // NormalizeDecisionSource maps a wire-provided source to its decision store
 // key. The controller's own entries key on the empty string; a remote host keys
 // on its host name. The wire default, "local" (and an absent field), normalizes
-// to the controller key so both spellings address the same entries.
+// to the controller key so both spellings address the same entries. Surrounding
+// whitespace is trimmed first: a source is an exact host name, so " local " and
+// "host-a " must not create a key no real source can ever address.
 func NormalizeDecisionSource(source string) string {
+	source = strings.TrimSpace(source)
 	if source == "" || source == "local" {
 		return ""
 	}

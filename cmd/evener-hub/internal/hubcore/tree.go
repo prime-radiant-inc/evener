@@ -277,6 +277,15 @@ type TreeProject struct {
 	// rollup dot couldn't say that. Idle/ended sessions count toward neither.
 	RollupLive int
 	RollupAttn int
+	// Sources are the distinct owning sources of the project's sessions: "" for
+	// controller-local sessions and the configured host name for remote ones,
+	// sorted for determinism. A project whose sessions all come from one source
+	// has a single entry; a project that merges the same path/ID across hosts
+	// carries every contributing source. Archive and favorite decisions are
+	// keyed by (source, project ID), so the read path must consult each of these
+	// rather than the bare ID (which only ever matches the controller's own
+	// decisions).
+	Sources []string
 	// Expanded is the sidebar's auto-open rule: a project's children render
 	// inline (and its disclosure starts open) only when it has a live session —
 	// RollupLive > 0 || RollupAttn > 0. Everything else starts collapsed and
@@ -1009,6 +1018,9 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		anyNonTest bool            // true once any session's Origin != "test"
 		project    identifier.Project
 		path       string
+		// sources is the set of owning sources of this project's sessions, used
+		// to resolve (source, project ID)-keyed archive decisions.
+		sources map[string]bool
 	}
 	projects := make(map[string]*projectAccum) // keyed by canonical project ID or presentation path
 	projectOrder := []string{}                 // insertion order for stable output
@@ -1066,7 +1078,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			if displayPath != "" {
 				name = filepath.Base(displayPath)
 			}
-			acc = &projectAccum{name: name, worktrees: map[string]bool{}, project: project, path: path}
+			acc = &projectAccum{name: name, worktrees: map[string]bool{}, project: project, path: path, sources: map[string]bool{}}
 			projects[groupKey] = acc
 			projectOrder = append(projectOrder, groupKey)
 		}
@@ -1094,6 +1106,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			acc.worktrees[m.WorktreePath] = true
 		}
 		acc.count++
+		acc.sources[sessionSourceFromID(m.ID)] = true
 		if m.Origin != "test" {
 			acc.anyNonTest = true
 		}
@@ -1281,7 +1294,8 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			projectKey = "no-project"
 			acc.workingDir = ""
 		}
-		isArchived := projectArchivedDecision(decisions, projectKey) ||
+		projectSources := sortedDecisionSources(acc.sources)
+		isArchived := projectArchivedDecision(decisions, projectKey, projectSources) ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -1305,6 +1319,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			RollupState:  rollup,
 			RollupLive:   rollupLive,
 			RollupAttn:   rollupAttn,
+			Sources:      projectSources,
 			// Auto-open only live projects (a working or awaiting session).
 			Expanded:     rollupLive > 0 || rollupAttn > 0,
 			MoreCurrent:  moreCurrent,
@@ -1335,6 +1350,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	}
 	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
 	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
+
+	// A live session's project may be archived by any of the sources that own
+	// the project (which can include hosts the session itself does not belong
+	// to). Index the already-built projects' source sets so the Live-tier filter
+	// below agrees with the Projects-tier placement rule.
+	projectSourcesByID := make(map[string][]string, len(treeProjects))
+	for _, p := range treeProjects {
+		if p.Key != "" {
+			projectSourcesByID[p.Key] = p.Sources
+		}
+	}
 
 	// Build the Live slice: every live, top-level session, with its subagent
 	// children nested the same way the Projects tier builds them (buildNode),
@@ -1417,8 +1443,14 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	unarchivedLive := make([]TreeNode, 0, len(liveNodes))
 	for _, node := range liveNodes {
 		entry := liveMap[node.ID]
-		if entry.Project.ID != "" && projectArchivedDecision(decisions, entry.Project.ID) {
-			continue
+		if entry.Project.ID != "" {
+			sources, ok := projectSourcesByID[entry.Project.ID]
+			if !ok {
+				sources = []string{liveEntrySource(entry)}
+			}
+			if projectArchivedDecision(decisions, entry.Project.ID, sources) {
+				continue
+			}
 		}
 		if decision := decisionFor(decisions, node.ID); decision != nil && *decision {
 			continue
@@ -1590,13 +1622,62 @@ func decisionFor(decisions map[ArchiveKey]bool, id string) *bool {
 	return nil
 }
 
-// projectArchivedDecision resolves a project's manual archive decision by its
-// canonical project ID. Returns false when no row is present.
-func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string) bool {
-	if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID}]; ok {
-		return v
+// projectArchivedDecision resolves a project's manual archive decision across
+// the sources that own its sessions. Decisions are keyed by (source, project
+// ID), so a bare-ID lookup never matches a remote host's decision; consulting
+// each owning source makes a remote archive effective while keeping it distinct
+// from the same project ID on another host. An empty source list is treated as
+// the controller source so callers that do not track sources keep the legacy
+// behavior. Returns true when any owning source's decision archives the project.
+func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string, sources []string) bool {
+	if projectID == "" {
+		return false
+	}
+	if len(sources) == 0 {
+		sources = []string{""}
+	}
+	for _, source := range sources {
+		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; ok && v {
+			return true
+		}
 	}
 	return false
+}
+
+// sessionSourceFromID extracts the owning source from a canonical session
+// identity. A remote identity is a source-qualified ref ("host:thread"); the
+// controller's own sessions and the "local" ref host both normalize to the
+// empty controller source.
+func sessionSourceFromID(id string) string {
+	ref, err := appwire.ParseRef(strings.TrimSpace(id))
+	if err != nil {
+		return ""
+	}
+	return NormalizeDecisionSource(ref.SourceID)
+}
+
+// liveEntrySource returns a live entry's owning source, preferring the
+// rendezvous ref source when present and falling back to the session identity.
+func liveEntrySource(entry LiveEntry) string {
+	if source := NormalizeDecisionSource(entry.SourceID); source != "" {
+		return source
+	}
+	return sessionSourceFromID(entry.SessionID)
+}
+
+// sortedDecisionSources returns a deterministic, source-only slice for a
+// project's accumulated source set. A nil map yields nil so controller-local
+// projects keep the zero value.
+func sortedDecisionSources(sources map[string]bool) []string {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(sources))
+	for source := range sources {
+		out = append(out, source)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // clusterRepeatedTitles folds same-titled idle/ended sessions into a single

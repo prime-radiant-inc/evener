@@ -44,6 +44,24 @@ func TestArchiveStoreNormalizesLocalSource(t *testing.T) {
 	}
 }
 
+// A source is an exact host name, so surrounding whitespace is stripped before
+// the empty/"local" check. Otherwise " local " would bypass controller-source
+// normalization and "host-a " would key a row no real source addresses.
+func TestNormalizeDecisionSourceTrimsWhitespace(t *testing.T) {
+	cases := map[string]string{
+		" host-a ":   "host-a",
+		"\thost-b\n": "host-b",
+		"  local  ":  "",
+		"   ":        "",
+		"\t":         "",
+	}
+	for source, want := range cases {
+		if got := NormalizeDecisionSource(source); got != want {
+			t.Fatalf("NormalizeDecisionSource(%q) = %q, want %q", source, got, want)
+		}
+	}
+}
+
 // A pre-federation index.db keys decisions on (kind, id) alone; opening it must
 // migrate the table to the (source, kind, id) key with legacy rows landing on
 // the controller source, after which a remote sibling of the same ID fits.

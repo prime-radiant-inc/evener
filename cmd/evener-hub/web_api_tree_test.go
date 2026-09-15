@@ -10,9 +10,37 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// A project favorite is stored under (source, project ID). The navigation
+// projection must keep that source dimension: registering every favorite under
+// its bare ID would let one host's favorite decorate another host's project.
+func TestProjectFavoritePresentationIsSourceQualified(t *testing.T) {
+	presentation := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: "shared", Source: "host-a"}: true,
+		{Kind: "project", ID: "mine", Source: ""}:         true,
+	}
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil, projectFavoritePresentation(presentation), nil, nil)
+
+	if !inputs.ProjectFavorite[projectFavoriteKey("host-a", "shared")] {
+		t.Fatalf("remote favorite not registered under its source: %v", inputs.ProjectFavorite)
+	}
+	if inputs.ProjectFavorite["shared"] {
+		t.Fatalf("remote favorite leaked onto the bare project key: %v", inputs.ProjectFavorite)
+	}
+	if !inputs.ProjectFavorite["mine"] {
+		t.Fatalf("controller favorite not registered under the bare key: %v", inputs.ProjectFavorite)
+	}
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-a"}}) {
+		t.Fatal("project owned by host-a did not resolve its favorite")
+	}
+	if projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-b"}}) {
+		t.Fatal("project owned by host-b inherited host-a's favorite")
+	}
+}
 
 func testProjectID(t *testing.T, path string) string {
 	t.Helper()

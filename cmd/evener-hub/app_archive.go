@@ -38,6 +38,9 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 			return appwire.ArchiveResponse{}, appwire.InvalidParams("invalid project ID: " + err.Error())
 		}
 		projectSource = hubcore.NormalizeDecisionSource(params.Source)
+		if err := validateDecisionSource(cfg, projectSource); err != nil {
+			return appwire.ArchiveResponse{}, err
+		}
 		if projectSource == "" {
 			if params.WorkingDir == "" {
 				return appwire.ArchiveResponse{}, appwire.InvalidParams("workingDir is required for project archive")
@@ -52,6 +55,12 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 		} else if err := validateHostProjectArchive(cfg, projectSource, params.ID, params.WorkingDir); err != nil {
 			return appwire.ArchiveResponse{}, err
 		}
+	} else if sessionSource := hubcore.NormalizeDecisionSource(params.Source); sessionSource != "" {
+		// A session's ID is already its host-qualified ref, so the session
+		// decision is keyed on the controller source. A non-local source here
+		// would address a row no read path consults; reject it instead of
+		// silently persisting an inert decision.
+		return appwire.ArchiveResponse{}, appwire.InvalidParams("source is not supported for session archive")
 	}
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
@@ -63,10 +72,11 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state does not lag
 	// behind the sidebar until the next tick, and push the sidebar to refetch.
+	// Project scoping is derived from the navigation source's fingerprint delta
+	// (the rebuilt tree reflects the decision); navigationChangeHint.Projects is
+	// not consumed by commitTargetsLocked, so the handler does not fabricate a
+	// per-project hint that no read path honors.
 	hint := navigationChangeHint{AllLoadedProjects: params.Kind == appwire.ArchiveTargetSession}
-	if params.Kind == appwire.ArchiveTargetProject {
-		hint.Projects = []string{projectsChangeKey(projectSource, params.ID)}
-	}
 	if navigation == nil {
 		return appwire.ArchiveResponse{}, appwire.Unavailable("navigation unavailable")
 	}
@@ -108,13 +118,18 @@ func validateHostProjectArchive(cfg hubcore.WebConfig, source, id, workingDir st
 	return nil
 }
 
-// projectsChangeKey qualifies a project navigation change hint by its owning
-// source, so a poke for one host's project cannot refresh another host's
-// project that happens to share an ID. The controller's own projects keep their
-// bare ID.
-func projectsChangeKey(source, id string) string {
+// validateDecisionSource rejects a non-empty (already normalized) source that
+// does not name a configured remote host. Without this check a typo or
+// whitespace variant would persist a successful but permanently inert decision
+// row: no read path ever addresses the misspelled source.
+func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	if source == "" {
-		return id
+		return nil
 	}
-	return source + ":" + id
+	for _, host := range cfg.RemoteHosts {
+		if host.Name == source {
+			return nil
+		}
+	}
+	return appwire.InvalidParams("unknown source: " + source)
 }
