@@ -1409,3 +1409,46 @@ func countAttentionEntries(t *testing.T, path, attentionID string) int {
 	}
 	return count
 }
+
+// TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh pins the freshness
+// chain that keeps a watch-only session from serving a stale watch row after a
+// post-turn settlement.
+//
+// watch deliveries settle at loop-owned boundaries. The caller-frame rail
+// settles inside the notification turn (acceptNotificationInput, before that
+// turn's TURN_ENDED), but the stable-delegate rail settles in the processing
+// boundary drain, which finishProcessingAtBoundary runs AFTER it emits
+// TURN_ENDED (agent/session_state.go). The envelope's only refresh trigger is a
+// session event, so if that boundary settle left the owner asleep the row would
+// stay stale until some later event - indefinitely on an idle session.
+//
+// It does not: every stable settle is paired with armStableWatchAttention,
+// which arms and notifies the receiver. The receiver is exactly the session
+// whose envelope row shows the config (watchConfigVisibleToSession /
+// liveWatchStatusesReporter), so its next EntryNotification turn emits
+// TURN_ENDED and the envelope's facetAll re-samples the row. This test exercises
+// the boundary drain directly and requires both halves of that pairing: the
+// delivery counter moves AND the owner is left with pending attention.
+func TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh(t *testing.T) {
+	fixture := newStableWatchRuntimeFixture(t, nil)
+	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "boundary frame"})
+	cfg := fixture.onlyWatchConfig(t)
+
+	fixture.sourceJM.mu.Lock()
+	before := cfg.deliveries
+	fixture.sourceJM.mu.Unlock()
+
+	if _, err := fixture.source.drainJobManagerWatchSends(context.Background(), fixture.sourceJM, ""); err != nil {
+		t.Fatalf("drain stable watch send: %v", err)
+	}
+
+	fixture.sourceJM.mu.Lock()
+	after := cfg.deliveries
+	fixture.sourceJM.mu.Unlock()
+	if after != before+1 {
+		t.Fatalf("watch deliveries = %d, want %d after the boundary drain settled the frame", after, before+1)
+	}
+	if !fixture.root.hasPendingRootDelegateAttention() {
+		t.Fatal("a settled stable watch delivery left the owner unwoken; its envelope watch row would stay stale")
+	}
+}
