@@ -1236,7 +1236,10 @@ function NavigationRail({
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
         if (pane === "notes") {
-          topNotesStore.getState().toggleAndFocus(session.ref);
+          // Idempotent open, like the sibling branches below: the rail
+          // navigates, it does not toggle - closing notes belongs to the
+          // panel's own header and the palette's Toggle command.
+          topNotesStore.getState().openAndFocus(session.ref);
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

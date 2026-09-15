@@ -11,6 +11,7 @@ import type {
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
+import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
@@ -24,8 +25,10 @@ import {
   type ResourceState,
 } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { ClientProvider } from "../clientContext";
+import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
@@ -1622,6 +1625,38 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(screen.getByText("Rejectable")).toBeTruthy();
     expect(getToasts().some((toast) => /Couldn't update archive state/i.test(toast.text))).toBe(true);
+  });
+
+  test("the rail's Notes action opens idempotently, matching its sibling panes", () => {
+    topNotesStore.getState().resetForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
+      ]);
+      threadsStore.setState({
+        threads: new Map([["local:notable", { ref: "local:notable", capabilities: { sharedNotes: true } } as never]]),
+      });
+      render(<Rail />);
+
+      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Notes" }));
+      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
+
+      // Re-selecting Notes (now labeled with the open checkmark) keeps it
+      // open: the rail NAVIGATES (idempotent, like its sibling pane openers) -
+      // toggling closed is the palette's deliberate job.
+      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Notes ✓" }));
+      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(true);
+      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(true);
+    } finally {
+      restoreSessionPane();
+    }
   });
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");

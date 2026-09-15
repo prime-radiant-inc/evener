@@ -1220,10 +1220,13 @@ test("a saved layout with a retired pane type restores the surviving panes witho
   render(<DockHost />);
 
   // The survivors render, the poisoned panel is gone from the store and
-  // the DOM, and the workspace never fell to its chunk-boundary error state.
+  // the DOM (VISIBLE tabs only: elements survive inside a hidden header, and
+  // after recovery the survivors' group must keep its tabs and close
+  // controls reachable - the store's recovered "main" sits physically in
+  // the old secondary group), and the workspace never fell to its
+  // chunk-boundary error state.
   expect(await screen.findByText(/doc pane: ref_c/)).toBeTruthy();
-  const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_b", "Doc ref_c"]);
+  expect(visibleTabTexts()).toEqual(["Doc ref_b", "Doc ref_c"]);
   expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual(["pane_doc_2", "pane_doc_3"]);
   expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
