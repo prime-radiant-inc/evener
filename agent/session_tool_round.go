@@ -440,7 +440,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Inject any queued steering messages before the next model call. A terminal
 	// communicate result owns this input's boundary, so leave client-authored
-	// steering durable pending work for the EntrySteeringCarrier turn the drain
+	// steering durable pending work for the steering carrier turn the drain
 	// ladder runs next (or, failing that, wakeForPendingSteering). Consuming it
 	// here would mark it incorporated in a result that ends the turn without a
 	// model request that can act on it.

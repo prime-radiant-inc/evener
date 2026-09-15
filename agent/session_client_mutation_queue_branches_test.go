@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1087,23 +1086,6 @@ func TestClientMutationTranscriptItemsStruct(t *testing.T) {
 	}
 	if items.StableTurnID != "turn_1" || !items.User || items.Failure {
 		t.Fatalf("items = %+v", items)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// withSteeringCarrierTurn / steeringCarrierTurnIDFromContext
-// ---------------------------------------------------------------------------
-
-func TestSteeringCarrierTurnContext(t *testing.T) {
-	ctx := withSteeringCarrierTurn(context.Background(), "turn_ctx_1")
-	if id := steeringCarrierTurnIDFromContext(ctx); id != "turn_ctx_1" {
-		t.Fatalf("turnID = %q, want 'turn_ctx_1'", id)
-	}
-}
-
-func TestSteeringCarrierTurnIDFromContextEmpty(t *testing.T) {
-	if id := steeringCarrierTurnIDFromContext(context.Background()); id != "" {
-		t.Fatalf("expected empty turnID, got %q", id)
 	}
 }
 

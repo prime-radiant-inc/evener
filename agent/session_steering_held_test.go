@@ -770,3 +770,10 @@ func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
 		t.Fatal("the hold names nothing: exactly the hold #710 forbids")
 	}
 }
+
+// claimSteeringCarrierTurn is the tests' shorthand for claimSteeringCarrierInput
+// when only the reserved turn id the claim published matters.
+func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+	carrier, ok := s.claimSteeringCarrierInput()
+	return carrier.StableTurnID, ok
+}

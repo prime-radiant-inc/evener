@@ -779,16 +779,6 @@ const (
 	// EntryDelegateAttention is a controller-owned stable delegate generation
 	// whose exact model-bound input is already durable in the receiver transcript.
 	EntryDelegateAttention
-	// EntrySteeringCarrier is a turn whose only job is to carry already-accepted
-	// user steering that has no turn of its own to land in -- the wake
-	// ProcessPendingUserInput runs when nothing is queued but user steering is
-	// pending. It passes the pending-question gate the way EntryUserInput does
-	// (the user's steering supersedes an unanswered question just as a queued
-	// message would), but does not route through acceptUserInput: it carries no
-	// user text, so it skips MaxTurns, s.turns++, and the TurnUserInput
-	// transcript append, mirroring EntryNotification's accounting instead of
-	// EntryUserInput's.
-	EntrySteeringCarrier
 	// entryKindCount is the number of EntryKind values. Keep it last: the
 	// turn-opening audit (entrykind_audit_test.go) iterates up to it, so a kind
 	// added above this line must declare how its turn acquires an identity
@@ -864,11 +854,12 @@ type drainInputs struct {
 	QueuedSkills         int
 	NotificationsPending bool
 	Awaiting             bool
-	// SteeringCarrierTurnID is the turn claimSteeringCarrierTurn reserved for
-	// user steering the turn that just ran left undelivered -- a queue
-	// drained as steering after the turn's last model call was already in
-	// flight. Empty when nothing was claimed.
-	SteeringCarrierTurnID string
+	// QueuedCarrier reports that the queued entry is the steering carrier
+	// claimSteeringCarrierInput synthesized for user steering the turn that
+	// just ran left undelivered -- a queue drained as steering after the
+	// turn's last model call was already in flight. It carries no content of
+	// its own and runs as queued input.
+	QueuedCarrier bool
 }
 
 // drainAction is the next action the drain loop takes after a completed turn.
@@ -877,12 +868,9 @@ type drainAction int
 const (
 	// runFollowUp runs the popped per-turn follow-up as the next turn.
 	runFollowUp drainAction = iota
-	// runQueued runs the popped queued user message as the next turn.
+	// runQueued runs the popped queued user message -- or the steering carrier
+	// claimed in its place -- as the next turn.
 	runQueued
-	// runSteeringCarrier runs the claimed steering carrier as the next turn:
-	// the user's steering has no turn of its own to land in, and the input
-	// that accepted it is not over until it has run.
-	runSteeringCarrier
 	// armGoalGate marks that the goal-continuation gate folds this turn and, with no
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
@@ -909,16 +897,16 @@ const (
 // unanswered questions — and only the queued-input rung stays live, because a
 // message the user queued mid-turn IS the reply (they are demonstrably present).
 //
-// A claimed steering carrier runs right behind queued input, awaiting or not:
-// it is the user speaking too, and a queued message would have carried the
+// The steering carrier is queued input for this purpose, awaiting or not: it
+// is the user speaking too, and a queued message would have carried the
 // steering itself (acceptUserInput drains it before the first model call), so
 // the carrier is only ever claimed when nothing is queued. Ending the input
 // instead would report the session idle while the user's drained text is
 // still undispatched (issue #1308).
 //
-// Otherwise, priority: a pending follow-up, then a queued user message, then
-// the steering carrier, then a pending notification, then the goal gate's
-// deferred continuation, then idle.
+// Otherwise, priority: a pending follow-up, then a queued user message (or
+// the carrier), then a pending notification, then the goal gate's deferred
+// continuation, then idle.
 // The goal gate always folds BEFORE the notification turn runs: the wrapper arms
 // on !skipGoalGate before acting on runNotification, so the fold stays ahead of
 // the notification interleave even though the notification is the turn that runs
@@ -927,22 +915,18 @@ const (
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
 	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting
+	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCarrier
 	if in.Awaiting {
-		if strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 {
+		if queued {
 			return runQueued, skipGoalGate
-		}
-		if in.SteeringCarrierTurnID != "" {
-			return runSteeringCarrier, skipGoalGate
 		}
 		return goIdle, skipGoalGate
 	}
 	switch {
 	case strings.TrimSpace(in.FollowUp) != "":
 		return runFollowUp, skipGoalGate
-	case strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0:
+	case queued:
 		return runQueued, skipGoalGate
-	case in.SteeringCarrierTurnID != "":
-		return runSteeringCarrier, skipGoalGate
 	case in.RanKind != EntryNotification && in.NotificationsPending:
 		return runNotification, skipGoalGate
 	case !skipGoalGate:
@@ -999,10 +983,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// wake source's own durable queue (jobstore notifications, the goal engine,
 	// the watch outbox) untouched, so it redelivers once the boundary drains
 	// after the user's reply. EntryUserInput is always accepted — it is how the
-	// reply resolves awaiting (spec §5.2). EntrySteeringCarrier is accepted for
-	// the same reason a queued message is: the steering it carries is the user
-	// speaking, not an autonomous wake, so it must reach the model rather than
-	// wait behind a question the user has already moved past.
+	// reply resolves awaiting (spec §5.2); the steering carrier enters as
+	// queued user input for the same reason a queued message does: the
+	// steering it carries is the user speaking, not an autonomous wake, so it
+	// must reach the model rather than wait behind a question the user has
+	// already moved past.
 	//
 	// Gated on the pending set, not raw state (attention-status-model v5
 	// reconciliation): SessionAwaiting used to imply "a question is pending" —
@@ -1014,7 +999,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// pending question is a stronger stop than the wake (a delegate finishing
 	// while the user reads a QUESTION must not silently resolve it out from
 	// under them); a general re-arm has nothing pending to protect.
-	if len(s.askPending) > 0 && kind != EntryUserInput && kind != EntrySteeringCarrier {
+	if len(s.askPending) > 0 && kind != EntryUserInput {
 		s.mu.Unlock()
 		return "", nil
 	}
@@ -1061,11 +1046,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// cleared, so a stale read costs one turn that then meets the writer's
 		// own refusal.
 		if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
-			// A carrier claimed at the tail below owns the active-turn slot
-			// until something hands it back; a refusal here is before
-			// processOneInput's own release, exactly the stranded claim
-			// ProcessPendingUserInput's deferred release guards against.
-			s.releaseRunningTurnID(steeringCarrierTurnIDFromContext(processCtx))
+			// A steering carrier claimed at the tail below owns the active-turn
+			// slot until something hands it back; a refusal here is before the
+			// release that follows processOneInput, exactly the stranded claim
+			// ProcessPendingUserInput's deferred release guards against. (A
+			// queued message's slot is not released: its claimed entry is
+			// re-run by restore under that id.)
+			s.releaseSteeringCarrierClaim(queuedClientMutationFromContext(processCtx))
 			return strings.Join(outputs, "\n"), err
 		}
 		// Capture the kind actually being processed this iteration before the
@@ -1075,14 +1062,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// does not — /par #4).
 		ranKind := nextKind
 		ranClientMutation := queuedClientMutationFromContext(processCtx)
-		ranSteeringCarrier := steeringCarrierTurnIDFromContext(processCtx)
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind, nextProvenance)
-		// Hand a carrier's claim back on every exit, the way
-		// ProcessPendingUserInput does: processOneInput refuses a closed session
-		// and checks cancellation before registering its own release. A no-op
-		// on the ordinary path, where that release already ran.
-		s.releaseRunningTurnID(ranSteeringCarrier)
-		processCtx = withSteeringCarrierTurn(processCtx, "")
+		// Hand a steering carrier's claim back on every exit, the way
+		// ProcessPendingUserInput does: a queued message's slot is cleared by
+		// its completion below, but nothing settles a carrier's identity --
+		// the steer it carried is incorporated at the drain, not at the turn's
+		// end. A no-op when the slot already names something else.
+		s.releaseSteeringCarrierClaim(ranClientMutation)
 		// True when the completion below finalized an interrupt fence naming
 		// this turn: a Stop is what ended it, and the drain branch further down
 		// must leave the queue head parked (wms7's ruling) rather than run the
@@ -1276,27 +1262,29 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
 			// turn; its image attachments ride along as ContentImage parts.
 			queued = s.popQueueHead()
-		}
-		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
-			!inputHasContent(queued.Text, queued.Images, queued.SkillNames)
-		// User steering the turn that just ran left behind -- a queue drained
-		// as steering after its last model call was in flight -- has no turn
-		// of its own, and the input is not over until it has run. Claim its
-		// carrier here, so it runs inline rather than after this call has
-		// reported the session idle and a wake reopens it (issue #1308). Only
-		// when nothing is queued: a queued message drains the steering itself.
-		// The claim refuses a held rail (a Stop parked the steer) and an
-		// occupied slot, the same gate the wake's claim uses. A carrier whose
-		// append failed ends the input with an error (acceptSteeringCarrierInput)
-		// and never reaches this rung, so nothing here claims the same steer
-		// again.
-		var carrierTurnID string
-		if noFollowUpOrQueued && s.hasPendingUserSteering() {
-			carrierTurnID, _ = s.claimSteeringCarrierTurn()
-			if carrierTurnID != "" && s.cfg.testOnly.steeringCarrierClaimed != nil {
-				s.cfg.testOnly.steeringCarrierClaimed(carrierTurnID)
+			// User steering the turn that just ran left behind -- a queue
+			// drained as steering after its last model call was in flight --
+			// has no turn of its own, and the input is not over until it has
+			// run. Claim its carrier here, as the queued entry, so it runs
+			// inline rather than after this call has reported the session
+			// idle and a wake reopens it (issue #1308). Only when nothing is
+			// queued: a queued message drains the steering itself. The claim
+			// refuses a held rail (a Stop parked the steer) and an occupied
+			// slot, the same gate the wake's claim uses. A carrier whose
+			// append failed ends the input with an error
+			// (acceptSteeringCarrierInput) and never reaches this rung, so
+			// nothing here claims the same steer again.
+			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
+				if carrier, ok := s.claimSteeringCarrierInput(); ok {
+					queued = carrier
+					if s.cfg.testOnly.steeringCarrierClaimed != nil {
+						s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
+					}
+				}
 			}
 		}
+		noFollowUpOrQueued := strings.TrimSpace(fu) == "" &&
+			!inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !queued.SteeringCarrier
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
 		// drain rather than run here: a completion the model was never shown is
@@ -1309,15 +1297,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
-			RanKind:               ranKind,
-			HaveDeferredCont:      haveDeferredCont,
-			FollowUp:              fu,
-			QueuedText:            queued.Text,
-			QueuedImages:          len(queued.Images),
-			QueuedSkills:          len(queued.SkillNames),
-			NotificationsPending:  notificationsPending,
-			Awaiting:              awaiting,
-			SteeringCarrierTurnID: carrierTurnID,
+			RanKind:              ranKind,
+			HaveDeferredCont:     haveDeferredCont,
+			FollowUp:             fu,
+			QueuedText:           queued.Text,
+			QueuedImages:         len(queued.Images),
+			QueuedSkills:         len(queued.SkillNames),
+			NotificationsPending: notificationsPending,
+			Awaiting:             awaiting,
+			QueuedCarrier:        queued.SteeringCarrier,
 		})
 
 		switch action {
@@ -1331,14 +1319,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			next = queued.Text
 			nextImages = queued.Images
 			processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(processCtx, queued), queued)
-			s.mu.Lock()
-			s.sessionEndEmitted = false
-			s.mu.Unlock()
-			continue
-		case runSteeringCarrier:
-			next = ""
-			nextKind = EntrySteeringCarrier
-			processCtx = withSteeringCarrierTurn(processCtx, carrierTurnID)
 			s.mu.Lock()
 			s.sessionEndEmitted = false
 			s.mu.Unlock()
@@ -1527,7 +1507,7 @@ func errTranscriptRefusesRecords() error {
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
-	case EntryUserInput, EntryContinuation, EntrySteeringCarrier:
+	case EntryUserInput, EntryContinuation:
 		return true
 	default:
 		return false
@@ -1783,17 +1763,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		rootAttentionAccepted = true
 	} else if kind == EntryDelegateAttention {
 		s.acceptDelegateAttentionInput()
-	} else if kind == EntrySteeringCarrier {
-		// Also arrives already named: claimSteeringCarrierTurn reserved the id
-		// (the steering mutation's own, reserved at its acceptance) and
-		// published it into ActiveTurnID before ProcessPendingUserInput ever
-		// called ProcessInputKind, so onRunnable already handed it to the
-		// daemon and cancellation is wired before this point runs.
-		runningTurnID = steeringCarrierTurnIDFromContext(ctx)
-		if proceed, err := s.acceptSteeringCarrierInput(ctx, runningTurnID); !proceed {
-			return "", false, err
-		}
 	} else if err := s.acceptUserInputWithSkillSelection(ctx, input, images, inputProvenance, kind == EntryUserInput, skillSelection); err != nil {
+		if errors.Is(err, errSteeringCarrierStoodDown) {
+			return "", false, nil
+		}
 		return "", false, err
 	}
 	if skillRouteErr != nil {
@@ -2223,6 +2196,13 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 // selection for a genuine user skill route: the recorded input turn keeps the
 // original text and carries the selection record in its SkillState.
 func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool, skillInput *schema.SkillInputRecord) error {
+	queuedIdentity := queuedClientMutationFromContext(ctx)
+	if queuedIdentity.SteeringCarrier {
+		// Queued input with no content of its own: the steering it carries is
+		// drained the way every accepted input drains it, and there is no
+		// user turn to record, count or announce.
+		return s.acceptSteeringCarrierInput(ctx, queuedIdentity.StableTurnID)
+	}
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
@@ -2231,7 +2211,6 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.
 	// Check the limit before incrementing so MaxTurns=N allows exactly N inputs.
-	queuedIdentity := queuedClientMutationFromContext(ctx)
 	var acceptedTurnsFloor uint64
 	if queuedIdentity.ClientMutationID == "" {
 		s.mu.Lock()
@@ -2548,17 +2527,17 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // its Applied receipt is the id that actually runs, which is what lets an
 // interrupt's fence match the turn it cancels.
 //
-// It returns proceed=false with no error when nothing is left to deliver -- a
+// It returns errSteeringCarrierStoodDown when nothing is left to deliver -- a
 // race with a turn that drained the steering first between the wake deciding
-// to run and this call -- so the caller can stand down without opening a turn
-// that carries nothing, and proceed=false with an error when the steer's
-// append failed: the turn is failed and the input ends, the same policy a
-// queued message whose append fails gets (acceptUserInput), with the steer
-// still accepted for the next wake to carry.
-func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) (proceed bool, err error) {
+// to run and this call -- so processOneInput stands down without opening a
+// turn that carries nothing, and any other error when the steer's append
+// failed: the turn is failed and the input ends, the same policy a queued
+// message whose append fails gets (acceptUserInput), with the steer still
+// accepted for the next wake to carry.
+func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) error {
 	if !s.hasPendingUserSteering() {
 		s.finishNotificationNoop()
-		return false, nil
+		return errSteeringCarrierStoodDown
 	}
 	s.repairOrphanedToolResults(context.Background(), "before accepting steering carrier")
 	// The announce precedes every content event of the turn, the same as
@@ -2580,9 +2559,24 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		// Fail the turn already announced above and end the input.
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
 		s.emitTurnFailure(errorDataFromError(err))
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
+}
+
+// errSteeringCarrierStoodDown is acceptSteeringCarrierInput's answer when the
+// steering it was claimed for is already gone: not a failure, a turn that has
+// nothing to do.
+var errSteeringCarrierStoodDown = errors.New("steering carrier: nothing left to carry")
+
+// releaseSteeringCarrierClaim hands back the active-turn slot a steering
+// carrier's claim published, and is a no-op for any other queued identity: a
+// queued message's slot is cleared by its own completion, or kept for restore
+// to re-run the claimed entry under.
+func (s *Session) releaseSteeringCarrierClaim(identity queuedClientMutationIdentity) {
+	if identity.SteeringCarrier {
+		s.releaseRunningTurnID(identity.StableTurnID)
+	}
 }
 
 func (s *Session) settleDeliveredWatchNotification(ctx context.Context, d deliverableJobNotification) {

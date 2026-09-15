@@ -193,17 +193,17 @@ func (s *Session) clientMutationQueue(params appwire.TurnQueueParams) (appwire.T
 // queued input ahead of everything else while awaiting.
 //
 // A queued message runs as its own turn. Pending steering has no turn of its
-// own to run: it is drained into a turn built to carry it, entering as
-// EntrySteeringCarrier -- a kind that passes the same pending-question gate as
-// EntryUserInput (steering is the user speaking too) but is not routed through
-// acceptUserInput, so it costs no MaxTurns slot and appends no empty user turn.
+// own to run: it runs as a synthetic queued entry with no content
+// (claimSteeringCarrierInput), so it passes the same pending-question gate a
+// queued message does (steering is the user speaking too), and its acceptance
+// drains the steering the way a queued message's would -- without a user turn
+// of its own, a MaxTurns slot, or a transcript append.
 //
 // onRunnable, when non-nil, is called with the turn id at the moment a claim
 // becomes real, so the daemon can publish the running turn and wire
 // cancellation to it before the turn starts producing. For steering that id is
-// claimSteeringCarrierTurn's -- one of the pending steer mutations' own
-// reserved ids, not a freshly minted one, so the id the client was told in its
-// Applied receipt is the id that actually runs.
+// the pending steer's own reserved id, not a freshly minted one, so the id the
+// client was told in its Applied receipt is the id that actually runs.
 func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
@@ -224,7 +224,27 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 	}
 	queued := s.popQueueHead()
-	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
+		var claimed bool
+		if queued, claimed = s.claimSteeringCarrierInput(); !claimed {
+			// Another mutation already owns the active-turn slot, or an
+			// interrupt fence is ending one: this wake cannot name itself.
+			// Stand down rather than run unaddressable -- the steering stays
+			// queued for whichever turn runs next, the same stand-down
+			// contract mintRunningTurnID's callers rely on.
+			return "", false, nil
+		}
+		// Hand the claim back on EVERY exit, not just the ones that reach the
+		// drain loop's own release. That release runs after processOneInput
+		// returns, and the entry gate refuses a closed session before it. A
+		// claim stranded there is not recoverable -- the pending steer still
+		// owns the id, so nothing else releases it -- and every later
+		// turn/start is then refused with "turn is already active" for the
+		// life of the session. releaseRunningTurnID compare-and-clears, so on
+		// the ordinary path this is a no-op.
+		defer s.releaseRunningTurnID(queued.StableTurnID)
+	}
+	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) || queued.SteeringCarrier {
 		if onRunnable != nil && queued.StableTurnID != "" {
 			onRunnable(queued.StableTurnID)
 		}
@@ -252,56 +272,14 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 		return result, true, err
 	}
-	if !s.hasPendingUserSteering() {
-		return "", false, nil
-	}
-	turnID, ok := s.claimSteeringCarrierTurn()
-	if !ok {
-		// Another mutation already owns the active-turn slot, or an interrupt
-		// fence is ending one: this wake cannot name itself. Stand down rather
-		// than run unaddressable -- the steering stays queued for whichever
-		// turn runs next, the same stand-down contract mintRunningTurnID's
-		// callers rely on.
-		return "", false, nil
-	}
-	// Hand the claim back on EVERY exit, not just the ones that reach
-	// processOneInput's own deferred release. That defer is registered several
-	// early returns into the call: the entry gate refuses a closed session
-	// before it, and so does the cancellation check processOneInput makes
-	// before taking any name. A claim stranded on either is not recoverable --
-	// the pending steer still owns the id, so forgetRunningTurnNoOneOwns leaves
-	// it alone at load -- and every later turn/start is then refused with "turn
-	// is already active" for the life of the session, across restarts.
-	// releaseRunningTurnID compare-and-clears, so on the ordinary path (where
-	// the turn's own release already ran, or a later mutation took the slot)
-	// this is a no-op.
-	defer s.releaseRunningTurnID(turnID)
-	if onRunnable != nil {
-		onRunnable(turnID)
-	}
-	ctx = withSteeringCarrierTurn(ctx, turnID)
-	result, err := s.ProcessInputKind(ctx, "", nil, EntrySteeringCarrier)
-	return result, true, err
+	return "", false, nil
 }
 
-// steeringCarrierContextKey carries the turn id claimSteeringCarrierTurn
-// reserved from ProcessPendingUserInput down into processOneInput, the same
-// way queuedClientMutationContextKey carries a claimed queue entry's identity.
-type steeringCarrierContextKey struct{}
-
-func withSteeringCarrierTurn(ctx context.Context, turnID string) context.Context {
-	return context.WithValue(ctx, steeringCarrierContextKey{}, turnID)
-}
-
-func steeringCarrierTurnIDFromContext(ctx context.Context) string {
-	turnID, _ := ctx.Value(steeringCarrierContextKey{}).(string)
-	return turnID
-}
-
-// claimSteeringCarrierTurn reserves the durable turn identity for a wake whose
-// only job is to carry already-accepted user steering. It reuses the id the
-// head of the pending steering already reserved at its own acceptance --
-// reserveClientMutationTurnID, called from clientMutationSteer/Drain/Promote
+// claimSteeringCarrierInput reserves the durable turn identity for a turn whose
+// only job is to carry already-accepted user steering, and returns the entry
+// that turn runs as: queued input with no content, whose identity is the head
+// steer's. It reuses the id that steer already reserved at its own acceptance
+// -- reserveClientMutationTurnID, called from clientMutationSteer/Drain/Promote
 // -- rather than minting a fresh one, so the id returned in that mutation's
 // Applied receipt is the id that actually runs.
 //
@@ -312,18 +290,18 @@ func steeringCarrierTurnIDFromContext(ctx context.Context) string {
 // treats every case the same way -- stand down -- because the steering that
 // prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting.
-func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return "", false
+		return queuedInput{}, false
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
-		if id := claimableSteeringCarrierTurnID(snapshot); id != "" {
-			snapshot.ActiveTurnID = id
-			turnID = id
+		if id, turnID := claimableSteeringCarrier(snapshot); turnID != "" {
+			snapshot.ActiveTurnID = turnID
+			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
 		}
 		return nil
 	}); err != nil {
@@ -331,9 +309,9 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 		// from resting (hasRunnableUserSteering) until the next wake claims
 		// it. A closed rail or an occupied slot returns nil above.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
-		return "", false
+		return queuedInput{}, false
 	}
-	return turnID, turnID != ""
+	return carrier, carrier.SteeringCarrier
 }
 
 // steeringCarrierRailOpen reports whether the steering rail is open to a claim
@@ -349,19 +327,19 @@ func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
 	return snapshot.InterruptFence == nil && snapshot.ActiveTurnID == "" && !snapshot.SteeringHeld
 }
 
-// claimableSteeringCarrierTurnID names the reserved turn the first eligible
-// pending steer already owns, or "" when no steer is ready to carry one. The
+// claimableSteeringCarrier names the first eligible pending steer and the
+// reserved turn it already owns, or "" when no steer is ready to carry one. The
 // claim above walks the order once through this; the gate's predicate asks it
 // the same question without taking anything.
-func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
+func claimableSteeringCarrier(snapshot *clientMutationSnapshot) (clientMutationID, turnID string) {
 	for _, id := range snapshot.SteeringOrder {
 		pending, exists := snapshot.PendingExecutions[id]
 		if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
 			continue
 		}
-		return pending.TurnID
+		return id, pending.TurnID
 	}
-	return ""
+	return "", ""
 }
 
 // carrierSteerStillQueued is the carrier's own question after it drained: is
@@ -386,7 +364,8 @@ func (s *Session) carrierSteerStillQueued(turnID string) bool {
 // whether this session has steering it could actually run asks the question the
 // claim asks.
 func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
-	return steeringCarrierRailOpen(snapshot) && claimableSteeringCarrierTurnID(snapshot) != ""
+	_, turnID := claimableSteeringCarrier(snapshot)
+	return steeringCarrierRailOpen(snapshot) && turnID != ""
 }
 
 // wakeHasClaimableWork reports whether this wake has work it could actually

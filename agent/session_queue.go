@@ -25,6 +25,10 @@ type queuedClientMutationIdentity struct {
 	ClientMutationID string
 	StableTurnID     string
 	QueueEntryID     string
+	// SteeringCarrier marks the synthetic entry claimSteeringCarrierInput
+	// builds for pending user steering: ClientMutationID is the steer's,
+	// StableTurnID the id it reserved, and there is no content of its own.
+	SteeringCarrier bool
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
@@ -32,6 +36,7 @@ func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.C
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
+		SteeringCarrier:  queued.SteeringCarrier,
 	})
 }
 
@@ -429,6 +434,11 @@ type queuedInput struct {
 	// from the recorded sources at actual consumption.
 	SkillNames []string           `json:"skill_names,omitempty"`
 	Provenance *provenance.Causal `json:"provenance,omitempty"`
+	// SteeringCarrier marks the entry claimSteeringCarrierInput synthesizes
+	// to run pending user steering as a turn of its own: never queued, never
+	// persisted, and carrying no content -- the steering it exists for is
+	// drained at the turn's acceptance like any queued message's.
+	SteeringCarrier bool `json:"-"`
 }
 
 // queueEntrySeq guarantees queue-entry id uniqueness by construction,
