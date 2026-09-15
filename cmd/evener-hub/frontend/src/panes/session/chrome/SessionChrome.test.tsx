@@ -392,7 +392,7 @@ test.each([
   },
 );
 
-test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
+test("SessionChrome keeps its actions-menu tasks entry count-free", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -409,10 +409,10 @@ test("SessionChrome shows task outcome aggregates in its actions menu", async ()
 
   render(<SessionChrome ref="ref_outcomes" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
-test("SessionChrome infers a missing zero outcome in its task label", async () => {
+test("SessionChrome keeps the menu entry count-free even when an outcome is omitted", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -429,7 +429,7 @@ test("SessionChrome infers a missing zero outcome in its task label", async () =
 
   render(<SessionChrome ref="ref_remaining" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {

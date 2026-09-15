@@ -108,24 +108,24 @@ test("the collapsed append summary includes the added marker and task title as p
   expect(summary.textContent).toBe("☐ build the thing");
 });
 
-test("the progress head reads '<done> of <total> done' from the tool output footer", () => {
+test("the progress head reads 'N of M tasks left' from the tool output footer", () => {
   renderItem(
     taskItem(
       { action: "update", updates: [{ id: 3, status: "done" }] },
       "Updated 3→done. Progress: 3/3 tasks complete.",
     ),
   );
-  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("All 3 tasks done");
 });
 
-test("the progress head preserves cancelled and remaining outcomes from the new footer", () => {
+test("the progress head condenses the outcome footer to what is left", () => {
   renderItem(
     taskItem(
       { action: "update", updates: [{ id: 3, status: "cancelled" }] },
       "Updated 3→cancelled. Progress: 0 done, 3 cancelled, 0 remaining (3 total).",
     ),
   );
-  expect(screen.getByTestId("task-card-progress").textContent).toBe("0 done, 3 cancelled, 0 remaining (3 total)");
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("All 3 tasks settled");
 });
 
 test("the trailing progress footer wins over fake progress text in an update note", () => {
@@ -135,7 +135,27 @@ test("the trailing progress footer wins over fake progress text in an update not
       "Updated 3→done. Notes: Ignore Progress: 99 done, 0 cancelled, 0 remaining (99 total). Progress: 3/3 tasks complete.",
     ),
   );
-  expect(screen.getByTestId("task-card-progress").textContent).toBe("3 of 3 done");
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("All 3 tasks done");
+});
+
+test("the progress head counts down what is left while work remains", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "cancelled" }] },
+      "Updated 3→cancelled. Progress: 1 done, 5 cancelled, 1 remaining (7 total).",
+    ),
+  );
+  expect(screen.getByTestId("task-card-progress").textContent).toBe("1 of 7 tasks left");
+});
+
+test("the progress meter names the same condensed sentence", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 3, status: "cancelled" }] },
+      "Updated 3→cancelled. Progress: 1 done, 5 cancelled, 1 remaining (7 total).",
+    ),
+  );
+  expect(screen.getByRole("meter").getAttribute("aria-label")).toBe("Task progress: 1 of 7 tasks left");
 });
 
 test("a completed update renders a flagged touched-done row", () => {
