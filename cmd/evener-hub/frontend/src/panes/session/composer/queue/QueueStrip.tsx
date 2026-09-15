@@ -185,6 +185,7 @@ export function QueueStrip({
   // indices shift), not row index - mirrors the legacy renderer's own
   // setQueuedRowActionsDisabled keying.
   const [busyEntryIds, setBusyEntryIds] = useState<ReadonlySet<string>>(new Set());
+  const [retryErrors, setRetryErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
   const queue = model?.queue ?? null;
   const depth = queue?.depth ?? 0;
@@ -321,10 +322,18 @@ export function QueueStrip({
 
   async function handleRetry(record: MutationOutboxRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
+    setRetryErrors((errors) => {
+      const next = new Map(errors);
+      next.delete(record.clientMutationId);
+      return next;
+    });
     try {
-      await retryBlockedPendingTurn(record.clientMutationId, sessionRef);
+      if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef)))
+        throw new Error("Delivery still cannot be checked. The original message is kept; you can send a new message.");
     } catch (error) {
-      toasts.push("error", `Retry failed: ${errorText(error)}`);
+      const message = `Retry failed: ${errorText(error)}`;
+      setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, message));
+      toasts.push("error", message);
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -457,6 +466,9 @@ export function QueueStrip({
                   <span>Delivery uncertain</span>
                   {" — "}
                   <span>{recordPreview(record)}</span>
+                  {retryErrors.has(record.clientMutationId) && (
+                    <span role="alert">{retryErrors.get(record.clientMutationId)}</span>
+                  )}
                 </span>
                 <div className={CLASS.rowActions}>
                   <Button
@@ -464,14 +476,14 @@ export function QueueStrip({
                     variant="quiet"
                     disabled={
                       rowBusy ||
-                      !mutationAuthority ||
                       !model ||
                       model.status.type === "restartRequired" ||
-                      model.status.type === "notLoaded"
+                      (model.status.type === "notLoaded" && !sessionRef.startsWith("local:")) ||
+                      (!mutationAuthority && !(model.status.type === "notLoaded" && sessionRef.startsWith("local:")))
                     }
                     onClick={() => void handleRetry(record)}
                   >
-                    Retry
+                    {rowBusy ? "Retrying…" : "Retry"}
                   </Button>
                 </div>
               </li>

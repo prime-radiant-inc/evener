@@ -489,6 +489,34 @@ describe("MutationOutboxIndexedDB", () => {
     expect(attachment ? Array.from(new Uint8Array(await attachment.blob.arrayBuffer())) : []).toEqual([1, 3, 5, 7]);
   });
 
+  test("an unknown old Send stays intact while a fresh Send becomes dispatchable", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    const sendIntent = (text: string, expectedInstanceId: string): MutationIntent => ({
+      ...intent(text),
+      method: "turn/start",
+      payload: { ref: TARGET, expectedInstanceId, input: [{ type: "text", text }] },
+    });
+    const original = await store.enqueueIntent(sendIntent("uncertain old input", "old-instance"));
+    await store.markAttempted(original.clientMutationId);
+    await store.markUnknown(original.clientMutationId, "blockedUnknown");
+    const fresh = await store.enqueueIntent(sendIntent("fresh user input", "current-instance"));
+    try {
+      expect((await store.nextDispatchable(TARGET))?.clientMutationId).toBe(fresh.clientMutationId);
+      expect(await store.getOutbox(original.clientMutationId)).toEqual({
+        ...original,
+        attempted: true,
+        state: "blockedUnknown",
+      });
+      await store.settleReceipt(fresh.clientMutationId, "reflected");
+      expect(await store.nextDispatchable(TARGET)).toBeUndefined();
+      await store.restoreProvenAbsent(TARGET, new Set());
+      expect((await store.nextDispatchable(TARGET))?.payload).toEqual(original.payload);
+      expect((await store.nextDispatchable(TARGET))?.clientMutationId).toBe(original.clientMutationId);
+    } finally {
+      store.close();
+    }
+  });
+
   test("a blocked lower sequence prevents later dispatch without blocking another target", async () => {
     const store = new MutationOutboxIndexedDB({
       indexedDB,

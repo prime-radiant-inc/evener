@@ -181,10 +181,25 @@ export class MutationDispatcher {
       ) {
         try {
           await this.#storage.markUnknown(record.clientMutationId, "blockedUnknown");
-          this.#onStorageChange([record.targetRef]);
-        } finally {
+        } catch (storageError) {
+          // Without a committed blocking state another tab could mistake this
+          // attempted request for eligible work. Keep the target fenced until
+          // storage reconciliation succeeds, as before.
           this.#onBlockedMutation(record.targetRef, client);
+          throw storageError;
         }
+        this.#onStorageChange([record.targetRef]);
+        if (
+          data.cause === "daemonRestartRequired" ||
+          data.cause === "persistenceUnavailable" ||
+          (error instanceof WireError && error.evenerErrorInfo === "actionUnavailable")
+        ) {
+          this.#onBlockedMutation(record.targetRef, client);
+          return "stop";
+        }
+        // The old ID stays visible/retryable. It must not park a distinct fresh
+        // user Send; nextDispatchable preserves ordering for other controls.
+        return "advance";
       }
       // Request timeouts, transport failures, and automatically retryable
       // unknown outcomes retain submitting. A later ready/discovery event

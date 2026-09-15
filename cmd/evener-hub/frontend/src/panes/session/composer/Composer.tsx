@@ -181,6 +181,7 @@ const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoad
 
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
+  const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationWriteStalled = useThreadsStore((s) => s.mutationWriteStalled);
   const submitting = useComposerSubmitting(ref);
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
@@ -238,6 +239,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const actionPending = busyAction !== null || submitting || mutationWriteStalled;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -808,7 +810,9 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Read here rather than inside the handlers below, which close over `model`
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
-  const canSendWhenEnded = model.capabilities.send;
+  const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
+  const canResumeOnSend = localNotLoaded && recoveryRequired;
+  const canSendWhenEnded = model.capabilities.send || canResumeOnSend;
   // The target's skillInput capability, same narrowing rule: submission is
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
@@ -835,7 +839,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Reading routing off the presentation source therefore lost tier 6 for the
   // sender at exactly the moment the daemon confirmed it had the send - the
   // next message went to turn/start and bounced.
-  const hasPendingSend = pendingSendEntries.some((entry) => entry.fromThisClient);
+  const hasPendingSend = pendingSendEntries.some((entry) => entry.fromThisClient && entry.state !== "blockedUnknown");
   const tableAvailability = deriveSendQueueAvailability({
     statusType: model.status.type,
     capabilities: model.capabilities,
@@ -921,7 +925,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not
   // strand a typed message with no visible way to send it.
-  const followUpEngaged = followUpFocused || hasContent;
+  const followUpEngaged = localNotLoaded || followUpFocused || hasContent;
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     editText(event.target.value);
@@ -1159,6 +1163,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
+    const submittedResume = kind === "send" && localNotLoaded;
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
@@ -1175,6 +1180,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
+    setSubmissionError(null);
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
     try {
       await submitWithPendingTracking(
@@ -1187,7 +1193,9 @@ export function Composer({ ref, focused }: ComposerProps) {
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-            toasts.push("error", sessionActionError(`${label} failed`, err));
+            const message = sessionActionError(`${label} failed`, err);
+            if (submittedResume && mountedRef.current) setSubmissionError(message);
+            else toasts.push("error", message);
           },
         },
         async () => {
@@ -1214,8 +1222,8 @@ export function Composer({ ref, focused }: ComposerProps) {
       clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
       clearSubmittedAttachments(submittedAttachments);
     } catch {
-      // The local durable write failed. The submitted composer payload stays
-      // untouched and no network request was eligible to start.
+      // Resume or the local durable write failed. Keep the submitted draft;
+      // only successful durable handoff above can clear it.
     } finally {
       if (mountedRef.current) setBusyAction(null);
     }
@@ -1443,6 +1451,8 @@ export function Composer({ ref, focused }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
+      {busyAction === "submit" && localNotLoaded && <div role="status">Resuming session…</div>}
+      {submissionError && <div role="alert">{submissionError}</div>}
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for

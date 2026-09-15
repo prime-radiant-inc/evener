@@ -404,7 +404,13 @@ export class MutationOutboxIndexedDB {
   async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord | undefined> {
     const records = await this.listOutbox(targetRef);
     const first = records[0];
-    return first?.state === "submitting" ? first : undefined;
+    if (first?.state === "submitting") return first;
+    // Uncertain delivery belongs to the old message, not to every later user
+    // intent. A never-attempted Send may pass blocked rows without reopening
+    // them or changing their original mutation/instance identity. Other
+    // controls keep their ordering, and no Send passes an eligible older row.
+    const next = records.find((record) => record.state === "submitting");
+    return next?.method === "turn/start" && next.attempted === false ? next : undefined;
   }
 
   async #open(): Promise<IDBDatabase> {

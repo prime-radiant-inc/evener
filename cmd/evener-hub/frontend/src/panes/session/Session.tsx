@@ -29,7 +29,7 @@ import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { resumeSessionForUserIntent, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { projectThread } from "../../transcriptDisplay/projector";
@@ -125,14 +125,14 @@ function RestartRequiredNotice({
       if (resumeRequired) {
         const { client, state } = connectionStore.getState();
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        const { thread } = await client.resumeThread(sessionRef);
-        refreshedRef = thread.evener.ref;
+        refreshedRef = await resumeSessionForUserIntent(sessionRef, true);
         if (refreshedRef !== sessionRef) {
           const url = paneToURL("session", { ref: refreshedRef });
           if (url !== null) navigate(url, { replace: true });
         }
+      } else {
+        await threadsStore.getState().refreshThread(refreshedRef);
       }
-      await threadsStore.getState().refreshThread(refreshedRef);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -144,7 +144,7 @@ function RestartRequiredNotice({
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
-          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
+          ? "Send a message or retry an uncertain message to resume this session."
           : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
       <Button disabled={refreshing} onClick={() => void refresh()}>
@@ -499,18 +499,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
                 resumeRequired={model.status.type !== "restartRequired" && !recoveryOwnerRef}
               />
             )}
-            {/* A FENCED notLoaded session (resumeRequired -> Send=false)
-                renders no composer card at all, which leaves the ⋯ menu -
-                the only force-stop surface - unmounted. Force stop matters
-                most in exactly that state: a stalled or fenced snapshot may
-                still have a daemon to stop. With Send=true the composer's
-                follow-up card exists and carries the menu, so this mount is
-                scoped to send === false to never render a second one.
-                Owner-retained sessions are excluded - their notice directs
-                recovery to the owner. */}
+            {/* Recovery keeps the composer and its menu mounted. Retain the
+                fallback only for other local snapshots with no Send surface;
+                owner-retained sessions direct recovery to their owner. */}
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
+              !restartPending &&
               !model.capabilities.send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>

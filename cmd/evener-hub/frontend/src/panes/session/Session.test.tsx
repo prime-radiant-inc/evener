@@ -30,8 +30,15 @@ import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
+import { recoveryClientFixture } from "../../stores/testing/recoveryClient";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import {
+  resetThreadsStoreForTests,
+  retryBlockedMutation,
+  setMutationStorageForTests,
+  subscribeMutationPersistence,
+  threadsStore,
+} from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
@@ -2931,11 +2938,23 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     await act(async () => {
       await threadsStore.getState().refreshThread(ref);
     });
+    // setInterval is frozen to control discovery, so waitFor cannot poll a
+    // storage-only update. Observe its real committed persistence edge instead.
+    const blockedWritten = new Promise<void>((resolve, reject) => {
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (!refs.includes(ref) || !mutationId) return;
+        void mutationStorage.getOutbox(mutationId).then((record) => {
+          if (record?.state === "blockedUnknown") resolve();
+        }, reject);
+      });
+      onTestFinished(unsubscribe);
+    });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
       await flushPendingTurnsProjectionForTests();
     });
-    await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+    await blockedWritten;
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
     await act(async () => {
@@ -2962,24 +2981,21 @@ test.each(["pending", "failed"])(
   "saved Send exposes confirmed recovery when automatic resume is %s",
   async (outcome) => {
     vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    vi.mocked(ComposerModule.Composer).mockRestore();
     const fake = connectFakeClient();
     const refresh = vi.spyOn(threadsStore.getState(), "refreshThread");
     onTestFinished(() => refresh.mockRestore());
     const ref = "local:saved-auto-resume";
     let daemonStarted = false;
     let stopped = false;
-    let mutationId = "";
     let rejectRead: (error: Error) => void = () => {};
     const resumedRead = new Promise<never>((_, reject) => {
       rejectRead = reject;
     });
-    const blocked = () =>
-      new WireError("resumed daemon read unavailable", -32014, {
-        evenerErrorInfo: "mutationOutcomeUnknown",
-        clientMutationId: mutationId,
-        mutationOutcome: "unknown",
-        retryDisposition: "blocked",
-      });
+    // Attach rejection observation before either failure or Stop releases the
+    // external boundary; assert it below rather than leaving cleanup unhandled.
+    const observedRead = resumedRead.catch((error: unknown) => error);
+    const blocked = new Error("resumed daemon read unavailable");
     fake.on("thread/read", () => {
       const response = readResponse(ref, { status: { type: "notLoaded" } });
       response.thread.evener.instanceId = "saved-instance";
@@ -2987,21 +3003,20 @@ test.each(["pending", "failed"])(
       response.thread.evener.resumeRequired = stopped;
       return response;
     });
-    fake.on("turn/start", (params) => {
-      mutationId = params.clientMutationId;
+    fake.on("thread/resume", (params) => {
+      expect(params).toEqual({ ref });
       daemonStarted = true;
       return resumedRead;
     });
     fake.on("evener/thread/forceStop", () => {
       expect(daemonStarted).toBe(true);
       stopped = true;
-      rejectRead(blocked());
+      rejectRead(blocked);
       return {};
     });
     try {
       render(
         <ClientProvider client={fake}>
-          <SessionChromeModule.SessionChrome ref={ref} />
           <Session params={{ ref }} paneId="p1" focused={true} />
         </ClientProvider>,
       );
@@ -3014,15 +3029,20 @@ test.each(["pending", "failed"])(
       await user.click(screen.getByRole("button", { name: /session actions/i }));
       expect(screen.getByRole("menuitem", { name: "Force stop…" })).toBeTruthy();
       await user.keyboard("{Escape}");
-      await act(async () => {
-        await threadsStore.getState().send(ref, "continue the saved conversation");
-        await flushPendingTurnsProjectionForTests();
-      });
+      const editor = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+      await user.type(editor, "continue the saved conversation");
+      await user.click(screen.getByRole("button", { name: "Send" }));
       await waitFor(() => expect(daemonStarted).toBe(true));
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([
+        { method: "thread/resume", params: { ref } },
+      ]);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+      expect(await mutationStorage.listOutbox(ref)).toEqual([]);
       if (outcome === "failed") {
-        await act(async () => rejectRead(blocked()));
-        await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
-      }
+        await act(async () => rejectRead(blocked));
+        expect(await observedRead).toBe(blocked);
+        expect(await screen.findByText(/resumed daemon read unavailable/)).toBeTruthy();
+      } else expect(screen.getByText("Resuming session…").getAttribute("role")).toBe("status");
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
@@ -3033,16 +3053,22 @@ test.each(["pending", "failed"])(
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
-      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
-      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+      expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
       expect(refresh).toHaveBeenCalledWith(ref);
       await act(async () => {
         await Promise.all(refresh.mock.results.map((result) => result.value));
         await flushPendingTurnsProjectionForTests();
       });
-      expect((await mutationStorage.getOutbox(mutationId))?.composerText).toBe("continue the saved conversation");
+      expect(await observedRead).toBe(blocked);
+      expect(await screen.findByText(/resumed daemon read unavailable/)).toBeTruthy();
+      expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
+      expect(editor.value).toBe("continue the saved conversation");
+      expect(editor.disabled).toBe(false);
+      expect(editor.readOnly).toBe(false);
+      expect(await mutationStorage.listOutbox(ref)).toEqual([]);
     } finally {
-      await act(async () => rejectRead(blocked()));
+      await act(async () => rejectRead(blocked));
     }
   },
 );
@@ -3179,12 +3205,508 @@ test.each(["idle", "active"])(
   },
 );
 
-// Regression for the review finding on the footer-button removal: a FENCED
-// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
-// at all, which used to leave the ⋯ menu - the only force-stop surface -
-// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
-// the footer for exactly this state. This drives the REAL Session + Composer
-// tree (no slot stubs) to prove the menu is reachable there.
+test("stopped-session Send keeps the composer writable and resumes the same session once", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "local:stopped-send";
+  let stopped = true;
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const snapshot = () =>
+    readResponse(ref, {
+      status: { type: stopped ? "notLoaded" : "idle" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: !stopped },
+        resumeRequired: stopped,
+        mutationStateAuthoritative: !stopped,
+        queue: { revision: 0 },
+      },
+    });
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id || request.method === "initialize" || request.method === "ping") return;
+        requests.push(request);
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result = snapshot();
+            break;
+          case "thread/resume":
+            stopped = false;
+            result = snapshot();
+            break;
+          case "evener/jobs/list":
+            result = { data: emptyActivityTree(ref) };
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = {
+              turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                threadId: snapshot().thread.id,
+                disposition: "applied",
+                projectionState: "pending",
+              },
+            };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  render(
+    <ClientProvider client={client}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(requests.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  const user = userEvent.setup();
+  await user.type(editor, "fresh intent after stop");
+  expect((editor as HTMLTextAreaElement).value).toBe("fresh intent after stop");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  expect(requests.filter(({ method }) => method === "thread/resume")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
+  expect(requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+    ref,
+    clientMutationId: expect.any(String),
+    input: [{ type: "text", text: "fresh intent after stop" }],
+  });
+  expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
+  expect(threadsStore.getState().threads.get(ref)?.threadId).toBe(snapshot().thread.id);
+});
+
+function stoppedRecoverySnapshot(ref: string, stopped: boolean, instanceId = "same-instance"): ThreadReadResponse {
+  return readResponse(ref, {
+    status: { type: stopped ? "notLoaded" : "idle" },
+    evener: {
+      ref,
+      instanceId,
+      capabilities: { ...CAPABILITIES, send: !stopped },
+      resumeRequired: stopped,
+      mutationStateAuthoritative: !stopped,
+      queue: { revision: 0 },
+    },
+  });
+}
+
+test("stopped-session resume failure keeps the editable draft and inline error", async ({ onTestFinished }) => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "local:resume-failure";
+  let releaseResume!: () => void;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const { client, requests, resumeReceived } = recoveryClientFixture({
+    ref,
+    snapshot: () => stoppedRecoverySnapshot(ref, true),
+    resume: async () => {
+      await resumeGate;
+      throw new Error("fixture-resume-denied");
+    },
+  });
+  onTestFinished(() => {
+    releaseResume();
+    client.close();
+  });
+  connectionStore.getState().connect(client);
+  await client.connect();
+  render(
+    <ClientProvider client={client}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  const user = userEvent.setup();
+  await user.type(editor, "draft before resume");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await resumeReceived;
+  expect(screen.getByText("Resuming session…").getAttribute("role")).toBe("status");
+  await user.type(editor, " and more");
+  await act(async () => releaseResume());
+  expect(await screen.findByText(/fixture-resume-denied/)).toBeTruthy();
+  expect((editor as HTMLTextAreaElement).value).toBe("draft before resume and more");
+  expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
+  expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+  expect(await mutationStorage.listOutbox(ref)).toEqual([]);
+});
+
+test.each(["replayed", "blocked", "stale"])(
+  "stopped-session concurrent Send and %s Retry share resume without rewriting old authority",
+  async (outcome) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const ref = `local:concurrent-${outcome}`;
+    let stopped = true;
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const old = await mutationStorage.enqueueIntent({
+      targetRef: ref,
+      threadId: `thr_${ref}`,
+      method: "turn/start",
+      payload: {
+        ref,
+        expectedInstanceId: "original-instance",
+        input: [{ type: "text", text: "uncertain original" }],
+      },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain original" }] },
+    });
+    await mutationStorage.markAttempted(old.clientMutationId);
+    await mutationStorage.markUnknown(old.clientMutationId, "blockedUnknown");
+    const currentInstance = outcome === "stale" ? "replacement-instance" : "original-instance";
+    const { client, requests, resumeReceived } = recoveryClientFixture({
+      ref,
+      snapshot: () => stoppedRecoverySnapshot(ref, stopped, stopped ? "original-instance" : currentInstance),
+      resume: async () => {
+        await resumeGate;
+        stopped = false;
+      },
+      mutation: (params) => {
+        if (params.clientMutationId !== old.clientMutationId) return undefined;
+        if (outcome !== "replayed")
+          throw new WireError("fixture-original-outcome", -32000, {
+            clientMutationId: old.clientMutationId,
+            mutationOutcome: outcome === "blocked" ? "unknown" : "notAccepted",
+            retryDisposition: outcome === "blocked" ? "blocked" : undefined,
+          });
+        return {
+          turn: { id: "original-turn", status: "completed", itemsView: "full" },
+          receipt: {
+            clientMutationId: old.clientMutationId,
+            threadId: old.threadId,
+            disposition: "replayed",
+            projectionState: "reflected",
+          },
+        };
+      },
+    });
+    onTestFinished(() => {
+      releaseResume();
+      client.close();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    render(
+      <ClientProvider client={client}>
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    await resumeReceived;
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    await user.type(editor, "independent fresh intent");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    await act(async () => releaseResume());
+    await waitFor(() =>
+      expect(
+        requests.some(
+          ({ method, params }) => method === "turn/start" && params.clientMutationId !== old.clientMutationId,
+        ),
+      ).toBe(true),
+    );
+    const starts = requests.filter(({ method }) => method === "turn/start");
+    const retried = starts.filter(({ params }) => params.clientMutationId === old.clientMutationId);
+    expect(retried.length).toBeGreaterThan(0);
+    // Resume hydration and the explicit Retry reconciliation are the only two
+    // authority cuts in this action; neither may create an unbounded retry loop.
+    expect(retried.length).toBeLessThanOrEqual(2);
+    for (const { params } of retried) expect(params).toEqual(old.payload);
+    const fresh = starts.find(({ params }) => params.clientMutationId !== old.clientMutationId);
+    expect(fresh?.params).toMatchObject({
+      ref,
+      expectedInstanceId: currentInstance,
+      input: [{ type: "text", text: "independent fresh intent" }],
+    });
+    expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    if (outcome === "blocked") {
+      expect((await mutationStorage.getOutbox(old.clientMutationId))?.payload).toEqual(old.payload);
+      expect(screen.getByText("Delivery uncertain")).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Retry" })).toBeTruthy();
+    } else if (outcome === "stale") {
+      expect((await mutationStorage.getRecovery(old.clientMutationId))?.payload).toEqual(old.payload);
+    } else {
+      expect(await mutationStorage.getOutbox(old.clientMutationId)).toBeUndefined();
+      expect(await mutationStorage.getRecovery(old.clientMutationId)).toBeUndefined();
+    }
+  },
+);
+
+test("stopped-session Stop cancels a pending Send resume but not a subsequent fresh Send", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "local:stop-racing-resume";
+  let stopped = true;
+  let announceSend!: () => void;
+  const sendReceived = new Promise<void>((resolve) => {
+    announceSend = resolve;
+  });
+  let releaseResume!: () => void;
+  const resumeGate = new Promise<void>((resolve) => {
+    releaseResume = resolve;
+  });
+  const { client, requests, resumeReceived } = recoveryClientFixture({
+    ref,
+    snapshot: () => stoppedRecoverySnapshot(ref, stopped),
+    resume: async () => {
+      await resumeGate;
+      stopped = false;
+    },
+    stop: () => {
+      stopped = true;
+    },
+    mutation: () => announceSend(),
+  });
+  onTestFinished(() => {
+    releaseResume();
+    client.close();
+  });
+  connectionStore.getState().connect(client);
+  await client.connect();
+  await threadsStore.getState().ensureThread(ref);
+  const oldSend = threadsStore
+    .getState()
+    .send(ref, "canceled input")
+    .catch((error: unknown) => error);
+  await resumeReceived;
+  await threadsStore.getState().forceStop(ref);
+  releaseResume();
+  expect(await oldSend).toBeInstanceOf(Error);
+  expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+  expect(await mutationStorage.listOutbox(ref)).toEqual([]);
+  await threadsStore.getState().send(ref, "later fresh input");
+  await sendReceived;
+  expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1);
+  expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(2);
+  expect(requests.find(({ method }) => method === "turn/start")?.params.input).toEqual([
+    { type: "text", text: "later fresh input" },
+  ]);
+});
+
+test("stopped-session repeated Stop through the menu preserves the writable draft without resume", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "local:repeated-stop-menu";
+  setNavigationTitle(ref, "Repeated stop session");
+  let stopped = false;
+  const { client, requests } = recoveryClientFixture({
+    ref,
+    snapshot: () => stoppedRecoverySnapshot(ref, stopped),
+    resume: () => {
+      stopped = false;
+    },
+    stop: () => {
+      stopped = true;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  render(
+    <ClientProvider client={client}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  const editor = await screen.findByRole("textbox", { name: "Message" });
+  await user.type(editor, "draft across repeated stop");
+  for (const count of [1, 2]) {
+    await openForceStopDialog(user);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(requests.filter(({ method }) => method === "evener/thread/forceStop")).toHaveLength(count);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
+    expect((editor as HTMLTextAreaElement).value).toBe("draft across repeated stop");
+  }
+  expect(requests.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+  await user.type(editor, " and still editable");
+  expect((editor as HTMLTextAreaElement).value).toBe("draft across repeated stop and still editable");
+});
+
+test("stopped-session Retry begun before Stop cannot resume after its IndexedDB lookup completes", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "local:retry-lookup-stop";
+  let stopped = true;
+  const { client, requests } = recoveryClientFixture({
+    ref,
+    snapshot: () => stoppedRecoverySnapshot(ref, stopped),
+    resume: () => {
+      stopped = false;
+    },
+    stop: () => {
+      stopped = true;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    method: "turn/start",
+    payload: { ref, expectedInstanceId: "original-instance", input: [{ type: "text", text: "old intent" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "old intent" }] },
+  });
+  await mutationStorage.markAttempted(original.clientMutationId);
+  await mutationStorage.markUnknown(original.clientMutationId, "blockedUnknown");
+  let announceLookup!: (held: ReturnType<typeof holdIndexedDBEvent>) => void;
+  const lookupHeld = new Promise<ReturnType<typeof holdIndexedDBEvent>>((resolve) => {
+    announceLookup = resolve;
+  });
+  const get = IDBObjectStore.prototype.get;
+  let held: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
+    const request = get.call(this, key);
+    if (!held && this.name === "outbox" && key === original.clientMutationId) {
+      held = holdIndexedDBEvent(request, "success");
+      announceLookup(held);
+    }
+    return request;
+  });
+  onTestFinished(() => {
+    held?.release();
+    getSpy.mockRestore();
+  });
+  const retry = retryBlockedMutation(original.clientMutationId).catch((error: unknown) => error);
+  const boundary = await lookupHeld;
+  await boundary.reached;
+  await threadsStore.getState().forceStop(ref);
+  boundary.release();
+  expect(await retry).toBeInstanceOf(Error);
+  expect(requests.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+  expect(await mutationStorage.getOutbox(original.clientMutationId)).toEqual({
+    ...original,
+    attempted: true,
+    state: "blockedUnknown",
+  });
+});
+
+test.each(["daemonRestartRequired", "persistenceUnavailable", "actionUnavailable"])(
+  "stopped-session broad %s authority failure fences fresh Send during recovery read",
+  async (cause) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const ref = `local:authority-${cause}`;
+    let heldRead = false;
+    let recovered = false;
+    let originalId: unknown;
+    let announceFreshSend!: () => void;
+    const freshSendReceived = new Promise<void>((resolve) => {
+      announceFreshSend = resolve;
+    });
+    let announceRead!: () => void;
+    const readReceived = new Promise<void>((resolve) => {
+      announceRead = resolve;
+    });
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const snapshot = () => stoppedRecoverySnapshot(ref, false);
+    const { client, requests } = recoveryClientFixture({
+      ref,
+      snapshot,
+      read: async () => {
+        if (heldRead) {
+          announceRead();
+          await readGate;
+        }
+        return snapshot();
+      },
+      resume: () => {
+        throw new Error("a live authority failure must not implicitly resume");
+      },
+      mutation: (params) => {
+        originalId ??= params.clientMutationId;
+        if (params.clientMutationId === originalId && !recovered)
+          throw new WireError("fixture-authority-lost", -32014, {
+            evenerErrorInfo: cause === "actionUnavailable" ? "actionUnavailable" : "mutationOutcome",
+            clientMutationId: originalId,
+            mutationOutcome: "unknown",
+            retryDisposition: "blocked",
+            ...(cause === "actionUnavailable" ? {} : { cause }),
+          });
+        if (params.clientMutationId !== originalId) announceFreshSend();
+        return undefined;
+      },
+    });
+    onTestFinished(() => {
+      releaseRead();
+      client.close();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    await threadsStore.getState().refreshThread(ref);
+    expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(true);
+    const blockedWritten = new Promise<void>((resolve, reject) => {
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (!refs.includes(ref) || typeof originalId !== "string") return;
+        void mutationStorage.getOutbox(originalId).then((record) => {
+          if (record?.state === "blockedUnknown") resolve();
+        }, reject);
+      });
+      onTestFinished(unsubscribe);
+    });
+    await threadsStore.getState().send(ref, "original intent");
+    await blockedWritten;
+    expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1);
+    expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
+    heldRead = true;
+    const refreshing = threadsStore.getState().refreshThread(ref);
+    await readReceived;
+    await threadsStore.getState().send(ref, "fresh intent while authority unavailable");
+    expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1);
+    expect(requests.filter(({ method }) => method === "thread/resume")).toEqual([]);
+    recovered = true;
+    releaseRead();
+    await refreshing;
+    await freshSendReceived;
+    expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(3);
+    expect(
+      requests.filter(({ method, params }) => method === "turn/start" && params.clientMutationId === originalId),
+    ).toHaveLength(2);
+  },
+);
+
+// A fenced notLoaded snapshot must retain both a writable composer and its
+// force-stop menu. Drive the REAL Session + Composer tree (no slot stubs),
+// preserving menu confirmation, activity hydration, and passive no-resume.
 test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   vi.mocked(ComposerModule.Composer).mockRestore();
@@ -3197,9 +3719,8 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = !stopped;
     response.thread.evener.mutationStateAuthoritative = false;
-    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
-    // resume fence (applyThreadResumeRequirement) takes it away - which is
-    // what kills the composer's follow-up card and its chrome mount.
+    // The wire capability remains fenced; explicit user intent owns resume,
+    // not passive rendering of the writable draft and its chrome.
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
   });
@@ -3219,12 +3740,15 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
-  // The fence kills the composer card entirely - no invitation, no chrome.
+  // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
-  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  expect((editor as HTMLTextAreaElement).disabled).toBe(false);
+  expect((editor as HTMLTextAreaElement).readOnly).toBe(false);
   const user = userEvent.setup();
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));

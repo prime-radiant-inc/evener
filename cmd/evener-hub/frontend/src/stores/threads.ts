@@ -901,12 +901,69 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   return { outbox, optimistic, recovery };
 }
 
+const userIntentResumes = new Map<string, Promise<string>>();
+const userIntentStopGenerations = new Map<string, number>();
+
+function cancelPendingUserIntents(ref: string): void {
+  userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
+  userIntentResumes.delete(ref);
+}
+
+// Called only by a fresh user Send, explicit Retry, or the recovery action.
+// Passive reads and background outbox discovery must never start a daemon.
+// Keep this above the client API so concurrent user actions share both its
+// connection refresh and the subsequent authoritative hydration.
+export function resumeSessionForUserIntent(ref: string, explicitRecovery = false): Promise<string> {
+  const existing = userIntentResumes.get(ref);
+  if (existing) return existing;
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  // Only implicit Send/Retry recovery is restricted to stopped local sessions.
+  // The explicit Resume action continues to support every ref the hub accepts.
+  if (
+    !explicitRecovery &&
+    (!ref.startsWith("local:") || (model?.status.type !== "notLoaded" && !state.restartBlockingObligations.has(ref)))
+  )
+    return Promise.resolve(ref);
+  if (model?.status.type === "restartRequired")
+    return Promise.reject(new Error("Stop the incompatible daemon before sending; your draft is kept."));
+  const client = requireClient();
+  const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
+  const checkStopped = () => {
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
+      throw new Error("Stop canceled this pending action; send again when ready.");
+  };
+  const resume = (async () => {
+    const { thread } = await client.resumeThread(ref);
+    checkStopped();
+    const resumedRef = thread.evener.ref;
+    await threadsStore.getState().refreshThread(resumedRef);
+    checkStopped();
+    return resumedRef;
+  })().finally(() => {
+    if (userIntentResumes.get(ref) === resume) userIntentResumes.delete(ref);
+  });
+  userIntentResumes.set(ref, resume);
+  return resume;
+}
+
 export async function retryBlockedMutation(clientMutationId: string): Promise<boolean> {
+  const stopGenerations = new Map(userIntentStopGenerations);
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
+  const checkStopped = () => {
+    if ((userIntentStopGenerations.get(record.targetRef) ?? 0) !== (stopGenerations.get(record.targetRef) ?? 0))
+      throw new Error("Stop canceled this pending action; retry again when ready.");
+  };
+  checkStopped();
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
+  await resumeSessionForUserIntent(record.targetRef);
+  checkStopped();
+  // Recovery may reveal a replacement instance. Never retarget an uncertain
+  // request: reconciliation and journal replay retain its original ID/payload,
+  // including the old instance fence, which the daemon may explicitly reject.
   if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
   const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
   if (!status || status === "restartRequired" || status === "notLoaded") return false;
@@ -923,9 +980,11 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
   await handleReady(client, epoch, record.targetRef);
+  checkStopped();
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
+  checkStopped();
   return current?.state !== "blockedUnknown";
 }
 
@@ -971,6 +1030,7 @@ export async function resendRecoveryMutation(
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
+  if (route === "send") targetRef = await resumeSessionForUserIntent(targetRef);
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
   const record = await runtime.storage.resendRecovery(clientMutationId, intent);
   if (!record) return undefined;
@@ -2716,7 +2776,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames) {
-    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
+    const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
+    const resumedRef = await resumeSessionForUserIntent(ref);
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
+      throw new Error("Stop canceled this pending action; send again when ready.");
+    await enqueueMutationIntent(composerMutationIntent(resumedRef, "send", text, attachments, skillNames));
   },
 
   async steer(ref, text, attachments, skillNames) {
@@ -2728,6 +2792,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async interrupt(ref) {
+    cancelPendingUserIntents(ref);
     // Stop is session-scoped, always. Naming a turn here could only ever make
     // Stop fail: the id is missing in the windows Stop matters most -- a turn
     // the session started for itself, a boundary between two turns of one
@@ -2887,6 +2952,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async forceStop(ref) {
+    cancelPendingUserIntents(ref);
     try {
       await requireClient().forceStop(ref);
     } catch (error) {
@@ -2908,6 +2974,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async shutdown(ref) {
+    cancelPendingUserIntents(ref);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });
@@ -3050,6 +3117,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  userIntentResumes.clear();
+  userIntentStopGenerations.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
