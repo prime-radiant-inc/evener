@@ -36,8 +36,8 @@ func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 	if !strings.Contains(desc, "gerund") {
 		t.Errorf("description lacks gerund-form guidance: %q", desc)
 	}
-	if !strings.Contains(desc, "expected outcome") {
-		t.Errorf("description lacks expected-outcome guidance: %q", desc)
+	if !strings.Contains(desc, "desired outcome") {
+		t.Errorf("description lacks desired-outcome guidance: %q", desc)
 	}
 	if !strings.Contains(desc, "Reading config to identify the active profile") {
 		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
