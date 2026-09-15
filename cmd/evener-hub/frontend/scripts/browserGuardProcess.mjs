@@ -234,6 +234,9 @@ export async function waitForBrowserReady(guard, { announcementTimeoutMs = CHROM
 export function chromeProfileIsolationArgs(platform = process.platform) {
   const args = ["--disable-crash-reporter"];
   if (platform === "darwin") args.push("--use-mock-keychain");
+  // A disposable test profile must not wait for the desktop keyring to unlock
+  // before its first HTTP request. Its credentials stay in the private profile.
+  if (platform === "linux") args.push("--password-store=basic");
   return args;
 }
 
