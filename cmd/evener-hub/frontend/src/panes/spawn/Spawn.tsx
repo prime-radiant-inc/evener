@@ -275,10 +275,21 @@ function SpawnForm({
   // manifest while the draft lived, or still listed but offline (the hub keeps
   // offline sources in the manifest - only the online flag flips). Both fall
   // back to local rather than submitting a source the hub rejects with
-  // "spawn source is not available"; the stale draft value stays until the
-  // picker changes it, so a host that comes back online is chosen again.
+  // "spawn source is not available". The fallback is written back into the
+  // draft below so the picker's value and the submitted source never diverge: a
+  // stale draft value would otherwise survive the fallback and, when the host
+  // came back online, silently flip both the select and the launch target back
+  // to it. Affirmatively settling on local cannot rewrite the stale value -
+  // selecting "Local" fires no change event while the select already reads
+  // local - so the draft, not the remembered host, must carry the choice.
   const chosenSource = sources.find((candidate) => candidate.id === source);
   const hostChoice = chosenSource?.online ? chosenSource.id : "local";
+  useEffect(() => {
+    // Guarded on a loaded manifest: while the sources are still in flight
+    // hostChoice is a provisional "local", and rewriting the draft then would
+    // discard a persisted remote host that is merely still loading.
+    if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
+  }, [sources.length, source, hostChoice, setSource]);
   const remoteHosts = sources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;

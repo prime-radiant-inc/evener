@@ -6110,6 +6110,52 @@ test("a host that goes offline while a draft names it falls back to local", asyn
   expect(params).not.toHaveProperty("source");
 });
 
+// The offline fallback is a real choice, not a render-time convenience: if the
+// host returns while the form is still mounted it must not silently re-select
+// itself. Selecting "Local" to affirmatively settle on local fires no change
+// event when the select already reads local, so a draft left holding the stale
+// host id would be the only thing that flips both the picker and the submitted
+// source back to the remote host.
+test("a host that returns online after its offline fallback stays on local", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/reonline-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+  });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  // The fallback is recorded in the draft, so it is not merely a render value.
+  expect(completionDraft("/tmp/reonline-target").fields.getState().source).toBe("local");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    ]);
+  });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "still local");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
 // The other fallback: a draft naming a host that has left the manifest
 // entirely (removed while the draft lived). The picker shows local and the
 // wire omits source rather than launching the unknown host.
