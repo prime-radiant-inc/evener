@@ -423,7 +423,15 @@ func (r *Roster) refresh() error {
 		// - never the unconfirmed one, which would park a reused PID with a
 		// closed socket forever (turns refused, deletion blocked, the stale
 		// file never cleaned).
-		disowned := r.procIdentity(e) == ProcessNotOwner
+		// One verdict per entry per refresh, reused below: the probe is a
+		// real inspection of a process, and two calls in one pass could
+		// disagree. A roster built without a prober admits every entry as
+		// listed and asks the host nothing, so it asks nothing here either.
+		identity := ProcessIdentityUnknown
+		if r.prober != nil {
+			identity = r.procIdentity(e)
+		}
+		disowned := identity == ProcessNotOwner
 		if disowned {
 			res.OK = false
 		}
@@ -456,7 +464,7 @@ func (r *Roster) refresh() error {
 					retainUnconfirmed(e)
 					continue
 				}
-				if r.procIdentity(e) != ProcessNotOwner {
+				if !disowned {
 					byPID[e.PID] = prev
 					if prev.SessionID != "" {
 						if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {

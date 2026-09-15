@@ -1641,3 +1641,53 @@ func TestRosterDoesNotPublishASuccessfulProbeForAPIDThatIsNotItsDaemon(t *testin
 		}
 	}
 }
+
+// A roster built without a prober admits every entry as listed (offline or
+// synthetic rosters); it must not then ask the host about a PID that is
+// nobody's on this machine and mark a complete entry crashed (review round 10
+// on #1325).
+func TestRosterWithoutProberDoesNotAskTheHostAboutAPID(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "01OFFLINE", ThreadID: "01OFFLINE", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: "/private/state", StartedAt: time.Now().UTC()}
+	writeRendezvous(t, dir, entry)
+	roster := NewRoster(dir, nil)
+	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity {
+		t.Fatal("identity probe consulted by a prober-less roster")
+		return ProcessNotOwner
+	})
+	roster.Refresh()
+	// A prober-less roster keys nothing by a probed session id, so the
+	// listing is the observable: one entry, live, not crashed.
+	listed := roster.List()
+	if len(listed) != 1 || listed[0].Crashed || listed[0].Entry.SessionID != "01OFFLINE" {
+		t.Fatalf("prober-less roster did not list the entry as live: %+v", listed)
+	}
+}
+
+// One verdict per entry per refresh: the identity probe is a real inspection
+// of a process, and two calls in one pass could disagree with each other.
+func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "01ONCE", ThreadID: "01ONCE", Protocol: appwire.ThreadStatusIdle, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
+	entry.Protocol = appwire.ProtocolVersion
+	writeRendezvous(t, dir, entry)
+	prober := &flakyProber{sessionID: "01ONCE"}
+	roster := NewRoster(dir, prober)
+	roster.procAlive = func(int) bool { return true }
+	var calls atomic.Int32
+	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity {
+		calls.Add(1)
+		return ProcessOwnsEntry
+	})
+	for i, fail := range []bool{false, true, true} {
+		prober.fail = fail
+		calls.Store(0)
+		roster.Refresh()
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("refresh %d (probe fails=%v): identity probe called %d times, want 1", i, fail, got)
+		}
+		if !roster.HasConfirmedEntry(entry) {
+			t.Fatalf("refresh %d: an owning daemon lost its route", i)
+		}
+	}
+}
