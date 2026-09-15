@@ -671,6 +671,23 @@ func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
 	}
 }
 
+// A location fit that dropped its session is not a fit. The deep link renders
+// the session summary and nothing else, so serving the envelope without it would
+// answer 200 with nothing to show -- where an irreducible overflow used to be
+// reported -- and a deep link to a job-heavy session that cannot fit (with the
+// watch payload already shed) is exactly how that happens.
+func TestValidateNavigationPageProgressRejectsSessionlessLocation(t *testing.T) {
+	if err := validateNavigationPageProgress(navigationResourceLocation, hubapi.NavigationSessionLocation{}); err == nil {
+		t.Fatal("session-less location passed validation: the deep link would render nothing")
+	}
+	location := hubapi.NavigationSessionLocation{
+		Session: &hubapi.NavigationSessionSummary{Ref: "local:root", SessionID: "root", State: "idle", Kind: "session"},
+	}
+	if err := validateNavigationPageProgress(navigationResourceLocation, location); err != nil {
+		t.Fatalf("location carrying its session rejected: %v", err)
+	}
+}
+
 // The nested job and watch rows carry their own identities, and the codec
 // validates every one of them with identity() at 1024 bytes. Only job_id is
 // guarded by the build's own validation, so job_type, status, watch id and

@@ -873,6 +873,16 @@ func (err navigationPageProgressInvariantError) Error() string {
 	return fmt.Sprintf("navigation page progress invariant: %s returned no rows with remaining data", err.kind)
 }
 
+// navigationSessionLocationInvariantError reports a location fit that dropped the
+// session the location exists to serve.
+type navigationSessionLocationInvariantError struct {
+	kind navigationResourceKind
+}
+
+func (err navigationSessionLocationInvariantError) Error() string {
+	return fmt.Sprintf("navigation location invariant: %s was fitted without its session", err.kind)
+}
+
 func validateNavigationPageProgress(kind navigationResourceKind, resource any) error {
 	var rows, remaining int
 	switch value := resource.(type) {
@@ -887,6 +897,16 @@ func validateNavigationPageProgress(kind navigationResourceKind, resource any) e
 		remaining = value.Current.Remaining + value.Recent.Remaining + value.Archived.Remaining
 	case hubapi.NavigationProjectPage:
 		rows, remaining = len(value.Sessions), value.Remaining
+	case hubapi.NavigationSessionLocation:
+		// A location IS its session: a deep link renders that summary and nothing
+		// else. The fitter's last resort for this kind drops the session to keep the
+		// envelope, which would answer 200 with nothing to render where an
+		// irreducible overflow used to be reported, so a session-less location never
+		// passes as a fit.
+		if value.Session == nil {
+			return navigationSessionLocationInvariantError{kind: kind}
+		}
+		return nil
 	default:
 		return nil
 	}
