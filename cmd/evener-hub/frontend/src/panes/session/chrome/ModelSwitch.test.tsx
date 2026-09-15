@@ -14,7 +14,11 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
-import { resetConnectDialogLoaderForTests, setConnectDialogImporterForTests } from "../../spawn/connectDialogChunk";
+import {
+  type ConnectDialogModule,
+  resetConnectDialogLoaderForTests,
+  setConnectDialogImporterForTests,
+} from "../../spawn/connectDialogChunk";
 import { openConnectDialog } from "./connectDialogTestUtils";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
@@ -195,33 +199,34 @@ test("keyless connection refreshes the warmed real session catalog without switc
   );
 });
 
-// The same opening flow with the connect-dialog chunk made deliberately slow:
-// an import far past testing-library's 1s default must not fail the flow,
-// because openConnectDialog waits on the import itself. Before that wait
-// existed this is exactly the #1369 flake - the
+// The same opening flow with the connect-dialog chunk's arrival under the
+// test's control rather than on a clock: an import that has not landed must
+// not fail the flow, because openConnectDialog waits on the import itself.
+// Before that wait existed this is exactly the #1369 flake - the
 // "Already configured access on this host?" query times out at 1000ms while
 // the chunk is still arriving, which is what the reported run saw under a
-// loaded machine.
-test("a connect-dialog chunk slower than the async-query default still opens the dialog", async () => {
+// loaded machine. Parking the import instead of sleeping past the budget makes
+// that structural: no real time passes, and the dialog can appear only once the
+// test lets the chunk through.
+test("a connect-dialog chunk held pending still opens the dialog once it lands", async () => {
   resetCredentialsStoreForTests();
-  // The transform cost is one-time, so only the FIRST import is slow - the
-  // later one the boundary issues resolves from the evaluated module. The
-  // delay is 2.5s, not just over 1s: the click path before the query burns
-  // 100-200ms of the query's own 1000ms budget, so a barely-over delay leaves
-  // the red state riding on a ~100ms margin - green again at random, and no
-  // longer protecting anything. 2.5x the budget cannot fit.
-  let first = true;
-  setConnectDialogImporterForTests(async () => {
-    if (first) {
-      first = false;
-      await new Promise((resolve) => setTimeout(resolve, 2_500));
-    }
-    return import("../../settings/sections/credentials/ConnectProviderDialog");
+  // The seam hands the test the parked import: the FIRST call - the helper's
+  // preload - waits on it, so the dialog cannot render until the test resolves
+  // it. Later calls (the boundary's own, once the click happens) load the real
+  // module, already evaluated by then.
+  let releaseImport!: (module: ConnectDialogModule) => void;
+  const pendingImport = new Promise<ConnectDialogModule>((resolve) => {
+    releaseImport = resolve;
+  });
+  let imports = 0;
+  setConnectDialogImporterForTests(() => {
+    imports += 1;
+    return imports === 1 ? pendingImport : import("../../settings/sections/credentials/ConnectProviderDialog");
   });
   // A fresh lazy() so the boundary's lazily-mounted render is not served from a
   // module an earlier test already resolved: an already-resolved lazy() caches
   // its module for the life of the module, and would otherwise render from
-  // cache and never issue the (one-time-slow) import this test exercises.
+  // cache and never issue the parked import this test exercises.
   resetConnectDialogChunkForTests();
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -230,11 +235,33 @@ test("a connect-dialog chunk slower than the async-query default still opens the
   fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
 
   render(<ModelSwitch sessionRef="remote:original" model={testModel()} />);
-  const user = userEvent.setup();
+  const user = userEvent.setup({ delay: null });
   await user.click(trigger());
   await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
-  await openConnectDialog(user);
 
+  const opened = openConnectDialog(user);
+  // While the import is parked, the dialog's content cannot be on screen -
+  // the state the pre-fix flow asserted through and timed out on.
+  expect(screen.queryByText("Already configured access on this host?")).toBeNull();
+
+  // The open must still be waiting on the chunk. Remove openConnectDialog's
+  // wait and it has already returned by now: the red this test exists for.
+  let settled = false;
+  void opened.then(() => {
+    settled = true;
+  });
+  // Let an unblocked open prove it finished: the click path's own timed steps
+  // (RTL's findByRole polls on a timer) need a macrotask turn, not a duration.
+  // With the chunk parked the open structurally cannot finish, so this holds no
+  // wall-clock dependence - a few zero-delay turns, never a sleep.
+  for (let turn = 0; turn < 8 && !settled; turn += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(settled).toBe(false);
+
+  // Let the chunk land: the open completes and the dialog renders.
+  releaseImport(await import("../../settings/sections/credentials/ConnectProviderDialog"));
+  await opened;
   expect(await screen.findByText("Already configured access on this host?")).toBeTruthy();
 });
 
