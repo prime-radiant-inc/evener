@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -22,6 +23,7 @@ type wireEnvelope struct {
 	Ref              string `json:"ref"`
 	ThreadID         string `json:"threadId"`
 	ClientMutationID string `json:"clientMutationId"`
+	Harness          string `json:"harness"`
 }
 
 func decodeWireEnvelope(t *testing.T, raw json.RawMessage) wireEnvelope {
@@ -91,7 +93,7 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 
 		// Thread/turn lifecycle without a ClientMutationID.
 		{"StartThread", appwire.MethodThreadStart, false, false, "", func(ctx context.Context, s *RemoteHubSource) error {
-			_, err := s.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work"})
+			_, err := s.StartThread(ctx, appwire.ThreadStartParams{Harness: "host", CWD: "/work"})
 			return err
 		}},
 		{"ResumeThread", appwire.MethodThreadResume, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
@@ -143,6 +145,11 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 		}},
 	}
 
+	// StartThread's harness is the controller's source selector; it must be
+	// rewritten before forwarding, or the remote hub resolves it as one of its
+	// own source ids and thread creation fails.
+	wantHarness := map[string]string{"StartThread": "evener"}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
@@ -160,6 +167,9 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 			}
 			if tc.cmid != "" && env.ClientMutationID != tc.cmid {
 				t.Errorf("%s clientMutationId = %q, want %q", tc.name, env.ClientMutationID, tc.cmid)
+			}
+			if want := wantHarness[tc.name]; env.Harness != want {
+				t.Errorf("%s harness = %q, want %q", tc.name, env.Harness, want)
 			}
 		})
 	}
@@ -358,4 +368,132 @@ func TestRemoteHubMutationForeignRefRefusedWithoutCall(t *testing.T) {
 			t.Fatalf("foreign ref was forwarded: %+v", calls())
 		}
 	}
+}
+
+// TestRemoteHubMutationClientAcquisitionFailureIsSessionUnavailable asserts a
+// failure to acquire the remote client (dial/attach) is reported as
+// SessionUnavailable, not as an in-doubt mutation: no request was sent, so the
+// outcome is known and the hub's auto-resume gate must be able to fire.
+func TestRemoteHubMutationClientAcquisitionFailureIsSessionUnavailable(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, io.EOF
+	})
+
+	_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-offline"})
+	if err == nil {
+		t.Fatal("StartTurn succeeded despite an unreachable remote host")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d (client acquisition is not an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubJobsListTranslatesActivityRefs asserts the recursive activity
+// tree returned by a remote hub has every session ref moved from the remote
+// "local:" namespace into the controller's "host:" namespace, while the opaque
+// "job:<id>" transcript ref of a shell job is preserved byte-for-byte.
+func TestRemoteHubJobsListTranslatesActivityRefs(t *testing.T) {
+	rawTree := map[string]any{
+		"revision": 3,
+		"root": map[string]any{
+			"sessionId": "root",
+			"ref":       "local:root",
+			"entries": []any{
+				map[string]any{"kind": "shell", "job": map[string]any{
+					"jobId": "job_a", "ownerSessionId": "root", "ownerRef": "local:root",
+					"transcriptRef": "job:job_a", "type": "shell",
+				}},
+				map[string]any{"kind": "delegate", "delegate": map[string]any{
+					"delegateId": "dlg_1", "ownerSessionId": "root", "childSessionId": "child",
+					"childRef": "local:child", "transcriptRef": "local:child",
+					"child": map[string]any{
+						"sessionId": "child",
+						"ref":       "local:child",
+						"entries": []any{
+							map[string]any{"kind": "shell", "job": map[string]any{
+								"jobId": "job_b", "ownerSessionId": "child", "ownerRef": "local:child",
+								"transcriptRef": "job:job_b", "type": "shell",
+							}},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: rawTree}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	tree, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data = %T, want the decoded activity tree map", resp.Data)
+	}
+	root := activityMap(t, tree["root"], "root")
+	if root["ref"] != "host:root" {
+		t.Errorf("root.ref = %v, want %q", root["ref"], "host:root")
+	}
+	if root["sessionId"] != "root" {
+		t.Errorf("root.sessionId = %v, want bare id %q", root["sessionId"], "root")
+	}
+	entries, ok := root["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("root.entries = %#v, want two entries", root["entries"])
+	}
+	shellJob := activityMap(t, activityMap(t, entries[0], "entry 0")["job"], "job_a")
+	if shellJob["ownerRef"] != "host:root" {
+		t.Errorf("shell job ownerRef = %v, want %q", shellJob["ownerRef"], "host:root")
+	}
+	if shellJob["transcriptRef"] != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %v, want opaque %q", shellJob["transcriptRef"], "job:job_a")
+	}
+	delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
+	if delegate["childRef"] != "host:child" {
+		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
+	}
+	if delegate["transcriptRef"] != "host:child" {
+		t.Errorf("delegate transcriptRef = %v, want session ref %q", delegate["transcriptRef"], "host:child")
+	}
+	child := activityMap(t, delegate["child"], "child session")
+	if child["ref"] != "host:child" {
+		t.Errorf("child.ref = %v, want %q", child["ref"], "host:child")
+	}
+	childEntries, ok := child["entries"].([]any)
+	if !ok || len(childEntries) != 1 {
+		t.Fatalf("child.entries = %#v, want one entry", child["entries"])
+	}
+	childJob := activityMap(t, activityMap(t, childEntries[0], "child entry")["job"], "job_b")
+	if childJob["ownerRef"] != "host:child" {
+		t.Errorf("child job ownerRef = %v, want %q", childJob["ownerRef"], "host:child")
+	}
+	if childJob["transcriptRef"] != "job:job_b" {
+		t.Errorf("child job transcriptRef = %v, want opaque %q", childJob["transcriptRef"], "job:job_b")
+	}
+}
+
+func activityMap(t *testing.T, value any, label string) map[string]any {
+	t.Helper()
+	node, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want a JSON object", label, value)
+	}
+	return node
 }

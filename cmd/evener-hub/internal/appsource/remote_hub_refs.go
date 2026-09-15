@@ -526,6 +526,49 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Ref = ref
+	case *appwire.JobsListResponse:
+		response.Data = s.translateActivityRefs(response.Data)
 	}
 	return nil
+}
+
+// activityRefKeys are the activity-tree JSON fields that carry a session ref in
+// the remote hub's "local:" namespace. The bare-id fields (sessionId,
+// ownerSessionId, childSessionId, rootSessionId) are deliberately absent: they
+// are ids, not refs, and must pass through unchanged. transcriptRef is included
+// because a delegate turn's transcriptRef points at its child session, but a
+// shell job's value is the opaque "job:<id>" ref, which does not parse as a
+// session ref and is preserved byte-for-byte.
+var activityRefKeys = map[string]bool{
+	"ref":           true,
+	"ownerRef":      true,
+	"childRef":      true,
+	"transcriptRef": true,
+}
+
+// translateActivityRefs rewrites every session ref embedded in a decoded
+// activity tree (or a legacy flat job list) from the remote hub's "local:"
+// namespace into this source's "<host>:" namespace. JobsListResponse.Data is
+// `any`, so a wire response decodes as nested map[string]any/[]any rather than
+// a typed tree; the walk handles both, at any depth. A value that does not
+// parse as a session ref (an opaque "job:" ref, or an older daemon's
+// unqualified id) is left untouched rather than failing the whole list.
+func (s *RemoteHubSource) translateActivityRefs(value any) any {
+	switch node := value.(type) {
+	case map[string]any:
+		for key, child := range node {
+			if raw, ok := child.(string); ok && activityRefKeys[key] {
+				if translated, err := s.fromRemoteRefString(raw); err == nil {
+					node[key] = translated
+				}
+				continue
+			}
+			node[key] = s.translateActivityRefs(child)
+		}
+	case []any:
+		for index, child := range node {
+			node[index] = s.translateActivityRefs(child)
+		}
+	}
+	return value
 }
