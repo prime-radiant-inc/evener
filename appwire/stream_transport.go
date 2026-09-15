@@ -57,6 +57,11 @@ type StreamTransport struct {
 	// send is the write lock, a buffered channel rather than a sync.Mutex so a
 	// send queued behind another stalled write can still obey its context.
 	send chan struct{}
+	// opMu admits writes. Close latches under mu and then closes the stream; the
+	// read lock makes "check the latch, then write" atomic with respect to that,
+	// and the drain on Close is what makes "Close has returned" mean no write can
+	// still begin.
+	opMu sync.RWMutex
 
 	mu       sync.Mutex
 	poisoned error
@@ -140,6 +145,14 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	stop := context.AfterFunc(ctx, func() { t.poison(ctx.Err()) })
 	defer stop()
 
+	// Admission, taken atomically with the latch check: a write that starts after
+	// Close returned is impossible, and one already in flight is interrupted by
+	// Close's own rw.Close() rather than waited for.
+	t.opMu.RLock()
+	defer t.opMu.RUnlock()
+	if err := t.poisonErr(); err != nil {
+		return err
+	}
 	n, err := t.rw.Write(buf)
 	if err != nil {
 		// Decide terminality from the write itself, before consulting the
@@ -230,6 +243,14 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 			// report an orderly io.EOF for a local cancellation.
 			t.poison(ctxErr)
 			return Message{}, ctxErr
+		}
+		// A cancellation landing after those checks but before the deferred stop
+		// must not be reported as a clean end of stream.
+		if !stop() {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				t.poison(ctxErr)
+				return Message{}, ctxErr
+			}
 		}
 		// A read that consumed no bytes left the framing intact but the stream
 		// broken; a clean io.EOF is the stream simply ending. Latch the former
@@ -374,5 +395,21 @@ func (t *StreamTransport) Close() error {
 	if !first {
 		return nil
 	}
-	return t.rw.Close()
+	err := t.rw.Close()
+	// Wait for admitted writes to finish: after this returns, no write can still
+	// reach the stream. The close above is what unblocks one already in flight,
+	// so this cannot wait forever on a write that is merely stalled.
+	t.drainWrites()
+	return err
+}
+
+// drainWrites blocks until every admitted write has finished. It is an empty
+// critical section on purpose — acquiring the write lock IS the wait — so both
+// of gocritic's lock heuristics misread it: badLock sees the adjacent
+// Lock/Unlock as a mistake, and unnecessaryDefer sees a defer with nothing after
+// it. Neither applies to a barrier.
+func (t *StreamTransport) drainWrites() {
+	t.opMu.Lock()
+	//nolint:gocritic // deliberate barrier, not a forgotten defer or a stray unlock
+	defer t.opMu.Unlock()
 }

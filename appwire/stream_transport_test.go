@@ -581,6 +581,23 @@ func (s *parkedReadStream) Read([]byte) (int, error) {
 func (s *parkedReadStream) Write(p []byte) (int, error) { return len(p), nil }
 func (s *parkedReadStream) Close() error                { return nil }
 
+// Nothing may reach the stream after Close returns: a write that starts later is
+// refused before it touches the closer.
+func TestStreamTransportCloseAdmitsNoFurtherWrites(t *testing.T) {
+	stream := &memoryStream{r: bytes.NewReader(nil)}
+	tr := NewStreamTransport(stream)
+	if err := tr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	before := stream.w.Len()
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`))); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Send after Close = %v, want ErrStreamClosed", err)
+	}
+	if stream.w.Len() != before {
+		t.Fatalf("a Send after Close wrote %d bytes to the stream", stream.w.Len()-before)
+	}
+}
+
 // Close latches: a frame bufio already prefetched must not be delivered by a
 // Recv after the caller closed the transport.
 func TestStreamTransportCloseLatchesClosedState(t *testing.T) {
