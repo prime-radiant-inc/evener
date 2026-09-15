@@ -1246,6 +1246,26 @@ describe("drain-as-steer affordance", () => {
     expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
   });
 
+  // awaiting + depth > 0 is the ask boundary, not a parked queue: the daemon
+  // arms awaiting at the boundary without consulting the queue and the drain
+  // ladder's queued rung runs it next, so the copy would name a pause that is
+  // not happening. Only idle + depth > 0 is unreachable without QueueHeld.
+  test("an awaiting session with a queue shows no parked-queue copy", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "awaiting" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, steer: false },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    expect(screen.queryByText(/paused by stop/i)).toBeNull();
+  });
+
   test("a running session with a queue shows no parked-queue copy", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
