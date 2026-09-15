@@ -56,6 +56,14 @@ const (
 	// clones it, so an unbounded list here is an unbounded payload everywhere.
 	// The watchable kinds are a fixed handful, so this is generous.
 	maxWatchEvents = 64
+	// maxWatchConditionChars bounds the two condition strings a watch may carry,
+	// output_match and event_filter.tool_name, at registration. It is the hub's
+	// navigation label bound and the wire codec's own bound for these fields: a
+	// longer value would be truncated on its way to the browser and then shown as
+	// the condition the watch matches, which is a claim this daemon must not make.
+	// Refused here, so the hub's truncation only ever sees a row from some other
+	// producer. Counted in runes, like every other "...Chars" bound here.
+	maxWatchConditionChars = 512
 	// watchDeliveryBudget caps the condition fires a watch config may deliver
 	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
 	// tick counts a delivery but is a clock rather than a condition, so it never
@@ -661,8 +669,8 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if len(a.Events) > maxWatchEvents {
 		return fmt.Errorf("invalid_request: events names at most %d kinds, got %d", maxWatchEvents, len(a.Events))
 	}
-	if len(a.OutputMatch) > watchTriggerMaxChars {
-		return fmt.Errorf("invalid_request: output_match must be at most %d characters, got %d", watchTriggerMaxChars, len(a.OutputMatch))
+	if runes := len([]rune(a.OutputMatch)); runes > maxWatchConditionChars {
+		return fmt.Errorf("invalid_request: output_match must be at most %d characters, got %d", maxWatchConditionChars, runes)
 	}
 	// every:1 is the semantic default (fire on each occurrence), so it reads as
 	// unset everywhere downstream; the single-concrete-kind requirement applies
@@ -673,8 +681,8 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.EventFilter != nil {
 		a.EventFilter.ToolName = strings.TrimSpace(a.EventFilter.ToolName)
 		a.EventFilter.Status = strings.ToLower(strings.TrimSpace(a.EventFilter.Status))
-		if len(a.EventFilter.ToolName) > watchTriggerMaxChars {
-			return fmt.Errorf("invalid_request: event_filter.tool_name must be at most %d characters, got %d", watchTriggerMaxChars, len(a.EventFilter.ToolName))
+		if runes := len([]rune(a.EventFilter.ToolName)); runes > maxWatchConditionChars {
+			return fmt.Errorf("invalid_request: event_filter.tool_name must be at most %d characters, got %d", maxWatchConditionChars, runes)
 		}
 		if a.EventFilter.ToolName == "" && a.EventFilter.Status == "" {
 			a.EventFilter = nil

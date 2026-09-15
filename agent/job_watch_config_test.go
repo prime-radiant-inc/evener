@@ -176,7 +176,7 @@ func TestConfigureWatchRejectsOversizedArguments(t *testing.T) {
 	for i := range tooManyEvents {
 		tooManyEvents[i] = "communicate"
 	}
-	oversized := strings.Repeat("x", watchTriggerMaxChars+1)
+	oversized := strings.Repeat("x", maxWatchConditionChars+1)
 
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "oversized-args"})
@@ -218,6 +218,20 @@ func TestConfigureWatchRejectsOversizedArguments(t *testing.T) {
 	}
 	if jm.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0 after every oversized argument was refused", jm.watchCount())
+	}
+
+	// The bound counts runes, like every other "...Chars" bound here, so a
+	// multibyte condition longer in bytes than the bound but shorter in runes is
+	// legal and must be accepted.
+	multibyte := strings.Repeat("é", maxWatchConditionChars-1)
+	if len(multibyte) <= maxWatchConditionChars {
+		t.Fatalf("test setup: multibyte condition is %d bytes, want more than %d", len(multibyte), maxWatchConditionChars)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: multibyte}); err != nil {
+		t.Fatalf("a %d-rune output_match inside the bound was refused: %v", maxWatchConditionChars-1, err)
+	}
+	if jm.watchCount() != 1 {
+		t.Fatalf("watch count = %d, want the multibyte condition to arm one watch", jm.watchCount())
 	}
 }
 

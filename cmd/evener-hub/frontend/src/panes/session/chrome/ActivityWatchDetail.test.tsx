@@ -100,6 +100,51 @@ describe("ActivityWatchDetail timeline", () => {
     expect(marker).toBeLessThan(positions[1] as number);
   });
 
+  test("a timeline whose every instant is ahead of the browser clock still reads chronologically", () => {
+    // The browser clock can lag the daemon's far enough that every retained
+    // instant is in `now`'s future. That is the one case where the rail's own
+    // span ran backwards: the now marker collapsed onto the left edge with the
+    // deliveries ahead of it, and the labels described a range running from a
+    // future instant to a past one.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T15:10:00Z", "2026-08-05T15:20:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    for (const position of positions) {
+      expect(marker).toBeLessThan(position);
+    }
+    // The rail is anchored at `now`, so its left end is the clock and its right
+    // end is the newest instant the wire carried.
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(`now ${nowClock}`);
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:20:00Z"));
+  });
+
+  test("a single instant that IS the browser clock draws apart from the marker", () => {
+    // The zero-span case: one retained instant equal to `now`. Both the dot and
+    // the marker collapsed onto the left edge before, drawing two facts as one.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 1,
+          delivery_times: [new Date(NOW).toISOString()],
+        })}
+        now={NOW}
+      />,
+    );
+    const dot = leftOf(screen.getAllByTestId("watch-timeline-dot")[0] as HTMLElement);
+    expect(dot).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
+  });
+
   test("keeps two instants apart even when both sit inside a stretched rail's headroom", () => {
     // The two newest deliveries are within the reserved last 2% of a rail that
     // already reaches past `now`. Clamping them into that reserve would still

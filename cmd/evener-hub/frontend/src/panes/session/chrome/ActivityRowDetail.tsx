@@ -100,23 +100,35 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   const dots = keyedInstants(instants);
   const earliest = instants[0] ?? 0;
   const newest = instants.at(-1) ?? earliest;
+  // The rail runs from whichever anchor comes first to whichever comes last.
+  // Normally that is earliest -> now. When the browser clock lags the daemon's
+  // far enough that EVERY retained instant is still ahead of `now`, it is
+  // now -> newest: anchoring the left edge at `now` is what keeps the span
+  // positive there, so the marker stays chronologically before the deliveries
+  // in its future instead of collapsing onto the left edge with them.
+  const left = Math.min(earliest, now);
+  const right = Math.max(newest, now);
+  const markerAtStart = now < earliest;
   const stretched = newest > now;
-  const span = (stretched ? newest : now) - earliest;
+  const span = right - left;
   // A stretched rail scales its whole span into the headroom, so no two
   // instants can land on the same position; the unstretched rail keeps the
   // clamp, which only ever moves instants inside the reserved last 2%.
   const scale = stretched ? WATCH_TIMELINE_DOT_MAX_PERCENT : 100;
-  const offset = (millis: number): number => (span <= 0 ? 0 : ((millis - earliest) / span) * scale);
+  const offset = (millis: number): number => (span <= 0 ? 0 : ((millis - left) / span) * scale);
   const position = (millis: number): number => {
     return Math.min(WATCH_TIMELINE_DOT_MAX_PERCENT, Math.max(0, offset(millis)));
   };
   // The marker shares the rail's scale: at its far end when `now` is the right
   // edge, and at its proportional spot when a delivery is still ahead of the
   // clock, so it never claims to sit after an instant the clock has not
-  // reached.
-  const nowPosition = span <= 0 ? (stretched ? 0 : 100) : Math.max(0, offset(now));
-  const startLabel = clockFromMillis(earliest);
-  const endLabel = clockFromMillis(now);
+  // reached. A zero span means the single retained instant IS `now`, where the
+  // marker takes the opposite end so the two never draw on one position.
+  const nowPosition = span <= 0 ? WATCH_TIMELINE_DOT_MAX_PERCENT : Math.max(0, offset(now));
+  // Each end is labeled with the instant that sits at it, and only the end the
+  // marker is at says "now".
+  const startLabel = markerAtStart ? `now ${clockFromMillis(left)}` : clockFromMillis(left);
+  const endLabel = markerAtStart ? clockFromMillis(right) : `now ${clockFromMillis(right)}`;
   const caption =
     watch.deliveries <= instants.length
       ? "Delivered to this session"
@@ -127,7 +139,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
         className={CLASS.timelineRail}
         data-testid="watch-timeline-rail"
         role="img"
-        aria-label={`${caption}, ${startLabel} to now ${endLabel}`}
+        aria-label={`${caption}, ${startLabel} to ${endLabel}`}
       >
         <span className={CLASS.timelineLine} aria-hidden="true" />
         {/* The marker precedes the dots in DOM order so a dot can never be
@@ -150,7 +162,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
       </div>
       <div className={CLASS.timelineLabels}>
         <span data-testid="watch-timeline-start">{startLabel}</span>
-        <span data-testid="watch-timeline-end">{`now ${endLabel}`}</span>
+        <span data-testid="watch-timeline-end">{endLabel}</span>
       </div>
       <p className={CLASS.timelineCaption} data-testid="watch-timeline-caption">
         {caption}
