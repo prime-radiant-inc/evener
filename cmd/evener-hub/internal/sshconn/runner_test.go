@@ -219,7 +219,7 @@ func TestChannelArgvQuotesHostValues(t *testing.T) {
 		}
 	}
 	for _, word := range argv {
-		if strings.ContainsRune(word, ' ') && !(strings.HasPrefix(word, "'") && strings.HasSuffix(word, "'")) {
+		if strings.ContainsRune(word, ' ') && (!strings.HasPrefix(word, "'") || !strings.HasSuffix(word, "'")) {
 			t.Fatalf("word %q would split in the remote shell: %v", word, argv)
 		}
 	}

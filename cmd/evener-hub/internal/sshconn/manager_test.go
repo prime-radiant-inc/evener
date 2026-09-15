@@ -642,7 +642,7 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 			mu.Unlock()
 			if fail {
 				auth := "bob@alpha.example: Permission denied (publickey).\n"
-				return []byte(auth), &RunFailure{Stderr: []byte(auth), Err: errors.New("exit status 255")}
+				return []byte(auth), &RunError{Stderr: []byte(auth), Err: errors.New("exit status 255")}
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -797,7 +797,7 @@ func TestRemoteProgramPermissionDeniedIsNotAuthFailure(t *testing.T) {
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			if strings.HasSuffix(strings.Join(argv, " "), "uname -s") {
 				denied := "Permission denied\n"
-				return []byte(denied), &RunFailure{Stdout: []byte(denied), Err: errors.New("exit status 1")}
+				return []byte(denied), &RunError{Stdout: []byte(denied), Err: errors.New("exit status 1")}
 			}
 			return cannedRun(nil)(ctx, argv, stdin)
 		},

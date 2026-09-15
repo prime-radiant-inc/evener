@@ -29,26 +29,26 @@ type Runner interface {
 	// stdout alone: ssh writes benign notices (host-key additions, a login
 	// message) to stderr, and a caller that parses the result must not see them.
 	// On failure it returns stdout and stderr together for the diagnostic, and
-	// the error is a *RunFailure carrying each stream separately, which is what
+	// the error is a *RunError carrying each stream separately, which is what
 	// lets a caller classify the cause from ssh's own stderr rather than from a
 	// concatenation the remote command's output can poison.
 	Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
 }
 
-// RunFailure reports a failed one-shot command with its two streams kept apart:
+// RunError reports a failed one-shot command with its two streams kept apart:
 // ssh's own diagnostics (an auth refusal, an unreachable host) arrive on stderr,
 // while the remote command's output arrives on stdout. A caller that classifies
 // the failure reads Stderr, because the remote program's stdout can contain the
 // same words for an unrelated reason.
-type RunFailure struct {
+type RunError struct {
 	Stdout []byte
 	Stderr []byte
 	Err    error
 }
 
-func (e *RunFailure) Error() string { return fmt.Sprintf("run failed: %v", e.Err) }
+func (e *RunError) Error() string { return fmt.Sprintf("run failed: %v", e.Err) }
 
-func (e *RunFailure) Unwrap() error { return e.Err }
+func (e *RunError) Unwrap() error { return e.Err }
 
 // Stdio is the byte-stream surface of a started child.
 type Stdio interface {
@@ -108,7 +108,7 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return append(stdout.Bytes(), stderr.Bytes()...), &RunFailure{
+		return append(stdout.Bytes(), stderr.Bytes()...), &RunError{
 			Stdout: stdout.Bytes(),
 			Stderr: stderr.Bytes(),
 			Err:    err,

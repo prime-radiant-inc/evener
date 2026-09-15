@@ -267,8 +267,7 @@ func sshRunFailure(hostName, what string, err error, diag string) error {
 // authentication. A runner that reports no separated stream falls back to the
 // combined diagnostic.
 func sshDiagnostic(err error, combined string) string {
-	var rf *RunFailure
-	if errors.As(err, &rf) {
+	if rf, ok := errors.AsType[*RunError](err); ok {
 		return string(rf.Stderr)
 	}
 	return combined
