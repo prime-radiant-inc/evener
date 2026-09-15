@@ -26,7 +26,7 @@
 //      demotes - if the model fails twice before finally succeeding, the
 //      first failure's "next" is the second failure, so it stays open,
 //      matching every persona's "if it recurs, keep it visible" caveat.
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel } from "@evener/appwire-client";
 
 /** True when `item` failed via a pre-dispatch bounce (never reached real
  * execution) AND the next later item for the same tool, anywhere in the

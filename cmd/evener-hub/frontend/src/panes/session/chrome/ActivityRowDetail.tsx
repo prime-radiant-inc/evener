@@ -8,20 +8,21 @@
 // outside the transcript subtree whose render context carries that map - and
 // the delegate line names a real entity.
 
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
   type ActivityWatchRow,
+  activityDelegateDiagnostics,
   activityDelegateState,
   type EntityView,
+  formatClockTime,
+  splitMandate,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
-import { activityDelegateDiagnostics } from "../../../protocol/activityData";
-import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";

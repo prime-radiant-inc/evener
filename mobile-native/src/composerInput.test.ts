@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { translateAttachmentMarkers } from "../../appwire-client/typescript/attachmentMarkers";
-import {
-  buildComposerInput,
-  buildInput,
-} from "../../appwire-client/typescript/composerInput";
+import { buildComposerInput, buildInput, translateAttachmentMarkers } from "@evener/appwire-client";
 
 describe("shared composer input", () => {
   it("preserves ordinary text and allows image-only input", () => {

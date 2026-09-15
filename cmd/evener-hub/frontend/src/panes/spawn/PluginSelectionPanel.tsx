@@ -1,5 +1,5 @@
+import type { PluginLaunchCandidate, PluginPreviewResponse } from "@evener/appwire-client";
 import type { ReactElement } from "react";
-import type { PluginLaunchCandidate, PluginPreviewResponse } from "../../protocol/types.gen";
 import { Button, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";

@@ -1,5 +1,5 @@
-import { WireError } from "../../appwire-client/typescript/errors";
-import type { ModelListResponse } from "../../appwire-client/typescript/types.gen";
+import { WireError } from "@evener/appwire-client";
+import type { ModelListResponse } from "@evener/appwire-client";
 import {
 	effortOptionLevels,
 	sessionEffortLevels,

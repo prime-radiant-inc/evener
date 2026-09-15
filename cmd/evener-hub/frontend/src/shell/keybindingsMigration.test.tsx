@@ -13,13 +13,14 @@
 // AppShell.test.tsx's own (helpers duplicated, not shared - this project has
 // no cross-test-file test-utils module; see that file's and
 // stores/threads.test.ts's own notes on the convention).
+
+import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";

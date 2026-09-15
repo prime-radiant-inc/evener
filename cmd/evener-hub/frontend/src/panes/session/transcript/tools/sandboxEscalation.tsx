@@ -34,9 +34,10 @@
 // own successful resolve() removes its local copy - see stores/threads.ts's
 // resolveEscalation), but no worse than before, and the common cold-open
 // case now works without any resolve happening at all.
+
+import type { SandboxEscalationRequested } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { sessionActionError } from "../../../../protocol/errors";
-import type { SandboxEscalationRequested } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

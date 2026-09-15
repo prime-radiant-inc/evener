@@ -16,11 +16,9 @@
 // one-line wiring lands, the diagnostic still renders in full - only the action
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
 
+import type { ItemImage, ItemModel, TurnError, TurnModel } from "@evener/appwire-client";
+import { sessionActionError, translateAttachmentMarkers } from "@evener/appwire-client";
 import { useMemo, useState } from "react";
-import { translateAttachmentMarkers } from "../../../protocol/attachmentMarkers";
-import { sessionActionError } from "../../../protocol/errors";
-import type { ItemImage, ItemModel, TurnModel } from "../../../protocol/model";
-import type { TurnError } from "../../../protocol/types.gen";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

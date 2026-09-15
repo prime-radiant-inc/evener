@@ -1,17 +1,18 @@
 // Pure-builder tests for the watch row model and the watch-string vocabulary.
 // These pin the exact facts/meta shapes the brief specifies, built only from
 // real wire fields (never a fabricated instant, name, or count).
-import { describe, expect, test } from "vitest";
+
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
   buildWatchRows,
+  formatClockTime,
   watchFacts,
   watchIsScheduled,
   watchMeta,
   watchName,
   watchRowID,
-} from "../../protocol/activityRows";
-import { formatClockTime } from "../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { describe, expect, test } from "vitest";
 import { watchCadenceLabel, watchDurationLabel } from "./RailRow";
 import { armedWatchCount } from "./railNodes";
 

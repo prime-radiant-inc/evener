@@ -44,3 +44,31 @@ out-of-scope invocation. Use `make test-web` as the canonical frontend unit,
 typecheck, and Biome gate; on Chrome-capable hosts, also run `make
 test-web-browser` for real geometry and browser guards. CI checks Biome
 formatting. Avoid `noNonNullAssertion` and array-index-key violations.
+
+## Importing the AppWire TypeScript package
+
+The shared client lives at `appwire-client/typescript` and every consumer in
+this repository imports it by name, never by a relative path into that
+directory:
+
+- `@evener/appwire-client` for the root exports,
+- `@evener/appwire-client/docContent` for the doc-pane data layer, the one
+  subpath the package publishes, and
+- `@evener/appwire-client/testing/<module>` for the fakes and fixtures. That
+  specifier is in-repo only — it is absent from `package.json` `exports` and
+  from the tarball — so it belongs in test and dev-support files and nowhere
+  else: `*.test.*`/`*.spec.*`, `__tests__/`, `src/dev/`, and `*TestUtils.*`.
+  `check-package-tests` fails a production file that imports it.
+
+The name resolves through `tsconfig` `paths`, the Vite and vitest configs, and
+Metro's `resolveRequest`; the frontend and `mobile-native` declare no npm
+dependency on the package. `make lint-package-imports` fails on a path import,
+because nothing else would notice one; it exempts only the resolver configs,
+named one by one.
+
+`mobile-native` needs the `paths` in **`tsconfig.json`**, not only in
+`tsconfig.check.json`: `tsc --noEmit` is passed the latter explicitly, but
+`tsx` reads the former, and the `scripts/*.mts` tools the README tells you to
+run load app modules that import the package by name. `npm run check:scripts`
+(part of `make test-native`) resolves those scripts' module graphs without
+loading them, since each opens a socket the moment its body runs.

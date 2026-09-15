@@ -1,13 +1,13 @@
 // ActivityPanelBody plumbing: the session's watches reach the tree, and an
 // idle session whose only pending work is a watch still shows its rows instead
 // of the "no retained activity" empty state.
+
+import type { NavigationWatchSummary, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import * as activityRows from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { NavigationWatchSummary, ThreadCapabilities } from "../../../protocol/types.gen";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";

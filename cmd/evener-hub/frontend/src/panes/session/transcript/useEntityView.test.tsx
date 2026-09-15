@@ -1,7 +1,6 @@
+import type { ActivityJob, ActivityTree, ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import {
   activityPanelStore,
   EMPTY_ACTIVITY_PANEL_ENTRY,

@@ -1,8 +1,8 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";

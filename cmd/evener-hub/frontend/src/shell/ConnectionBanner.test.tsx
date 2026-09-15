@@ -1,11 +1,11 @@
+import type { InitializeResponse } from "@evener/appwire-client";
+import { AppwireClient, type ConnectionState } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
-import { AppwireClient, type ConnectionState } from "../protocol/client";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
