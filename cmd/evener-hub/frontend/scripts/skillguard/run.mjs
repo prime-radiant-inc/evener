@@ -559,10 +559,17 @@ class Driver {
     return evaluate(this.send, this.composerStateExpr(ref));
   }
 
-  railRowsExpr() {
-    return `(() => ({
-      rows: [...document.querySelectorAll("[data-session-ref]")].map((el) => ({ ref: el.dataset.sessionRef, text: el.textContent.slice(0, 80) })),
-    }))()`;
+  // The rail element mounts before the hub's session list arrives, and waitPage
+  // resolves on any non-null value -- so returning a bare rows object made the
+  // caller's count check race the first render: the check saw an empty rail,
+  // and the failure dump caught both rows present moments later. atLeast makes
+  // the wait resolve only once that many rows are on screen. Callers that want
+  // a snapshot whatever the count (the failure dump) leave it at 0.
+  railRowsExpr({ atLeast = 0 } = {}) {
+    return `(() => {
+      const rows = [...document.querySelectorAll("[data-session-ref]")].map((el) => ({ ref: el.dataset.sessionRef, text: el.textContent.slice(0, 80) }));
+      return rows.length >= ${atLeast} ? { rows } : null;
+    })()`;
   }
 
   queueStripExpr() {
@@ -993,7 +1000,10 @@ async function runScenarios(driver) {
     timeoutMs: 30000,
     label: "app shell (rail brand)",
   });
-  const rows = await driver.waitPage(driver.railRowsExpr(), { timeoutMs: 30000, label: "rail rows" });
+  const rows = await driver.waitPage(driver.railRowsExpr({ atLeast: 2 }), {
+    timeoutMs: 30000,
+    label: "two live sessions in the rail",
+  });
   check(rows.rows.length >= 2, `expected two live sessions in the rail, found ${rows.rows.length}`);
   // The control path targets helper alpha's OWN daemon, and rail order is not
   // start order: pin each session to the ref the Go owner derived from the
