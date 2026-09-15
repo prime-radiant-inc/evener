@@ -15,6 +15,7 @@ import {
 } from "../../protocol/slashCompletion";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
+import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { effortLabel } from "../../shell/reasoningEffort";
@@ -60,7 +61,7 @@ import {
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
-import { resolveHeadBranch } from "./branch";
+import { isStaleConnectDialogChunkError, loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
