@@ -29,10 +29,12 @@ func TestRemoteHubSourceOnlineDefaultsTrueAndSignal(t *testing.T) {
 	}
 }
 
-// TestRemoteHubSourceStartThreadClearsSource covers the forward-clearing rule:
-// the controller-side Source names this host in the controller's registry, so
-// it must not reach the remote hub, which would resolve it against its own.
-func TestRemoteHubSourceStartThreadClearsSource(t *testing.T) {
+// TestRemoteHubSourceStartThreadClearsRoutingHints covers the forward-clearing
+// rule: Source names this host in the controller's registry, and a non-"evener"
+// Harness is read as a source id by the remote hub's launchSourceID, so neither
+// routing hint may reach the remote hub, which would resolve it against its own
+// registry and could spawn on the wrong host.
+func TestRemoteHubSourceStartThreadClearsRoutingHints(t *testing.T) {
 	source, calls := newScriptedRemote(t, "remote-host", func(method string, _ json.RawMessage) scriptedReply {
 		if method == appwire.MethodThreadStart {
 			return scriptedReply{result: appwire.ThreadStartResponse{}}
@@ -40,7 +42,7 @@ func TestRemoteHubSourceStartThreadClearsSource(t *testing.T) {
 		return scriptedReply{result: appwire.EmptyResponse{}}
 	})
 
-	if _, err := source.StartThread(t.Context(), appwire.ThreadStartParams{Source: "remote-host", CWD: "/tmp"}); err != nil {
+	if _, err := source.StartThread(t.Context(), appwire.ThreadStartParams{Source: "remote-host", Harness: "remote-b", CWD: "/tmp"}); err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
 	var forwarded map[string]any
@@ -49,6 +51,9 @@ func TestRemoteHubSourceStartThreadClearsSource(t *testing.T) {
 	}
 	if v, ok := forwarded["source"]; ok {
 		t.Fatalf("forwarded params carry source=%v, want none", v)
+	}
+	if v, ok := forwarded["harness"]; ok {
+		t.Fatalf("forwarded params carry harness=%v, want none", v)
 	}
 	if forwarded["cwd"] != "/tmp" {
 		t.Fatalf("forwarded cwd = %v, want /tmp (other fields preserved)", forwarded["cwd"])

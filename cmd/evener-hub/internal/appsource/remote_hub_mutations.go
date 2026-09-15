@@ -58,9 +58,16 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 // spawns on its own host. ThreadStartParams carries no ref.
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	remote := params
-	// Source names this source in the controller's registry; the remote hub
-	// would resolve it against its own, so it is cleared before forwarding.
+	// Source and a non-"evener" Harness are both controller-side routing hints:
+	// Source names this source in the controller's registry, and the remote
+	// hub's launchSourceID reads any non-"evener" Harness as a source id too.
+	// The remote hub would resolve either against its own registry, so both are
+	// cleared before forwarding. Leaving Harness set would re-route a start the
+	// controller already targeted at this host (Source=remote-a, Harness=remote-b
+	// would spawn on remote-b on the remote hub); the remote hub's own local
+	// spawn is the intended target.
 	remote.Source = ""
+	remote.Harness = ""
 	var out appwire.ThreadStartResponse
 	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err

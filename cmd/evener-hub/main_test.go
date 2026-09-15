@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -572,4 +573,28 @@ func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHubSSHStateInvalidation covers the fleet-view invalidation gate: only the
+// sshconn transitions that change Manager.Attached invalidate navigation, and a
+// nil invalidate is tolerated (the hook's slot is late-bound, so it is nil until
+// the WebServer exists).
+func TestHubSSHStateInvalidation(t *testing.T) {
+	for _, tc := range []struct {
+		kind        sshconn.EventKind
+		wantInvalid bool
+	}{
+		{sshconn.EventAttached, true},
+		{sshconn.EventDetached, true},
+		{sshconn.EventFailed, true},
+		{sshconn.EventState, false},
+	} {
+		calls := 0
+		hubSSHStateInvalidation(func() { calls++ })(sshconn.Event{Kind: tc.kind})
+		if got := calls > 0; got != tc.wantInvalid {
+			t.Fatalf("kind %q invalidated=%v, want %v", tc.kind, got, tc.wantInvalid)
+		}
+	}
+	// A connection event before the WebServer exists must not panic.
+	hubSSHStateInvalidation(nil)(sshconn.Event{Kind: sshconn.EventAttached})
 }

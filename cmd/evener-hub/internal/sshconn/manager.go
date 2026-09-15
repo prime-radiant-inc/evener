@@ -454,12 +454,15 @@ func (m *Manager) currentChannel(name string) *Channel {
 	return m.chans[name]
 }
 
-// Attached reports whether host currently has a live, not-closed channel.
-// A host that has never been Ensure'd is not attached; the hub's background
-// refresh attaches lazily, so this converges within one refresh interval.
+// Attached reports whether host currently has a usable channel: one that has
+// been established, has not been closed, and has not lost its link. A host that
+// has never been Ensure'd is not attached; the hub's background refresh
+// attaches lazily, so this converges within one refresh interval. A link-lost
+// channel reports detached as soon as markLost closes lost, before the
+// supervisor wakes to clear and replace it.
 func (m *Manager) Attached(name string) bool {
 	ch := m.currentChannel(name)
-	return ch != nil && !ch.isClosed()
+	return ch != nil && !ch.isClosed() && !ch.linkLost()
 }
 
 func (m *Manager) setChannel(name string, ch *Channel) {
@@ -562,6 +565,18 @@ func (c *Channel) markLost() {
 func (c *Channel) isClosed() bool {
 	select {
 	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// linkLost reports whether the channel's ssh link has dropped. lost is closed
+// by markLost when the child exits, the monitor errors, or Close runs; done is
+// closed only by Close, so a usable channel must check both.
+func (c *Channel) linkLost() bool {
+	select {
+	case <-c.lost:
 		return true
 	default:
 		return false
