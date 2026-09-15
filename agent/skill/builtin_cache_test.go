@@ -835,6 +835,7 @@ func TestEmbeddedSkillsDir_FallsBackToAProcessLifetimeCopy(t *testing.T) {
 	// A base that cannot be staged into (it does not exist) fails
 	// materialization, so there is nothing to publish or adopt.
 	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
 
 	first, err := EmbeddedSkillsDir()
 	if err != nil {
@@ -898,5 +899,54 @@ func TestEmbeddedSkillsDir_FallsBackToAProcessLifetimeCopy(t *testing.T) {
 	}
 	if _, ok := againMeta[name]; !ok {
 		t.Fatalf("EmbeddedSkills handed back a cached map alias: %q missing", name)
+	}
+}
+
+// resetProcessSkills drops the process-lifetime extraction a test triggered, so
+// the next test resolves it afresh. The directory is removed with it.
+func resetProcessSkills() {
+	processSkillsMu.Lock()
+	dir := processSkillsDir
+	processSkillsDir = ""
+	processSkillsMeta = nil
+	processSkillsMu.Unlock()
+	if dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+}
+
+// A temp cleaner can remove the process copy while the process lives; the next
+// resolution must extract a fresh one rather than hand back a dangling path.
+func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyDisappears(t *testing.T) {
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	if err := os.RemoveAll(first); err != nil {
+		t.Fatalf("remove process copy: %v", err)
+	}
+
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (after removal): %v", err)
+	}
+	if second == first {
+		t.Fatal("returned the removed process copy")
+	}
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(second, skills)
+	if len(skills) == 0 {
+		t.Fatalf("re-extracted copy %q holds no skills", second)
+	}
+
+	meta, err := EmbeddedSkills()
+	if err != nil {
+		t.Fatalf("EmbeddedSkills: %v", err)
+	}
+	if len(meta) != len(skills) {
+		t.Fatalf("metadata after re-extraction has %d skills, want %d", len(meta), len(skills))
 	}
 }

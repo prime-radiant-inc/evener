@@ -5,6 +5,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -126,5 +127,31 @@ func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
 	}
 	if err := ensureTrustedRoot(inner); err == nil {
 		t.Fatal("accepted a group-accessible cache root")
+	}
+}
+
+// The degraded extraction must not land in a temp root the shared cache refuses.
+func TestEmbeddedSkillsDir_RefusesAnUntrustedTempRootForTheProcessCopy(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	if err := os.Chmod(root, 0o777); err != nil {
+		t.Fatalf("open up temp root: %v", err)
+	}
+	if _, err := EmbeddedSkillsDir(); err == nil {
+		t.Fatal("extracted a process copy into an untrusted temp root")
+	}
+
+	if err := os.Chmod(root, os.ModeSticky|0o777); err != nil {
+		t.Fatalf("make temp root sticky: %v", err)
+	}
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("refused a sticky temp root: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(dir), embeddedSkillsPrefix+"process-") {
+		t.Fatalf("degraded copy = %q, want a process-lifetime extraction", dir)
 	}
 }

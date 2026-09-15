@@ -74,15 +74,15 @@ var skillsBaseRoot = defaultSkillsBaseRoot
 // The shared content-addressed cache is best-effort: when no copy can be
 // resolved, the process keeps one private extraction of the bundled skills for
 // the rest of its lifetime, exactly as a process did before the shared cache
-// existed. Nothing reaps this copy and it is never removed: sessions read the
-// SkillFile paths inside it for as long as the process runs.
+// existed. Nothing reaps this copy and it is never removed by this package:
+// sessions read the SkillFile paths inside it for as long as the process runs.
+// It is revalidated rather than created once, because a system temp cleaner can
+// remove it while the process lives, and a dangling path would silently cost
+// every later resolution its skills.
 var (
-	processSkillsOnce sync.Once
+	processSkillsMu   sync.Mutex
 	processSkillsDir  string
-	errProcessSkills  error
-
-	processSkillsMetaMu sync.Mutex
-	processSkillsMeta   map[string]SkillMeta
+	processSkillsMeta map[string]SkillMeta
 )
 
 // processSkillsTempPattern names the process-lifetime extraction. It is
@@ -91,16 +91,30 @@ var (
 const processSkillsTempPattern = embeddedSkillsPrefix + "process-*"
 
 // embeddedProcessSkillsDir returns the process-lifetime private extraction,
-// creating it at most once. It extracts through the same implementation as
-// ExtractEmbeddedSkills, under its own temp name so the copy that outlives every
-// caller is not confused with the staging directories the cache reaps by age.
+// creating or recreating it as needed. It extracts through the same
+// implementation as ExtractEmbeddedSkills, under its own temp name so the copy
+// that outlives every caller is not confused with the staging directories the
+// cache reaps by age, and only into a temp root the shared cache would accept:
+// the degraded path must not read skill content out of a root that was just
+// refused as replaceable by other users.
 func embeddedProcessSkillsDir() (string, error) {
-	processSkillsOnce.Do(func() {
-		processSkillsDir, errProcessSkills = extractEmbeddedSkills(bundled.Skills(), func(_, _ string) (string, error) {
-			return os.MkdirTemp("", processSkillsTempPattern)
-		})
+	processSkillsMu.Lock()
+	defer processSkillsMu.Unlock()
+	if processSkillsDir != "" && cacheDirExists(processSkillsDir) {
+		return processSkillsDir, nil
+	}
+	if err := ensureTrustedRoot(os.TempDir()); err != nil {
+		return "", err
+	}
+	dir, err := extractEmbeddedSkills(bundled.Skills(), func(_, _ string) (string, error) {
+		return os.MkdirTemp("", processSkillsTempPattern)
 	})
-	return processSkillsDir, errProcessSkills
+	if err != nil {
+		return "", err
+	}
+	processSkillsDir = dir
+	processSkillsMeta = nil
+	return dir, nil
 }
 
 // embeddedProcessSkills returns the metadata of the process-lifetime extraction,
@@ -110,8 +124,8 @@ func embeddedProcessSkills() (map[string]SkillMeta, error) {
 	if err != nil {
 		return nil, err
 	}
-	processSkillsMetaMu.Lock()
-	defer processSkillsMetaMu.Unlock()
+	processSkillsMu.Lock()
+	defer processSkillsMu.Unlock()
 	if processSkillsMeta == nil {
 		skills := make(map[string]SkillMeta)
 		ScanSkillsDir(dir, skills)
@@ -185,7 +199,11 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			// another rather than hand back one whose files may vanish.
 			forgetEmbeddedSkillsLocked()
 		case !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest):
-			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
+			// The content is checked again once the lease is held: the copy can be
+			// replaced between the check above and the claim, and a re-check under
+			// the lease is what rules that out.
+			if err := claimEmbeddedSkillsLocked(cached); err == nil &&
+				cacheDirUsable(cached, embeddedSkillsCache.digest) {
 				embeddedSkillsCache.verified = true
 				rememberCacheDirLocked(cached)
 				touchDir(cached)
@@ -213,7 +231,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			lastErr = err
 			continue
 		}
-		if !cacheDirExists(dir) {
+		if !cacheDirUsable(dir, digest) {
 			lastErr = fmt.Errorf("bundled skills copy %s was reaped while it was claimed", dir)
 			forgetEmbeddedSkillsLocked()
 			continue
