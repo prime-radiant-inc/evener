@@ -67,10 +67,17 @@ var manifestMarshal = json.Marshal
 // owner is not offline, only unregistered here; answering false would drop those
 // rows from the live set. A host removed from config is unreachable at runtime
 // anyway, since config is read once and the cache starts empty.
+//
+// The ID is trimmed before lookup so a padded source (" host-a ") resolves to
+// the registered host instead of missing the registry and fail-opening an
+// offline source's rows as live. Only TrimSpace applies: the registry keys the
+// controller's own source as "local", so NormalizeDecisionSource's "local" →
+// "" mapping would bypass that entry rather than normalize it.
 func (s *WebServer) sourceOnline(id string) bool {
 	if s.sources == nil {
 		return true
 	}
+	id = strings.TrimSpace(id)
 	source, ok := s.sources.Source(id)
 	if !ok || source == nil {
 		return true

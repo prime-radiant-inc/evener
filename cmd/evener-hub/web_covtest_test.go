@@ -529,6 +529,48 @@ func TestNavigationSnapshotOfflineSourceRowsNotLive(t *testing.T) {
 	}
 }
 
+// A padded source id must resolve to the registered host instead of missing the
+// registry and fail-opening an offline source's rows as live. Source and
+// decision code normalize with TrimSpace, so this lookup must too; an
+// unregistered id still fails open (round-one disposition).
+func TestSourceOnlineTrimsPaddedRegisteredID(t *testing.T) {
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	web.sources = registry
+
+	if web.sourceOnline("  remote-offline  ") {
+		t.Fatal("padded offline source reported online")
+	}
+	if web.sourceOnline("remote-offline") {
+		t.Fatal("offline source reported online")
+	}
+	if !web.sourceOnline("unregistered") {
+		t.Fatal("unregistered source stopped failing open")
+	}
+}
+
+// The padded spelling survives into the live projection too: a cached row from
+// an offline source must not appear live just because its Source carries
+// surrounding whitespace.
+func TestNavigationSnapshotPaddedOfflineSourceRowNotLive(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{
+		{ID: "padded-thread", Source: " remote-offline ", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+	})
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RemoteThreadCache: cache})
+	web.sources = registry
+
+	snapshot := web.navigationSnapshotInputs(t.Context())
+	for _, entry := range snapshot.live {
+		if entry.ThreadID == "padded-thread" {
+			t.Fatalf("padded offline source row appeared live: %#v", snapshot.live)
+		}
+	}
+}
+
 // --- project_delete.go: removeProjectSessionRendezvous ---
 
 // TestCovRemoveProjectSessionRendezvousEmptyRunDir covers the empty runDir

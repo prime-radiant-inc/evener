@@ -119,12 +119,20 @@ func validateHostProjectArchive(cfg hubcore.WebConfig, source, id, workingDir st
 }
 
 // validateDecisionSource rejects a non-empty (already normalized) source that
-// does not name a configured remote host. Without this check a typo or
+// does not name a registered remote source. Without this check a typo or
 // whitespace variant would persist a successful but permanently inert decision
 // row: no read path ever addresses the misspelled source.
+//
+// A configured host is only a registered source when the hub wired a remote
+// client — newHubSourceRegistry skips cfg.RemoteHosts entirely when
+// RemoteHostClient is nil — so accepting its name here would persist a decision
+// that no source, and no navigation row, can ever address.
 func validateDecisionSource(cfg hubcore.WebConfig, source string) error {
 	if source == "" {
 		return nil
+	}
+	if cfg.RemoteHostClient == nil {
+		return appwire.InvalidParams("unknown source: " + source)
 	}
 	for _, host := range cfg.RemoteHosts {
 		if host.Name == source {

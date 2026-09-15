@@ -99,6 +99,64 @@ func TestArchiveStoreMigratesLegacyKeyToSourceColumn(t *testing.T) {
 	}
 }
 
+// Two migrators can both observe the legacy schema outside a transaction. The
+// loser of the write-lock race must recheck the schema once it holds the lock
+// and leave the already-upgraded table alone; rebuilding it would migrate the
+// winner's source-qualified rows under the controller source, collapsing two
+// hosts' same-ID decisions into one. The interleave hook pins the race
+// deterministically instead of sleeping.
+func TestArchiveStoreMigrationRechecksSchemaUnderWriteLock(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	legacy, err := sql.Open("sqlite", sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE archive (
+		kind       TEXT    NOT NULL,
+		id         TEXT    NOT NULL,
+		archived   INTEGER NOT NULL,
+		decided_at INTEGER NOT NULL,
+		PRIMARY KEY (kind, id))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO archive (kind, id, archived, decided_at) VALUES ('project', 'legacy-proj', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Interleave a competing migrator between the caller's schema pre-check and
+	// its write lock: it upgrades the table and writes a source-qualified row.
+	previous := decisionMigrationInterleave
+	decisionMigrationInterleave = func() {
+		decisionMigrationInterleave = nil // the competing migration is one-shot
+		competing := NewArchiveStore(dbPath)
+		if _, err := competing.Decisions(); err != nil {
+			t.Errorf("competing migration: %v", err)
+		}
+		if err := competing.Set("host-a", "project", "proj-a", true, time.Unix(2, 0)); err != nil {
+			t.Errorf("competing set: %v", err)
+		}
+	}
+	t.Cleanup(func() { decisionMigrationInterleave = previous })
+
+	store := NewArchiveStore(dbPath)
+	got, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[ArchiveKey{Kind: "project", ID: "proj-a", Source: "host-a"}] {
+		t.Fatalf("host-a decision lost after the concurrent migration: %v", got)
+	}
+	if got[ArchiveKey{Kind: "project", ID: "proj-a"}] {
+		t.Fatalf("host-a row collapsed onto the controller source: %v", got)
+	}
+	if !got[ArchiveKey{Kind: "project", ID: "legacy-proj"}] {
+		t.Fatalf("legacy row did not migrate to the controller source: %v", got)
+	}
+}
+
 func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "index.db")
 	s := NewArchiveStore(db)

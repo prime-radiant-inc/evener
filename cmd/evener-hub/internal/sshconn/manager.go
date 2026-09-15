@@ -232,7 +232,10 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if ch := m.currentChannel(name); ch != nil && !ch.isClosed() {
+	// Reuse only a channel that is still usable. A link-lost channel has lost
+	// closed but is not yet closed (the supervisor clears and replaces it after
+	// markLost), so isClosed alone would hand back a dead channel in that window.
+	if ch := m.currentChannel(name); ch != nil && !ch.isClosed() && !ch.linkLost() {
 		return ch, nil
 	}
 	ch, err := m.ensureOnce(ctx, host)

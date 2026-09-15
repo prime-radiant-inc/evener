@@ -108,6 +108,36 @@ func TestEnsureIdempotentWhileAttached(t *testing.T) {
 	}
 }
 
+// A link-lost channel is unusable in the window after markLost closes lost but
+// before the supervisor clears and replaces it. Ensure must reattach rather than
+// hand back the dead channel that Attached already reports as detached.
+func TestEnsureReplacesLinkLostChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
+	dead.markLost()
+	m.setChannel("alpha", dead)
+	if m.Attached("alpha") {
+		t.Fatal("link-lost channel reported attached")
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if ch == dead {
+		t.Fatal("Ensure reused a link-lost channel")
+	}
+	if ch.linkLost() {
+		t.Fatal("Ensure returned a channel that had already lost its link")
+	}
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want 1 (reattach)", got)
+	}
+}
+
 func TestEnsureUnknownHost(t *testing.T) {
 	fr := &fakeRunner{}
 	m := newTestManager(t, testRegistry(t), fr, Options{})

@@ -145,10 +145,11 @@ func dispatchArchiveSet(t *testing.T, web *WebServer, params appwire.ArchivePara
 func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	web := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-		RemoteHosts:  []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+		Archive:          store,
+		HubStateRoot:     t.TempDir(),
+		Past:             hubcore.NewPastIndex(""),
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+		RemoteHostClient: unusedRemoteHostClient,
 	})
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 
@@ -198,6 +199,7 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 		HubStateRoot:      t.TempDir(),
 		Past:              hubcore.NewPastIndex(""),
 		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient:  unusedRemoteHostClient,
 	})
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -232,10 +234,11 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
 	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
 	web := NewWebServer(hubcore.WebConfig{
-		Archive:      store,
-		HubStateRoot: t.TempDir(),
-		Past:         hubcore.NewPastIndex(""),
-		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
+		Archive:          store,
+		HubStateRoot:     t.TempDir(),
+		Past:             hubcore.NewPastIndex(""),
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient: unusedRemoteHostClient,
 	})
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 
@@ -276,6 +279,45 @@ func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
 	}
 	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: projectID, Source: "host-a"}] {
 		t.Fatalf("padded source did not normalize to host-a: %v", decisions)
+	}
+}
+
+// A configured host is only a registered source when the hub wired a remote
+// client: newHubSourceRegistry skips cfg.RemoteHosts entirely when
+// RemoteHostClient is nil, so accepting its name here would persist a decision
+// no source, and no navigation row, can ever address. The same request against a
+// wired hub succeeds.
+func TestHubArchiveSetRejectsConfiguredHostWithoutRemoteClient(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
+	params := appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetProject,
+		ID:       projectID,
+		Source:   "host-a",
+		Archived: true,
+	}
+
+	unwired := NewWebServer(hubcore.WebConfig{
+		Archive:      store,
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
+	})
+	_, err := dispatchArchiveSet(t, unwired, params)
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || !strings.Contains(err.Error(), "unknown source") {
+		t.Fatalf("error = %v, want InvalidParams for an unregistered source", err)
+	}
+
+	wired := NewWebServer(hubcore.WebConfig{
+		Archive:          store,
+		HubStateRoot:     t.TempDir(),
+		Past:             hubcore.NewPastIndex(""),
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient: unusedRemoteHostClient,
+	})
+	if _, err := dispatchArchiveSet(t, wired, params); err != nil {
+		t.Fatalf("archive against a wired hub: %v", err)
 	}
 }
 
