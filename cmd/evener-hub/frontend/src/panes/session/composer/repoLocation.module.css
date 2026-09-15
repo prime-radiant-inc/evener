@@ -14,9 +14,9 @@
   color: var(--ink-low);
 }
 
-/* The path is machine text, so it takes the mono face, and it is the line's
- * only shrinkable part: a deep path ellipsizes while the branch it sits beside
- * stays whole. `title` carries the full path (RepoLocation.tsx). */
+/* The path is machine text, so it takes the mono face. It shrinks first: the
+ * repo reference beside it is the line's actionable fact. `title` carries the
+ * full path (RepoLocation.tsx). */
 .path {
   flex: 0 1 auto;
   min-width: 0;
@@ -26,10 +26,22 @@
   font-family: var(--font-mono);
 }
 
-/* The branch never shrinks: it is the line's one actionable fact, and a clipped
- * branch name would be worse than a clipped path. */
+/* A branch with no recognized repo behind it - the plain-text case. It never
+ * shrinks: it is then the line's whole point. */
 .branch {
   flex: none;
+  color: var(--ink-mid);
+}
+
+/* `owner/repo#branch`, beside the forge's mark. It may shrink as a last resort,
+ * after the path has given up all of its room, and ellipsizes rather than
+ * pushing the line out of the pane. */
+.ref {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--ink-mid);
 }
 
@@ -37,12 +49,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   color: var(--ink-mid);
   text-decoration: none;
 }
 
-.link:hover .branch {
+.link:hover .ref {
   color: var(--ink-hi);
   text-decoration: underline;
 }
