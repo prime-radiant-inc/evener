@@ -21,11 +21,10 @@ config.resolver.resolveRequest = (context, name, platform) => {
 			path.join(root, "cmd", "evener-hub", "frontend", "src"),
 		) ||
 		context.originModulePath.startsWith(appwirePackage);
-	// Nothing imports by this name yet - the native tree still uses relative
-	// paths into the package, which resolve without this branch. SDK A4 rewrites
-	// those imports to the package name, and `make test-native-bundle` (#1245,
-	// closing #1244) is the gate that bundles the app and so exercises this
-	// branch for the first time; A4 must pass it.
+	// src/connection.ts imports by this name, so the exported graph reaches this
+	// branch and `make test-native-bundle` fails when it breaks. SDK A4 rewrites
+	// the rest of the native tree's relative paths to the same name; that one
+	// site is here so the gate is not proving a branch nothing uses.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
 		const subpath = name.slice(appwireName.length).replace(/^\//, "");
 		return {
