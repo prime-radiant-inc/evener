@@ -598,6 +598,71 @@ func TestHostAdminFanOutReEmitsOnlyConfigNotifications(t *testing.T) {
 	}
 }
 
+// TestHostAdminFanOutStopsWhenContextCanceled pins the fan-out's shutdown path:
+// canceling its context must unblock the receive loop promptly even while the
+// subscription channel is still open, so a process-lifetime ctx or a test
+// context tears the goroutine down instead of parking it forever.
+func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
+	client, _, emit := newScriptedRemoteClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		controller.fanOut(ctx, source)
+		close(done)
+	}()
+
+	// Prove the fan-out is subscribed and relaying before cancelling, so the
+	// assertion below is about unblocking an established subscription.
+	emit(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	select {
+	case <-recorder.ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the fan-out to relay a config notification")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
+// of the fail-closed checks: a method the proxy may never forward is refused
+// with InvalidParams even when the host is offline, without consulting the
+// source registry at all.
+func TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck(t *testing.T) {
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	// No sources at all: if the method check ran after source resolution this
+	// would report Unavailable rather than InvalidParams.
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, appsource.NewRegistry())
+
+	_, err = controller.Request(context.Background(), appwire.HostRequestParams{
+		Host:   "m4",
+		Method: "evener/instance/deleteAll",
+	})
+	assertWireCode(t, err, appwire.CodeInvalidParams)
+}
+
 func assertWireCode(t *testing.T, err error, want int) {
 	t.Helper()
 	if err == nil {
