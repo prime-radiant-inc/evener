@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
-# package-import-paths-check.sh fails if any app-tree module specifier reaches
-# the AppWire TypeScript package by path instead of by its package name.
+# package-import-paths-check.sh fails if any file in the app trees names the
+# AppWire TypeScript package by path instead of by its package name.
 #
-# Both halves of the sweep are load-bearing. The mobile half catches a stale
-# `cmd/evener-hub/frontend/src/protocol/` specifier, which resolves to nothing
-# now that the directory is gone. The web half catches the old relative
-# `protocol/<module>` spelling, which is the form a rebased branch or a copied
-# import line reintroduces -- silently, because a path import typechecks just
-# as well as the package name and nothing else in the tree would notice.
+# It is a substring grep, not a parser. A quoted literal anywhere in a swept
+# file that contains `appwire-client/typescript` (the package by path) or
+# `/protocol/` (the directory the package used to live behind) fails the gate.
+# The rewriter's TypeScript reader is precise about which quoted strings are
+# imports; this gate is deliberately broader, because the cost of missing one
+# is a path import that typechecks and that nothing else in the tree notices.
+# The price of the breadth: a quoted path in a COMMENT -- a commented-out
+# import, an example in a doc comment -- is refused too, since grep cannot tell
+# it from a live import. Spell the package name, or move the string out of the
+# swept trees, or (for a config or a test that legitimately names the path) add
+# it to the exact-path exemptions below.
 #
-# Every file in the three trees is swept; nothing is exempt but the resolver
-# configs named below.
-#
-# On --include/--exclude/--exclude-dir being GNU-only: measured 2026-09-14 on
-# macOS 26 against `grep (BSD grep, GNU compatible) 2.6.0-FreeBSD`, the /usr/bin
-# grep this script invokes -- all three are accepted and filter correctly, and
-# CI's ubuntu runners use GNU grep, where they originate.
-#
-# Usage:
-#   scripts/sdk/package-import-paths-check.sh [--root DIR]
-#
-# --root points the sweep at a tree other than this checkout. It exists so the
-# gate's own test can hold it against fixtures; nothing else passes it.
+# --root points the sweep at a fixture tree instead of this checkout; only the
+# gate's own Go test passes it.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
@@ -47,59 +41,24 @@ trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
 
 # The extensions swept and the directories skipped are the resolvers' lists,
 # not the ones that happen to exist today: the file this gate exists to catch
-# is one nobody has written yet. They are kept byte-for-byte equal to the
-# shared SOURCE_EXTENSIONS and SKIPPED_DIRS in scripts/sdk/source-files.mjs by
-# a Go audit -- the same way the loader-call set below is -- because a file the
-# rewriter sweeps and this gate skips (or the reverse) reaches the package by
-# path in one of them silently.
+# is one nobody has written yet. Kept equal to the shared SOURCE_EXTENSIONS and
+# SKIPPED_DIRS in scripts/sdk/source-files.mjs.
 extensions=(ts tsx mts cts js jsx mjs cjs)
 skip_dirs=(node_modules dist build ios android __snapshots__ .git)
 sources=()
 for extension in "${extensions[@]}"; do sources+=(--include="*.${extension}"); done
 for dir in "${skip_dirs[@]}"; do sources+=(--exclude-dir="${dir}"); done
 
-# The resolver configs are exempt, and only they: mapping the package name onto
-# its path is what a resolver config is for, so a path there is the fix rather
-# than the defect. By exact relative path, not basename -- grep's --exclude
-# matches a basename anywhere, which would also excuse a src/metro.config.js an
-# app happened to write. So the exemption is a post-sweep filter instead, keyed
-# on the path grep prints. These are the configs inside the swept trees today;
-# the frontend's vite and browser-guard configs sit beside src/, not in it. A
-# new resolver config has to be added here, which is the point.
+# The files that legitimately carry the path: the resolver configs that map the
+# name onto it, and the test that proves they do. Exempted by exact relative
+# path, so an app file that merely shares a config's basename in a subdirectory
+# is not. A new such file has to be added here, which is the point.
 exempt_configs=(
 	mobile-native/vitest.config.mts
 	mobile-native/metro.config.js
+	mobile-native/src/metroResolver.test.ts
 )
 
-# A module specifier, not a mention in prose. Three positions carry one:
-# `from "x"`, a bare `import "x"`, and a call taking the path as its first
-# argument -- `import("x")`, `require("x")`, `vi.mock("x")`, and the rest of
-# vitest's mocking family, which is why the call form is an identifier chain
-# rather than a fixed list of names. Any of the three quotes: a specifier with
-# nothing to interpolate is as spellable in backticks as in quotes. And the
-# whitespace after a keyword is optional, because `import"./x"` and
-# `import{a}from"./x"` are what the language accepts, not what a formatter
-# happens to emit.
-# The last alternative is the specifier that opens its own line, which is what
-# a call or an import broken across lines leaves behind:
-#
-#     vi.mock(
-#       "../../protocol/reducer",
-#
-# grep is line-oriented and the portable flags it has cannot see the line
-# above, so the continuation is matched on its own shape instead. In these
-# trees a line that begins with a quoted path IS a module specifier; the sweep
-# finds none today that is not.
-# The calls that LOAD a module, and only those. An earlier pattern accepted any
-# identifier before the parenthesis, which made readFileSync("…/typescript/x")
-# and new URL("…/typescript/…", import.meta.url) failures of a gate about
-# imports. These are the same names scripts/sdk/module-specifiers.mjs reads --
-# MOCK_CALLS there, matched on the property regardless of the object, so a
-# jest.mock is caught as readily as a vi.mock -- and the Go audit compares the
-# two sets so neither can gain a loader the other does not know.
-mock_calls='mock|doMock|unmock|importActual|importMock'
-loader_call='(require|import|[A-Za-z_$][A-Za-z0-9_$.]*\.('"$mock_calls"'))[[:space:]]*\([[:space:]]*'
-opener='(from[[:space:]]*|import[[:space:]]*|'"$loader_call"'|^[[:space:]]*)'
 # `/protocol/` rather than `protocol`: the seam is only ever reached through a
 # relative path, and a bare `protocol` substring matches @modelcontextprotocol
 # and the "protocol" terminal-reason literal the app really does use. The
@@ -129,27 +88,20 @@ done
 # grep exits 1 for "no matches" and 2 or more for a real error -- an unreadable
 # file, a bad pattern. Swallowing everything with `|| true` turned a broken
 # sweep into a pass, which is the one verdict this gate must never invent.
-# Written inline rather than through a helper, because a helper runs inside a
-# command substitution, where `exit` leaves only the subshell and the failure
-# reads as "no matches" again.
-#
-# The option arrays come before the pattern and the operands: BSD and GNU grep
-# both accept options after operands, but only by permuting them, and a file
-# named like an option would be read as one.
 #
 # One sweep, two verdicts. A specifier still naming the directory the package
 # moved out of is a subset of "names the package by path" -- it matches the
 # same pattern -- but it earns its own message, because the fix is not "import
 # it by name" so much as "that directory is gone".
 old_seam=cmd/evener-hub/frontend/src/protocol/
-# The exempt configs are dropped by the exact path grep prints, anchored at the
+# The exempt files are dropped by the exact path grep prints, anchored at the
 # line start so an app file of the same basename in a subdirectory is not.
 exempt_pattern=""
 for config in "${exempt_configs[@]}"; do
 	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
 	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
 done
-if found="$(grep "${sources[@]}" -rnE "${opener}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
+if found="$(grep "${sources[@]}" -rnE "[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
 	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then

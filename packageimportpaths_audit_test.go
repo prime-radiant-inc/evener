@@ -1,7 +1,6 @@
 package evener_test
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -88,10 +87,10 @@ func TestPackageImportPathsCheckPassesACleanTree(t *testing.T) {
 	}
 }
 
-// Each case is one spelling that reaches the package by path. Four of them --
-// the vitest mocking helpers, single quotes, and the package directory named
-// without a trailing slash -- bypassed the gate's first implementation, which
-// matched only double-quoted specifiers after from/import/require.
+// Each case is one path shape or quote style the gate has to catch. The gate
+// is a substring grep over quoted literals, so what varies here is the path
+// and the quote, not the import syntax around it -- that is the whole point of
+// dropping the parser.
 func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 	for _, testCase := range []struct {
 		name    string
@@ -118,27 +117,9 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 			expects: "no longer exists",
 		},
 		{
-			name:    "vi.mock naming the seam",
-			path:    "cmd/evener-hub/frontend/src/app.test.ts",
-			line:    "vi.mock(\"../../protocol/reducer\", () => ({}));\n",
-			expects: "by path",
-		},
-		{
-			name:    "vi.importActual naming the seam",
-			path:    "cmd/evener-hub/frontend/src/app.test.ts",
-			line:    "const actual = await vi.importActual(\"../../protocol/reducer\");\n",
-			expects: "by path",
-		},
-		{
-			name:    "a specifier on the line after the call that opens it",
-			path:    "cmd/evener-hub/frontend/src/app.test.ts",
-			line:    "vi.mock(\n\t\"../../protocol/reducer\",\n\t() => ({}),\n);\n",
-			expects: "by path",
-		},
-		{
-			name:    "a backtick specifier with nothing to interpolate",
-			path:    "cmd/evener-hub/frontend/src/app.test.ts",
-			line:    "vi.mock(`../../protocol/reducer`, () => ({}));\n",
+			name:    "a backtick specifier",
+			path:    "cmd/evener-hub/frontend/src/app.ts",
+			line:    "const reducer = await import(`../../protocol/reducer`);\n",
 			expects: "by path",
 		},
 		{
@@ -177,6 +158,22 @@ func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
 	}
 }
 
+// The price of the broader substring rule: grep cannot tell a commented-out
+// import naming the package by path from a live one, so a quoted path in a
+// comment is refused too. Spell the package name or drop the line.
+func TestPackageImportPathsCheckRefusesAPathInAComment(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["cmd/evener-hub/frontend/src/app.ts"] =
+		"// import { errorText } from \"../../appwire-client/typescript/errors\";\n"
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate passed a commented-out path import:\n%s", output)
+	}
+	if !strings.Contains(output, "app.ts") {
+		t.Fatalf("the gate named no offending file:\n%s", output)
+	}
+}
+
 // The word "protocol" appears in this app as a terminal-reason literal and
 // inside @modelcontextprotocol specifiers. Matching it there would make the
 // gate fire on code that has nothing to do with the package.
@@ -185,7 +182,6 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 	files["cmd/evener-hub/frontend/src/banner.ts"] = strings.Join([]string{
 		"import { spawn } from \"@modelcontextprotocol/server-everything\";",
 		"setClosedReason(\"protocol\");",
-		"// The moved profile lives in appwire-client/typescript/tokenFlood.bench.ts.",
 		"",
 	}, "\n")
 	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
@@ -241,57 +237,6 @@ func TestPackageImportPathsCheckExemptsResolverConfigsByName(t *testing.T) {
 	}
 	if !strings.Contains(output, "launch.config.ts") {
 		t.Fatalf("the gate named no offending file; wanted launch.config.ts in:\n%s", output)
-	}
-}
-
-// specifierForm is one way a source file can name a module, as
-// scripts/sdk/module-specifier-forms.json spells it. The AST reader's own
-// tests walk the same file.
-type specifierForm struct {
-	Name   string `json:"name"`
-	Kind   string `json:"kind"`
-	Source string `json:"source"`
-}
-
-func loadSpecifierForms(t *testing.T) []specifierForm {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	raw, err := os.ReadFile(filepath.Join(wd, "scripts", "sdk", "module-specifier-forms.json"))
-	if err != nil {
-		t.Fatalf("reading the shared form list: %v", err)
-	}
-	var forms []specifierForm
-	if err := json.Unmarshal(raw, &forms); err != nil {
-		t.Fatalf("parsing the shared form list: %v", err)
-	}
-	if len(forms) == 0 {
-		t.Fatal("the shared form list is empty; this audit would be measuring nothing")
-	}
-	return forms
-}
-
-// The gate is a grep and the rewriter is a TypeScript AST reader, so they
-// answer the same question in two languages and drifted apart form by form --
-// a backtick specifier, a vi.mock, a specifier on the line after its call.
-// They read one list of forms now, and this is the half that holds the grep to
-// it: every form the AST reader recognizes must also be a form the gate
-// catches, or a path import can be rewritten-but-unguarded again.
-func TestPackageImportPathsCheckCatchesEveryFormTheReaderKnows(t *testing.T) {
-	for _, form := range loadSpecifierForms(t) {
-		t.Run(form.Name, func(t *testing.T) {
-			files := cleanPackageImportTree()
-			files["mobile/src/probe.ts"] = strings.ReplaceAll(form.Source, "@@SPEC@@", "../../appwire-client/typescript/errors")
-			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
-			if passed {
-				t.Fatalf("the gate passed a %s naming the package by path:\n%s", form.Name, form.Source)
-			}
-			if !strings.Contains(output, "mobile/src/probe.ts") {
-				t.Fatalf("the gate named no offending file:\n%s", output)
-			}
-		})
 	}
 }
 
@@ -366,56 +311,6 @@ func TestPackageImportPathsCheckExemptsResolverConfigsByPathNotBasename(t *testi
 	}
 	if !strings.Contains(output, "src/metro.config.js") {
 		t.Fatalf("the gate named no offending file; wanted src/metro.config.js in:\n%s", output)
-	}
-}
-
-// The sweep reads module LOADERS. An earlier pattern accepted any identifier
-// before a parenthesis, which made an ordinary call carrying the package path
-// -- reading a fixture file, building a URL -- a failure of a gate about
-// imports.
-func TestPackageImportPathsCheckIgnoresCallsThatLoadNothing(t *testing.T) {
-	files := cleanPackageImportTree()
-	files["mobile-native/src/fixtures.ts"] = strings.Join([]string{
-		`const raw = readFileSync("../../appwire-client/typescript/fixtures/thread.jsonl", "utf8");`,
-		`const url = new URL("../../appwire-client/typescript/docContent.ts", import.meta.url);`,
-		`expect(thing).toThrow("../../appwire-client/typescript/errors");`,
-		"",
-	}, "\n")
-	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
-	if !passed {
-		t.Fatalf("the gate fired on calls that load nothing:\n%s", output)
-	}
-}
-
-// The gate is a grep and the reader is a TypeScript AST walk, and each carries
-// its own list of the calls that take a module specifier. They are compared
-// here rather than trusted to stay equal: a loader added to one and not the
-// other is either a form the gate stops catching or a call it starts flagging.
-func TestPackageImportPathsCheckKnowsTheSameLoaderCallsAsTheReader(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	read := func(rel string) string {
-		raw, readErr := os.ReadFile(filepath.Join(wd, rel))
-		if readErr != nil {
-			t.Fatalf("reading %s: %v", rel, readErr)
-		}
-		return string(raw)
-	}
-	names := func(source, pattern string) []string {
-		match := regexp.MustCompile(pattern).FindStringSubmatch(source)
-		if match == nil {
-			t.Fatalf("no loader-call list found with %q", pattern)
-		}
-		found := regexp.MustCompile(`[A-Za-z]+`).FindAllString(match[1], -1)
-		sort.Strings(found)
-		return found
-	}
-	gate := names(read(filepath.Join("scripts", "sdk", "package-import-paths-check.sh")), `(?m)^mock_calls='([^']*)'`)
-	reader := names(read(filepath.Join("scripts", "sdk", "module-specifiers.mjs")), `MOCK_CALLS = new Set\(\[([^\]]*)\]`)
-	if !slices.Equal(gate, reader) {
-		t.Fatalf("the gate knows %v and the reader knows %v; they have to be the same calls", gate, reader)
 	}
 }
 

@@ -1,23 +1,12 @@
 // The shared module-specifier reader, one case per form it claims to read.
 //
-// The form list is a checked-in file, not a literal here, because the grep
-// gate's audit test builds its fixtures from the same list: the two readers
-// answer the same question in different languages, and this is what stops them
-// drifting apart form by form, which is how they drifted in the first place.
-//
 // It lives under the frontend's scripts/ for the reason the rewriter's test
 // does: this is the only runner in the repo with the node_modules these tools
 // parse with.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../../scripts/sdk/module-specifiers.mjs";
-
-const sdkDir = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk");
-const forms = JSON.parse(readFileSync(path.join(sdkDir, "module-specifier-forms.json"), "utf8"));
 
 const SPECIFIER = "../../appwire-client/typescript/errors";
 
@@ -25,12 +14,29 @@ function sitesFor(source) {
   return moduleSpecifierSites(ts, parseSource(ts, "fixture.ts", source));
 }
 
-test("the form list is not empty and every entry is complete", () => {
-  assert.ok(forms.length > 0);
-  for (const form of forms) {
-    assert.ok(form.name && form.kind && form.source.includes("@@SPEC@@"), `incomplete form: ${form.name}`);
-  }
-});
+// Every form the reader claims to recognize, one case each. @@SPEC@@ stands in
+// for the specifier so the same source can be checked for the kind it reads.
+const forms = [
+  { name: "static named import", kind: "import-named", source: 'import { errorText } from "@@SPEC@@";\nvoid errorText;\n' },
+  { name: "static named import, single-quoted", kind: "import-named", source: "import { errorText } from '@@SPEC@@';\nvoid errorText;\n" },
+  { name: "static named import, specifier on the next line", kind: "import-named", source: 'import { errorText } from\n\t"@@SPEC@@";\nvoid errorText;\n' },
+  { name: "namespace import", kind: "import-namespace", source: 'import * as everything from "@@SPEC@@";\nvoid everything;\n' },
+  { name: "default import", kind: "import-default", source: 'import theDefault from "@@SPEC@@";\nvoid theDefault;\n' },
+  { name: "side-effect import", kind: "import-side-effect", source: 'import "@@SPEC@@";\n' },
+  { name: "type-only import", kind: "import-named", source: 'import type { WireError } from "@@SPEC@@";\nexport type Alias = WireError;\n' },
+  { name: "named re-export", kind: "export-from", source: 'export { errorText } from "@@SPEC@@";\n' },
+  { name: "star re-export", kind: "export-star-from", source: 'export * from "@@SPEC@@";\n' },
+  { name: "dynamic import with a backtick specifier", kind: "dynamic-import", source: "const loaded = await import(`@@SPEC@@`);\nvoid loaded;\n" },
+  { name: "require call", kind: "require", source: 'const loaded = require("@@SPEC@@");\nvoid loaded;\n' },
+  { name: "vi.mock with the specifier on the next line", kind: "mock-call", source: 'vi.mock(\n\t"@@SPEC@@",\n\t() => ({}),\n);\n' },
+  { name: "vi.importActual call", kind: "mock-call", source: 'const actual = await vi.importActual("@@SPEC@@");\nvoid actual;\n' },
+  { name: "inline import type node", kind: "import-named", source: 'export type Alias = import("@@SPEC@@").WireError;\n' },
+  { name: "TypeScript import-equals require", kind: "require-equals", source: 'import loaded = require("@@SPEC@@");\nvoid loaded;\n' },
+  { name: "side-effect import with no space before the specifier", kind: "import-side-effect", source: 'import"@@SPEC@@";\n' },
+  { name: "named import with no whitespace at all", kind: "import-named", source: 'import{errorText}from"@@SPEC@@";\nvoid errorText;\n' },
+  { name: "named re-export with no whitespace at all", kind: "export-from", source: 'export{errorText}from"@@SPEC@@";\n' },
+  { name: "namespace re-export", kind: "export-namespace-from", source: 'export * as everything from "@@SPEC@@";\n' },
+];
 
 for (const form of forms) {
   test(`reads ${form.name} as ${form.kind}`, () => {
