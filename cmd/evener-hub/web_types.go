@@ -14,6 +14,9 @@ type modelsCache struct {
 	mu      sync.Mutex
 	expires time.Time
 	models  []appwire.ModelDescriptor
+	// gen is the holder generation the cached descriptors were filled
+	// at; any Reload or live re-apply bumps it and misses the cache.
+	gen uint64
 }
 
 const liveModelsTTL = 5 * time.Minute

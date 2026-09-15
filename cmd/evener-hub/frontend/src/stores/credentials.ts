@@ -32,6 +32,7 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
@@ -89,6 +90,12 @@ export interface CredentialsStoreState {
   edit(params: InstanceEditParams): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
+  // setModelDisabled flips one model row's disabled flag and applies the
+  // returned list, like setDefault: the sheet steers on the store's list.
+  setModelDisabled(params: InstanceSetModelDisabledParams): Promise<void>;
+  // refreshModels fetches one instance's live listing, then applies the
+  // returned inventory (exact catalog rows plus cached live ids).
+  refreshModels(name: string): Promise<void>;
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders synchronously - on success the store
   // schedules its own listing refresh (see the wrappers below), which
@@ -143,18 +150,73 @@ function emptyListState(): ListState {
 
 let requestVersion = 0;
 let requestedList = false;
+// landedMutations counts authoritative writes that LANDED, PER INSTANCE (a
+// write the server applied, whether or not its answer is the one the store
+// applied). refreshModels captures its instance's count at start, and only a
+// write on THAT instance landing while the refresh is out - never a routine
+// read, never a write on another instance - supersedes it: counting globally
+// dropped a refresh for one instance whenever anything was written to another,
+// and the sheet silently lost the live rows it asked for.
+const landedMutations = new Map<string, number>();
+// refreshVersions tracks one in-flight version per refreshed instance: two
+// sheets may refresh different instances concurrently, and starting B's
+// refresh must not cancel A's.
+const refreshVersions = new Map<string, number>();
+// refreshGeneration counts landed refresh merges: a read older than one
+// (it started before the refresh landed) merges around the refreshed rows
+// instead of replacing them.
+let refreshGeneration = 0;
+// listEstablished turns true on the first applied full-list answer: it
+// distinguishes "the store never held this name" from "a remove dropped it".
+let listEstablished = false;
+// refreshedInstances names the rows a refresh merged since the last full-list
+// apply: a read older than one merges around them instead of replacing them.
+const refreshedInstances = new Set<string>();
+
+// noteLandedMutation records one landed write against the instance it touched.
+function noteLandedMutation(instance: string): void {
+  landedMutations.set(instance, (landedMutations.get(instance) ?? 0) + 1);
+}
 
 // Reads and writes share ordering: only the most recently started request
 // can replace the listing, even when responses arrive out of order. Reports
 // whether THIS response is the one that replaced it: a superseded response
 // carries a listing the store discarded, and a caller steering a view on the
 // strength of its own write has to be able to tell the two apart.
-async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<boolean> {
+// reconcile, when given, places this write's answer correctly among newer
+// reads: supersededFor receives an answer a newer request outran (a write the
+// server applied still knows the authoritative outcome of the ONE row it
+// wrote), instance records the landed-write count against the row it touched,
+// and written names the model a toggle wrote, re-applied onto an inventory a
+// refresh replaced while the write was in flight.
+async function applyMutation(
+  request: () => Promise<InstanceListResponse>,
+  reconcile?: MutationReconcile,
+): Promise<boolean> {
   const version = ++requestVersion;
+  const client = connectionStore.getState().client;
+  // Refreshes already landed when this write started: the answer is newer
+  // than those rows and replaces them, as it always has.
+  const before = new Set(refreshedInstances);
   try {
     const response = await request();
-    if (version !== requestVersion) return false;
-    credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    // The server applied this write whatever the store does with its answer,
+    // so it counts as landed before the version check below - but only for
+    // the client that made it: a landing from a client that is gone says
+    // nothing about the listing the current client holds.
+    if (connectionStore.getState().client === client) noteLandedMutation(reconcile?.instance ?? "");
+    if (version !== requestVersion) {
+      reconcile?.supersededFor?.(response);
+      return false;
+    }
+    const refreshedDuringFlight = new Set([...refreshedInstances].filter((name) => !before.has(name)));
+    refreshedInstances.clear();
+    listEstablished = true;
+    const applied = listState(response);
+    if (refreshedDuringFlight.size > 0) {
+      applied.instances = keepRefreshedModels(applied.instances, refreshedDuringFlight, reconcile?.written);
+    }
+    credentialsStore.setState({ ...applied, loading: false, error: null });
     return true;
   } finally {
     if (version === requestVersion) credentialsStore.setState({ loading: false });
@@ -171,22 +233,126 @@ let selfRefreshCounter = 0;
 // apart from a foreign listing change. Resolves true only when the response
 // was applied - a superseded or failed read resolves false without throwing,
 // so a resolved promise alone is never confirmation the listing moved.
+//
+// A read is also where an older snapshot can arrive after a write: the hub
+// serves List() without holding the write lock, so an answer computed before
+// a write landed can carry the pre-write row. mergeNewerRows keeps the newer
+// copy for the instances a landed write named.
 async function readListing(self: boolean): Promise<boolean> {
   const client = requireClient();
   requestedList = true;
   const version = ++requestVersion;
+  const generation = refreshGeneration;
+  const writes = new Map(landedMutations);
   const mark = () => (self ? { selfRefresh: ++selfRefreshCounter } : {});
   credentialsStore.setState({ loading: true, error: null, ...mark() });
   try {
     const resp = await client.request("evener/instance/list", {});
     if (version !== requestVersion || connectionStore.getState().client !== client) return false;
-    credentialsStore.setState({ ...listState(resp), loading: false, ...mark() });
+    listEstablished = true;
+    const instances = mergeNewerRows(resp.instances, generation, writes);
+    credentialsStore.setState({ ...listState({ ...resp, instances }), loading: false, ...mark() });
     return true;
   } catch (err) {
     if (version !== requestVersion || connectionStore.getState().client !== client) return false;
     credentialsStore.setState({ loading: false, error: errorText(err), ...mark() });
     return false;
   }
+}
+
+// MutationReconcile tells applyMutation how to place its answer among newer
+// reads: supersededFor receives the answer a newer request outran, instance
+// names the row the landed-write count belongs to, and written names the
+// model a toggle wrote.
+interface MutationReconcile {
+  instance?: string;
+  supersededFor?: (response: InstanceListResponse) => void;
+  written?: { instance: string; model: string };
+}
+
+// mergeNewerRows keeps, in a listing read's answer, the rows newer work has
+// already made authoritative: the model inventory a refresh landed for while
+// this read was out (only its models are newer than the answer), and the
+// whole row of an instance a write landed for (the stored copy is what that
+// write's own answer installed, and this answer predates it). A row the
+// answer omits is a row the server no longer has, so nothing is staged back
+// in.
+function mergeNewerRows(
+  instances: InstanceEntry[],
+  generation: number,
+  writes: Map<string, number>,
+): InstanceEntry[] {
+  const written = new Set(
+    [...landedMutations].filter(([name, count]) => (writes.get(name) ?? 0) !== count).map(([name]) => name),
+  );
+  if (generation === refreshGeneration && written.size === 0) {
+    refreshedInstances.clear();
+    return instances;
+  }
+  const merged = keepWrittenRows(keepRefreshedModels(instances, refreshedInstances), written);
+  refreshedInstances.clear();
+  return merged;
+}
+
+// keepRefreshedModels keeps, for the instances a refresh landed for during a
+// write's flight, the store's own (newer) model inventory instead of the
+// answer's older one. Every other field comes from the answer, which is
+// authoritative for the write itself; the written model's flag, when the
+// caller names one, is taken from the answer so the row it wrote still shows
+// what the server recorded.
+function keepRefreshedModels(
+  instances: InstanceEntry[],
+  names: Set<string>,
+  written?: { instance: string; model: string },
+): InstanceEntry[] {
+  const current = credentialsStore.getState().instances;
+  return instances.map((entry) => {
+    if (!names.has(entry.name)) return entry;
+    const held = current.find((row) => row.name === entry.name);
+    if (!held?.models) return entry;
+    const answered =
+      written?.instance === entry.name ? entry.models?.find((model) => model.id === written.model) : undefined;
+    if (!answered) return { ...entry, models: held.models };
+    return {
+      ...entry,
+      models: held.models.map((model) =>
+        model.id === written?.model ? { ...model, disabled: answered.disabled } : model,
+      ),
+    };
+  });
+}
+
+// keepWrittenRows keeps the store's own row for every instance a write landed
+// for while a read was in flight: that read's answer was computed before the
+// write, so its copy of the row is the older one, and applying it would flip
+// back what the write just set.
+function keepWrittenRows(instances: InstanceEntry[], names: Set<string>): InstanceEntry[] {
+  if (names.size === 0) return instances;
+  const current = credentialsStore.getState().instances;
+  return instances.map((entry) => {
+    const held = names.has(entry.name) ? current.find((row) => row.name === entry.name) : undefined;
+    return held ?? entry;
+  });
+}
+
+// reconcileToggledModel merges one superseded toggle's own outcome into the
+// listing the store holds: only the model that call wrote is taken from its
+// answer, because everything else there is older than the store's copy.
+// Nothing happens when the answer, the instance, or the model row is gone: a
+// stale answer never resurrects a row the store dropped.
+function reconcileToggledModel(response: InstanceListResponse, params: InstanceSetModelDisabledParams): void {
+  const answered = response.instances.find((entry) => entry.name === params.name);
+  const toggled = answered?.models?.find((model) => model.id === params.model);
+  if (!toggled) return;
+  const current = credentialsStore.getState().instances;
+  const target = current.find((entry) => entry.name === params.name);
+  if (!target?.models?.some((model) => model.id === params.model)) return;
+  const models = target.models.map((model) =>
+    model.id === params.model ? { ...model, disabled: toggled.disabled } : model,
+  );
+  credentialsStore.setState({
+    instances: current.map((entry) => (entry.name === params.name ? { ...entry, models } : entry)),
+  });
 }
 
 export const credentialsStore = createStore<CredentialsStoreState>(() => ({
@@ -205,27 +371,29 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async create(params) {
     const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/create", params));
+    return applyMutation(() => client.request("evener/instance/create", params), { instance: params.name });
   },
 
   async edit(params) {
     const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/edit", params));
+    return applyMutation(() => client.request("evener/instance/edit", params), { instance: params.name });
   },
 
   async remove(name, expectedEndpointFingerprint) {
     const client = requireClient();
-    return applyMutation(() =>
-      client.request("evener/instance/remove", {
-        name,
-        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
-      }),
+    return applyMutation(
+      () =>
+        client.request("evener/instance/remove", {
+          name,
+          ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+        }),
+      { instance: name },
     );
   },
 
   async setDefault(name) {
     const client = requireClient();
-    const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }));
+    const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }), { instance: name });
     // A superseded response lost the store's ordering race: the read that won it
     // may have started before the hub applied the new default, so the listing
     // would keep the old flag until something else refreshed. The store's own
@@ -233,6 +401,54 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     // change is not the guided flow's own edit.
     if (!applied) scheduleRefetch();
     return applied;
+  },
+
+  async setModelDisabled(params) {
+    const client = requireClient();
+    // A toggle whose answer a newer request outran is not dropped: it holds
+    // the authoritative outcome for the one model it wrote, so that row is
+    // reconciled into whatever listing the store now has.
+    await applyMutation(() => client.request("evener/instance/setModelDisabled", params), {
+      instance: params.name,
+      supersededFor: (response) => reconcileToggledModel(response, params),
+      written: { instance: params.name, model: params.model },
+    });
+  },
+
+  async refreshModels(name) {
+    const client = requireClient();
+    // Per-instance version, not the global counter: a refresh for B must not
+    // cancel an in-flight refresh for A. Only a newer refresh for THIS
+    // instance, or a write on THIS instance landing while this read is out,
+    // supersedes it - routine reads and writes on other instances never do.
+    const basis = landedMutations.get(name) ?? 0;
+    const version = (refreshVersions.get(name) ?? 0) + 1;
+    refreshVersions.set(name, version);
+    try {
+      const response = await client.request("evener/instance/refreshModels", { name });
+      if (
+        refreshVersions.get(name) !== version ||
+        (landedMutations.get(name) ?? 0) !== basis ||
+        connectionStore.getState().client !== client
+      )
+        return;
+      const row = response.instances.find((entry) => entry.name === name);
+      if (row) {
+        const current = credentialsStore.getState().instances;
+        if (listEstablished && !current.some((existing) => existing.name === name)) return;
+        // Only the MODEL INVENTORY comes from this answer: every other field
+        // of the row may have been updated by a newer read or write that
+        // landed while this refresh was in flight, and a refresh only ever
+        // knows about live models.
+        const merged = current.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
+        if (!current.some((existing) => existing.name === name)) merged.push({ ...row });
+        refreshedInstances.add(name);
+        refreshGeneration++;
+        credentialsStore.setState({ instances: merged, error: null });
+      }
+    } finally {
+      if (refreshVersions.get(name) === version) refreshVersions.delete(name);
+    }
   },
 
   async setApiKey(provider, value, expectedEndpointFingerprint) {
@@ -256,6 +472,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       // watch) tell the refresh it schedules apart from a foreign listing
       // change.
       completeLocalAuthMutation(provider, generation);
+      // A write landed: count it against the instance it named so only that
+      // instance's in-flight refresh is retired (see landedMutations).
+      if (generation === connectionGeneration) noteLandedMutation(provider);
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
@@ -276,7 +495,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation);
+      // A write landed: count it against the instance it named so only that
+      // instance's in-flight refresh is retired (see landedMutations).
+      if (generation === connectionGeneration) noteLandedMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
@@ -296,7 +518,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation);
+      // A write landed: count it against the instance it named so only that
+      // instance's in-flight refresh is retired (see landedMutations).
+      if (generation === connectionGeneration) noteLandedMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
@@ -316,7 +541,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         originClientId: ownClientId(),
         ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
       });
-      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation);
+      // A write landed: count it against the instance it named so only that
+      // instance's in-flight refresh is retired (see landedMutations).
+      if (generation === connectionGeneration) noteLandedMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
@@ -341,7 +569,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         redirectUrl,
         originClientId: ownClientId(),
       });
-      completeLocalAuthMutation(provider, generation); // same rationale as setApiKey
+      completeLocalAuthMutation(provider, generation);
+      // A write landed: count it against the instance it named so only that
+      // instance's in-flight refresh is retired (see landedMutations).
+      if (generation === connectionGeneration) noteLandedMutation(provider); // same rationale as setApiKey
       return result;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
@@ -369,7 +600,10 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       // would silence unrelated same-provider changes tick after tick. An
       // authorized poll also refreshes the listing through the store - the
       // polling dialog may already be closed by the time authorization lands.
-      if (resp.state === "authorized") completeLocalAuthMutation(provider, generation);
+      if (resp.state === "authorized") {
+        completeLocalAuthMutation(provider, generation);
+        if (generation === connectionGeneration) noteLandedMutation(provider);
+      }
       else endUnconfirmedAuthMutation(provider, generation);
       return resp;
     } catch (err) {
@@ -643,6 +877,15 @@ connectionStore.subscribe((state, previous) => {
     localAuthMutations.clear();
     connectionGeneration += 1;
   }
+  if (state.client !== previous.client) {
+    // Refresh and landed-write bookkeeping belongs to the client it was
+    // written under: a row a previous client's refresh marked, or a count its
+    // late answer bumped, must not decide the next client's listing.
+    refreshedInstances.clear();
+    refreshVersions.clear();
+    landedMutations.clear();
+    refreshGeneration = 0;
+  }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
   // even if its one-shot mount loader was interrupted.
@@ -670,6 +913,11 @@ export function resetCredentialsStoreForTests(): void {
   requestedList = false;
   localAuthMutations.clear();
   connectionGeneration += 1;
+  refreshedInstances.clear();
+  refreshVersions.clear();
+  landedMutations.clear();
+  refreshGeneration = 0;
+  listEstablished = false;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;

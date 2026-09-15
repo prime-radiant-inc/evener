@@ -11988,6 +11988,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerInstanceEdit,
 		appwire.MethodEvenerInstanceRemove,
 		appwire.MethodEvenerInstanceSetDefault,
+		appwire.MethodEvenerInstanceSetModelDisabled,
+		appwire.MethodEvenerInstanceRefreshModels,
 		appwire.MethodEvenerLaunchResolve,
 		appwire.MethodEvenerLaunchSchema,
 		appwire.MethodEvenerLaunchGetLayer,

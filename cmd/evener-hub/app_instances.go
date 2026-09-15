@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -228,6 +229,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		StoredEmail:         status.StoredEmail,
 		CredentialRequired:  inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
 		Warnings:            inst.Warnings,
+		Models:              instanceModels(r, inst.Name),
 	}
 	if authored != nil {
 		// api_key_env names an environment variable, and the loader takes
@@ -1074,25 +1076,10 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	} else {
 		l.Providers[name] = p
 	}
-	if err := c.writeLoadable(l); err != nil {
+	// writeAndReload restores before when the reload fails (see #711
+	// on its comment); a rename continues below on success.
+	if err := c.writeAndReload(before, l, name, "edit"); err != nil {
 		return err
-	}
-	if err := c.reg.Reload(); err != nil {
-		// writeLoadable's dry parse only checks TOML syntax against the
-		// registry schema; it does not resolve the config the way Reload
-		// does. A standalone instance (no base, and its own name is not a
-		// registry id either) that just lost its only base_url is a config
-		// that parses fine but cannot resolve an endpoint (llm/registry:
-		// "no base URL: set base_url = … or base = <registry id>"), and one
-		// bad instance record fails the whole reload, not just this one
-		// (#711). Restore the file this call just overwrote instead of
-		// leaving every instance operation refused by a config only this
-		// edit produced.
-		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
-		}
-		_ = c.reg.Reload() // best-effort: put the last-good registry view back
-		return appwire.InvalidParams(fmt.Sprintf("this edit would leave %q unable to load: %v", name, err))
 	}
 	if renaming {
 		moveErr := c.moveCredentials(name, newName)
@@ -1448,6 +1435,126 @@ func describeImplicit(inst registry.Instance) string {
 	default:
 		return "credential source " + src
 	}
+}
+
+// instanceModels renders an instance's model inventory for the sheet's
+// per-model toggles. A registry that cannot list the instance yields no
+// rows rather than an error: the entry still describes the instance.
+func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEntry {
+	if r == nil {
+		return nil
+	}
+	models, err := r.InstanceModels(name)
+	if err != nil {
+		return nil
+	}
+	out := make([]appwire.InstanceModelEntry, 0, len(models))
+	for _, m := range models {
+		out = append(out, appwire.InstanceModelEntry{ID: m.ID, Disabled: m.Disabled})
+	}
+	return out
+}
+
+// RefreshModels fetches one instance's live listing into the held registry,
+// then answers with the updated list. It is a read: no file is written, so
+// it stays available while writes are refused. A failed fetch is an error,
+// not a catalog-only list — the sheet keeps its catalog rows and toasts
+// the failure.
+func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+	reg := c.reg.Get()
+	if reg == nil {
+		return appwire.InstanceListResponse{}, errors.New("providers.toml cannot be read: the provider registry has not loaded")
+	}
+	name := strings.TrimSpace(params.Name)
+	if _, ok := reg.Instance(name); !ok {
+		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	if err := fetchInstanceLive(ctx, c.reg, name); err != nil {
+		return appwire.InstanceListResponse{}, err
+	}
+	return c.List(), nil
+}
+
+// writeAndReload persists a mutated layer and reloads the registry: the
+// tail Edit and SetModelDisabled share. writeLoadable's dry parse only
+// checks TOML syntax against the registry schema; it does not resolve the
+// config the way Reload does. A standalone instance (no base, and its own
+// name is not a registry id either) that just lost its only base_url is a
+// config that parses fine but cannot resolve an endpoint (llm/registry:
+// "no base URL: set base_url = … or base = <registry id>"), and one bad
+// instance record fails the whole reload, not just this one (#711).
+// Restore the file this call just overwrote instead of leaving every
+// instance operation refused by a config only this write produced. verb
+// names the write in the refusal ("edit", "toggle").
+func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name, verb string) error {
+	if err := c.writeLoadable(l); err != nil {
+		return err
+	}
+	if err := c.reg.Reload(); err != nil {
+		if restoreErr := c.write(before); restoreErr != nil {
+			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+		}
+		_ = c.reg.Reload() // best-effort: put the last-good registry view back
+		return appwire.InvalidParams(fmt.Sprintf("this %s would leave %q unable to load: %v", verb, name, err))
+	}
+	return nil
+}
+
+// SetModelDisabled flips one model row's disabled flag, writing through
+// aliases: an alias id resolves to its target and the flag lands on the
+// target row, so all names of a model share one flag and the alias row
+// itself never carries one. It writes an explicit bool — authoring the row
+// when the model exists only as a curated entry — so the choice survives
+// catalog refreshes. Refusals follow Create's convention: the caller sent
+// the bad name, so unknown instances, glob ids, dangling aliases,
+// cross-provider targets, and unknown rows come back as
+// appwire.InvalidParams.
+func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) error {
+	if err := c.refuseWhenBroken(); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(params.Name)
+	model := strings.TrimSpace(params.Model)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.reg.Get().Instance(name); !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	// Lockstep: an alias id resolves to its target, and the flag lands on
+	// the target row — never the alias. Membership, glob, dangling, and
+	// cross-provider refusals all come from the same answer.
+	target, err := c.reg.Get().AliasTarget(name, model)
+	if err != nil {
+		return appwire.InvalidParams(err.Error())
+	}
+	// before is an independent parse from l below — a fresh read sharing no
+	// maps with it — so a toggle that parses fine but fails to load restores
+	// exactly what was on disk, the way Edit's own before does.
+	before, _, err := c.read()
+	if err != nil {
+		return err
+	}
+	l, _, err := c.read()
+	if err != nil {
+		return err
+	}
+	p, ok := l.Providers[name]
+	if !ok {
+		// An implicit instance has no authored entry; shadowing it carries
+		// the toggle alone, the way Edit shadows its own fields.
+		p = registry.Provider{ID: name}
+	}
+	if p.Models == nil {
+		p.Models = map[string]registry.Model{}
+	}
+	row := p.Models[target.Model]
+	row.ID = target.Model
+	disabled := params.Disabled
+	row.Disabled = &disabled
+	p.Models[target.Model] = row
+	l.Providers[name] = p
+	return c.writeAndReload(before, l, name, "toggle")
 }
 
 // SetDefault records which instance a bare model reference resolves on. A

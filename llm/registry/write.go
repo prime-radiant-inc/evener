@@ -87,6 +87,9 @@ func modelTables(rows map[string]Model) map[string]any {
 		setString(t, "protocol", m.Protocol)
 		setString(t, "surface", m.Surface)
 		setStringMap(t, "headers", m.Headers)
+		if m.Disabled != nil {
+			t["disabled"] = *m.Disabled
+		}
 		if m.Transport != nil {
 			transportInto(t, *m.Transport)
 		}
