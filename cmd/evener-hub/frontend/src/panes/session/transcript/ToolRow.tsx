@@ -186,7 +186,10 @@ function splitTrailingWord(text: string): [leading: string, trailing: string] {
  * final TEXT segment the head and the final word linkify independently (one
  * occurrence each, as linkifySummary's contract pins): the split lands on
  * whitespace, and a summaryLink is a URL - whitespace-free - so no link can
- * straddle the boundary and be lost. */
+ * straddle the boundary and be lost. A descriptor that repeated the href on
+ * both sides of the boundary would mark one occurrence per half; no
+ * descriptor does - web_fetch's summary carries the URL exactly once
+ * (webTools.test.tsx pins the rule). */
 function TailUnit({
   line,
   segments,
@@ -201,7 +204,11 @@ function TailUnit({
   const [unitClass, textClass] =
     line === "intent" ? [CLASS.intentTail, CLASS.intentTailText] : [CLASS.summaryTail, CLASS.summaryTailText];
   const last = segments.at(-1);
-  if (last === undefined) return null;
+  // No text to glue to: render the glyphs bare rather than dropping them.
+  // No call site passes an empty list today (the intent's one synthetic
+  // segment, hasSummary's non-empty summary, the anchor arms' own gates),
+  // and a future one must never lose the chevron or control to it.
+  if (last === undefined) return <>{children}</>;
   const head = segments.slice(0, -1);
   if (last.kind === "entity") {
     // The final segment is a whole entity card: the unit wraps it and the
