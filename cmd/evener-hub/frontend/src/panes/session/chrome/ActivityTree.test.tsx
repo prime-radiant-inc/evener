@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import * as sessionPlacementModule from "../../../shell/sessionPlacement";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
+import { detailLineByText } from "./detailLine.testFixture";
 
 // vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
 // (this file's own subject) without ever mocking this module, so under a
@@ -399,7 +400,7 @@ describe("ActivityTree", () => {
       }),
     );
 
-    expect(screen.getByText(/delegate dlg_stable/i)).toBeTruthy();
+    expect(detailLineByText("Delegate dlg_stable · send · stop · status")).toBeTruthy();
     expect(screen.getByText(/watch enabled/i)).toBeTruthy();
     expect(screen.getByText(/observer armed/i)).toBeTruthy();
   });
