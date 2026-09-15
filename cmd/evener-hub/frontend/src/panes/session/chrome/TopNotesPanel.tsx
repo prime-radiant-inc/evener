@@ -2,9 +2,8 @@ import { useEffect, useRef } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import { topNotesStore, useTopNotesExpanded, useTopNotesFocusEpoch } from "../../../stores/topNotes";
-import { Chevron } from "../../../widgets/chevron";
+import { Chevron, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { ToolIcon } from "../../../widgets/toolicon";
 import { NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
 
@@ -17,7 +16,6 @@ const CLASS = {
   clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
   placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
   hint: requireClass(styles.hint, "topnotespanel.module.css", "hint"),
-  expandedPanel: requireClass(styles.expandedPanel, "topnotespanel.module.css", "expandedPanel"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
   expandedTitle: requireClass(styles.expandedTitle, "topnotespanel.module.css", "expandedTitle"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
@@ -73,53 +71,41 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
 
   return (
     <div className={CLASS.topNotesPanel} data-testid="top-notes-panel">
-      {!expanded ? (
-        <button
-          type="button"
-          className={CLASS.summary}
-          onClick={toggle}
-          aria-expanded={false}
-          aria-label={isPlaceholder ? "Add a note" : "Session notes"}
-          data-testid="top-notes-summary"
-        >
-          <div className={CLASS.summaryLeft}>
-            <span className={CLASS.chevron} data-open="false">
-              <Chevron size={16} />
-            </span>
-            {sourceIconKind && (
-              <span className={CLASS.sourceIcon} data-testid={`top-notes-icon-${sourceIconKind}`} aria-hidden="true">
-                <ToolIcon kind={sourceIconKind} size={14} />
-              </span>
-            )}
-            <div className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</div>
-          </div>
-          <span className={CLASS.hint} aria-hidden="true">
-            {isPlaceholder ? "Click to write" : "Click to expand"}
+      {/* One disclosure trigger both states share (the collapsed summary and
+          the expanded header row): same button role, same toggle, same
+          chevron - only the resting style, label, and lead content differ. */}
+      <button
+        type="button"
+        className={expanded ? CLASS.expandedHeader : CLASS.summary}
+        onClick={toggle}
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse session notes" : isPlaceholder ? "Add a note" : "Session notes"}
+        data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
+      >
+        <div className={CLASS.summaryLeft}>
+          <span className={CLASS.chevron} data-open={expanded}>
+            <Chevron size={16} />
           </span>
-        </button>
-      ) : (
-        <div className={CLASS.expandedPanel} data-testid="top-notes-expanded-content">
-          <button
-            type="button"
-            className={CLASS.expandedHeader}
-            onClick={toggle}
-            aria-expanded={true}
-            aria-label="Collapse session notes"
-            data-testid="top-notes-collapse-trigger"
-          >
-            <div className={CLASS.summaryLeft}>
-              <span className={CLASS.chevron} data-open="true">
-                <Chevron size={16} />
-              </span>
-              <span className={CLASS.expandedTitle}>Session Notes</span>
-            </div>
-            <span className={CLASS.hint} aria-hidden="true">
-              Click to collapse
-            </span>
-          </button>
-          <div className={CLASS.expandedBody}>
-            <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />
-          </div>
+          {expanded ? (
+            <span className={CLASS.expandedTitle}>Session Notes</span>
+          ) : (
+            <>
+              {sourceIconKind && (
+                <span className={CLASS.sourceIcon} data-testid={`top-notes-icon-${sourceIconKind}`} aria-hidden="true">
+                  <ToolIcon kind={sourceIconKind} size={14} />
+                </span>
+              )}
+              <div className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</div>
+            </>
+          )}
+        </div>
+        <span className={CLASS.hint} aria-hidden="true">
+          {expanded ? "Click to collapse" : isPlaceholder ? "Click to write" : "Click to expand"}
+        </span>
+      </button>
+      {expanded && (
+        <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
+          <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />
         </div>
       )}
     </div>

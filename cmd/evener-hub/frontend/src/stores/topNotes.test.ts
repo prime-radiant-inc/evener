@@ -39,6 +39,20 @@ test("openAndFocus expands and increments focus epoch", () => {
   expect(topNotesStore.getState().getFocusEpoch("ref_1")).toBe(2);
 });
 
+test("toggleAndFocus opens with a focus request, then collapses without one", () => {
+  topNotesStore.getState().toggleAndFocus("ref_1");
+  expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
+  expect(topNotesStore.getState().getFocusEpoch("ref_1")).toBe(1);
+
+  topNotesStore.getState().toggleAndFocus("ref_1");
+  expect(topNotesStore.getState().isExpanded("ref_1")).toBe(false);
+  expect(topNotesStore.getState().getFocusEpoch("ref_1")).toBe(1);
+
+  topNotesStore.getState().toggleAndFocus("ref_1");
+  expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
+  expect(topNotesStore.getState().getFocusEpoch("ref_1")).toBe(2);
+});
+
 test("useTopNotesExpanded and useTopNotesFocusEpoch reflect store state", () => {
   const { result: exp } = renderHook(() => useTopNotesExpanded("ref_1"));
   const { result: epoch } = renderHook(() => useTopNotesFocusEpoch("ref_1"));
