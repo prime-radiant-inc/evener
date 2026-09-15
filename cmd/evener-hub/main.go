@@ -431,10 +431,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			}
 			return ch.Client(), nil
 		},
-		RemoteHostFacts: func(ctx context.Context, host string) (appsource.HostFacts, error) {
+		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
 				return appsource.HostFacts{}, err
+			}
+			// The facts must describe the same connection generation the probe
+			// ran its wire reads on. Ensure is idempotent while attached, so it
+			// normally hands back the channel behind client; if a component-04
+			// reconnect swapped the generation in between, refuse rather than
+			// cache facts from one connection against another's reads. The
+			// probe is not cached on failure, so the next call re-probes the new
+			// generation cleanly.
+			if ch.Client() != client {
+				return appsource.HostFacts{}, fmt.Errorf("remote hub %q: connection changed during capability probe", host)
 			}
 			pf := ch.Preflight()
 			return appsource.HostFacts{

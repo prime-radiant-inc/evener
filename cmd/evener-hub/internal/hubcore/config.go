@@ -84,10 +84,13 @@ type WebConfig struct {
 	// disables remote hosts (tests).
 	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
-	// version, hub version, OS/arch, advertised features) for a remote host.
-	// The capability probe combines them with its AppWire reads. nil leaves
-	// the preflight-owned fields zero-valued (tests).
-	RemoteHostFacts func(ctx context.Context, host string) (appsource.HostFacts, error)
+	// version, hub version, OS/arch, advertised features) for the AppWire
+	// connection behind client, the exact generation RemoteHostClient resolved
+	// for the capability probe; an implementation must answer from that same
+	// generation rather than racing a reconnect. The capability probe combines
+	// the facts with its AppWire reads. nil leaves the preflight-owned fields
+	// zero-valued (tests).
+	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

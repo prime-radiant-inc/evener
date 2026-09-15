@@ -96,7 +96,7 @@ func TestRemoteHubSourceHostCapabilitiesFacts(t *testing.T) {
 		Features:        appwire.FeatureSet{ThreadList: true, TurnSteer: true},
 	}
 	var gotHost string
-	source.SetHostFacts(func(_ context.Context, host string) (HostFacts, error) {
+	source.SetHostFacts(func(_ context.Context, host string, _ *appwire.Client) (HostFacts, error) {
 		gotHost = host
 		return want, nil
 	})
@@ -251,7 +251,7 @@ func TestRemoteHubSourceHostCapabilitiesClosedTransport(t *testing.T) {
 // rather than as a raw error the auto-resume gate cannot attribute.
 func TestRemoteHubSourceHostCapabilitiesMapsFactsError(t *testing.T) {
 	source, _ := newScriptedRemote(t, "host", capabilityReply("gpt-x", "pl"))
-	source.SetHostFacts(func(context.Context, string) (HostFacts, error) {
+	source.SetHostFacts(func(context.Context, string, *appwire.Client) (HostFacts, error) {
 		return HostFacts{}, io.EOF
 	})
 
@@ -277,7 +277,7 @@ func TestRemoteHubSourceHostCapabilitiesMapsFactsError(t *testing.T) {
 func TestRemoteHubSourceHostCapabilitiesPreservesFactsWireError(t *testing.T) {
 	semantic := appwire.InvalidParams("bad facts")
 	source, _ := newScriptedRemote(t, "host", capabilityReply("gpt-x", "pl"))
-	source.SetHostFacts(func(context.Context, string) (HostFacts, error) {
+	source.SetHostFacts(func(context.Context, string, *appwire.Client) (HostFacts, error) {
 		return HostFacts{}, semantic
 	})
 
@@ -300,7 +300,7 @@ func TestRemoteHubSourceSetHostFactsSynchronizesWithProbe(t *testing.T) {
 	source.probeMu.Lock()
 	installed := make(chan struct{})
 	go func() {
-		source.SetHostFacts(func(context.Context, string) (HostFacts, error) { return HostFacts{}, nil })
+		source.SetHostFacts(func(context.Context, string, *appwire.Client) (HostFacts, error) { return HostFacts{}, nil })
 		close(installed)
 	}()
 
@@ -368,5 +368,120 @@ func TestRemoteHubSourceHostCapabilitiesDoesNotHoldLockAcrossWire(t *testing.T) 
 		}
 	case <-time.After(time.Second):
 		t.Fatal("HostCapabilities did not return after the wire call was released")
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesFactsUseResolvedClient pins the seam that
+// keeps the facts in one connection generation: the facts function receives the
+// exact client the five wire reads ran on, so a component-04 reconnect that
+// swaps the client between the reads and the facts cannot mix generations into
+// the snapshot (the production implementation refuses on a mismatch).
+func TestRemoteHubSourceHostCapabilitiesFactsUseResolvedClient(t *testing.T) {
+	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	var got *appwire.Client
+	source.SetHostFacts(func(_ context.Context, _ string, c *appwire.Client) (HostFacts, error) {
+		got = c
+		return HostFacts{}, nil
+	})
+
+	if _, err := source.HostCapabilities(t.Context()); err != nil {
+		t.Fatalf("HostCapabilities: %v", err)
+	}
+	if got != client {
+		t.Fatalf("facts client = %p, want the client the wire reads ran on (%p)", got, client)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesToleratesMissingInstanceSurface pins that a
+// hub with no user layer — which registers no evener/instance/list handler and
+// answers CodeMethodNotFound — still yields a capability snapshot: the probe
+// leaves Instances empty and keeps the surfaces it did read, instead of failing
+// permanently for a healthy host.
+func TestRemoteHubSourceHostCapabilitiesToleratesMissingInstanceSurface(t *testing.T) {
+	notFound := appwire.MethodNotFound(appwire.MethodEvenerInstanceList)
+	reply := capabilityReply("gpt-x", "pl")
+	source, _ := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerInstanceList {
+			return scriptedReply{wireErr: &notFound}
+		}
+		return reply(method, params)
+	})
+
+	caps, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("HostCapabilities: %v", err)
+	}
+	if len(caps.Instances.Instances) != 0 || len(caps.Instances.AvailableProviders) != 0 {
+		t.Fatalf("Instances = %+v, want empty", caps.Instances)
+	}
+	if caps.LaunchGlobal.Model != "gpt-x" {
+		t.Fatalf("LaunchGlobal.Model = %q, want gpt-x: the probe must continue past the missing instance surface", caps.LaunchGlobal.Model)
+	}
+	if caps.HubSourceID != remoteHubNamespace {
+		t.Fatalf("HubSourceID = %q, want %q", caps.HubSourceID, remoteHubNamespace)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesInstanceErrorStillAborts pins that only
+// CodeMethodNotFound is tolerated: any other instance-surface failure is a real
+// probe failure and must not be swallowed.
+func TestRemoteHubSourceHostCapabilitiesInstanceErrorStillAborts(t *testing.T) {
+	semantic := appwire.InvalidParams("instance surface failed")
+	reply := capabilityReply("gpt-x", "pl")
+	source, _ := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerInstanceList {
+			return scriptedReply{wireErr: &semantic}
+		}
+		return reply(method, params)
+	})
+
+	_, err := source.HostCapabilities(t.Context())
+	if err == nil {
+		t.Fatal("HostCapabilities succeeded despite a non-MethodNotFound instance error")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %T %v, want InvalidParams WireError", err, err)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesCacheIsolated pins that the cache hit and
+// the fresh probe hand back slices that do not alias the stored snapshot, so a
+// caller mutating a returned value cannot corrupt the cached capabilities for
+// every later caller.
+func TestRemoteHubSourceHostCapabilitiesCacheIsolated(t *testing.T) {
+	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
+	source := NewRemoteHubSource("host", []string{"/root/a"}, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	first, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("first HostCapabilities: %v", err)
+	}
+	first.Models.Data[0].Model = "mutated"
+	first.Plugins.Plugins[0].Plugin = "mutated"
+	first.Auth.Providers[0].Provider = "mutated"
+	first.Roots[0] = "/mutated"
+
+	second, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("second HostCapabilities: %v", err)
+	}
+	if second.Models.Data[0].Model != "gpt-x" {
+		t.Fatalf("cached Models.Data[0].Model = %q, want gpt-x: caller mutation reached the cache", second.Models.Data[0].Model)
+	}
+	if second.Plugins.Plugins[0].Plugin != "pl" {
+		t.Fatalf("cached Plugins[0].Plugin = %q, want pl: caller mutation reached the cache", second.Plugins.Plugins[0].Plugin)
+	}
+	if second.Auth.Providers[0].Provider != "auth" {
+		t.Fatalf("cached Auth.Providers[0].Provider = %q, want auth: caller mutation reached the cache", second.Auth.Providers[0].Provider)
+	}
+	if !reflect.DeepEqual(second.Roots, []string{"/root/a"}) {
+		t.Fatalf("cached Roots = %v, want [/root/a]: caller mutation reached the cache", second.Roots)
 	}
 }
