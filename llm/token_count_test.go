@@ -808,6 +808,115 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetail(t *tes
 	}
 }
 
+// Only the Responses builder injects the row's configured image detail (and a
+// "high" default when the row sets none): the chat builder sends the image's own
+// detail or nothing at all (chatcompletions/messages.go), so a chat row's
+// image_detail never reaches the wire and the estimate must not bill for it.
+func TestEstimateMessagesInputTokensForResolved_ChatRowDoesNotApplyTheRowsImageDetail(t *testing.T) {
+	low := "low"
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
+	}}}
+	withCap := registry.Resolved{
+		Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIChat,
+		Caps: registry.Caps{ImageDetail: &low},
+	}
+	withoutCap := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIChat}
+	got := EstimateMessagesInputTokensForResolved(withCap, messages).Tokens
+	if want := EstimateMessagesInputTokensForResolved(withoutCap, messages).Tokens; got != want {
+		t.Fatalf("chat row image history = %d, want %d: the chat builder never injects the row's detail", got, want)
+	}
+}
+
+// A resolved row knows which adapter will build the request, so every thinking
+// shape is billed by what that adapter puts on the wire:
+//
+//   - anthropic/request.go replays a thinking block (text, plus the signature
+//     unless the value is really an OpenAI-compatible field name) and a
+//     redacted_thinking block (its data); an encrypted blob never rides, and a
+//     thinking part with no text is skipped entirely;
+//   - responses/input.go replays one reasoning item carrying a non-compat
+//     encrypted blob with its id and non-blank summaries, and drops every other
+//     shape, the part's display text included;
+//   - chatcompletions/messages.go replays the part's text (unless the row is
+//     declared non-reasoning without replaying thinking as text) and the compat
+//     reasoning_details array (unless the row is declared non-reasoning at all),
+//     and drops a redacted part and an opaque Responses blob;
+//   - the Google adapter emits no thinking shape at all.
+func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *testing.T) {
+	const (
+		textChars    = 400 // 100 tokens
+		blobChars    = 800 // 200 tokens
+		idChars      = 400 // 100 tokens
+		summaryChars = 400 // 100 tokens
+	)
+	text := strings.Repeat("t", textChars)
+	sig := strings.Repeat("s", blobChars)
+	blob := strings.Repeat("b", blobChars)
+	id := strings.Repeat("i", idChars)
+	summary := strings.Repeat("m", summaryChars)
+	compat := `[{"type":"reasoning.text","text":"","signature":"` + strings.Repeat("g", textChars) + `"}]`
+
+	part := func(kind ContentKind, thinking *ThinkingData) []Message {
+		return []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: kind, Thinking: thinking}}}}
+	}
+	thinking := func(thinking *ThinkingData) []Message { return part(ContentThinking, thinking) }
+	row := func(protocol string, caps registry.Caps) registry.Resolved {
+		return registry.Resolved{Instance: "gateway", ModelID: "m", Protocol: protocol, Caps: caps}
+	}
+	declare := func(reasoning, thinkingAsText bool) registry.Caps {
+		return registry.Caps{Reasoning: &reasoning, ThinkingAsText: &thinkingAsText}
+	}
+
+	anthropic, responses := registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses
+	chat, google := registry.ProtocolOpenAIChat, registry.ProtocolGoogle
+
+	cases := []struct {
+		name string
+		row  registry.Resolved
+		msgs []Message
+		want int
+	}{
+		{"anthropic bills redacted data", row(anthropic, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text, Signature: sig}), textChars / 4},
+		{"responses drops a redacted part", row(responses, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
+		{"chat drops a redacted part", row(chat, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
+		{"google drops a redacted part", row(google, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
+
+		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
+		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
+		{"responses drops an id and summaries that do not ride", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: "  ", Summary: []string{" "}}), blobChars / 4},
+		{"chat drops the opaque blob and replays its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},
+		{"chat drops an opaque blob with no text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob}), 0},
+		{"anthropic drops the opaque blob and replays the text", row(anthropic, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},
+		{"anthropic drops an encrypted-only part", row(anthropic, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob}), 0},
+		{"google drops an opaque blob", row(google, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), 0},
+
+		{"chat bills the compat array and its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), (len(compat) + textChars) / 4},
+		{"anthropic drops the compat array and replays the text", row(anthropic, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), textChars / 4},
+		{"responses drops the compat array", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), 0},
+		{"google drops the compat array", row(google, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat}), 0},
+
+		{"anthropic bills the text and the signature", row(anthropic, registry.Caps{}), thinking(&ThinkingData{Text: text, Signature: sig}), (textChars + blobChars) / 4},
+		{"anthropic blanks a compat field name", row(anthropic, registry.Caps{}), thinking(&ThinkingData{Text: text, Signature: "reasoning_content"}), textChars / 4},
+		{"chat bills the text without the signature", row(chat, registry.Caps{}), thinking(&ThinkingData{Text: text, Signature: sig}), textChars / 4},
+		{"responses drops a signature part", row(responses, registry.Caps{}), thinking(&ThinkingData{Text: text, Signature: sig}), 0},
+		{"google drops a signature part", row(google, registry.Caps{}), thinking(&ThinkingData{Text: text, Signature: sig}), 0},
+
+		{"chat drops the compat array when reasoning is off", row(chat, declare(false, false)), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), 0},
+		{"chat drops thinking text when reasoning is off", row(chat, declare(false, false)), thinking(&ThinkingData{Text: text}), 0},
+		{"chat replays thinking as text when reasoning is off", row(chat, declare(false, true)), thinking(&ThinkingData{Text: text}), textChars / 4},
+		{"chat keeps the text off the compat array when reasoning is off", row(chat, declare(false, true)), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), textChars / 4},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EstimateMessagesInputTokensForResolved(tc.row, tc.msgs).Tokens; got != tc.want {
+				t.Fatalf("estimate = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // The row's instance alias is not vendor identity for the thinking rule either:
 // with no caller-provided provider and no row facts, a row merely named
 // "anthropic" must not bill thinking text.

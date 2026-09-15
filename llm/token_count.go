@@ -261,26 +261,47 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the
-// outgoing request. The estimator bills the payload each adapter may replay.
+// outgoing request. A resolved row that names its protocol is billed for exactly
+// what that protocol's builder puts on the wire; every other target keeps the
+// conservative billing that counts every shape, with the text-only case decided
+// by the target's unsignedThinking (unsignedThinkingReplayed for a resolved row,
+// unsignedThinkingReplayedByName for a caller that passed only names).
 //
-//   - redacted thinking replays its text payload only (anthropic/request.go
-//     emits "data": Text and never a signature);
-//   - an encrypted blob is replayed verbatim together with its summary and id
-//     by the OpenAI Responses adapter (responses/input.go), and by the
-//     OpenAI-compatible chat adapter for the reasoning_details shape;
-//   - a cryptographic signature (Anthropic) replays its text and signature; an
-//     OpenAI-compatible wire field name in Signature means the text is replayed
-//     in that field, with the name itself not payload.
-//
-// Text that carries no replay metadata is billed only for the adapters that
-// replay it unsigned, decided by the target the caller supplied: a resolved row
-// decides it exactly (unsignedThinkingReplayed), while a caller that passed
-// only names gets the documented fallback (unsignedThinkingReplayedByName).
+//   - anthropic/request.go replays a thinking block for a part that carries text
+//     (the text plus the signature, blanked when the value is really an
+//     OpenAI-compatible wire field name) and a redacted_thinking block for
+//     ContentRedThinking; an encrypted blob never rides, and a part with no text
+//     is skipped;
+//   - responses/input.go replays one reasoning item carrying a non-compat
+//     encrypted blob with its trimmed id and non-blank summaries, and drops every
+//     other shape, the part's display text included;
+//   - chatcompletions/messages.go replays the part's text (kept off the wire by a
+//     declared non-reasoning row that does not replay thinking as text) and the
+//     compat reasoning_details array (kept off the wire by any declared
+//     non-reasoning row), and drops a redacted part and an opaque Responses blob;
+//   - the Google adapter emits no thinking shape at all.
 func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
 	}
 	t := p.Thinking
+	if target.resolved && target.protocol != "" {
+		switch target.protocol {
+		case registry.ProtocolAnthropic:
+			if p.Kind == ContentRedThinking {
+				return len(t.Text)
+			}
+			return anthropicThinkingChars(t)
+		case registry.ProtocolOpenAIResponses:
+			return responsesReasoningChars(t)
+		case registry.ProtocolOpenAIChat:
+			return chatReasoningChars(target, p)
+		default:
+			// The Google adapter and every other protocol along this path emit
+			// no thinking shape.
+			return 0
+		}
+	}
 	if p.Kind == ContentRedThinking {
 		return len(t.Text)
 	}
@@ -312,6 +333,61 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 	return 0
 }
 
+// anthropicThinkingChars is what anthropic/request.go emits for a ContentThinking
+// part: nothing when the part carries no text (an empty thinking block is invalid
+// continuation state), otherwise the text plus the signature -- except an
+// OpenAI-compatible wire field name, which is not an Anthropic signature and
+// rides unsigned.
+func anthropicThinkingChars(t *ThinkingData) int {
+	if t.Text == "" {
+		return 0
+	}
+	if IsOpenAICompatReasoningField(t.Signature) {
+		return len(t.Text)
+	}
+	return len(t.Text) + len(t.Signature)
+}
+
+// responsesReasoningChars is what responses/input.go emits: one reasoning item
+// for a thinking part carrying a non-compat encrypted blob, holding the blob, the
+// trimmed id when it is not blank, and the non-blank summaries. Every other
+// thinking shape is dropped.
+func responsesReasoningChars(t *ThinkingData) int {
+	if t.EncryptedContent == "" || IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+		return 0
+	}
+	chars := len(t.EncryptedContent)
+	if id := strings.TrimSpace(t.ID); id != "" {
+		chars += len(id)
+	}
+	for _, s := range t.Summary {
+		if s = strings.TrimSpace(s); s != "" {
+			chars += len(s)
+		}
+	}
+	return chars
+}
+
+// chatReasoningChars is what chatcompletions/messages.go emits: the compat
+// reasoning_details array (kept off the wire by a declared non-reasoning row)
+// and the part's text (kept off the wire by a declared non-reasoning row that
+// does not replay thinking as text, which is what the target's unsignedThinking
+// records for a chat row). A redacted part is never read.
+func chatReasoningChars(target targetInfo, p ContentPart) int {
+	if p.Kind != ContentThinking {
+		return 0
+	}
+	t := p.Thinking
+	chars := 0
+	if !target.reasoningOff && IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+		chars += len(t.EncryptedContent)
+	}
+	if target.unsignedThinking {
+		chars += len(t.Text)
+	}
+	return chars
+}
+
 // targetInfo is what the local estimator knows about the request's target: the
 // names the media estimates key on, and whether the target's adapter replays a
 // thinking part that carries text and no replay metadata.
@@ -330,7 +406,11 @@ type targetInfo struct {
 	providerFromCaller bool
 	// imageDetail is the row's configured image detail, which the adapter applies
 	// to images that carry none of their own.
-	imageDetail      string
+	imageDetail string
+	// reasoningOff marks a row that declares reasoning = false: the chat adapter
+	// keeps the reasoning fields and the reasoning_details array off the wire
+	// (chatcompletions/messages.go).
+	reasoningOff     bool
 	unsignedThinking bool
 }
 
@@ -460,7 +540,8 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		provider: provider, model: model,
 		protocol: res.Protocol, surface: res.Surface, family: res.Model.Family,
 		resolved: true, providerFromCaller: providerFromCaller,
-		imageDetail:      stringValue(res.Caps.ImageDetail),
+		imageDetail:      registry.StringValue(res.Caps.ImageDetail),
+		reasoningOff:     res.Caps.ReasoningDisabled(),
 		unsignedThinking: unsignedThinkingReplayed(res, fallbackProvider, model),
 	}
 }
@@ -541,9 +622,11 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 		return fallbackMediaTokens + len(img.URL)/4 + len(img.MediaType)/4 + len(img.Detail)/4
 	}
 	detail := img.Detail
-	if strings.TrimSpace(detail) == "" {
-		// The adapter sends the row's configured detail when the image carries
-		// none, so the estimate bills what the request will actually contain.
+	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
+		// Only the Responses builder injects the row's configured detail (and a
+		// "high" default when the row sets none); the chat builder sends the
+		// image's own detail or nothing at all (chatcompletions/messages.go), so
+		// a chat row's image_detail never reaches the wire.
 		detail = t.imageDetail
 	}
 	switch t.mediaFamily() {
@@ -637,19 +720,10 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
 		return false
 	}
-	if stringValue(a.Caps.ImageDetail) != stringValue(b.Caps.ImageDetail) {
+	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {
 		return false
 	}
 	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
-}
-
-// stringValue reads an optional string capability as its value, with absence and
-// an empty value meaning the same thing.
-func stringValue(v *string) string {
-	if v == nil {
-		return ""
-	}
-	return *v
 }
 
 // oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"
