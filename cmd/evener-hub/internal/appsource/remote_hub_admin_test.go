@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,6 +176,40 @@ func TestRemoteHubSourceAdminMutationCallPreservesSemanticWireError(t *testing.T
 	}
 	if !strings.Contains(wire.Message, "refused by the host") {
 		t.Fatalf("message = %q, want the remote's own text", wire.Message)
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallClientFailureIsNotOutcomeUnknown pins the
+// round-five medium finding: a connector failure — the host is offline, the
+// attach is refused, the dial fails — happens before client.Request is ever
+// issued, so the mutation provably did not reach the host. It must report a
+// plain SessionUnavailable (a safe retry), never
+// ErrorMutationOutcomeUnknown/RetryDispositionBlocked, which would tell the
+// caller the change may have been applied and discourage a retry that cannot
+// double-apply anything. The received-loss mapping is pinned separately by
+// TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown.
+func TestRemoteHubSourceAdminMutationCallClientFailureIsNotOutcomeUnknown(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, fmt.Errorf("dial remote host: %w", syscall.ECONNREFUSED)
+	})
+
+	var out json.RawMessage
+	err := source.AdminMutationCall(context.Background(), appwire.MethodEvenerPluginInstall, nil, &out)
+	if err == nil {
+		t.Fatal("AdminMutationCall succeeded despite the connector failure")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d (session unavailable, a safe retry)", wire.Code, appwire.CodeUnavailable)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorSessionUnavailable)
+	}
+	if data, ok := wire.Data.(appwire.ErrorData); ok && data.EvenerErrorInfo == appwire.ErrorMutationOutcomeUnknown {
+		t.Fatalf("connector failure was reported as %q; the mutation never reached the host", data.EvenerErrorInfo)
 	}
 }
 
