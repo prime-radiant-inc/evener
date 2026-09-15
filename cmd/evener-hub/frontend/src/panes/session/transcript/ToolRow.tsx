@@ -177,7 +177,10 @@ function splitTrailingWord(text: string): [leading: string, trailing: string] {
  * (the same mechanism as NotificationCard's .secondaryTail; see the grammar
  * above and the stylesheet). `line` picks the name pair its markup reads:
  * .intentTail/.intentTailText on the intent line, .summaryTail/
- * .summaryTailText on the expanded summary line. */
+ * .summaryTailText on the expanded summary line. The head and the final word
+ * linkify independently (one occurrence each, as linkifySummary's contract
+ * pins): the unit's split lands on whitespace, and a summaryLink is a URL -
+ * whitespace-free - so no link can straddle the boundary and be lost. */
 function TailUnit({
   line,
   text,

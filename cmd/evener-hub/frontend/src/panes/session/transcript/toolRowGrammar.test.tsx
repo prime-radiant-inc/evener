@@ -827,6 +827,40 @@ test("trailingAfter on an expanded row splits the full summary around the contro
   expect(before + after).toBe(summary);
 });
 
+// The binary read: the summary ends at the file path - no "· lines" meta -
+// so the control lands at the END of the text, where it would strand
+// exactly like a plain end-of-line control. The path's final word and the
+// control are therefore ONE unit (ToolRow's anchorSplit[1] === "" arm).
+test("trailingAfter equal to the whole summary (binary read) glues the path's final word and the control in one unit", () => {
+  const summary = "Read cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsx";
+  render(
+    <ToolRow
+      summary={summary}
+      intent="Check the source"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter={summary}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const unit = summaryEl.lastElementChild;
+  // No text lost, none doubled: the head before the unit plus the unit's
+  // contents reconstruct the line exactly, and nothing renders after the
+  // unit. A spaceless repo path is the final word whole, so the head is
+  // just "Read " (splitTrailingWord hands the whitespace to the head).
+  expect(unit?.previousSibling?.textContent).toBe("Read ");
+  expect(unit?.textContent).toBe("cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsxOpen beside");
+  expect(unit?.nextSibling).toBe(null);
+  // The control rides INSIDE the unit, right after the path's final word.
+  expect(unit?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+  const [before, after] = textAround(screen.getByTestId("tool-row-trailing"));
+  expect(before).toBe("cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsx");
+  expect(after).toBe("");
+});
+
 test("a trailingAfter anchor NOT present at all in the summary falls back to the end placement", () => {
   render(
     <ToolRow

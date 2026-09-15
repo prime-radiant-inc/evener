@@ -43,6 +43,8 @@
        MID-SUMMARY after the file path (trailingAfter's anchor), the body
        chevron after the "· lines N-M" meta; each glyph glues to the final
        word of the text segment it trails.
+       An empty meta (a binary read) folds the control into the chevron's
+       end-of-text unit.
 
      Every shape renders twice per box: the PRODUCTION row (glued per its
      shape flag below) and a PROBE row hardwired to the unglued markup - the
@@ -135,11 +137,19 @@ function summaryRow(intent, summary, withControl, glued) {
 // onto the same line. The chevron trails the LAST text, so IT is the strand
 // surface - glued to the meta's final word. Unglued:
 // [Read <path>] CONTROL [ · lines N-M] CHEVRON inline.
+// An empty meta (a binary read: trailingAfter is the whole summary) is the
+// degenerate fold: the control sits at the END of the text, where it strands
+// together with the chevron exactly like the plain summary shapes, so the
+// path's final word, the control, and the chevron are ONE unit (ToolRow's
+// anchorSplit[1] === "" arm). Unglued: [Read <path>] CONTROL CHEVRON inline.
 function anchorRow(intent, path, meta, glued) {
   const [iHead, iWord] = splitTrailingWord(intent);
   const seg0 = `Read ${path}`;
   const [a0Head, a0Word] = splitTrailingWord(seg0);
   const [a1Head, a1Word] = splitTrailingWord(meta);
+  const summaryHtml = meta
+    ? `${a0Head}${a0Word}<span class="summaryTrailing">${openControl()}</span>${a1Head}${tail(a1Word, chevron(true), glued, "summaryTail", "summaryTailText")}`
+    : `${a0Head}${tail(a0Word, `<span class="summaryTrailing">${openControl()}</span>${chevron(true)}`, glued, "summaryTail", "summaryTailText")}`;
   return `
     <div class="row" data-intent="true">
       <button type="button" class="trigger" aria-expanded="true">
@@ -147,7 +157,7 @@ function anchorRow(intent, path, meta, glued) {
       </button>
       <div class="summaryLine" data-body-trigger="true">
         <button type="button" class="bodyTrigger" aria-expanded="true"></button>
-        <span class="summary demoted" data-summary>${a0Head}${a0Word}<span class="summaryTrailing">${openControl()}</span>${a1Head}${tail(a1Word, chevron(true), glued, "summaryTail", "summaryTailText")}</span>
+        <span class="summary demoted" data-summary>${summaryHtml}</span>
       </div>
     </div>`;
 }
@@ -183,6 +193,7 @@ const SHAPES = [
   { key: "summary-chevron-mid", base: 640, kind: "summary", intent: "Inspect the guard's fixture geometry.", summary: LONG_SUMMARY, withControl: false, glued: true },
   { key: "summary-open-control", base: 420, kind: "summary", intent: "Inspect the guard's fixture geometry.", summary: LONG_SUMMARY, withControl: true, glued: true },
   { key: "anchor-read-file", base: 420, kind: "anchor", intent: "Reading the fixture that reproduces the anchor-split row.", path: READ_PATH, meta: READ_META, glued: true },
+  { key: "anchor-binary-read", base: 420, kind: "anchor", intent: "Reading the fixture that reproduces the binary-read row.", path: READ_PATH, meta: "", glued: true },
   { key: "short-inline", base: 420, kind: "short", intent: SHORT_INTENT, glued: true },
 ];
 
@@ -257,6 +268,8 @@ function linesOf(textEl) {
 // ahead of it) all trail the summary's final word; the anchor shape's
 // mid-summary control is deliberately absent - its wrap point always carries
 // the meta text onto the same line, so it has no stranding geometry to guard.
+// The binary-read fold is the exception: its control sits at the text's end
+// and strands with the chevron, so both assert there.
 function glyphRefs(shape) {
   switch (shape.kind) {
     case "intent":
@@ -270,7 +283,12 @@ function glyphRefs(shape) {
         { glyph: "[data-chevron]", text: "[data-summary]" },
       ];
     case "anchor":
-      return [{ glyph: "[data-chevron]", text: "[data-summary]" }];
+      return shape.meta
+        ? [{ glyph: "[data-chevron]", text: "[data-summary]" }]
+        : [
+            { glyph: "[data-open]", text: "[data-summary]" },
+            { glyph: "[data-chevron]", text: "[data-summary]" },
+          ];
   }
 }
 
