@@ -67,6 +67,28 @@ shipped mechanism, so they are not interchangeable descriptions.
   `ErrStreamClosed` and drains in-flight writes, so after it returns no write can
   still reach the stream and every later `Send`/`Recv` reports `ErrStreamClosed`
   even when the reader held prefetched frames.
+- **`Close` ordering — close before wait, never wait-then-close.** `Close` (and
+  every poison path) latches the terminal cause first, then closes the underlying
+  `io.ReadWriteCloser`, and only then waits for admitted writes. The order is
+  what makes the drain terminate: closing the stream is what unblocks a `Write`
+  that is blocked in the underlying stream, so a wait for in-flight writes can
+  never hang on a write that is merely stalled. Synchronization is the same
+  principle: admission is held under a read lock for the duration of
+  `rw.Write`, and the drain takes the matching write lock **after** the close, so
+  a waiting `Close` never deadlocks against a blocking `Write` that holds the
+  lock. (The inverse — `Close` taking the write lock before closing — is exactly
+  the deadlock this contract forbids.) The serialized-write lock is a buffered
+  channel acquired with a `select` on `ctx.Done()`, not a plain mutex, so a
+  `Send` queued behind a stalled write still obeys its own context.
+  Blocked-write shutdown: a write already admitted when `Close` (or its context)
+  lands is interrupted by the close and reports the recorded terminal cause; a
+  write not yet admitted returns `ErrStreamClosed` (or the cancellation) without
+  writing anything. **This is already the shipped implementation** —
+  `appwire/stream_transport.go`'s `Close` latches `ErrStreamClosed`, calls
+  `doClose()` (the underlying `rw.Close()`), then `drainWrites()`; `poison`
+  deliberately does **not** take the write lock, because that close is what
+  unblocks the write it exists to interrupt. The contract is stated here so a
+  rewrite cannot regress to wait-before-close.
 
 ## Data flow
 
@@ -161,6 +183,16 @@ corrupt stream"):
   and stays poisoned; a clean end reports `io.EOF`; `Close` latches
   `ErrStreamClosed`, so a `Recv` after `Close` does not deliver a prefetched
   frame.
+- `Close` returns while a write is blocked: with a writer stalled in the
+  underlying `Write`, a concurrent `Close` closes the stream, unblocks the
+  write, drains it, and returns — it must not deadlock waiting for a lock the
+  blocked write holds. The blocked `Send` reports the recorded terminal cause,
+  and a write that had not yet been admitted returns `ErrStreamClosed` without
+  reaching the stream. A `Send` queued behind a stalled write is released by its
+  own context cancellation. (Shipped coverage:
+  `TestStreamTransportCloseWaitsForInProgressClose`,
+  `TestStreamTransportCloseAdmitsNoFurtherWrites`,
+  `TestStreamTransportQueuedSendHonorsCancel`, `appwire/stream_transport_test.go`.)
 
 ## Acceptance criteria
 

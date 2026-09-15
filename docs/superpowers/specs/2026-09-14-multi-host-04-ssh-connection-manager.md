@@ -105,6 +105,18 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error)
 // membership.
 func (m *Manager) Attached(name string) bool
 
+// ClientIfAttached returns the current initialized AppWire client for host ONLY
+// while a live, not-closed channel is installed, and reports false otherwise.
+// It never spawns ssh, preflights, deploys, or attaches: an unattached host (or
+// one that dropped) yields (nil, false) with no side effect. This is the
+// non-dialing lookup a background caller (component 06's 30s snapshot) and the
+// notification broker's reconnect rebind (component 05) use in place of Ensure,
+// so neither can eagerly attach a dormant host or re-dial a host that dropped
+// between a check and the call. It reads the same installed channel the
+// Attached signal derives from, so the two can never disagree within one
+// per-host lock.
+func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool)
+
 // Channel is one owned SSH channel + the AppWire client over it.
 type Channel struct { /* host, facts, stdio, transport, client, drop/lifecycle channels */ }
 
@@ -446,6 +458,18 @@ to it, so the handoff is defined as:
 The events are advisory: `EventDetached` is emitted before the reconnect starts
 and `EventAttached` once the replacement channel is installed, but a consumer
 that ignores them still converges, because resolution happens per call.
+
+**A consumer that must not dial uses `ClientIfAttached`, not `Ensure`.**
+`Ensure` attaches; the notification broker's rebind (component 05, §"One
+notification consumer per client") and component 06's background snapshot must
+instead read `ClientIfAttached(name)`, which returns the freshly installed
+client only while a channel is live and `(nil, false)` otherwise. On the
+`EventAttached` that installs a replacement channel, the source rebinds its
+registered consumers to the new client by reading `ClientIfAttached` — never by
+calling `Ensure` (which would attach every configured host and violates the lazy
+manager, component 04, §"Channel lifecycle states"). Both the `Attached` signal
+and `ClientIfAttached` are derived under the same per-host lock, so a rebind
+cannot observe an attachment state and a client that disagree.
 
 ### 3. Preflight — `preflight.go`
 

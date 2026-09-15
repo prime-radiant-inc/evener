@@ -168,9 +168,12 @@ will want: `MethodThreadUnsubscribe` (`ScopeBoth`),
 (`MethodEvenerPathsComplete`, `MethodEvenerDirsCreate`,
 `MethodEvenerProjectsRecent`, `MethodEvenerPathValidate`,
 `MethodEvenerGitHead`). The `Method*` constants live in `appwire/types.go`; the
-catalog rows live in `appwire/protocol.go`. These are forwarded by the hub as
-normal hub-scoped methods once a host is selected, not through
-`RemoteHubSource`.
+catalog rows live in `appwire/protocol.go`. Once a host is selected these are
+forwarded as normal hub-scoped methods — through the host-scoped request
+envelope `evener/host/request` (component 07, §"Proxy method"), which carries
+the selected host and method name — **not** through `RemoteHubSource` (none is
+on the `Source` interface). This is the routing component 06's spawn-form
+discovery calls use.
 
 `MethodThreadTurnItemsList` (wire string `thread/turns/items/list`) is
 `ScopeUnimplemented` — served by no evener router — and is not on the `Source`
@@ -270,7 +273,7 @@ the registry on attach/detach — lifecycle events carry connection state only
 list equal to the configured `[[hosts]]` set (component 06). Order is
 irrelevant; `Registry.All` sorts by ID (`registry.go`).
 
-The source's two optional seams are installed once at registration, both from
+The source's optional seams are installed once at registration, all from
 `hubcore.WebConfig` fields the hub already fills (`cmd/evener-hub/main.go`):
 
 - `SetHostOnline(RemoteHostOnline)` where `RemoteHostOnline` is
@@ -281,6 +284,15 @@ The source's two optional seams are installed once at registration, both from
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
   probe needs (`HostFacts`, `remote_hub_probe.go`).
+- `SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)` where
+  `RemoteHostClientIfAttached` is `sshManager.ClientIfAttached` (component 04,
+  §"Go surface") — the **non-dialing, attached-only client lookup**. It returns
+  the current `*appwire.Client` only while a live channel is installed and
+  reports `false` otherwise, without spawning `ssh` or attaching. The
+  notification broker's reconnect rebind (§"One notification consumer per
+  client") and component 06's background snapshot read the client through this
+  accessor instead of the `Ensure`-backed `RemoteHubClientFunc`, so neither can
+  eagerly attach a dormant host or re-dial one that dropped.
 
 Without a facts seam the probe leaves the preflight-owned fields zero-valued; it
 never guesses them from the wire.
@@ -437,6 +449,16 @@ implementing PR's contract:
   the next resolution. Where a drain cannot be started (no event wired), a
   consumer must reconcile its state explicitly after a reconnect rather than
   assume no notifications were missed.
+  **The event carries connection state only, not the replacement client**, so
+  the rebind reads the fresh client through the **non-dialing attached-only
+  lookup** `ClientIfAttached(host)` (component 04, §"Go surface"; wired as
+  `SetHostClientIfAttached`, §"Registration and default-source selection"), not
+  through `Ensure`. A rebind that called `Ensure` would attach every configured
+  host on every reconnect and violate the lazy manager; `ClientIfAttached`
+  returns `(nil, false)` for a host that is not currently attached, so a rebind
+  on a detach/attach edge never dials a dormant host. Once it has the fresh
+  client, the source starts that client's drain and attaches every registered
+  consumer to it.
 
 A consumer callback must not be able to stall thread subscriptions: the broker
 hands each consumer its own buffered channel or dispatches on its own goroutine,

@@ -199,7 +199,8 @@ converted `cfg.Hosts` (§"Host registry") and hands the converted entries to the
 source registry through `hubcore.WebConfig`: `newHubSourceRegistry`
 (`cmd/evener-hub/app_rpc.go`) iterates `cfg.RemoteHosts` and adds one source per
 entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
-`cfg.RemoteHostOnline` (component 05). This spec fixes only:
+`cfg.RemoteHostOnline` / `cfg.RemoteHostClientIfAttached` (component 05). This
+spec fixes only:
 
 - the registry is built once at hub startup from the validated `cfg.Hosts`;
 - component 05 registers **one source per configured host at startup**, from the
@@ -319,7 +320,10 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
    `ch.Client()`), `RemoteHostFacts` (the channel's `Preflight()`), and
-   `RemoteHostOnline` (`sshManager.Attached`); `newHubSourceRegistry`
+   `RemoteHostOnline` (`sshManager.Attached`) and `RemoteHostClientIfAttached`
+   (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
+   lookup component 05's notification rebind and component 06's snapshot use);
+   `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
@@ -453,9 +457,9 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
   deferral.
 - **Where the registry is built (settled).** `main.go`, before the web server,
   passed through `hubcore.WebConfig` as `RemoteHosts`/`RemoteHostClient`/
-  `RemoteHostFacts`/`RemoteHostOnline` — the wiring described in §Implementation
-  approach item 4, which is **pending merge** (see the header note), not on
-  `main`. `newHubSourceRegistry` consumes
+  `RemoteHostFacts`/`RemoteHostOnline`/`RemoteHostClientIfAttached` — the wiring
+  described in §Implementation approach item 4, which is **pending merge** (see
+  the header note), not on `main`. `newHubSourceRegistry` consumes
   `cfg.RemoteHosts`; `NewWebServer` never reads `hub.toml`.
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's

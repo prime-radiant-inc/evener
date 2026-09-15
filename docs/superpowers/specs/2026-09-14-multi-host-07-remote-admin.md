@@ -80,7 +80,7 @@ handler registrations are:
 | Agents doc | `cmd/evener-hub/app_rpc_agents_doc.go` (`registerAgentsDocHandlers`) | `app_rpc_agents_doc.go` (called from `app_rpc.go`) | `appwire/protocol.go` |
 
 Concretely the proxied method names are (all `ScopeHub` in
-`appwire/protocol.go`):
+`appwire/protocol.go` unless noted):
 
 - `evener/instance/{list,create,edit,remove,setDefault}`
 - `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`
@@ -88,6 +88,21 @@ Concretely the proxied method names are (all `ScopeHub` in
   `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`
 - `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`
 - `evener/settings/agentsDoc/{get,set}`
+- **Host-dependent discovery** — the spawn form's remote-scoped calls
+  (component 06, §"Frontend changes"): `evener/paths/complete`,
+  `evener/path/validate`, `evener/dirs/create`, `evener/projects/recent`,
+  `evener/harnesses/list`, `evener/spawn/slashCatalog`, and `model/list`
+  (`ScopeBoth`, `appwire/protocol.go`; forwarded to the host hub, which serves
+  it against its own local environment). The remote settings panes call the
+  filesystem helpers directly — `evener/path/validate`
+  (`frontend/src/stores/launchConfig.ts:93`,
+  `src/stores/extensions.ts:384`), `evener/dirs/create`
+  (`src/stores/extensions.ts:388`), and `evener/paths/complete`
+  (`src/stores/extensions.ts:393`) — and would otherwise fail closed with
+  `appwire.InvalidParams`, breaking path validation, auto-completion, and
+  directory creation in remote panes. **Implementation status:** the 07a
+  proxy's allow-list as written covers the five admin families only; adding the
+  discovery set above is a tracked 07a follow-up, not a present fact.
 
 The instance family has exactly those five handlers — the catalog has no
 `evener/instance/setModelDisabled` and no `evener/instance/refreshModels`
@@ -134,14 +149,17 @@ The handler:
 2. refuses when the host is not attached (component 04/05 exposes attachment
    state) with `appwire.Unavailable`, matching the offline rule (design §2:
    "actions refused until reconnect");
-3. allow-lists `Method` against an **exact set of method names**, not five family
+3. allow-lists `Method` against an **exact set of method names**, not family
    *prefixes*. The set is the concrete enumeration above:
    `evener/instance/{list,create,edit,remove,setDefault}`,
    `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`,
    `evener/marketplace/{list,add,remove,refresh,edit,browse}`,
    `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`,
    `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`,
-   `evener/settings/agentsDoc/{get,set}` — and nothing else.
+   `evener/settings/agentsDoc/{get,set}`, plus the host-dependent discovery set:
+   `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`,
+   `evener/projects/recent`, `evener/harnesses/list`,
+   `evener/spawn/slashCatalog`, and `model/list` — and nothing else.
    A prefix match (`strings.HasPrefix(method, "evener/instance/")`) is **not**
    acceptable: it would auto-allow a future sensitive `ScopeHub` method the
    moment it is added to the catalog (a hypothetical

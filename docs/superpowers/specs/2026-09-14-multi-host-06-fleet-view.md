@@ -216,7 +216,16 @@ only `local`, so the fan-out currently degenerates to one source.
   gate. The gate must not be a check followed by an `Ensure`-backed resolver: it
   must read through the **attached-only client lookup** (component 05,
   §"Method-coverage analysis"), so a host that disconnects between the check and
-  the call is skipped rather than re-attached by a background read.
+  the call is skipped rather than re-attached by a background read. That lookup
+  is `sshconn.Manager.ClientIfAttached(name) (*appwire.Client, bool)`
+  (component 04, §"Go surface"), installed on the source through
+  `hubcore.WebConfig` (component 03, §"Implementation approach" item 4) as a
+  `SetHostClientIfAttached` seam analogous to `SetHostOnline`/`SetHostFacts`
+  (component 05, §"Registration and default-source selection").
+  `refreshRemoteThreadSnapshot`
+  (and its synchronous `remoteThreadFetch` fallback) resolves the client through
+  that accessor, not the `Ensure`-backed `RemoteHubClientFunc`, and skips the
+  host when it reports "not attached" without dialing.
   **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
   (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate and its
   resolver is wired to `Ensure`; both the gate and the attached-only lookup are
@@ -247,6 +256,20 @@ only `local`, so the fan-out currently degenerates to one source.
   remote row — thread listing, the background snapshot, tree ingestion, and
   metadata/archive/favorite handling — and none of them may pass a remote row
   through the controller-side `ResolveProject`.
+  **`annotateThreadProjects` must not overwrite a validated non-local
+  identity.** The merged thread-list path (and the thread-read and
+  lifecycle/start responses) runs `annotateThreadProjects`
+  (`cmd/evener-hub/app_threadlist.go`) over every returned row. Today it
+  resolves each row's `CWD` with `identifier.ResolveProject` — the controller's
+  local, path-based resolver — and unconditionally writes `ProjectID` /
+  `ProjectPath`, so a remote row's project identity is clobbered by the
+  controller's view of the same path (the wrong project, or none at all, when
+  that path does not exist on the controller). The requirement: a row whose
+  source is **not** `local` (its `ref.SourceID` names a configured host) keeps
+  the `ProjectID` / `ProjectPath` the remote hub already validated against the
+  remote filesystem; `annotateThreadProjects` skips non-local rows instead of
+  re-resolving them, and any local resolution cache it keeps is keyed per source
+  so a remote path can never seed the local project for that same path.
 - **Manifest source list**: `apiTreeSources`
   (`web_api_tree.go`) is consumed by `navigation_service.go` and
   projected via `navigationSources` into `NavigationManifest.Sources`
@@ -331,17 +354,29 @@ only `local`, so the fan-out currently degenerates to one source.
 - **Host-dependent discovery must use the selected host.** Routing only
   `thread/start` through the picker is not enough. The form's other calls —
   model discovery (`model/list`), harness discovery (`evener/harnesses/list`),
-  path completion/validation (`evener/paths/complete`), launch
+  path completion (`evener/paths/complete`), path validation
+  (`evener/path/validate`), directory creation (`evener/dirs/create`), launch
   resolution/schema (`evener/launch/resolve`), recent projects
   (`evener/projects/recent`), and the spawn slash catalog
   (`evener/spawn/slashCatalog`) — are host-dependent and must be issued against
-  the selected source, not left controller-scoped, or a remote launch is
+  the selected host, not left controller-scoped, or a remote launch is
   validated against the wrong machine (a controller-local path accepted for a
-  remote spawn, the controller's model/harness list). The selected source is
-  the calls' selector (the same source/harness selector the server-side
-  handlers already resolve), and a remote working directory must be validated
-  on the remote filesystem, not the controller's. Until this lands, the picker
-  must not present a remote host as fully usable.
+  remote spawn, the controller's model/harness list).
+  **The routing mechanism is the host-scoped request envelope
+  `evener/host/request`** (component 07, §"Proxy method"): each call is wrapped
+  as `{host: <selected source ID>, method: "<method>", params: <the call's
+  params>}` and the controller forwards it to that host's hub over its SSH
+  channel, so the host's own handlers resolve the models, harnesses, paths,
+  directories, launch config, and slash catalog against the host. The form must
+  **not** issue these methods on the plain controller connection and rely on the
+  handler being host-aware: the controller's handlers run against the
+  controller's local environment. `RemoteHubSource` is not the path for these
+  calls — none is on the `Source` interface (component 05, §"Method-coverage
+  analysis") — the proxy envelope is. A remote working directory is therefore
+  validated on the remote filesystem, not the controller's, and the `host` the
+  form passes must be the same value it sends as `ThreadStartParams.Source`.
+  Until the proxy and its allow-list land (component 07, §"Proxy method"), the
+  picker must not present a remote host as fully usable.
 - **Source list source**: the manifest already carries `sources` and the
   navigation store already holds it (`stores/navigation/store.ts`,
   validated at `store.ts` and `stores/navigation/codec.ts`), but
@@ -554,9 +589,11 @@ This is larger than a single tight PR if done at once. A natural split:
 
 - **Wire field shape for targeting (settled)**: `ThreadStartParams.Source` — a
   bare source ID, serialized as `source` — is the chosen shape; reusing the
-  existing `ref` or overloading `Harness` were the rejected alternatives. The
-  field is controller-only; it **and** the legacy `Harness` are stripped before
-  any remote forward (§"Write contract").
+  existing `ref` or overloading `Harness` were the rejected alternatives. Only
+  `Source` is controller-only and is stripped before any remote forward;
+  `Harness` is the caller's backend selection and is **forwarded verbatim** (or
+  explicitly translated) — it is never stripped or overwritten (§"Write
+  contract"; component 05, §"Registration and default-source selection").
 - **`Kind` value for hosts**: reuse `"appwire"` or introduce a host-specific
   value? The frontend cannot currently tell an attached host from any other
   appwire source; if grouping/labels need that distinction, pick a value now to
