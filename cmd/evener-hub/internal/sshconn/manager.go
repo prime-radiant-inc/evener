@@ -345,6 +345,11 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		if err := m.restartHub(ctx, host, facts); err != nil {
 			return nil, err
 		}
+		// Preflight read the on-disk binary's version; the running hub now serves
+		// the deployed build. Record that so the attached channel (and callers of
+		// Channel.Preflight) report the version actually running, not the
+		// pre-deploy one.
+		facts.Version = m.opts.controllerVersion()
 	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)

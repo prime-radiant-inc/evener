@@ -87,6 +87,21 @@ func TestParseLogPath(t *testing.T) {
 	if _, ok := parseLogPath([]byte("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n")); ok {
 		t.Fatal("header parsed as a log path")
 	}
+
+	// Only stdout redirected: stderr would not be preserved, so no shared log.
+	onlyStdout := []byte("evener 4242 dev 1w REG 1,2 123 456 /home/dev/evener-hub.log\n" +
+		"evener 4242 dev 2u CHR 16,1 0t0 9 /dev/ttys003\n")
+	if got, ok := parseLogPath(onlyStdout); ok {
+		t.Fatalf("parseLogPath accepted a single descriptor: (%q,%v)", got, ok)
+	}
+
+	// Descriptors pointing at different files must not be collapsed onto the
+	// first match.
+	split := []byte("evener 4242 dev 1w REG 1,2 123 456 /home/dev/out.log\n" +
+		"evener 4242 dev 2w REG 1,2 123 456 /home/dev/err.log\n")
+	if got, ok := parseLogPath(split); ok {
+		t.Fatalf("parseLogPath accepted mismatched descriptors: (%q,%v)", got, ok)
+	}
 }
 
 func TestRelaunchCommand(t *testing.T) {
@@ -215,8 +230,14 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 		},
 	})
 
-	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
 		t.Fatalf("Ensure: %v", err)
+	}
+	// The attached channel must report the version now running, not the
+	// pre-deploy version the preflight launch-check read from disk.
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel preflight version = %q, want %q after deploy+restart", got, "newsha")
 	}
 
 	mu.Lock()

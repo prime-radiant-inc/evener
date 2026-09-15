@@ -418,9 +418,12 @@ func stripPSHeader(out string) string {
 }
 
 // parseLogPath extracts the regular-file destination shared by fd 1 and fd 2
-// from `lsof -p <pid> -a -d 1,2` output. A tty destination (nothing redirected
-// at launch) yields no path.
+// from `lsof -p <pid> -a -d 1,2` output. Both descriptors must point at the same
+// regular file: relaunching with only one of two different destinations would
+// preserve stdout and send stderr (or vice versa) somewhere else. A tty
+// destination (nothing redirected at launch) yields no path.
 func parseLogPath(out []byte) (string, bool) {
+	var stdout, stderr string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 9 || fields[0] == "COMMAND" {
@@ -434,11 +437,20 @@ func parseLogPath(out []byte) (string, bool) {
 			continue
 		}
 		name := fields[len(fields)-1]
-		if strings.HasPrefix(name, "/") {
-			return name, true
+		if !strings.HasPrefix(name, "/") {
+			continue
+		}
+		switch fd {
+		case "1":
+			stdout = name
+		case "2":
+			stderr = name
 		}
 	}
-	return "", false
+	if stdout == "" || stdout != stderr {
+		return "", false
+	}
+	return stdout, true
 }
 
 // firstLine returns the first non-empty line of s, trimmed.
