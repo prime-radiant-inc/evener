@@ -49,6 +49,37 @@ func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bo
 	return *snapshot.HumanNote, true, nil
 }
 
+// notesHumanNoteEscapedKeyProbes are the escape spellings that could hide the
+// human-note key. An escaped ASCII character is written "\u00XX" with either hex
+// case, so any escaped spelling of the key contains one of these.
+var notesHumanNoteEscapedKeyProbes = func() [][]byte {
+	probes := make([][]byte, 0, 2*len(notesHumanNoteFieldKey))
+	for _, r := range notesHumanNoteFieldKey {
+		if r == '"' {
+			continue
+		}
+		probes = append(probes, []byte(fmt.Sprintf(`\u%04x`, r)), []byte(fmt.Sprintf(`\u%04X`, r)))
+	}
+	return probes
+}()
+
+// containsEscapedNotesKey reports whether the document contains an escape that
+// could spell part of the human-note key. Every probe contains a backslash byte,
+// so a document with no backslash byte cannot hold any escape spelling and the
+// probe loop is skipped after one single-byte scan. A document that does contain
+// a backslash pays one extra single-byte pass before the probes.
+func containsEscapedNotesKey(data []byte) bool {
+	if bytes.IndexByte(data, '\\') < 0 {
+		return false
+	}
+	for _, probe := range notesHumanNoteEscapedKeyProbes {
+		if bytes.Contains(data, probe) {
+			return true
+		}
+	}
+	return false
+}
+
 // notesHumanNoteFieldKey is the persisted snapshot's JSON key for the canonical
 // human note, as a quoted byte literal so the reader's absence pre-filter looks
 // for the field rather than for the word appearing inside some string value.
@@ -96,11 +127,14 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	// per past entry and the absent case is the common one, which is why the
 	// walk was worth removing. A false positive (the spelling inside some string
 	// value) costs only the walk this used to do unconditionally.
-	// The pre-filter trusts the key's bytes, which is only sound while the
-	// document carries no escapes: "\u0068uman_note" is a valid JSON spelling of
-	// the same key and the strict reader decodes it, so any backslash falls
-	// through to the token walk instead of being reported absent.
-	if !bytes.Contains(data, []byte("\\")) && !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) {
+	// The pre-filter trusts the key's bytes unless the document could spell the
+	// key escaped: "\u0068uman_note" is a valid JSON spelling of the same key and
+	// the strict reader decodes it, so the probes below look for an escape of any
+	// character the key is made of and only then fall through to the token walk.
+	// Escapes for quotes, newlines and the HTML-sensitive characters (\u0022,
+	// \u003c, \u003e, \u0026) are not probes, so an ordinary journal keeps the
+	// fast path (roborev's eleventh round).
+	if !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) && !containsEscapedNotesKey(data) {
 		return "", false, nil
 	}
 

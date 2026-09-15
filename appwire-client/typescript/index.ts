@@ -2,6 +2,7 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
+  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -14,6 +15,8 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
+  activityDelegateBranch,
+  activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
@@ -35,7 +38,15 @@ export type {
   ActivityRow,
   ActivityRowBase,
 } from "./activityRows";
-export { activityDelegateState, buildActivityRows, foldRowID, jobIsFailed } from "./activityRows";
+export {
+  activityDelegateState,
+  buildActivityRows,
+  delegateRowFields,
+  foldRowID,
+  indexActivityEntities,
+  jobIsFailed,
+  jobRowFields,
+} from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
@@ -66,6 +77,10 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { EntityIdMatch, EntityKind } from "./entityIds";
+export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
+export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
+export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
 export {
   ClientNotReadyError,
   ConnectionClosedError,
@@ -155,3 +170,19 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
+export {
+  asJsonObject,
+  boolField,
+  conditionSpec,
+  foldWatchSummaries,
+  humanizeInterval,
+  humanizeSeconds,
+  normalizeRow,
+  numField,
+  parseConditionText,
+  sourceLabel,
+  strArrayField,
+  strField,
+  watchDisplayState,
+} from "./watchRows";

@@ -36,7 +36,7 @@ jobs:
       # Named for the run so two failures on the same PR do not collide.
       - name: Keep the skill guard's artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: skillguard-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/skillguard-browser-*/artifacts/**
@@ -60,7 +60,8 @@ jobs:
       - name: Install native dependencies
         run: npm ci --prefix mobile-native
 
-      - name: Test native app and shared session core
+      - name: Bundle, test native app and shared session core
+        timeout-minutes: 30
         run: make test-native
 
   api-package:
