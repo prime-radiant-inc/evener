@@ -509,7 +509,7 @@ describe("ActivityPanel", () => {
           render(<ActivityPanelBody sessionRef="ref_root" model={testModel()} />);
         } else {
           installMatchMediaStub(true);
-          render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+          render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
           await user.click(screen.getByRole("button", { name: "Activity" }));
           await screen.findByRole("dialog");
         }
@@ -606,7 +606,7 @@ describe("ActivityPanel", () => {
     const gate = deferred<{ data: unknown }>();
     fake.on("evener/jobs/list", () => gate.promise);
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     expect(screen.getByRole("button", { name: "Activity" })).toBeTruthy();
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 
@@ -628,8 +628,8 @@ describe("ActivityPanel", () => {
 
     const chromeOwners = (second: boolean) => (
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />
-        {second && <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />}
+        <ActivityPanel sessionRef="ref_root" model={testModel()} hideTrigger refreshWhenHidden />
+        {second && <ActivityPanel sessionRef="ref_root" model={testModel()} hideTrigger refreshWhenHidden />}
       </>
     );
 
@@ -659,7 +659,7 @@ describe("ActivityPanel", () => {
 
     render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />
         <Toast />
       </>,
     );
@@ -682,7 +682,7 @@ describe("ActivityPanel", () => {
     degraded.root.diagnostics = [torn];
     fake.on("evener/jobs/list", () => ({ data: degraded }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
@@ -696,7 +696,7 @@ describe("ActivityPanel", () => {
     incomplete.root.counts.complete = false;
     fake.on("evener/jobs/list", () => ({ data: incomplete }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
@@ -711,7 +711,7 @@ describe("ActivityPanel", () => {
       continuation === "tok_after_skip" ? { data: afterSkipTree() } : { data: skippedEntryTree() },
     );
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
 
     // The page rendered nothing, but it said why and handed back a token:
@@ -732,7 +732,7 @@ describe("ActivityPanel", () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: emptyExplainedTree() }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
 
     expect(await screen.findByText(/with no entries rendered/i)).toBeTruthy();
@@ -747,7 +747,7 @@ describe("ActivityPanel", () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: emptyTree() }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
     expect(await screen.findByText("No retained activity yet")).toBeTruthy();
 
@@ -755,7 +755,7 @@ describe("ActivityPanel", () => {
     resetThreadsStoreForTests();
     const unsupported = connectFakeClient();
     unsupported.on("evener/jobs/list", () => ({ data: null }));
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
     expect(await screen.findByText(/activity isn't available/i)).toBeTruthy();
 
@@ -765,7 +765,7 @@ describe("ActivityPanel", () => {
     ended.on("evener/jobs/list", () => {
       throw new WireError("thread not found: thr_root", -32014, { evenerErrorInfo: "sessionUnavailable" });
     });
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: /Activity/ }));
     expect(await screen.findByText("This session has ended")).toBeTruthy();
   });
@@ -778,7 +778,7 @@ describe("ActivityPanel", () => {
     }));
 
     const panel = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
     );
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -824,7 +824,7 @@ describe("ActivityPanel", () => {
 
     const { rerender } = render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />
         <Toast />
       </>,
     );
@@ -833,7 +833,7 @@ describe("ActivityPanel", () => {
 
     rerender(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />
         <Toast />
       </>,
     );
@@ -849,7 +849,7 @@ describe("ActivityPanel", () => {
     fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
     const visible = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
     );
     const { rerender } = render(visible(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -860,13 +860,7 @@ describe("ActivityPanel", () => {
 
     const handle = createRef<ActivityPanelHandle>();
     const hidden = (bump: number | null) => (
-      <ActivityPanel
-        ref={handle}
-        sessionRef="ref_root"
-        model={testModel({ jobsUpdatedAt: bump })}
-        now={0}
-        hideTrigger
-      />
+      <ActivityPanel ref={handle} sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} hideTrigger />
     );
     cleanup();
     const hiddenRender = render(hidden(3));
@@ -889,14 +883,14 @@ describe("ActivityPanel", () => {
     const model = testModel({ jobsUpdatedAt: 1 });
     const { rerender } = render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={model} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={model} />
         <ActivityPanelBody sessionRef="ref_root" model={model} />
       </>,
     );
     await screen.findByRole("tree");
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
 
-    rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} now={0} />);
+    rerender(<ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
     expect(screen.getByRole("button", { name: "Activity · 8" })).toBeTruthy();
   });
@@ -960,7 +954,7 @@ describe("ActivityPanel", () => {
       ]),
     });
 
-    render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} now={0} />);
+    render(<ActivityPanel sessionRef="ref_gen" model={testModel({ ref: "ref_gen" })} />);
     await act(async () => Promise.resolve());
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 
@@ -996,11 +990,7 @@ describe("ActivityPanel", () => {
     });
 
     const panel = (bump: number) => (
-      <ActivityPanel
-        sessionRef="ref_pending_gen"
-        model={testModel({ ref: "ref_pending_gen", jobsUpdatedAt: bump })}
-        now={0}
-      />
+      <ActivityPanel sessionRef="ref_pending_gen" model={testModel({ ref: "ref_pending_gen", jobsUpdatedAt: bump })} />
     );
     const { rerender } = render(panel(1));
     rerender(panel(2));
@@ -1039,7 +1029,7 @@ describe("ActivityPanel", () => {
       return { data: patch };
     });
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
@@ -1071,9 +1061,7 @@ describe("ActivityPanel", () => {
       return heldRoot.promise;
     });
 
-    const panel = (bump: number) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
-    );
+    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
@@ -1114,9 +1102,7 @@ describe("ActivityPanel", () => {
       return lateRoot.promise;
     });
 
-    const panel = (bump: number) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
-    );
+    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
@@ -1175,9 +1161,7 @@ describe("ActivityPanel", () => {
       return lateRoot.promise;
     });
 
-    const panel = (bump: number) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
-    );
+    const panel = (bump: number) => <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />;
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
@@ -1209,7 +1193,7 @@ describe("ActivityPanel", () => {
       data: continuation ? continuedPartialTree() : activityTree(),
     }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
@@ -1231,7 +1215,7 @@ describe("ActivityPanel", () => {
 
     render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel()} />
         <Toast />
       </>,
     );
@@ -1259,7 +1243,7 @@ describe("ActivityPanel", () => {
 
     render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel()} />
         <Toast />
       </>,
     );
@@ -1334,7 +1318,7 @@ describe("ActivityPanel", () => {
     });
 
     const panel = (bump: number | null) => (
-      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} now={0} />
+      <ActivityPanel sessionRef="ref_root" model={testModel({ jobsUpdatedAt: bump })} />
     );
     const { rerender } = render(panel(1));
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -1352,7 +1336,7 @@ describe("ActivityPanel", () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
@@ -1368,7 +1352,7 @@ describe("ActivityPanel", () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: activityTree() }));
 
-    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
     await screen.findByRole("tree");
 
@@ -1387,9 +1371,9 @@ describe("ActivityPanel", () => {
       return Promise.resolve({ data: emptyTree() });
     });
 
-    const { rerender } = render(<ActivityPanel sessionRef="ref_root" model={testModel({ ref: "ref_root" })} now={0} />);
+    const { rerender } = render(<ActivityPanel sessionRef="ref_root" model={testModel({ ref: "ref_root" })} />);
     await user.click(screen.getByRole("button", { name: "Activity" }));
-    rerender(<ActivityPanel sessionRef="ref_other" model={testModel({ ref: "ref_other" })} now={0} />);
+    rerender(<ActivityPanel sessionRef="ref_other" model={testModel({ ref: "ref_other" })} />);
     act(() => first.resolve({ data: activityTree() }));
 
     await user.click(screen.getByRole("button", { name: "Activity" }));
@@ -1405,7 +1389,7 @@ describe("ActivityPanel", () => {
 
     const { rerender } = render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel()} />
         <Toast />
       </>,
     );
@@ -1429,7 +1413,7 @@ describe("ActivityPanel", () => {
 
     const { rerender } = render(
       <>
-        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />
+        <ActivityPanel sessionRef="ref_root" model={testModel()} />
         <Toast />
       </>,
     );

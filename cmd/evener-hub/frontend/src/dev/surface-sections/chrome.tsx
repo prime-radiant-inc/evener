@@ -91,7 +91,7 @@ export default function ChromeSurfaceSection() {
         </div>
         <div className={styles.row}>
           <p className={styles.rowLabel}>activity</p>
-          <ActivityPanel sessionRef={ref} model={model} now={Date.now()} />
+          <ActivityPanel sessionRef={ref} model={model} />
         </div>
       </ThemeFlip>
     </section>

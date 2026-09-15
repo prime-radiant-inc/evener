@@ -29,8 +29,6 @@ const CAPABILITIES: ThreadCapabilities = {
   rename: true,
 };
 
-const NOW = Date.parse("2026-08-05T15:00:12.000Z");
-
 function testModel(ref: string): ThreadModel {
   return {
     ref,
@@ -247,12 +245,13 @@ describe("ActivityPanelBody watches", () => {
     expect(screen.getByRole("treeitem", { name: "Watch: Deploy watch" })).toBeTruthy();
   });
 
-  // The chrome hands the panel its own ticking clock as `now`. The panel must
-  // not thread that clock into the tree: the tree owns TreeNowContext and only
-  // its live-duration leaves consume it, so a tick of the chrome clock must
-  // leave the whole row list untouched. Before the fix the changed `now` prop
-  // reached WatchRowView and re-rendered the row (and its watchMeta) every tick.
-  test("the chrome's ticking clock does not re-render the watch rows", async () => {
+  // The chrome re-renders the panel on its own clock, re-creating the element
+  // with the same props. The tree owns TreeNowContext and only its
+  // live-duration leaves consume it, so such a prop-identical re-render must
+  // leave the row list untouched: nothing in the tree carries the chrome clock
+  // as a prop any more. (Before the fix the chrome threaded its ticking `now`
+  // into the tree and a changed prop re-rendered the open row and its meta.)
+  test("a prop-identical chrome re-render leaves the watch rows untouched", async () => {
     const ref = "ref_watch_tick";
     const fake = new FakeClient("ready");
     connectionStore.getState().connect(fake);
@@ -261,25 +260,23 @@ describe("ActivityPanelBody watches", () => {
     const watches = [
       watch({ id: "watch_tick", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
     ];
-    // One model object across both renders, so a re-render can only come from
-    // the clock changing, never from a fresh prop identity.
+    // One model object across both renders: the chrome re-renders its element,
+    // it does not mint new props for the panel.
     const model = testModel(ref);
     const handle = createRef<ActivityPanelHandle>();
-    const panel = (now: number) => (
-      <ActivityPanel ref={handle} sessionRef={ref} model={model} now={now} watches={watches} hideTrigger />
-    );
-    const { rerender } = render(panel(NOW));
+    const panel = () => <ActivityPanel ref={handle} sessionRef={ref} model={model} watches={watches} hideTrigger />;
+    const { rerender } = render(panel());
     act(() => handle.current?.open());
     await screen.findByRole("treeitem", { name: "Watch: Poll the queue depth" });
 
     // WatchRowView renders its right-hand meta through watchMeta, so a row
     // re-render shows up here. Spy after the tree has settled so the count
-    // measures only the clock tick below.
+    // measures only the chrome re-render below.
     const rowRender = vi.spyOn(activityRows, "watchMeta");
     const atRest = rowRender.mock.calls.length;
 
     act(() => {
-      rerender(panel(NOW + 3000));
+      rerender(panel());
     });
 
     expect(rowRender.mock.calls.length).toBe(atRest);

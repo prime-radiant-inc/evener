@@ -24,11 +24,6 @@ import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
 export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
-  // The chrome's shared ticking clock. The panel takes it as part of the
-  // chrome's contract but deliberately does not forward it: the activity tree
-  // ticks through its own TreeNowContext, so only the live-duration leaves
-  // re-render and a chrome tick leaves the row list untouched.
-  now: number;
   // The session's live watches, absent-able: an old daemon omits the list.
   watches?: NavigationWatchSummary[];
   // Rows the hub omitted from `watches`; the Watches header reports "+N more".
