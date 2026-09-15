@@ -1219,6 +1219,49 @@ describe("drain-as-steer affordance", () => {
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
+  // A Stop parks the queue (agent/session_client_mutation.go QueueHeld): the
+  // entries stay, the daemon reports idle with a non-empty queue (a queue that
+  // is not parked upgrades idle to active, session_state.go WireState), and
+  // the next user-initiated run releases it -- turn/start runs the new
+  // message first and the drain loop takes the parked messages after it.
+  // The wire carries no held flag, so idle + depth > 0 IS the parked state,
+  // and the strip says what the composer's Send will do rather than offering
+  // a steer the daemon advertises as unavailable.
+  test("an idle session with a parked queue says the next message runs first, then the queue", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, steer: false, send: true, queue: false },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    expect(screen.getByText(/paused by stop/i).textContent).toMatch(/your next message runs first, then the queue/i);
+    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+    expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
+    expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
+  });
+
+  test("a running session with a queue shows no parked-queue copy", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    expect(screen.queryByText(/paused by stop/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Steer queue now" })).toBeTruthy();
+  });
+
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {

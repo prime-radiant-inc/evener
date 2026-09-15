@@ -68,6 +68,14 @@
   color: var(--ink-low);
 }
 
+/* The parked-queue note sits where "Steer queue now" would: the header's
+ * trailing slot, in the title's own caption size. */
+.parked {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  text-align: right;
+}
+
 .rowActions {
   display: flex;
   flex: 0 0 auto;

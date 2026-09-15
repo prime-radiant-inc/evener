@@ -122,6 +122,7 @@ async function qualify() {
     "decideSubmitRoute",
     "decideSteerRoute",
     "isTurnActive",
+    "canSteer",
     "formatTokenCount",
     "formatDurationMs",
     "formatCharCount",
@@ -247,6 +248,9 @@ assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSe
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
 assert.equal(client.isTurnActive("active"), true);
 assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.canSteer("active", { steer: true }), true);
+assert.equal(client.canSteer("idle", { steer: true }), false);
+assert.equal(client.canSteer("active", { steer: false }), false);
 assert.equal(client.formatTokenCount(41200), "41k");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5k chars");

@@ -10,7 +10,7 @@
 import { type ReactNode, useState } from "react";
 import { canonicalSkillNames } from "../../../../protocol/composerInput";
 import { errorText, sessionActionError } from "../../../../protocol/errors";
-import { canSteer } from "../../../../protocol/submitRouting";
+import { canSteer, isTurnActive } from "../../../../protocol/submitRouting";
 import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
@@ -41,6 +41,7 @@ const CLASS = {
   rowText: requireClass(styles.rowText, "queuestrip.module.css", "rowText"),
   rowReason: requireClass(styles.rowReason, "queuestrip.module.css", "rowReason"),
   rowActions: requireClass(styles.rowActions, "queuestrip.module.css", "rowActions"),
+  parked: requireClass(styles.parked, "queuestrip.module.css", "parked"),
 };
 
 // Session.tsx's own loadOlder catch is this wave's reference implementation
@@ -200,6 +201,20 @@ export function QueueStrip({
   // and a disabled "Steer now", never a drain or promote it would answer
   // Unavailable. Edit and remove need no such gate.
   const steerOffered = canSteer(model.status.type, model.capabilities);
+  // A Stop parks the daemon's queue (agent/session_client_mutation.go
+  // QueueHeld): the entries stay where they are and the session reports idle
+  // (or awaiting) with a non-empty queue, which a queue that is NOT parked
+  // never does -- pending queued work upgrades idle to active
+  // (agent/session_state.go WireState, pendingQueueDepth). The wire carries no
+  // held flag, so this is the parked state. What releases it is the user's
+  // next run: turn/start runs the new message first and the drain loop takes
+  // the parked messages after it, so the strip says exactly that beside the
+  // composer's Send, rather than offering a steer the daemon advertises as
+  // unavailable while idle. (turn/drainAsSteer and turn/promoteQueuedAsSteer
+  // would also release it, but the hub derives the steer capability from the
+  // active status, so at idle they are not advertised; issue #1363.)
+  const parkedByStop =
+    depth > 0 && !isTurnActive(model.status.type) && ["idle", "awaiting"].includes(model.status.type);
 
   const ids = queue?.ids;
   const texts = queue?.texts;
@@ -384,6 +399,9 @@ export function QueueStrip({
               Steer queue now
             </Button>
           </Tooltip>
+        )}
+        {parkedByStop && (
+          <span className={CLASS.parked}>Paused by Stop. Your next message runs first, then the queue.</span>
         )}
       </div>
       <ul className={CLASS.list}>
