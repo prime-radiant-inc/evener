@@ -105,7 +105,9 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	var rec *httptest.ResponseRecorder
 
 	// 2. git-head: the AppWire response carries the seam's sentinel branch,
-	// proving no real `git` ran.
+	// proving no real `git` ran. Origin is opt-in, so the branch-only call must
+	// come back without it and the IncludeOrigin call must carry the seam's
+	// sentinel (also proving the origin half of the seam ran, not a real `git`).
 	out, err := exactDispatch(context.Background(), t, s.Web.appRPC, appwire.MethodEvenerGitHead, appwire.GitHeadParams{CWD: s.CWD})
 	if err != nil {
 		t.Fatalf("git/head dispatch: %v", err)
@@ -116,6 +118,20 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	}
 	if gh.Head != sandboxGitHead {
 		t.Fatalf("git/head did not use the seam: head=%q want %q", gh.Head, sandboxGitHead)
+	}
+	if gh.OriginURL != "" {
+		t.Fatalf("git/head sent an origin to a branch-only caller: originUrl=%q", gh.OriginURL)
+	}
+	out, err = exactDispatch(context.Background(), t, s.Web.appRPC, appwire.MethodEvenerGitHead, appwire.GitHeadParams{CWD: s.CWD, IncludeOrigin: true})
+	if err != nil {
+		t.Fatalf("git/head (IncludeOrigin) dispatch: %v", err)
+	}
+	gh, ok = out.(appwire.GitHeadResponse)
+	if !ok {
+		t.Fatalf("git/head (IncludeOrigin) response=%T, want appwire.GitHeadResponse", out)
+	}
+	if gh.OriginURL != sandboxGitOrigin {
+		t.Fatalf("git/head did not use the origin seam: originUrl=%q want %q", gh.OriginURL, sandboxGitOrigin)
 	}
 
 	// Network tripwire: nothing above may have dialed.
