@@ -273,19 +273,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		}
 		// Environment context is a standalone saved turn, not a runnable
 		// work carrier. Close its group before the following user input.
-		reserved := p.reservedTurnID
-		wasRealTurnStarted := p.anyTurnStarted
-		p.reservedTurnID = ""
-		_, out := p.openTurn(data.TurnID, event.Timestamp)
-		// Environment context is persisted metadata, not a runnable turn. Keep
-		// prelude and reserved-turn state based on real work only.
-		p.anyTurnStarted = wasRealTurnStarted
-		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)...)
-		out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-		// The environment has its own durable identity and cannot consume
-		// the runnable identity already advertised for the following input.
-		p.reservedTurnID = reserved
-		return out
+		return p.bookkeepingTurn(data.TurnID, event.Timestamp, func() []AppNotification {
+			return p.systemAnnouncement(appwire.ThreadItemEventKindEnvironment, "Environment", data.Text)
+		})
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {
@@ -2024,6 +2014,32 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 		Ref:      p.ref,
 		Turn:     startedTurn(turnID, at),
 	}))
+}
+
+// bookkeepingTurn opens and closes a standalone turn for a persisted record
+// that is not runnable work -- an environment block today -- around the items
+// announce emits into it. The record has its own durable identity (stableID,
+// empty when the daemon could not name it), so it must not consume the
+// runnable identity already advertised for the following input: the pending
+// reservation is set aside while the turn runs and handed back afterwards,
+// with its provenance. openTurn clears reservedTurnIDIsStable on the way
+// through, and a stable reservation restored without that flag is one the
+// counter then treats as minted, skipping the number a stable id owes, so
+// every turn named after it lands one short of where a reload numbers the
+// same conversation. The prelude test (anyTurnStarted) likewise tracks real
+// work only.
+func (p *AppEventProjector) bookkeepingTurn(stableID string, at time.Time, announce func() []AppNotification) []AppNotification {
+	reserved := p.reservedTurnID
+	reservedIsStable := p.reservedTurnIDIsStable
+	wasRealTurnStarted := p.anyTurnStarted
+	p.reservedTurnID = ""
+	_, out := p.openTurn(stableID, at)
+	p.anyTurnStarted = wasRealTurnStarted
+	out = append(out, announce()...)
+	out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
+	p.reservedTurnID = reserved
+	p.reservedTurnIDIsStable = reservedIsStable
+	return out
 }
 
 // completeReasoningItem closes the reasoning item opened by a summary delta
