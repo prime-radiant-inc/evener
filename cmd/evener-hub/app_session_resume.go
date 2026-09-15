@@ -58,6 +58,18 @@ func withSessionResume[R any](
 // we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
+	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
+		if cfg.ResumeLocks != nil {
+			if err := cfg.ResumeLocks.ResumeCleanupError(cfg.ResumeLocks.RecoveryAliases(ref.ThreadID)); err != nil {
+				return appwire.Unavailable(err.Error())
+			}
+		}
+		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false); err != nil {
+			return err
+		} else if stopped {
+			return nil
+		}
+	}
 	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
