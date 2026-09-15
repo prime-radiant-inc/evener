@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
+import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
+import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
 import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
@@ -1689,3 +1691,104 @@ test.each(["chat", "intent"] as const)(
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Delegating the flaky suite");
   },
 );
+
+// --- entity cards on ids in non-content summary fields ---------------------
+//
+// A tool summary is a plain string, but a job_/dlg_/watch_ id inside it names a
+// real entity: the row renders it as the transcript's shared card trigger and
+// never clips it (a clipped id with an ellipsis in it is not detectable as an
+// id at all, so no card could attach). These drive the REAL descriptors
+// through the real consumer.
+
+const SUMMARY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+const SUMMARY_WATCH = "watch_034KEfjYFbfoUaPeHJcLXY";
+
+function summaryEntities(): ReadonlyMap<string, EntityView> {
+  const job: ActivityJob = {
+    jobId: SUMMARY_JOB,
+    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
+    ownerRef: "local:s",
+    type: "shell",
+    status: "completed",
+    outcome: "success",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "Compile the frontend",
+    command: "npm run build",
+    startedAt: "2026-09-13T20:00:00Z",
+    exitCode: 0,
+    outputBytes: 12,
+  };
+  const tree: ActivityTree = {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "02wMz5TxvEMoJEDTDGOTil",
+      ref: "local:s",
+      label: "root",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 1, complete: true },
+      entries: [{ kind: "shell", job }],
+      branch: {},
+    },
+  };
+  const watchItem = {
+    id: "watch-item",
+    turnId: "turn_1",
+    position: { entry: 1, item: 1 },
+    type: "commandExecution" as const,
+    text: "",
+    toolName: "job_watch",
+    argumentsJSON: JSON.stringify({ operation: "inspect", watch_id: SUMMARY_WATCH }),
+    output: "",
+    raw: { watch_id: SUMMARY_WATCH, watching: true, source: "job_x", condition: "output_match: ready", deliveries: 2 },
+    status: "completed" as const,
+  };
+  return buildEntityView({
+    sessionRef: "local:s",
+    tree,
+    turns: [{ id: "turn_1", status: "completed", items: [watchItem] }],
+    stale: false,
+    ended: false,
+  });
+}
+
+function renderSummaryWithEntities(toolItem: ItemModel) {
+  return render(
+    <TranscriptRenderProvider
+      config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+      surface="readOnly"
+      disclosureScope="test:summary-entities"
+      entities={summaryEntities()}
+    >
+      <ToolCallItem item={toolItem} turn={turn} live={false} />
+    </TranscriptRenderProvider>,
+  );
+}
+
+test("the job_status row renders its target id whole and as an entity card", () => {
+  const output = JSON.stringify({ id: SUMMARY_JOB, type: "shell", status: "running" });
+  renderSummaryWithEntities(
+    item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: SUMMARY_JOB }), output }),
+  );
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.textContent).toBe(`Checked ${SUMMARY_JOB} · running`);
+  expect(summary.textContent).not.toContain("…");
+  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_JOB);
+});
+
+test("the job_watch clear row renders its cleared watch id whole and as an entity card", () => {
+  renderSummaryWithEntities(
+    item({
+      toolName: "job_watch",
+      argumentsJSON: JSON.stringify({ operation: "clear", watch_id: SUMMARY_WATCH }),
+      raw: { watch_id: SUMMARY_WATCH, watching: false },
+      output: "",
+    }),
+  );
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.textContent).toBe(`Cleared ${SUMMARY_WATCH}`);
+  expect(summary.textContent).not.toContain("…");
+  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_WATCH);
+});
