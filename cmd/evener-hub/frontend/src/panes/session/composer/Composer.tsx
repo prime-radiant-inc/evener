@@ -98,6 +98,7 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
+import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
 import { addSkillSelection, removeSkillSelection } from "./skillSelections";
@@ -1629,7 +1630,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} discoverActivity />
                     </div>
                   )
                 }
@@ -1715,6 +1716,13 @@ export function Composer({ ref, focused }: ComposerProps) {
           </form>
         </div>
       )}
+      {/* The session's working dir and git branch, in one quiet line under the
+          card. Reference material, not a control: it stays put across every
+          composer state (including an ended session's collapsed card and the
+          ask-pending input swap), so "where is this agent working" never
+          disappears with the input row. Only a local session's cwd is looked up
+          for a branch: a source-backed session's cwd is another host's path. */}
+      <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} />
     </div>
   );
 }

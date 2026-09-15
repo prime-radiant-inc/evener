@@ -59,6 +59,8 @@ export interface SessionChromeProps {
   ref: string;
   placement?: SessionChromePlacement;
   onOpenTasks?: () => void;
+  /** Live session mounts opt into the hidden panel's initial activity discovery. */
+  discoverActivity?: boolean;
 }
 
 const CLASS = {
@@ -74,7 +76,12 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTasks }: SessionChromeProps) {
+export function SessionChrome({
+  ref: sessionRef,
+  placement = "footer",
+  onOpenTasks,
+  discoverActivity = false,
+}: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
@@ -296,6 +303,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             now={now}
             hideTrigger
             refreshWhenHidden
+            discoverWhenHidden={discoverActivity}
           />
           <NotesPanel ref={notesRef} sessionRef={sessionRef} model={model} hideTrigger />
           <SessionMenu

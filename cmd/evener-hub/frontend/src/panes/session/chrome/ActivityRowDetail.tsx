@@ -8,6 +8,7 @@
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
+  activityDelegateDiagnostics,
   activityDelegateState,
   formatClockTime,
   splitMandate,
@@ -216,11 +217,12 @@ export function ActivityRowDetail({
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
       {delegate && <span className={CLASS.detailMeta}>Delegate {delegate.delegateId} · send · stop · status</span>}
       {delegate?.parentWatchGranted && <span className={CLASS.detailMeta}>Watch enabled</span>}
-      {delegate?.diagnostics?.map((diagnostic) => (
-        <span className={CLASS.detailMeta} key={diagnostic}>
-          {diagnostic}
-        </span>
-      ))}
+      {delegate &&
+        activityDelegateDiagnostics(delegate).map((diagnostic) => (
+          <span className={CLASS.detailMeta} key={diagnostic}>
+            {diagnostic}
+          </span>
+        ))}
       {delegate?.warnings?.map((warning) => (
         <span className={CLASS.detailMeta} key={warning}>
           {warning}

@@ -20,6 +20,7 @@ import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import { foldTurnEntries } from "./toolRuns";
 import { asTurnError } from "./turnFailure";
+import { useEntityView } from "./useEntityView";
 import "./messages";
 import "./tools";
 import styles from "../session.module.css";
@@ -327,6 +328,7 @@ export function TranscriptBody({
   onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const focusFallbackRef = useRef<HTMLElement>(null);
+  const entities = useEntityView(sessionRef ?? model.ref, model);
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
   // Source item ids from the projector plus the folded-run ids the rows will
@@ -356,8 +358,9 @@ export function TranscriptBody({
         surface,
         sessionRef,
         disclosureScope,
+        entities,
       }),
-    [itemRenderFingerprint],
+    [itemRenderFingerprint, entities],
   );
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const viewRegistration = useTranscriptViewRegistration({
@@ -510,6 +513,7 @@ export function TranscriptBody({
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}
       thread={model}
+      entities={entities}
     >
       {content}
     </TranscriptRenderProvider>

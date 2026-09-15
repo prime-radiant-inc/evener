@@ -16,6 +16,7 @@ import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
 import { scopedDisclosureId } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import type { ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -312,7 +313,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
     <div className={CLASS.card} data-testid="delegate-status-body">
       {/* Header: delegate ID + status chip */}
       <div className={CLASS.head}>
-        <span className={CLASS.headId}>{state.id}</span>
+        <span className={CLASS.headId}>
+          <EntityRef id={state.id ?? ""} triggerOnly />
+        </span>
         <span className={CLASS.headSpacer} />
         <Chip tone={tone}>{label}</Chip>
       </div>

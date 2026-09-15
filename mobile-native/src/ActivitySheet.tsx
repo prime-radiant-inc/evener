@@ -334,9 +334,14 @@ export function ActivitySheet({
                 <View style={{ gap: 12, paddingTop: 12 }}>
                   {list.branches().map((branch) => (
                     <View key={branch.id}>
-                      <Copy
-                        muted
-                      >{`${branch.label}: ${branch.error ?? "Some activity is not loaded."}`}</Copy>
+                      {branch.error || branch.truncated || branch.continuation ? (
+                        <Copy
+                          muted
+                        >{`${branch.label}: ${branch.error ?? "Some activity is not loaded."}`}</Copy>
+                      ) : null}
+                      {branch.diagnostics?.map((diagnostic) => (
+                        <Copy muted key={diagnostic}>{`${branch.label}: ${diagnostic}`}</Copy>
+                      ))}
                       {branch.continuation ? (
                         <Action
                           disabled={!connected || state.loading}

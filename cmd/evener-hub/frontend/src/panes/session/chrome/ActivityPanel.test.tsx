@@ -620,6 +620,35 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: "Activity · 3" })).toBeTruthy();
   });
 
+  test("the hidden chrome owner discovers activity once before the summary is established", async () => {
+    const fake = connectFakeClient();
+    const gate = deferred<{ data: unknown }>();
+    fake.on("evener/jobs/list", () => gate.promise);
+
+    const chromeOwners = (second: boolean) => (
+      <>
+        <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />
+        {second && <ActivityPanel sessionRef="ref_root" model={testModel()} now={0} hideTrigger refreshWhenHidden />}
+      </>
+    );
+
+    expect(activitySummaryStore.getState().entries.has("ref_root")).toBe(false);
+    const { rerender } = render(chromeOwners(false));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
+
+    rerender(chromeOwners(true));
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+
+    await act(async () => {
+      gate.resolve({ data: activityTree() });
+      await gate.promise;
+      await Promise.resolve();
+    });
+
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+  });
+
   test("establishes a failed first attempt and does not retry the same bump while closed", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -639,6 +668,24 @@ describe("ActivityPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Close" }));
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+  });
+
+  // The root has no row, so what the daemon could not read of its journals
+  // (#1269's session-level diagnostics) is the panel's to say, beside the
+  // coverage strip; a delegate's child sentences are the row's detail strip's.
+  test("shows the root session's diagnostics beside the coverage strip", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const torn = "delegate_journal_torn_tail: ignored unterminated trailing batch";
+    const degraded = activityTree() as { root: Record<string, unknown> };
+    degraded.root.diagnostics = [torn];
+    fake.on("evener/jobs/list", () => ({ data: degraded }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+
+    expect(screen.getByText(torn)).toBeTruthy();
   });
 
   test("keeps the badge bare when the root counts are incomplete", async () => {
@@ -922,6 +969,65 @@ describe("ActivityPanel", () => {
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
   });
 
+  test("a closed panel queues one hydration refresh while the summary is loading", async () => {
+    const fake = connectFakeClient();
+    const bumpGate = deferred<{ data: unknown }>();
+    const generationGate = deferred<{ data: unknown }>();
+    fake.on("evener/jobs/list", () =>
+      fake.calls.filter((call) => call.method === "evener/jobs/list").length === 1
+        ? bumpGate.promise
+        : generationGate.promise,
+    );
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          "ref_pending_gen",
+          {
+            counts: undefined,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: 1,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
+
+    const panel = (bump: number) => (
+      <ActivityPanel
+        sessionRef="ref_pending_gen"
+        model={testModel({ ref: "ref_pending_gen", jobsUpdatedAt: bump })}
+        now={0}
+      />
+    );
+    const { rerender } = render(panel(1));
+    rerender(panel(2));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1));
+
+    act(() => {
+      threadsStore.setState({ hydrations: new Map([["ref_pending_gen", 1]]) });
+    });
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(1);
+
+    await act(async () => {
+      bumpGate.resolve({ data: activityTree() });
+      await bumpGate.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2));
+
+    await act(async () => {
+      generationGate.resolve({ data: activityTree(2) });
+      await generationGate.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_pending_gen")?.loading).toBe(false));
+    await act(async () => Promise.resolve());
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
+  });
+
   test("derives the root badge from the merged tree after continuation", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -1166,6 +1272,50 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("button", { name: /load more/i })).toBeTruthy();
     expect(screen.queryByText(/showing the last activity that loaded/i)).toBeNull();
     expect(screen.queryByText(/couldn't load activity/i)).toBeNull();
+  });
+
+  test("a failed continuation does not automatically issue a root request", async () => {
+    const fake = connectFakeClient();
+    const discardedRoot = deferred<{ data: unknown }>();
+    let rootRequests = 0;
+    fake.on("evener/jobs/list", () => {
+      rootRequests += 1;
+      if (rootRequests === 2) return discardedRoot.promise;
+      return { data: activityTree() };
+    });
+
+    const { rerender } = render(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 1 })} />);
+    await screen.findByRole("tree");
+    rerender(<ActivityPanelBody sessionRef="ref_root" model={testModel({ jobsUpdatedAt: 2 })} />);
+    await waitFor(() => expect(rootRequests).toBe(2));
+
+    const nodeID = "delegate:dlg_partial";
+    let continuationRequest = 0;
+    act(() => {
+      continuationRequest = activityPanelStore.getState().beginFetch("ref_root", { nodeID });
+    });
+    await act(async () => {
+      discardedRoot.resolve({ data: activityTree(2) });
+      await discardedRoot.promise;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(activitySummaryStore.getState().entries.get("ref_root")?.loading).toBe(false));
+
+    act(() => {
+      activityPanelStore.getState().publishFetch("ref_root", continuationRequest, {
+        kind: "continuation-failed",
+        nodeID,
+        message: "continuation failed",
+      });
+    });
+    await act(async () => Promise.resolve());
+
+    expect(activityPanelStore.getState().entries.get("ref_root")?.continuationFailures[nodeID]).toBe(
+      "continuation failed",
+    );
+    expect(activitySummaryStore.getState().entries.get("ref_root")?.lastFetchedBump).toBeUndefined();
+    expect(rootRequests).toBe(2);
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(2);
   });
 
   test("a refresh that drops a retained row keeps rendering the surviving tree", async () => {

@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -47,18 +47,43 @@ test-web-browser: web-preflight
 # can still load their module graph. The scripts run under no gate, so nothing
 # noticed when they stopped resolving.
 ## The native iPhone app and its shared session core gate.
-## proves: Native and shared-session Vitest suites plus strict native TypeScript
-##   compilation pass against the checked-in Expo/React Native sources, and the
-##   hand-run scripts/*.mts tools still resolve their module graph under tsx.
+## proves: Metro bundles the real iOS entry point, the native and
+##   shared-session Vitest suites plus strict native TypeScript compilation
+##   pass against the checked-in Expo/React Native sources, and the hand-run
+##   scripts/*.mts tools still resolve their module graph under tsx.
 ## trigger: Native CI; local pre-merge when native or shared mobile sources change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
 ##   does not contact a hub or provider - script resolution is checked without
 ##   loading anything, since every one of those scripts opens a socket the
 ##   moment its body runs.
-## fails-when: Native tests, shared-session tests, native typechecking, or
-##   script module resolution fail.
-test-native:
+## fails-when: Bundling, native tests, shared-session tests, native
+##   typechecking, or script module resolution fail.
+test-native: test-native-bundle
 	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
+
+# The only gate that runs Metro. Vitest resolves through Vite and `tsc` through
+# TypeScript's own resolver; neither reads metro.config.js, so a resolver
+# regression there passes every other native check and fails first on a device.
+# It runs ahead of the suites because a bundle that does not build is the
+# cheaper failure to read.
+## The native app's Metro bundling gate.
+## proves: Metro resolves every specifier the real iOS entry point reaches —
+##   the app's own sources, the shared mobile/ and frontend sources its
+##   resolveRequest redirects, and the AppWire client wherever that package
+##   lives — and the export writes an iOS bundle.
+## trigger: Native CI (via make test-native); local pre-merge when native
+##   sources or metro.config.js change.
+## requires: Node 22.13+ and an already-installed mobile-native dependency
+##   tree; no device, simulator, packager, hub, or provider. Runs with a
+##   private process home plus temporary and XDG roots and passes --clear, so
+##   the verdict never comes from a warm Metro cache. ~10s on a developer Mac,
+##   bounded by `timeout 900` where coreutils provides it (the ubuntu runner,
+##   or a Mac with gtimeout); without it the run is unbounded and the CI
+##   step's timeout-minutes is the backstop.
+## fails-when: Metro cannot resolve a module, the export fails, or the export
+##   writes no iOS bundle.
+test-native-bundle:
+	@scripts/native/test-native-bundle.sh
 
 ## The independently consumable AppWire package qualification gate.
 ## proves: A packed package installs outside the checkout, exposes ESM and

@@ -9,7 +9,8 @@ config.resolver.nodeModulesPaths = [path.resolve(__dirname, "node_modules")];
 // both where "@evener/appwire-client" lives and that its sources count as
 // shared headless code. Metro reads neither tsconfig paths nor the package's
 // own exports map, so this branch is the only thing that resolves the name for
-// the native bundle - and no gate bundles the app, so a break here ships green.
+// the native bundle - and `make test-native-bundle` bundles the app, so a break
+// here fails CI.
 const appwirePackage = path.join(root, "appwire-client", "typescript");
 const appwireName = "@evener/appwire-client";
 // Shared headless sources use this app's React/Zustand installation. Keep
@@ -21,11 +22,11 @@ config.resolver.resolveRequest = (context, name, platform) => {
 			path.join(root, "cmd", "evener-hub", "frontend", "src"),
 		) ||
 		context.originModulePath.startsWith(appwirePackage);
-	// Every native import of the package comes through here, and nothing in CI
-	// reads it: vitest resolves the name through this app's vitest config and
-	// `tsc` through tsconfig.check.json's paths, so a break in this branch
-	// passes both and surfaces first on a device. #1244 is the bundling gate
-	// that will exercise it.
+	// Every native import of the package comes through here -- the whole tree
+	// spells it by name now -- and `make test-native-bundle` is what exercises
+	// it: vitest resolves the name through this app's vitest config and `tsc`
+	// through tsconfig.check.json's paths, so a break in this branch passes
+	// both and would otherwise surface first on a device.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
 		const subpath = name.slice(appwireName.length).replace(/^\//, "");
 		const filePath = path.join(appwirePackage, `${subpath || "index"}.ts`);
