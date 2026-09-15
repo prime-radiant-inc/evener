@@ -6,10 +6,11 @@
 //   showSteer = busy && capabilities.steer
 //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
 //
-// Three of the hub's capabilities are themselves defined by whether a turn is
+// Two of the hub's capabilities are themselves defined by whether a turn is
 // in flight (server/appwire_runtime.go's appCapabilities: Send is !active,
-// Steer and Queue are active), so a snapshot cut before the turn says
-// steer=false/queue=false about the turn that follows. Reading it back once
+// Queue is active; Steer is harness support alone and the composer applies
+// the status), so a snapshot cut before the turn says queue=false about the
+// turn that follows. Reading it back once
 // the status has moved on produced kata 06t8's report exactly: submit a reply,
 // and the session it KNOWS is running shows no Steer, no Stop, and a Send that
 // stays grey however much you type — until a reload re-reads the snapshot from
@@ -103,11 +104,11 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
 // What a LIVE daemon with every callback wired advertises, verbatim from
 // server/appwire_runtime.go's appCapabilities. `active` is the whole
 // difference, and it is the reason a snapshot cannot be reused across a
-// status change.
+// status change. Steer is harness support and does not move with it.
 function daemonCapabilities(active: boolean): ThreadCapabilities {
   return {
     send: !active,
-    steer: active,
+    steer: true,
     interrupt: true,
     compact: true,
     clear: false,

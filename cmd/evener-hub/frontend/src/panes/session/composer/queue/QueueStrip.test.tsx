@@ -1221,13 +1221,61 @@ describe("drain-as-steer affordance", () => {
 
   // A Stop parks the queue (agent/session_client_mutation.go QueueHeld): the
   // entries stay, the daemon reports idle with a non-empty queue (a queue that
-  // is not parked upgrades idle to active, session_state.go WireState), and
-  // the next user-initiated run releases it -- turn/start runs the new
-  // message first and the drain loop takes the parked messages after it.
-  // The wire carries no held flag, so idle + depth > 0 IS the parked state,
-  // and the strip says what the composer's Send will do rather than offering
-  // a steer the daemon advertises as unavailable.
-  test("an idle session with a parked queue says the next message runs first, then the queue", async () => {
+  // is not parked upgrades idle to active, session_state.go WireState), and a
+  // drain or promote sent while idle releases it (both are accepted with no
+  // turn in flight and wake a steering carrier). The hub advertises steer as
+  // harness support, so the strip offers both for a parked queue.
+  test("a parked queue on a harness that can steer offers Steer queue now and Steer now, and they dispatch", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, send: true, queue: false },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    fake.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    fake.on("turn/promoteQueuedAsSteer", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+    renderStrip(defaultProps({ getComposerText: () => ({ text: "", hasPending: false }) }));
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    const steerNow = screen.getByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(false);
+    await act(async () => {
+      fireEvent.click(steerNow);
+    });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+    });
+
+    const drainButton = screen.getByRole("button", { name: "Steer queue now" });
+    await act(async () => {
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a" });
+    });
+  });
+
+  test("a parked queue on a harness that cannot steer offers no steering affordance", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       status: { type: "idle" },
@@ -1240,46 +1288,9 @@ describe("drain-as-steer affordance", () => {
     renderStrip(defaultProps());
 
     expect(await screen.findByText("queued")).toBeTruthy();
-    expect(screen.getByText(/paused by stop/i).textContent).toMatch(/your next message runs first, then the queue/i);
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
     expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
     expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
-  });
-
-  // awaiting + depth > 0 is the ask boundary, not a parked queue: the daemon
-  // arms awaiting at the boundary without consulting the queue and the drain
-  // ladder's queued rung runs it next, so the copy would name a pause that is
-  // not happening. Only idle + depth > 0 is unreachable without QueueHeld.
-  test("an awaiting session with a queue shows no parked-queue copy", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      status: { type: "awaiting" },
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...CAPABILITIES, steer: false },
-        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    renderStrip(defaultProps());
-
-    expect(await screen.findByText("queued")).toBeTruthy();
-    expect(screen.queryByText(/paused by stop/i)).toBeNull();
-  });
-
-  test("a running session with a queue shows no parked-queue copy", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      evener: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    renderStrip(defaultProps());
-
-    expect(await screen.findByText("queued")).toBeTruthy();
-    expect(screen.queryByText(/paused by stop/i)).toBeNull();
-    expect(screen.getByRole("button", { name: "Steer queue now" })).toBeTruthy();
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {

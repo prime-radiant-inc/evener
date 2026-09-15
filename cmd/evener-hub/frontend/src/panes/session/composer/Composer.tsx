@@ -40,7 +40,13 @@ import {
   type SlashToken,
   spliceSlashCommand,
 } from "../../../protocol/slashCompletion";
-import { canSteer, decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
+import {
+  canDrainQueue,
+  canSteer,
+  decideSteerRoute,
+  decideSubmitRoute,
+  isTurnActive,
+} from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -870,13 +876,19 @@ export function Composer({ ref, focused }: ComposerProps) {
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
 
-  // Stop and Steer share the gate and part on capability alone: the hub
-  // derives both `interrupt` and `steer` from the same active status
-  // (server/appwire_runtime.go appCapabilitiesLocked), so the pair the composer
-  // draws is the pair the daemon advertised for this status. Steer's is
-  // canSteer, the predicate the queue strip's steering affordances share.
+  // Stop and Steer share the status gate and part on capability alone. The
+  // hub's `interrupt` folds the active status in; its `steer` is harness
+  // support alone (server/appwire_runtime.go appCapabilitiesLocked), and
+  // canSteer applies the status for turn/steer. The queue strip's drain and
+  // promote affordances read canDrainQueue, which also admits a queue a Stop
+  // parked.
   const showStop = busy && model.capabilities.interrupt;
   const showSteer = canSteer(model.status.type, model.capabilities);
+  // Read here for the keybinding handler below, which closes over `model`
+  // outside this component's narrowing (see the block at the top on why every
+  // handler reads a pre-narrowed local).
+  const steerSupported = model.capabilities.steer === true;
+  const drainReady = canDrainQueue(model.status.type, model.capabilities, queueDepth);
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -1315,8 +1327,8 @@ export function Composer({ ref, focused }: ComposerProps) {
       textareaRef.current?.focus();
       return;
     }
-    // The same readiness rule as the button: the session is working (the
-    // thread status), not "the transcript has an open turn row". Neither
+    // The same readiness rule as the buttons: the session's status and the
+    // harness's capability, not "the transcript has an open turn row". Neither
     // request names a turn (appwire v3), and the daemon's v3 mutation path
     // accepts both without one: turn/steer adds pending steering for the
     // carrier turn (agent/session_client_mutation_queue.go clientMutationSteer)
@@ -1326,14 +1338,18 @@ export function Composer({ ref, focused }: ComposerProps) {
     // to steer" refusal lives in the legacy DrainAsSteerWithInput, which this
     // route never reaches. Gating on activeTurnId here refused a click landing
     // between the turn/completed and turn/started of an inline turn boundary,
-    // where the daemon is mid-input (issue #1341). The rule is showSteer, the
-    // button's own, capability included: Shift+Enter reaches this handler with
-    // no button on screen, and a harness that advertises no steer must not be
-    // sent a request it answers Unavailable. With the session idle Send is the
-    // route, so a steer keybinding there toasts rather than sending.
-    if (!showSteer) {
+    // where the daemon is mid-input (issue #1341). Shift+Enter reaches this
+    // handler with no button on screen, so the capability is checked here too:
+    // a harness that advertises no steer must not be sent a request it answers
+    // Unavailable. The steer route needs a running turn (idle means Send is the
+    // route); the drain route also runs a queue a Stop parked (canDrainQueue).
+    const ready = route === "drain" ? drainReady : showSteer;
+    if (!ready) {
       const verb = route === "drain" ? "Drain" : "Steer";
-      toasts.push("error", busy ? `${verb} is not available for this session` : `${verb} failed: no active turn`);
+      toasts.push(
+        "error",
+        steerSupported ? `${verb} failed: no active turn` : `${verb} is not available for this session`,
+      );
       return;
     }
     void submitAction(route);

@@ -61,7 +61,7 @@ test("isSessionBusy reads the thread status, not the transcript's open turn row"
   // id is gone while the session is still working.
   expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
   expect(isSessionBusy(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
-  // Mid-ask the daemon advertises no steer or queue (appCapabilitiesLocked
-  // derives both from an active status), and the palette agrees.
+  // Mid-ask nothing is running: the hub's queue capability is off and
+  // turn/steer needs a turn to redirect, so the palette says not busy.
   expect(isSessionBusy(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
 });

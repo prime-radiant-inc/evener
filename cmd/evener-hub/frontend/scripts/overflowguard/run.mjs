@@ -1291,7 +1291,15 @@ async function main() {
         // threshold is the container's, measured by the harness, not the pane's.
         const cluster = result.currentWork.verbCluster;
         const expectedVerbs = steer ? 3 : 2;
-        const expectWrapped = cluster.containerWidth !== null && cluster.containerWidth <= 399 && expectedVerbs === 3;
+        // The expectation is meaningless without the container's measured
+        // width: a missing container (the harness found no inline-size
+        // ancestor) is a guard defect, not a pass.
+        if (!Number.isFinite(cluster.containerWidth)) {
+          widthFailed = true;
+          console.log(`${label} ... FAIL - verb cluster: card container width unmeasured (${cluster.containerWidth})`);
+        }
+        const expectWrapped =
+          Number.isFinite(cluster.containerWidth) && cluster.containerWidth <= 399 && expectedVerbs === 3;
         const wrapped =
           cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
         if (cluster.controls !== expectedVerbs || wrapped !== expectWrapped) {

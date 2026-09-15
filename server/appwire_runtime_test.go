@@ -30,7 +30,11 @@ func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
 	}
 }
 
-func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
+// Steer advertises harness support, not a turn in flight: the daemon accepts
+// turn/drainAsSteer and turn/promoteQueuedAsSteer with nothing running (they
+// release a queue a Stop parked), and clients apply the status themselves for
+// turn/steer. Only a closed thread withholds it (#1363).
+func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -43,11 +47,12 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	}{
 		{"processing with steerFunc", "active", true, false, false, true, true},
 		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, false},
-		{"idle with steerFunc", "idle", false, false, false, true, false},
-		{"awaiting with steerFunc", "awaiting", false, false, false, true, false},
+		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
+		{"idle with steerFunc", "idle", false, false, false, true, true},
+		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
 		{"closed with steerFunc", "closed", false, false, false, true, false},
 		{"processing without steerFunc", "active", true, false, false, false, false},
+		{"idle without steerFunc", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,8 +155,11 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			if caps.Interrupt != working {
 				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
 			}
-			if caps.Steer != working {
-				t.Fatalf("status=%q (working=%v) but steer=%v: one frame, two threads", status, working, caps.Steer)
+			// Steer is harness support, withheld only by closed: it does not
+			// follow `working` (see TestAppCapabilities_SteerAdvertisesHarnessSupport).
+			wantSteer := status != appwire.ThreadStatusClosed
+			if caps.Steer != wantSteer {
+				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed

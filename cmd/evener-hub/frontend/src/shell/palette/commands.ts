@@ -12,6 +12,7 @@
 import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
 import type { ThreadModel } from "../../protocol/model";
 import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
+import { canDrainQueue } from "../../protocol/submitRouting";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
@@ -556,7 +557,8 @@ export function buildCommands(): Command[] {
       capability: "steer",
       run: (ctx) => {
         const model = focusedModel(ctx.sessionRef);
-        if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("drain failed: no active turn");
+        if (!ctx.sessionRef || !model || !canDrainQueue(model.status.type, model.capabilities, model.queue?.depth ?? 0))
+          return blocked("drain failed: no active turn");
         return threadsStore.getState().drainAsSteer(ctx.sessionRef, "");
       },
     },

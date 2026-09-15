@@ -70,14 +70,34 @@ export function isTurnActive(statusType: string): boolean {
   return statusType === "active";
 }
 
-// canSteer is the one gate every steering affordance shares: the composer's
-// Steer button and its keybinding, and the queue strip's "Steer queue now"
-// and per-row "Steer now". The session is working (isTurnActive) and the
-// daemon advertises steer for that status (the hub derives the capability
-// from the same status, server/appwire_runtime.go appCapabilitiesLocked).
-// One predicate rather than one per affordance, so a harness that cannot
-// steer is never sent a turn/steer, turn/drainAsSteer or
-// turn/promoteQueuedAsSteer it would answer Unavailable, from any of them.
+// canSteer gates turn/steer: the composer's Steer button and its keybinding's
+// steer route. The session is working (isTurnActive) and the harness can
+// steer. The hub's `steer` capability is harness support alone
+// (server/appwire_runtime.go appCapabilitiesLocked: it does not fold the
+// status in, so an idle client can still tell a harness that steers from one
+// that cannot); the status is the client's to apply, and for a plain steer
+// it is active, because with nothing running Send is the route.
 export function canSteer(statusType: string, capabilities: Pick<ThreadCapabilities, "steer">): boolean {
   return isTurnActive(statusType) && capabilities.steer === true;
+}
+
+// canDrainQueue gates turn/drainAsSteer and turn/promoteQueuedAsSteer: the
+// queue strip's "Steer queue now" and per-row "Steer now", the composer
+// keybinding's drain route and the palette's /drain-as-steer. The harness can
+// steer, and either a turn is running or the queue is parked: a Stop parks
+// the daemon's queue (agent/session_client_mutation.go QueueHeld), the
+// entries stay and the session reports idle with a non-empty queue (a queue
+// that is not parked upgrades idle to active, agent/session_state.go
+// WireState), and a drain or promote is one of the runs that releases it
+// (agent/session_client_mutation_queue.go; neither has a status
+// precondition). Idle only: awaiting + a queue is the ask boundary, and that
+// queue runs next on its own. One predicate for every drain/promote
+// affordance, so a harness that cannot steer is never sent one.
+export function canDrainQueue(
+  statusType: string,
+  capabilities: Pick<ThreadCapabilities, "steer">,
+  queueDepth: number,
+): boolean {
+  if (capabilities.steer !== true) return false;
+  return isTurnActive(statusType) || (statusType === "idle" && queueDepth > 0);
 }

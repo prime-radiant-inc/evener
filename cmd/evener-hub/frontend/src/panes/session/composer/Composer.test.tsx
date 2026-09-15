@@ -90,13 +90,14 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
 
 // What a real daemon publishes for an IDLE thread, read off
 // server/appwire_runtime.go's appCapabilities: `active` is false there, and
-// both Steer and Queue are gated on it, so an idle thread advertises
-// queue:false. Clear and ForkFromTurn are hardcoded false. This is the set the
-// client is actually holding in the window kata 8c65 describes, and it is not
+// Queue is gated on it, so an idle thread advertises queue:false; Steer is
+// harness support and stays true (the composer applies the status itself).
+// Clear and ForkFromTurn are hardcoded false. This is the set the client is
+// actually holding in the window kata 8c65 describes, and it is not
 // FULL_CAPABILITIES.
 const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   send: true,
-  steer: false,
+  steer: true,
   interrupt: true,
   compact: true,
   clear: false,

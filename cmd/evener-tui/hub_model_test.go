@@ -2127,6 +2127,69 @@ func TestHubModelNotificationClosedIsNotError(t *testing.T) {
 	}
 }
 
+// The hub advertises steer as harness support, not as "a turn is running"
+// (server/appwire_runtime.go appCapabilitiesLocked; #1363): an idle session on
+// a harness that steers reads steer=true on the wire. The TUI applies the
+// state itself -- its composer is in send mode at idle, so the ctrl+s hint is
+// not offered and the binding is a silent no-op -- and keeps the capability
+// so the hint appears the moment the session goes busy.
+func TestHubModelIdleSessionWithSteerSupportAdvertisesSteer(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref != "local:01SEND" {
+				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
+			}
+			thread := appwireThread(hubTreeNode{
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
+			}, "/tmp/evener")
+			// The hub's idle set: send on, queue off, steer on (harness support).
+			thread.Evener.Capabilities.Send = true
+			thread.Evener.Capabilities.Queue = false
+			thread.Evener.Capabilities.Steer = true
+			return appwire.ThreadReadResponse{Thread: thread}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = false
+	m.session.processing = true
+	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+	})
+
+	cmd := m.applyHubNotification(*notification.Notification)
+	if cmd == nil {
+		t.Fatal("idle status notification should refresh session detail")
+	}
+	updated, _ := m.Update(cmd())
+	got := updated.(hubModel)
+	if !got.detail.Capabilities.Steer {
+		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
+	}
+	if got.session.processing {
+		t.Fatal("session stayed processing after idle status refresh")
+	}
+	view := got.sessionView()
+	if strings.Contains(view, "ctrl+s") {
+		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
+	}
+	if !strings.Contains(view, "send: ready") {
+		t.Fatalf("idle composer is not in send mode:\n%s", view)
+	}
+	steered, steerCmd := got.handleSessionForceSteer()
+	if steerCmd != nil {
+		t.Fatal("ctrl+s at idle produced a command; it must be a silent no-op outside queue mode")
+	}
+	after := steered.(hubModel)
+	if afterView := after.sessionView(); afterView != view {
+		t.Fatalf("ctrl+s at idle changed the session view:\n%s", afterView)
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
