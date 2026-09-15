@@ -485,3 +485,47 @@ func TestRemoteHubSourceHostCapabilitiesCacheIsolated(t *testing.T) {
 		t.Fatalf("cached Roots = %v, want [/root/a]: caller mutation reached the cache", second.Roots)
 	}
 }
+
+// TestRemoteHubSourceHostCapabilitiesCacheIsolatedPointerScalars pins that the
+// pointer-valued scalars the launch layer and model list carry are deep-copied
+// too: mutating a returned *LaunchGlobal.Schema or *Models.Data[0].ContextWindow
+// must not reach the cached snapshot.
+func TestRemoteHubSourceHostCapabilitiesCacheIsolatedPointerScalars(t *testing.T) {
+	schema := 1
+	contextWindow := 1000
+	reply := func(method string, _ json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodEvenerLaunchGetLayer:
+			return scriptedReply{result: appwire.LaunchConfigLayer{Model: "gpt-x", Schema: &schema}}
+		case appwire.MethodModelList:
+			return scriptedReply{result: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "p", Model: "gpt-x", ContextWindow: &contextWindow}}}}
+		default:
+			return scriptedReply{result: appwire.EmptyResponse{}}
+		}
+	}
+	client, _ := newScriptedClient(t, reply)
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	first, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("first HostCapabilities: %v", err)
+	}
+	if first.LaunchGlobal.Schema == nil || first.Models.Data[0].ContextWindow == nil {
+		t.Fatalf("probe returned nil pointer scalars in %+v; the fixture did not exercise them", first)
+	}
+	*first.LaunchGlobal.Schema = 99
+	*first.Models.Data[0].ContextWindow = 99
+
+	second, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("second HostCapabilities: %v", err)
+	}
+	if second.LaunchGlobal.Schema == nil || *second.LaunchGlobal.Schema != 1 {
+		t.Fatalf("cached LaunchGlobal.Schema = %v, want 1: caller mutation reached the cache", second.LaunchGlobal.Schema)
+	}
+	if second.Models.Data[0].ContextWindow == nil || *second.Models.Data[0].ContextWindow != 1000 {
+		t.Fatalf("cached Models.Data[0].ContextWindow = %v, want 1000: caller mutation reached the cache", second.Models.Data[0].ContextWindow)
+	}
+}

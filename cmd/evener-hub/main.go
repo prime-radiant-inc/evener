@@ -446,14 +446,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			if ch.Client() != client {
 				return appsource.HostFacts{}, fmt.Errorf("remote hub %q: connection changed during capability probe", host)
 			}
-			pf := ch.Preflight()
-			return appsource.HostFacts{
-				ProtocolVersion: pf.Protocol,
-				HubVersion:      pf.Version,
-				OS:              pf.OS,
-				Arch:            pf.Arch,
-				Features:        ch.Client().Features(),
-			}, nil
+			return remoteHostFacts(ch.Preflight(), ch.Client().Features()), nil
 		},
 	}, appwireTrace)
 	if appwireTrace != nil {
@@ -596,6 +589,27 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return opts, err
+}
+
+// remoteHostFacts assembles the preflight half of a remote host's capability
+// snapshot from the channel's captured facts and the freshly initialized
+// client's advertised features.
+//
+// The channel's facts are captured before attach: when the host's build differs
+// from the controller's, sshconn's ensureOnce redeploys the controller's build
+// and restarts the host hub before attaching, but the channel keeps those
+// pre-deploy facts. pf.Version is therefore stale exactly in that case, while
+// Features come from the newly initialized client. A successful Ensure
+// guarantees the attached hub runs the controller's build — the only build the
+// manager deploys — so report that version rather than the pre-deploy string.
+func remoteHostFacts(pf sshconn.Preflight, features appwire.FeatureSet) appsource.HostFacts {
+	return appsource.HostFacts{
+		ProtocolVersion: pf.Protocol,
+		HubVersion:      buildinfo.Version(),
+		OS:              pf.OS,
+		Arch:            pf.Arch,
+		Features:        features,
+	}
 }
 
 // printVersionInfo prints version information including backend git SHA and frontend hash.
