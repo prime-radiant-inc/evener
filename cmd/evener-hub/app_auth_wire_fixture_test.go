@@ -305,6 +305,9 @@ func authWireScenarios() []authWireScenario {
 				t.Helper()
 				dir := t.TempDir()
 				stateDir := t.TempDir()
+				// Fixed key: this case records endpoint fingerprints into the
+				// committed corpus, which is compared byte for byte.
+				pinEndpointFingerprintKey(t, stateDir)
 				tomlPath := filepath.Join(dir, "providers.toml")
 				if err := os.WriteFile(tomlPath, []byte(mixedInstancesToml), 0o644); err != nil {
 					t.Fatalf("write providers.toml: %v", err)

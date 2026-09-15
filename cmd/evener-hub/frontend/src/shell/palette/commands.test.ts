@@ -1,9 +1,8 @@
+import type { Thread, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import "../../panes/sessionPanels";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";

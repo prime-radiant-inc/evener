@@ -68,17 +68,23 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import {
+  errorText,
+  isActionUnavailable,
+  isThreadNotFound,
+  sessionActionError,
+  sessionActionHeadline,
+} from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { isActionUnavailable, isThreadNotFound } from "../../../protocol/sessionErrors";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { parseTaskListData, type TaskRow, type TaskStatus } from "./taskData";
+import { parseTaskListData, type TaskRow, type TaskStatus, taskAggregateLabel } from "./taskData";
 import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
 import { absoluteTime, relativeTime } from "./taskTime";
@@ -176,19 +182,11 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
   cancelled: "neutral",
 };
 
-function hasTaskOutcomes(tasks: NonNullable<ThreadModel["tasks"]>): boolean {
-  return tasks.cancelled !== undefined || tasks.remaining !== undefined;
-}
-
-export function taskAggregateLabel(tasks: NonNullable<ThreadModel["tasks"]>): string {
-  if (hasTaskOutcomes(tasks)) {
-    return `${tasks.done} done, ${tasks.cancelled ?? 0} cancelled, ${tasks.remaining ?? 0} remaining (${tasks.total} total)`;
-  }
-  return `${tasks.done}/${tasks.total}`;
-}
-
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
-  return tasks ? `Tasks ${taskAggregateLabel(tasks)}` : "Tasks";
+  // Bare sentence, no "Tasks" prefix: the aggregate already names the noun
+  // ("4 of 7 tasks left"), so a prefix would stutter ("Tasks 4 of 7 tasks
+  // left"). Bare "Tasks" remains the pre-aggregate fallback.
+  return tasks ? taskAggregateLabel(tasks) : "Tasks";
 }
 
 // The one name this panel's failure goes by. Both reports of it - the toast
@@ -580,11 +578,7 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
         )}
         {model.tasks && (
           <div className={CLASS.bodyHead} data-testid="tasks-body-head">
-            <span className={CLASS.count}>
-              {hasTaskOutcomes(model.tasks)
-                ? taskAggregateLabel(model.tasks)
-                : `${model.tasks.done}/${model.tasks.total} done`}
-            </span>
+            <span className={CLASS.count}>{taskAggregateLabel(model.tasks)}</span>
           </div>
         )}
         {rows.length === 0 ? (

@@ -4,7 +4,7 @@ import type {
   NavigationOrderContainer,
   NavigationReadBase,
   NavigationSnapshot,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
   NavigationBaseInvalidError,
@@ -103,11 +103,26 @@ const SESSION_OPTIONAL = [
   "updated_at",
   "more_subagents",
   "omitted_descendants",
+  "omitted_watches",
+  "omitted_armed_watches",
   "running_jobs",
   "completed_jobs",
+  "watches",
 ];
 const JOB_REQUIRED = ["job_id", "job_type", "status"];
 const JOB_OPTIONAL = ["command", "task", "reason", "intent", "full_command"];
+const WATCH_REQUIRED = ["id", "source", "deliveries", "created_at", "active"];
+const WATCH_OPTIONAL = [
+  "target",
+  "send_to",
+  "note",
+  "cadence",
+  "output_match",
+  "events",
+  "wildcard_events",
+  "delivery_times",
+  "end_reason",
+];
 const PROJECT_REQUIRED = ["key", "name", "session_count"];
 const PROJECT_OPTIONAL = [
   "working_dir",
@@ -137,6 +152,45 @@ function jobValue(value: unknown): boolean {
   );
 }
 
+const watchCadenceValue = (value: unknown): boolean =>
+  exactKeys(value, ["kind"], ["seconds", "derived_next_fire_at", "every", "filter"]) &&
+  identity(value.kind) &&
+  optional(value.seconds, (item) => typeof item === "number" && Number.isFinite(item) && item >= 0) &&
+  optional(value.derived_next_fire_at, rfc3339Timestamp) &&
+  optional(value.every, count) &&
+  optional(value.filter, (item) => boundedString(item, 512));
+
+function watchValue(value: unknown): boolean {
+  return (
+    exactKeys(value, WATCH_REQUIRED, WATCH_OPTIONAL) &&
+    identity(value.id) &&
+    identity(value.source) &&
+    count(value.deliveries) &&
+    rfc3339Timestamp(value.created_at) &&
+    bool(value.active) &&
+    optional(value.target, (item) => boundedString(item, 512)) &&
+    optional(value.send_to, (item) => boundedString(item, 512)) &&
+    optional(value.note, (item) => boundedString(item, 512)) &&
+    optional(value.cadence, (item) => Array.isArray(item) && item.every(watchCadenceValue)) &&
+    optional(value.output_match, (item) => boundedString(item, 512)) &&
+    optional(value.events, (item) => Array.isArray(item) && item.every((event) => boundedString(event, 512))) &&
+    optional(value.wildcard_events, bool) &&
+    optional(
+      value.delivery_times,
+      (item) => Array.isArray(item) && item.every((instant) => rfc3339Timestamp(instant)),
+    ) &&
+    optional(value.end_reason, (item) => boundedString(item, 512))
+  );
+}
+
+// Mirrors navigationSessionValueValid exactly: the armed subset can never exceed
+// the omitted total, and an absent total counts as zero rather than as unknown.
+// No producer can send an armed count without a total -- the projector counts
+// every omitted armed row in the total too -- so treating absence as unknown
+// would only let a malformed snapshot through.
+const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
+  ((value.omitted_armed_watches as number | undefined) ?? 0) <= ((value.omitted_watches as number | undefined) ?? 0);
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     exactKeys(value, SESSION_REQUIRED, SESSION_OPTIONAL) &&
@@ -159,8 +213,12 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.updated_at, rfc3339Timestamp) &&
     optional(value.more_subagents, count) &&
     optional(value.omitted_descendants, count) &&
+    optional(value.omitted_watches, count) &&
+    optional(value.omitted_armed_watches, count) &&
+    omittedArmedWithinOmitted(value) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue))
+    optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
+    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))
   );
 }
 

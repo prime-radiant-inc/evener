@@ -22,10 +22,10 @@
 // composer is where you act on this session"; the command palette only
 // hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
+
+import type { NavigationSessionLocation } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -50,7 +50,7 @@ import { GoalControl } from "./GoalControl";
 import { NotesPanel, type NotesPanelHandle } from "./NotesPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
@@ -59,6 +59,16 @@ export interface SessionChromeProps {
   ref: string;
   placement?: SessionChromePlacement;
   onOpenTasks?: () => void;
+  /** Live session mounts opt into the hidden panel's initial activity discovery. */
+  discoverActivity?: boolean;
+  /**
+   * Mount ONLY the hidden discovery owner, with no chrome of its own. The
+   * composer uses this while its follow-up card rests, when the card's own
+   * control row - the mount that otherwise carries `discoverActivity` - is
+   * absent, so initial activity discovery still follows the pane on screen
+   * (issue #1335).
+   */
+  discoveryOnly?: boolean;
 }
 
 const CLASS = {
@@ -74,7 +84,13 @@ const CLASS = {
 // the same for the header cadence).
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTasks }: SessionChromeProps) {
+export function SessionChrome({
+  ref: sessionRef,
+  placement = "footer",
+  onOpenTasks,
+  discoverActivity = false,
+  discoveryOnly = false,
+}: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
@@ -135,6 +151,28 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const activityRef = useRef<ActivityPanelHandle>(null);
   const notesRef = useRef<NotesPanelHandle>(null);
   if (!model) return null;
+
+  // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
+  // is the opt-in wiring that must not drift, so it is spelled exactly once
+  // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
+  const hiddenActivityPanel = (
+    <ActivityPanel
+      ref={activityRef}
+      sessionRef={sessionRef}
+      model={model}
+      watches={fallbackSession?.watches}
+      omittedWatches={fallbackSession?.omitted_watches}
+      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
+      hideTrigger
+      refreshWhenHidden
+      discoverWhenHidden={discoverActivity || discoveryOnly}
+    />
+  );
+
+  // A chrome-less mount returns the hidden discovery owner and nothing else:
+  // no status row, no menu, no second "⋯". This early return sits after every
+  // hook call above (everything below is plain values and handlers).
+  if (discoveryOnly) return hiddenActivityPanel;
 
   // Force-stop eligibility mirrors the reach of the retired inline footer
   // button (Session.tsx): any local session that isn't closed, including
@@ -289,14 +327,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
         <div className={CLASS.right}>
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
           {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
-          <ActivityPanel
-            ref={activityRef}
-            sessionRef={sessionRef}
-            model={model}
-            now={now}
-            hideTrigger
-            refreshWhenHidden
-          />
+          {hiddenActivityPanel}
           <NotesPanel ref={notesRef} sessionRef={sessionRef} model={model} hideTrigger />
           <SessionMenu
             sessionRef={sessionRef}
@@ -307,7 +338,9 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
             canReadNotes={canReadSharedNotes(model)}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
+            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
+            // inline and in the panel; even a condensed aggregate would crowd
+            // the menu's leading pane group.
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             actions={{

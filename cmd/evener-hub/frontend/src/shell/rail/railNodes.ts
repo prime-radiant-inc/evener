@@ -5,7 +5,7 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { NavigationJobSummary, NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 import { projectNodeExpansionKey } from "./railExpansion";
 
 export type TreeTier = "current" | "recent" | "archived";
@@ -66,15 +66,32 @@ export interface SessionRailNode extends WidgetTreeNode {
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
   //
-  // Its current subagents and jobs, followed by independent inactive-subagent
-  // and completed-job folds when either has rows (see splitChildren).
-  children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[];
+  // Its current subagents, running jobs, and own live watches, followed by
+  // independent inactive-subagent and completed-job folds when either has
+  // rows (see splitChildren).
+  children: (
+    | SessionRailNode
+    | JobRailNode
+    | WatchRailNode
+    | InactiveFoldRailNode
+    | CompletedJobsFoldRailNode
+    | OverflowRailNode
+  )[];
 }
 
 export interface JobRailNode extends WidgetTreeNode {
   kind: "job";
   job: RailJob;
   active: boolean;
+}
+
+/** One of a session's own live watches, as a quiet leaf row in that
+ * session's fold-out. Mirrors JobRailNode: it carries no children and no
+ * rail-side state of its own - the wire row ("active", cadence, note) is the
+ * whole truth RailRow renders. */
+export interface WatchRailNode extends WidgetTreeNode {
+  kind: "watch";
+  watch: NavigationWatchSummary;
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -127,11 +144,22 @@ export interface OverflowPage {
 /** A quiet "+N older" note standing for the rows the server capped away
  * (hubcore's maxSidebarSessionsPerTier, 50 per tier). Project overflow rows
  * carry the tier offsets needed to reveal those rows; synthetic child folds
- * leave pages empty because their omitted children are not project pages. */
+ * leave pages empty because their omitted children are not project pages.
+ *
+ * A capped WATCH list reuses this same row shape (see MAX_INLINE_WATCHES) with
+ * `suffix` set, so "+N more watches" reads in the rail's one existing overflow
+ * grammar instead of inventing a second one. */
 export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
+  /** The wording after the count. Absent means the tier cap's "older". */
+  suffix?: string;
+  /** True when the row stands for rows that cannot be revealed by a fetch
+   * (the local watch cap: the wire already carried every row). Such a row is a
+   * count, not a control: nothing activates it. Tier and catalog overflow rows
+   * leave this false and reveal their next page on activation. */
+  passive?: boolean;
 }
 
 export function sectionOverflowNode(
@@ -167,6 +195,7 @@ export function catalogOverflowNode(
 export type RailNode =
   | SessionRailNode
   | JobRailNode
+  | WatchRailNode
   | ProjectRailNode
   | LoadingRailNode
   | InactiveFoldRailNode
@@ -193,8 +222,14 @@ const projectNodeCache = new WeakMap<object, WeakMap<IsExpanded, Map<string, Pro
 // renders: an active project's inline list shows Current+Recent (the archived
 // tier is diverted out of it), the archived sub-branch shows only Archived,
 // and a hydrated archived project shows all three.
-function overflowNode(id: string, count: number, pages: OverflowPage[] = []): OverflowRailNode[] {
-  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages }] : [];
+function overflowNode(
+  id: string,
+  count: number,
+  pages: OverflowPage[] = [],
+  suffix?: string,
+  passive = false,
+): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count, pages, suffix, passive }] : [];
 }
 
 function tierOverflow(p: RailProject, tiers: ("current" | "recent" | "archived")[]): number {
@@ -288,6 +323,76 @@ function activeJobNode(parent: RailSession, job: NavigationJobSummary): JobRailN
   return { ...toJobNode(parent, job), active: true };
 }
 
+/** Watch rows a session renders inline before the rest fold behind one
+ * "+N more watches" note. Three keeps a fold-out scannable in the rail's
+ * ~280px column; past that the watches are inventory, and the count on the
+ * summary line is the honest summary of them. */
+const MAX_INLINE_WATCHES = 3;
+
+// Namespaced off the PARENT's row_id like the job rows are, so two sessions
+// carrying a same-id watch (each the watch's own receiver) still get distinct
+// tree ids.
+function toWatchNode(parent: RailSession, watch: NavigationWatchSummary): WatchRailNode {
+  const rowID = `watch:${parent.row_id}:${watch.id}`;
+  return { id: rowID, kind: "watch", watch, children: [] };
+}
+
+function watchOverflowId(parentRowID: string): string {
+  return `watches:${parentRowID}`;
+}
+
+/** How many of a session's OWN live watches are still armed. Deliberately not
+ * a subtree rollup: the hub projects each watch onto exactly the summary of
+ * the session that receives it (navigation_projection.go's navigationWatches),
+ * so summing descendants here would print a subagent's watch on every ancestor
+ * row as well as on the subagent's own - one watch, several counts. A receiver
+ * watch belongs to the session whose summary carries it. */
+export function activeWatchCount(node: RailSession): number {
+  // Include the armed rows the hub omitted: past the per-session cap they are
+  // not on `node.watches`, but they are still this session's armed watches, and
+  // counting only the retained rows understates the total.
+  return armedWatchCount(node.watches) + (node.omitted_armed_watches ?? 0);
+}
+
+/** The same count read straight off the wire list, so the activity panel's
+ * Watches header and the rail row's count cannot drift apart: both numbers are
+ * one predicate, not two copies of one. */
+export function armedWatchCount(watches: readonly NavigationWatchSummary[] | undefined): number {
+  return (watches ?? []).filter((watch) => watch.active).length;
+}
+
+/** The session's summary-line watch count. It reports ONE total per session -
+ * the retained rows the fold-out lists plus the exact number of rows the
+ * projector omitted (a session above its per-session cap, or rows its byte
+ * fitter shed) as "+N more" - so the summary and the fold-out hanging under it
+ * cannot disagree about how many watches the session holds.
+ *
+ * When every retained row is armed the base is the armed count, byte-identical
+ * to the wording that shipped before the retained/inactive distinction existed
+ * (`1 watch`, `2 watches · +1 more`). When a retained row is inactive - a fired
+ * one-shot whose teardown is still pending projects inactive - the base is the
+ * retained total and the armed count stays visible beside it
+ * (`5 watches · 2 armed`, `5 watches · 2 armed · +3 more`), because the
+ * summary's number must match the fold-out that shows all of them.
+ *
+ * `armed` is the session's TRUE armed total (activeWatchCount), so it already
+ * includes armed rows the hub omitted. Whenever rows were omitted the figure is
+ * labelled `N armed total`, because the retained rows alone cannot say what
+ * covers the hidden ones - and the label must never understate the session's
+ * armed watches. */
+export function watchCountLabel(armed: number, retained: number, omitted: number): string {
+  if (omitted > 0) {
+    // The byte fitter can shed every retained row, and a leading "0 watches"
+    // would then contradict the totals beside it: the session does hold watches,
+    // the hub just could not fit a single row. Dropping the base count there
+    // matches what the panel's own watch header says in the same case.
+    const total = `${armed} armed total · +${omitted} more`;
+    return retained === 0 ? total : `${retained} watch${retained === 1 ? "" : "es"} · ${total}`;
+  }
+  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
+  return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
+}
+
 function subagentIsCurrent(child: RailSession): boolean {
   const activity = activeWorkSummary(child);
   return CURRENT_SUBAGENT_STATES.has(child.state) || activity.workingSubagents > 0 || activity.runningJobs > 0;
@@ -305,10 +410,7 @@ function subagentIsCurrent(child: RailSession): boolean {
 // "Inactive subagents" for rows that are neither inactive-in-that-sense nor
 // subagents. A cluster is already a disclosure; its members are ordinary
 // top-level sessions (parity-m3-sidebar-tree.md §3).
-function splitChildren(
-  parent: RailSession,
-  isExpanded: IsExpanded,
-): (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] {
+function splitChildren(parent: RailSession, isExpanded: IsExpanded): SessionRailNode["children"] {
   const cached = sessionChildrenCache.get(parent as object)?.get(isExpanded);
   if (cached) return cached;
   const current: SessionRailNode[] = [];
@@ -322,10 +424,29 @@ function splitChildren(
     (subagentIsCurrent(child) ? current : inactive).push(toSessionNode(child, isExpanded));
   }
   const inactiveCount = inactive.length + (parent.more_subagents ?? 0);
-  const children: (SessionRailNode | JobRailNode | InactiveFoldRailNode | CompletedJobsFoldRailNode)[] = [
+  const children: SessionRailNode["children"] = [
     ...current,
     ...(parent.running_jobs ?? []).map((job) => activeJobNode(parent, job)),
   ];
+  // The session's own live watches, after running work: an armed watch is
+  // pending, not happening, so it reads below the things currently running.
+  // Every row the wire sent stays reachable - the inline cap only hides the
+  // tail behind a count, it never drops it. The count also carries the rows the
+  // hub projector omitted (over the per-session cap, or shed by its byte
+  // fitter), which the summary line already reports as "+N more": a fold-out
+  // that ignored them would contradict the row it hangs under.
+  const watches = parent.watches ?? [];
+  const inlineWatches = watches.slice(0, MAX_INLINE_WATCHES);
+  children.push(...inlineWatches.map((watch) => toWatchNode(parent, watch)));
+  const hiddenWatches = watches.length - inlineWatches.length + (parent.omitted_watches ?? 0);
+  if (hiddenWatches > 0) {
+    children.push(
+      // The cap is local to the rail: the wire already carried every retained
+      // watch, and the omitted rows the hub dropped have no page to fetch
+      // either. The row is an honest count, not a control.
+      ...overflowNode(watchOverflowId(parent.row_id), hiddenWatches, [], "more watches", true),
+    );
+  }
   if (inactiveCount > 0) {
     const id = inactiveFoldId(parent.row_id);
     const omitted = overflowNode(id, parent.more_subagents ?? 0);

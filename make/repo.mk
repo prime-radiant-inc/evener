@@ -12,7 +12,14 @@ tools:
 tools-golangci:
 	@set -eu; \
 	golangci=$$(awk '$$1=="golangci-lint" {print $$2}' .tool-versions); \
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"
+	url=https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh; \
+	attempt=0; for delay in 3 10 30 0; do attempt=$$((attempt+1)); \
+		if installer=$$(curl -sSfL --retry 5 --retry-delay 2 "$$url") && \
+			printf '%s\n' "$$installer" | sh -s -- -b "$$(go env GOPATH)/bin" "v$$golangci"; then exit 0; fi; \
+		echo "tools-golangci: attempt $$attempt of 4 failed" >&2; \
+		if [ "$$delay" -gt 0 ]; then echo "tools-golangci: retrying in $${delay}s" >&2; sleep "$$delay"; fi; \
+	done; \
+	echo "tools-golangci: golangci-lint install failed after 4 attempts" >&2; exit 1
 
 ## Install the CI-pinned gitleaks version from .tool-versions.
 tools-gitleaks:

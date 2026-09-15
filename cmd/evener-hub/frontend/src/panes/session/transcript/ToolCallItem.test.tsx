@@ -11,6 +11,7 @@ import {
   TranscriptRenderProvider,
 } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
 import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
@@ -20,7 +21,7 @@ import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its 
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
@@ -1689,3 +1690,68 @@ test.each(["chat", "intent"] as const)(
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Delegating the flaky suite");
   },
 );
+
+// --- entity cards on ids in non-content summary fields ---------------------
+//
+// A tool summary is a plain string, but a job_/dlg_/watch_ id inside it names a
+// real entity: the row renders it as the transcript's shared card trigger and
+// never clips it (a clipped id with an ellipsis in it is not detectable as an
+// id at all, so no card could attach). These drive the REAL descriptors
+// through the real consumer.
+
+const SUMMARY_WATCH = "watch_034KEfjYFbfoUaPeHJcLXY";
+
+function summaryEntities() {
+  const watchItem = {
+    id: "watch-item",
+    turnId: "turn_1",
+    position: { entry: 1, item: 1 },
+    type: "commandExecution" as const,
+    text: "",
+    toolName: "job_watch",
+    argumentsJSON: JSON.stringify({ operation: "inspect", watch_id: SUMMARY_WATCH }),
+    output: "",
+    raw: { watch_id: SUMMARY_WATCH, watching: true, source: "job_x", condition: "output_match: ready", deliveries: 2 },
+    status: "completed" as const,
+  };
+  return summaryEntityView([{ id: "turn_1", status: "completed", items: [watchItem] }]);
+}
+
+function renderSummaryWithEntities(toolItem: ItemModel) {
+  return render(
+    <TranscriptRenderProvider
+      config={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+      surface="readOnly"
+      disclosureScope="test:summary-entities"
+      entities={summaryEntities()}
+    >
+      <ToolCallItem item={toolItem} turn={turn} live={false} />
+    </TranscriptRenderProvider>,
+  );
+}
+
+test("the job_status row renders its target id whole and as an entity card", () => {
+  const output = JSON.stringify({ id: SUMMARY_ENTITY_JOB, type: "shell", status: "running" });
+  renderSummaryWithEntities(
+    item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: SUMMARY_ENTITY_JOB }), output }),
+  );
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.textContent).toBe(`Checked ${SUMMARY_ENTITY_JOB} · running`);
+  expect(summary.textContent).not.toContain("…");
+  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_ENTITY_JOB);
+});
+
+test("the job_watch clear row renders its cleared watch id whole and as an entity card", () => {
+  renderSummaryWithEntities(
+    item({
+      toolName: "job_watch",
+      argumentsJSON: JSON.stringify({ operation: "clear", watch_id: SUMMARY_WATCH }),
+      raw: { watch_id: SUMMARY_WATCH, watching: false },
+      output: "",
+    }),
+  );
+  const summary = screen.getByTestId("tool-row-summary");
+  expect(summary.textContent).toBe(`Cleared ${SUMMARY_WATCH}`);
+  expect(summary.textContent).not.toContain("…");
+  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_WATCH);
+});

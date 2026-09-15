@@ -1,9 +1,9 @@
+import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { AppwireClient } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
-import { AppwireClient } from "./protocol/client";
-import { FakeClient } from "./protocol/testing/fakeClient";
-import type { NavigationReadParams, NavigationReadResponse } from "./protocol/types.gen";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";

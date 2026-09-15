@@ -13,6 +13,7 @@ import (
 // TestRunShardsBuildFailurePrintsBuildLog covers the build-failure path in
 // runShards where the build fails but no signal was received (line 239-241).
 func TestRunShardsBuildFailurePrintsBuildLog(t *testing.T) {
+	isolateToolchainEnv(t)
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("GOWORK", "off")
@@ -62,7 +63,7 @@ func TestCachedSurveyPathWithGOCACHE(t *testing.T) {
 	if len(strings.TrimSpace(string(gocache))) == 0 {
 		t.Skip("GOCACHE is empty")
 	}
-	got := cfg.cachedSurveyPath("TestA\nTestB\n")
+	got := cfg.cachedSurveyPath("TestA\nTestB\n", parsedFlags{}, "")
 	if got == "" {
 		t.Fatalf("cachedSurveyPath with default GOCACHE should not be empty")
 	}
@@ -118,6 +119,7 @@ func TestInterrupterAddTerminatesAfterSignalNoPanic(t *testing.T) {
 // TestRunShardsNoTestsFound covers the path where the survey finds no tests
 // to shard (line 299-301).
 func TestRunShardsNoTestsFound(t *testing.T) {
+	isolateToolchainEnv(t)
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("GOWORK", "off")
@@ -155,6 +157,7 @@ func TestSignalHandlerNonSyscallSignal(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
 	t.Setenv("GOWORK", "off")
+	isolateToolchainEnv(t)
 
 	signals := make(chan os.Signal, 2)
 	var stdout, stderr bytes.Buffer

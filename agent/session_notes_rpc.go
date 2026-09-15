@@ -3,8 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -59,9 +59,9 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		if changed {
 			reserveClientMutationTurnID(snapshot, record)
 			record.SteeringKind = events.SteeringKindHumanNote
-			text := "human updated their whiteboard: " + stored
+			text := humanNoteSteerPrefix + " " + stored
 			if stored == "" {
-				text = "human updated their whiteboard: (whiteboard cleared)"
+				text = humanNoteSteerPrefix + " (whiteboard cleared)"
 			}
 			addPendingSteering(snapshot, record, []appwire.InputItem{{Type: "text", Text: text}})
 			projection = acceptedClientMutationProjection(record.Method)
@@ -82,6 +82,10 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 		lookup.Record = s.clientMutations.snapshot().Journal[clientMutationID]
 	}
 	if lookup.Record.OperationState == clientMutationOperationApplied || lookup.Record.OperationState == clientMutationOperationTerminal {
+		// The commit landed (a post-rename error still reports it through the
+		// store), so the canonical note is now readable. Publish before the
+		// emission so the emitted snapshot and every reader agree on it.
+		s.publishCommittedHumanNoteLocked()
 		s.reflectDurableClientSteering()
 		s.wakeForPendingSteering()
 		if changed {
@@ -99,6 +103,14 @@ func (s *Session) SetHumanNote(clientMutationID, note string) (appwire.NotesHuma
 	if err := replayClientMutationResult(lookup.Record, &response); err != nil {
 		return response, NormalizeClientMutationError(clientMutationID, err)
 	}
+	// A replayed result was journaled by whichever binary served the original
+	// call, and one that predates the write-path strip can carry controls; the
+	// response is rendered by clients, so the value handed out is stripped while
+	// the journal keeps its historical record. Stripping is deliberately not
+	// normalizeNote: the journaled value is already normalized (the clamp can
+	// leave a trailing space that a second collapse would drop), so re-normalizing
+	// would hand back a different value than the original call returned.
+	response.Note = stripTextControls(response.Note)
 	disposition := appwire.MutationDispositionApplied
 	if lookup.Disposition == clientMutationDispositionReplayed {
 		disposition = appwire.MutationDispositionReplayed
@@ -158,7 +170,10 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	if err != nil {
 		return false, NormalizeClientMutationError(outerID, err)
 	}
-	unknown := appwire.InvalidParams("no URL entry with id " + id)
+	// The id is caller-supplied and this message is printed by terminals (the
+	// TUI renders RPC errors), so quote it: %q escapes any control sequence
+	// instead of handing the terminal something to execute.
+	unknown := appwire.InvalidParams(fmt.Sprintf("no URL entry with id %q", id))
 	s.notesUpdateMu.Lock()
 	urls := s.snapshotSessionURLsLocked()
 	lookup, err := s.clientMutations.reservePrepared(request, func(_ *clientMutationSnapshot, record *clientMutationRecord) error {
@@ -196,7 +211,7 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	removed := s.removeSessionURL(id)
+	removed := s.stageSessionURLRemove(id)
 	if !removed {
 		s.metaSaveMu.Unlock()
 		if lookup.Record.AttemptGeneration > 1 {
@@ -208,6 +223,9 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 				lookup.Lease.Release()
 				return false, err
 			}
+			// The removal's metadata write landed on the earlier attempt, so
+			// publish the store as committed before announcing the removal.
+			s.publishCommittedNotesLocked()
 			// The removal's announcement belongs to the removal, not to the
 			// crash: re-emit the current list so the projector converges on
 			// the post-removal state the success journal records (G2).
@@ -237,6 +255,9 @@ func (s *Session) RemoveSessionURL(outerID, id string) (bool, error) {
 		return false, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil: a reader that already saw the
+	// pre-removal list must never see it retracted by a failed write.
+	s.publishCommittedNotesLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(s.snapshotSessionURLsLocked()))
 	return s.applyUrlsRemoveResult(lookup.Lease, outerID)
 }
@@ -261,13 +282,16 @@ func (s *Session) restoreSessionURLsLocked(urls []schema.SessionURL) {
 // the resulting snapshot as one serialized unit under notesUpdateMu, so
 // concurrent mutations publish in store order (G1). The emission runs
 // without Session.mu (emit re-acquires it). On a persistence failure the
-// store rolls back and the caller reports the error with no emission.
+// store rolls back and the caller reports the error with no emission. The
+// committed notes cut is published after the save returns nil, so readers
+// keep seeing the previous value while the save is in flight and after it
+// fails.
 func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed bool, human, agent string, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	_, prevAgent := s.notesSnapshot()
-	stored, changed = s.setAgentNote(note)
+	stored, changed = s.stageAgentNote(note)
 	if err = s.persistNotesMetaLocked(); err != nil {
 		s.mu.Lock()
 		s.agentNote = prevAgent
@@ -276,6 +300,10 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 		return stored, changed, "", "", err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil: readers must never observe a
+	// staged value whose save later fails, and the failure branch above never
+	// publishes at all.
+	s.publishCommittedNotesLocked()
 	if !changed {
 		human, agentNote := s.notesSnapshot()
 		return stored, false, human, agentNote, nil
@@ -290,13 +318,13 @@ func (s *Session) mutateAgentNoteSerialized(note string) (stored string, changed
 // concurrent URL mutations publish in store order (G1). The emission runs
 // without Session.mu (emit re-acquires it). On a persistence failure the
 // store rolls back to the pre-add list and the caller reports the error
-// with no emission.
+// with no emission, and the published committed cut is left untouched.
 func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry schema.SessionURL, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	entry, err = s.addSessionURL(rawURL, label)
+	entry, err = s.stageSessionURLAdd(rawURL, label)
 	if err != nil {
 		s.metaSaveMu.Unlock()
 		return schema.SessionURL{}, nil, err
@@ -307,6 +335,9 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 		return schema.SessionURL{}, nil, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil; the failure branch above
+	// restores the live list without touching the published cut.
+	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return entry, urls, nil
@@ -317,13 +348,14 @@ func (s *Session) mutateSessionURLAddSerialized(rawURL, label string) (entry sch
 // notesUpdateMu, so concurrent URL mutations publish in store order (G1).
 // The emission runs without Session.mu (emit re-acquires it). On a
 // persistence failure the store rolls back to the pre-removal list and the
-// caller reports the error with no emission.
+// caller reports the error with no emission, and the published committed cut
+// is left untouched.
 func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, urls []schema.SessionURL, err error) {
 	s.notesUpdateMu.Lock()
 	defer s.notesUpdateMu.Unlock()
 	s.metaSaveMu.Lock()
 	prev := s.snapshotSessionURLsLocked()
-	removed = s.removeSessionURL(id)
+	removed = s.stageSessionURLRemove(id)
 	if !removed {
 		s.metaSaveMu.Unlock()
 		return false, nil, nil
@@ -334,6 +366,9 @@ func (s *Session) mutateSessionURLRemoveSerialized(id string) (removed bool, url
 		return false, nil, err
 	}
 	s.metaSaveMu.Unlock()
+	// Publish only after the save returned nil; a failed removal restores the
+	// live list and leaves the published cut on the previous committed value.
+	s.publishCommittedNotesLocked()
 	urls = s.snapshotSessionURLsLocked()
 	s.emit(events.EventUrlsUpdated, urlsUpdatedData(urls))
 	return true, urls, nil
@@ -379,7 +414,7 @@ func (s *Session) SessionURLsForTest() []schema.SessionURL {
 	return append([]schema.SessionURL(nil), s.sessionURLs...)
 }
 
-// notesSnapshot reads the human and agent notes under s.mu.
+// notesSnapshot reads the committed human and agent notes.
 func (s *Session) notesSnapshot() (human, agentNote string) {
 	human, agentNote, _ = s.notesSnapshotAll()
 	return human, agentNote
@@ -405,13 +440,6 @@ func (s *Session) notesContextBlockForModel() string {
 	return escapeNotesContextBlock(s.renderNotesContextBlock())
 }
 
-// notesAngleBracketReference matches the start of every character reference that
-// decodes to an angle bracket: a numeric reference ("&#60;", "&#060;", "&#x3c;",
-// "&#X3C;") or a named lt/gt reference. HTML named references are
-// case-insensitive, so "&LT;" and "&Lt;" have to be caught alongside "&lt;". The
-// optional "amp;" covers the same reference behind one more encoding layer.
-var notesAngleBracketReference = regexp.MustCompile(`(?i)&(?:amp;)?(?:#|lt|gt)`)
-
 // notesAngleBrackets escapes the literal spelling of the two framing characters.
 var notesAngleBrackets = strings.NewReplacer("<", "&lt;", ">", "&gt;")
 
@@ -421,14 +449,143 @@ var notesAngleBrackets = strings.NewReplacer("<", "&lt;", ">", "&gt;")
 // — html.EscapeString would also rewrite "&" and the quote characters, handing the
 // model a URL like "...?a=1&amp;b=2" that neither notes_read nor the UI would ever
 // show it.
+//
+// References are canonicalized rather than escaped one layer deeper. Escaping the
+// leading "&" only ever buys the next decode layer, so a note could always spell a
+// tag behind one layer more than the escaper had seen; canonicalizing gives the
+// copy exactly one spelling per angle bracket, whatever the input spelling and
+// however many "amp;" layers it carried, and makes the pass idempotent. A reader
+// that decodes one layer still sees what it saw before for a literal "<", which is
+// the property this escape has always had.
 func neutralizeNotesFraming(content string) string {
-	// References first: escaping their "&" leaves nothing that decodes to an angle
-	// bracket. This runs before the literal pass so its own "&lt;" output is not
-	// escaped a second time.
-	content = notesAngleBracketReference.ReplaceAllStringFunc(content, func(match string) string {
-		return "&amp;" + match[1:]
-	})
-	return notesAngleBrackets.Replace(content)
+	// References first: canonicalizing them leaves nothing that decodes to an angle
+	// bracket, and this runs before the literal pass so its own "&lt;" output is
+	// not escaped a second time.
+	return notesAngleBrackets.Replace(canonicalizeNotesAngleBracketReferences(content))
+}
+
+// canonicalizeNotesAngleBracketReferences rewrites every complete character
+// reference that resolves to an angle bracket into the canonical escaped spelling
+// of that angle bracket ("&lt;" or "&gt;"). Text that is not such a reference is
+// copied byte for byte, so an innocent "?a=1&ltd=2" in a URL reaches the model
+// exactly as it was stored.
+func canonicalizeNotesAngleBracketReferences(content string) string {
+	if !strings.Contains(content, "&") {
+		return content
+	}
+	var canonical strings.Builder
+	canonical.Grow(len(content))
+	for i := 0; i < len(content); {
+		if content[i] == '&' {
+			if bracket, size, ok := parseNotesAngleBracketReference(content[i:]); ok {
+				if bracket == '<' {
+					canonical.WriteString("&lt;")
+				} else {
+					canonical.WriteString("&gt;")
+				}
+				i += size
+				continue
+			}
+		}
+		canonical.WriteByte(content[i])
+		i++
+	}
+	return canonical.String()
+}
+
+// parseNotesAngleBracketReference parses one complete character reference at the
+// start of s, which must begin with "&", and reports the angle bracket it resolves
+// to together with the number of bytes the reference occupied.
+//
+// A reference is "&", any number of ampersand layers, then a base followed by the
+// terminating ";": the named references lt/gt (HTML named references are
+// case-insensitive, so "&LT;" and "&Lt;" count too), or a numeric reference of
+// decimal or "x"/"X" hex digits ("&#60;", "&#060;", "&#x3c;", "&#X3C;"). A layer
+// may itself be spelled numerically, which is why notesAmpLayerWidth exists. The
+// terminator is required, the digits have to parse and stay in range, and the
+// resolved value has to be an angle bracket: anything else is ordinary text that
+// happens to contain an "&", and rewriting it would hand the model text the user
+// never wrote.
+func parseNotesAngleBracketReference(s string) (bracket rune, size int, ok bool) {
+	rest := s[1:]
+	size = 1
+	for {
+		width, layer := notesAmpLayerWidth(rest)
+		if !layer {
+			break
+		}
+		rest = rest[width:]
+		size += width
+	}
+	switch {
+	case len(rest) >= 3 && strings.EqualFold(rest[:3], "lt;"):
+		return '<', size + 3, true
+	case len(rest) >= 3 && strings.EqualFold(rest[:3], "gt;"):
+		return '>', size + 3, true
+	case strings.HasPrefix(rest, "#"):
+		if value, width, valid := parseNotesNumericReference(rest[1:], size+1); valid && (value == '<' || value == '>') {
+			return value, width, true
+		}
+	}
+	return 0, 0, false
+}
+
+// notesAmpLayerWidth reports the width of an ampersand-encoding layer at the
+// start of s: the named reference "amp;" in any case, or a complete numeric
+// reference resolving to "&" ("&#38;", "&#038;", "&#x26;", "&#X26;"). The
+// numeric spelling counts because "&#38;lt;" decodes to "&lt;" and then to "<",
+// so following only the named spelling left a whole spelling of a framing tag
+// passing through untouched (roborev's finding on the round that introduced
+// this parser).
+func notesAmpLayerWidth(s string) (int, bool) {
+	if len(s) >= 4 && strings.EqualFold(s[:4], "amp;") {
+		return 4, true
+	}
+	if strings.HasPrefix(s, "#") {
+		if value, width, ok := parseNotesNumericReference(s[1:], 1); ok && value == '&' {
+			return width, true
+		}
+	}
+	return 0, false
+}
+
+// parseNotesNumericReference parses the digits of a numeric character reference
+// and its required terminator, afterHash pointing just past the "#" and size
+// counting the bytes consumed before them. It resolves any in-range value and
+// leaves which values are in scope to the caller.
+func parseNotesNumericReference(afterHash string, size int) (value rune, consumed int, ok bool) {
+	base := 10
+	digits := afterHash
+	if len(digits) > 0 && (digits[0] == 'x' || digits[0] == 'X') {
+		base = 16
+		digits = digits[1:]
+		size++
+	}
+	end := 0
+	for end < len(digits) && isNotesReferenceDigit(digits[end], base) {
+		end++
+	}
+	if end == 0 || end >= len(digits) || digits[end] != ';' {
+		return 0, 0, false
+	}
+	parsed, err := strconv.ParseUint(digits[:end], base, 32)
+	if err != nil {
+		return 0, 0, false
+	}
+	return rune(parsed), size + end + 1, true
+}
+
+// isNotesReferenceDigit reports whether c is a digit of base 10 or 16.
+func isNotesReferenceDigit(c byte, base int) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		return true
+	case base == 16 && c >= 'a' && c <= 'f':
+		return true
+	case base == 16 && c >= 'A' && c <= 'F':
+		return true
+	}
+	return false
 }
 
 // escapeNotesContextBlock returns the model-facing copy of a rendered
@@ -507,19 +664,119 @@ func formatNotesLinkLine(u schema.SessionURL) string {
 	return "Link: " + base
 }
 
-// notesSnapshotAll reads human note, agent note, and URL list together.
+// committedNotesState is one committed notes cut: every notes value a reader
+// may observe, installed together through Session.notesCommitted.
+//
+// The human note carries no presence flag. Every reader surface (Meta,
+// notesSnapshot, notesSnapshotAll, the projection renderer) collapses
+// "authority not established" and "saved clear" to "", exactly as the reads did
+// before this cut existed, so no consumer distinguishes them;
+// ReadCanonicalHumanNote still reports presence from disk for callers that act
+// on it.
+type committedNotesState struct {
+	human         string
+	agent         string
+	urls          []schema.SessionURL
+	everProjected bool
+}
+
+// committedNotesBaseLocked builds the next published cut from the live store,
+// carrying the previously published human note forward unless humanOverride is
+// non-nil. Callers hold notesUpdateMu (construction is single-threaded and runs
+// before the session is shared), which serializes every publisher, so the
+// carried value cannot move underneath them.
+func (s *Session) committedNotesBaseLocked(humanOverride *string) committedNotesState {
+	s.mu.Lock()
+	next := committedNotesState{
+		agent:         s.agentNote,
+		urls:          append([]schema.SessionURL(nil), s.sessionURLs...),
+		everProjected: s.notesEverProjected,
+	}
+	s.mu.Unlock()
+	if published := s.notesCommitted.Load(); published != nil {
+		next.human = published.human
+	}
+	if humanOverride != nil {
+		next.human = *humanOverride
+	}
+	return next
+}
+
+// publishCommittedNotesLocked publishes the live store as the committed cut.
+// Callers hold notesUpdateMu and call it only at a durability point: after a
+// notes mutator's metadata save returned nil, or when a projection records the
+// ever-projected flag. The failure paths (a rolled-back mutation, a rolled-back
+// URL removal) never call it, so a value a reader observed is never retracted;
+// restoreSessionURLsLocked deliberately has no publish of its own.
+func (s *Session) publishCommittedNotesLocked() {
+	next := s.committedNotesBaseLocked(nil)
+	s.notesCommitted.Store(&next)
+}
+
+// publishCommittedHumanNoteLocked publishes the mutation store's committed
+// canonical human note as the cut's human field, carrying the agent note, URL
+// list, and ever-projected flag forward. SetHumanNote is the only writer of the
+// committed human note, and every notes publisher holds notesUpdateMu, so the
+// carried fields cannot move underneath this publish.
+func (s *Session) publishCommittedHumanNoteLocked() {
+	human := ""
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	next := s.committedNotesBaseLocked(&human)
+	s.notesCommitted.Store(&next)
+}
+
+// seedCommittedNotes installs the first published cut during session
+// construction: the restored (or empty) live store plus the mutation store's
+// committed human note. It runs before the session serves any reader, so it
+// needs no publisher lock.
+func (s *Session) seedCommittedNotes() {
+	human := ""
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	next := s.committedNotesBaseLocked(&human)
+	s.notesCommitted.Store(&next)
+}
+
+// notesLiveSnapshot reads the notes store as staged: the live agent note, URL
+// list, and ever-projected flag, plus the mutation store's committed human
+// note. The metadata write uses it, because that write is the durability point
+// for a mutation whose value is still staged; readers take the published
+// committed cut instead (notesProjectionSnapshot).
+func (s *Session) notesLiveSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
+	s.mu.Lock()
+	agent, everProjected = s.agentNote, s.notesEverProjected
+	urls = append([]schema.SessionURL(nil), s.sessionURLs...)
+	s.mu.Unlock()
+	if s.clientMutations != nil {
+		human = s.clientMutations.committedHumanNote()
+	}
+	return human, agent, urls, everProjected
+}
+
+// notesSnapshotAll reads the committed human note, agent note, and URL list as
+// one cut.
 func (s *Session) notesSnapshotAll() (human, agent string, urls []schema.SessionURL) {
 	human, agent, urls, _ = s.notesProjectionSnapshot()
 	return human, agent, urls
 }
 
-// notesProjectionSnapshot reads the agent note, URL list, and ever-projected
-// flag under s.mu, then the canonical human note under clientMutations'
-// stateMu. The human note is owned by a different lock, so this is not one
-// atomic cut of all four: notesContextBlock's callers hold notesUpdateMu across
-// the render-compare-record unit, and that is what keeps a notes mutation from
-// landing between the emptiness check and the cleared-marker decision.
+// notesProjectionSnapshot returns one committed notes cut: the human note,
+// agent note, URL list, and ever-projected flag all come from a single atomic
+// load of the published cut, so a concurrent mutation can no longer make the
+// result a mix of pre- and post-mutation values — and a mutation that is still
+// inside its metadata save is not visible at all until that save lands.
+//
+// The fallback covers a session that was never built through NewSession or
+// RestoreSessionFromMeta: tests construct &Session{} directly and seed the live
+// fields, and those sessions have no published cut. It reads the live store
+// exactly as every reader did before the cut existed.
 func (s *Session) notesProjectionSnapshot() (human, agent string, urls []schema.SessionURL, everProjected bool) {
+	if published := s.notesCommitted.Load(); published != nil {
+		return published.human, published.agent, append([]schema.SessionURL(nil), published.urls...), published.everProjected
+	}
 	s.mu.Lock()
 	agent, everProjected = s.agentNote, s.notesEverProjected
 	urls = append([]schema.SessionURL(nil), s.sessionURLs...)
@@ -581,6 +838,17 @@ func (s *Session) maybeAppendNotesContext() {
 	body := llm.User(block)
 	modelBody := llm.User(modelBlock)
 	s.mu.Unlock()
+	// The ever-projected transition is part of the committed cut: readers use it
+	// to decide whether an empty store renders the explicit cleared marker, so
+	// publish it before the turn that records the projection. It publishes from
+	// the cut already published rather than re-reading the live staging store, so
+	// the transition can never carry a value a mutator has staged but not yet
+	// saved — even if a future caller reaches this without notesUpdateMu.
+	if published := s.notesCommitted.Load(); published != nil && !published.everProjected {
+		next := *published
+		next.everProjected = true
+		s.notesCommitted.Store(&next)
+	}
 	s.appendTurnWithTranscriptMessage(turn, modelBody, body)
 }
 
@@ -604,15 +872,83 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 // but model context must receive the escaped copy (see escapeNotesContextBlock),
 // or a note carrying the closing tag regains the harness framing on every
 // request the session serves. The input is not modified.
+// humanNoteSteerPrefix opens the steering text a shared-notes update carries.
+// A journal record persisted before SteeringKind was recorded has no kind to
+// read, so the prefix is how a note-origin entry is recognized there.
+const humanNoteSteerPrefix = "human updated their whiteboard:"
+
+// isHumanNoteSteer reports whether steering text came from a shared-notes update,
+// by kind or, for entries older than the kind, by its text. Only note-origin
+// steering is normalized: ordinary steering keeps the bytes the user typed, which
+// is what the live path and the persisted transcript already show.
+func isHumanNoteSteer(kind, text string) bool {
+	if kind != "" {
+		// A recorded kind decides. Only the human-note kind is note-origin, so a
+		// user's steering keeps its bytes even when it quotes the words back.
+		return kind == events.SteeringKindHumanNote
+	}
+	// A record persisted before kinds existed has none to read, so the exact shape
+	// the write path emits is the only marker left: the prefix followed by the
+	// space the note text always comes after. A user text imitating that shape
+	// exactly is indistinguishable and stays a documented ambiguity.
+	return strings.HasPrefix(text, humanNoteSteerPrefix+" ")
+}
+
+// rebuiltSteeringText returns a rebuilt steering entry's text: note-origin text is
+// stripped like every other load path, and ordinary steering keeps its bytes.
+func rebuiltSteeringText(kind, text string) string {
+	if !isHumanNoteSteer(kind, text) {
+		return text
+	}
+	return stripTextControls(text)
+}
+
 func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
 	for i := range out {
-		if out[i].Kind != schema.TurnNotesContext {
+		text := out[i].Message.Text()
+		if text == "" {
 			continue
 		}
-		if text := out[i].Message.Text(); text != "" {
-			out[i].Message = llm.User(escapeNotesContextBlock(text))
+		switch out[i].Kind {
+		case schema.TurnNotesContext:
+			// A turn persisted before the write-path strip can still carry
+			// controls, and the framing escape only knows the framing spellings:
+			// strip the other controls as well before the model copy is built.
+			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
+		case schema.TurnSteering:
+			if !isHumanNoteSteer(out[i].SteeringKind, text) {
+				// Ordinary steering is delivered exactly as the user typed it, live
+				// and restored alike; only notes-derived text is normalized, so this
+				// copy keeps its bytes.
+				continue
+			}
+			// A human-note update rides a steering turn, and this copy is what
+			// resumed requests and inherited prefixes hand to the model, so the
+			// text parts are stripped as well. Only the text parts change, and
+			// the slice is copied before the first change: llm.User(text) would
+			// replace the whole message and drop the image parts a steering turn
+			// can legitimately carry (attachments, or queued image-bearing input
+			// drained as steer), which is data loss on restore or fork. The
+			// stored turn keeps its bytes.
+			var rewritten []llm.ContentPart
+			for j, part := range out[i].Message.Content {
+				if part.Kind != llm.ContentText {
+					continue
+				}
+				stripped := stripTextControls(part.Text)
+				if stripped == part.Text {
+					continue
+				}
+				if rewritten == nil {
+					rewritten = append([]llm.ContentPart(nil), out[i].Message.Content...)
+				}
+				rewritten[j].Text = stripped
+			}
+			if rewritten != nil {
+				out[i].Message.Content = rewritten
+			}
 		}
 	}
 	return out

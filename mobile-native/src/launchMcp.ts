@@ -1,4 +1,4 @@
-import type { MCPServerSpec } from "../../appwire-client/typescript/types.gen";
+import type { MCPServerSpec } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 export async function addLaunchMcp(

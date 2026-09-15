@@ -2,6 +2,7 @@ export type {
   ActivityBranchState,
   ActivityCounts,
   ActivityDelegate,
+  ActivityDelegateBranch,
   ActivityDelegateEntry,
   ActivityDisclosureState,
   ActivityEntry,
@@ -14,6 +15,8 @@ export type {
   ActivityWorktree,
 } from "./activityData";
 export {
+  activityDelegateBranch,
+  activityDelegateDiagnostics,
   activityNodeID,
   defaultExpandedIDs,
   delegateHasActiveWork,
@@ -34,8 +37,24 @@ export type {
   ActivityJobRow,
   ActivityRow,
   ActivityRowBase,
+  ActivityWatchRow,
 } from "./activityRows";
-export { activityDelegateState, buildActivityRows, foldRowID, jobIsFailed } from "./activityRows";
+export {
+  activityDelegateState,
+  buildActivityRows,
+  buildWatchRows,
+  delegateRowFields,
+  foldRowID,
+  indexActivityEntities,
+  jobIsFailed,
+  jobRowFields,
+  watchDeliveryInstants,
+  watchFacts,
+  watchIsScheduled,
+  watchMeta,
+  watchName,
+  watchRowID,
+} from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
@@ -47,7 +66,7 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {
@@ -66,6 +85,10 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { EntityIdMatch, EntityKind } from "./entityIds";
+export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
+export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
+export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";
 export {
   ClientNotReadyError,
   ConnectionClosedError,
@@ -155,3 +178,27 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
+export {
+  asJsonObject,
+  boolField,
+  conditionSpec,
+  foldWatchSummaries,
+  humanizeInterval,
+  humanizeSeconds,
+  normalizeRow,
+  numField,
+  parseConditionText,
+  sourceLabel,
+  strArrayField,
+  strField,
+  watchDisplayState,
+} from "./watchRows";
+export {
+  watchArmedLabel,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+  watchNextFireLabel,
+  watchTitle,
+} from "./watchText";

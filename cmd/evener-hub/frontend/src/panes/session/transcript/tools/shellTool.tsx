@@ -19,9 +19,9 @@
 // heuristic looks only inside the FINAL bracketed segment (never the command's
 // own stdout/stderr body) to keep false positives unlikely.
 
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str, trailingBracketFooter } from "@evener/appwire-client";
 import { useRef } from "react";
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str, trailingBracketFooter } from "../../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { CodeBlock, ShellCommandBlock } from "../../../../widgets";

@@ -1,16 +1,18 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
+import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -31,12 +33,9 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
-import { draftStorageKey, readComposerDraft, readDraft } from "./draft";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "./queue/pendingTurnsStore";
+import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
@@ -153,6 +152,21 @@ function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 
 function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
   return { thread: testThread(ref, overrides) };
+}
+
+function emptyActivityTree(ref: string) {
+  return {
+    revision: 1,
+    root: {
+      sessionId: `sess_${ref}`,
+      ref,
+      label: "Root session",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
 }
 
 function connectFakeClient(): FakeClient {
@@ -737,6 +751,8 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map
@@ -769,6 +785,8 @@ afterEach(() => {
   // test. Under isolate:false that is what a later file's own
   // connectionStore.connect() re-triggers via rewireClient.
   resetThreadsStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   // Every test here writes real durable outbox records into this file's own
   // globalThis.indexedDB instance (one exercises the unavailable-storage
   // boundary by setting it to undefined) - the beforeEach above only
@@ -839,6 +857,66 @@ test("a focused pane never focuses its composer on mount on mobile", async () =>
   } finally {
     restoreViewport();
   }
+});
+
+test("the real live Composer mount discovers initial activity without a test-supplied opt-in", async () => {
+  const ref = "ref_activity_live";
+  const fake = connectFakeClient();
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () => readResponse(ref));
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  await threadsStore.getState().ensureThread(ref);
+  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
+  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref={ref} focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+});
+
+// The companion to the test above for the state it cannot cover: a SAVED
+// (notLoaded) session that still advertises send arrives with a collapsed
+// follow-up card, and the card's own control row - the composer's only
+// discovery opt-in - is not mounted while the card rests. Without a
+// chrome-less owner, entity ids in that session's transcript would stay plain
+// text until the card is engaged (issue #1335).
+test("a saved notLoaded session with sending enabled discovers activity while its card rests", async () => {
+  const ref = "ref_activity_saved";
+  const fake = connectFakeClient();
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    }),
+  );
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  await threadsStore.getState().ensureThread(ref);
+
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref={ref} focused={false} />
+    </ClientProvider>,
+  );
+
+  // The card rests as a bare invitation, so the composer's own chrome - the
+  // other discovery opt-in - is genuinely absent for this whole interval.
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
 });
 
 test("restores a stored draft into the textarea on mount", async () => {
@@ -3475,6 +3553,62 @@ test("a focused thread skill selection stages a canonical chip and submits the u
       { type: "skill", name: "simplify" },
     ],
   });
+});
+
+// model.skills mirrors thread.evener.diagnostics.skills, and the daemon only
+// publishes entries that are available AND user-invocable (agent/status.go) -
+// so a catalog entry reaching this tooltip is always usable. An "unavailable"
+// or "not user-invocable" diagnostic would describe a state the wire cannot
+// carry; the description is the whole tooltip.
+test("a selected skill's tooltip never invents an unavailable or non-user-invocable diagnostic", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_tip_usable";
+  writeComposerDraft(ref, { text: "", skillNames: ["simplify"] });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "simplify",
+            description: "rewrite",
+            disableModelInvocation: false,
+            userInvocable: false,
+            available: false,
+          },
+        ],
+      },
+    },
+  });
+
+  // The Tooltip wraps the inner name span, so the pointer must land on that
+  // span (mouseenter does not fire for a child of the hovered element).
+  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("simplify"));
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toBe("rewrite");
+});
+
+// The one diagnostic that CAN happen: the selection outlives the catalog
+// report that backed it, so the tooltip names the skill and says why it is
+// absent.
+test("a selected skill the catalog no longer reports says so in its tooltip", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_tip_missing";
+  writeComposerDraft(ref, { text: "", skillNames: ["vanished"] });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: { skills: [] },
+    },
+  });
+
+  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("vanished"));
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toBe("vanished — no longer in this session's skill catalog");
 });
 
 test("a mid-word slash never opens the menu", async () => {

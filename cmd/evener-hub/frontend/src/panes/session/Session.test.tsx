@@ -1,19 +1,35 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type {
+  ActivityJob,
+  ActivityTree,
+  AnyNotification,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { AppwireClient, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import { AppwireClient } from "../../protocol/client";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { FakeSocket } from "../../protocol/testing/fakeSocket";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
+import {
+  activityPanelStore,
+  EMPTY_ACTIVITY_PANEL_ENTRY,
+  resetActivityPanelStoreForTests,
+} from "../../stores/activityPanel";
+import {
+  activitySummaryStore,
+  EMPTY_ACTIVITY_SUMMARY_ENTRY,
+  resetActivitySummaryStoreForTests,
+} from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
@@ -26,14 +42,12 @@ import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
+import ReadOnlyTranscript from "../transcript/Transcript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "./composer/queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
@@ -151,6 +165,75 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
+function emptyActivityTree(ref: string) {
+  return {
+    revision: 1,
+    root: {
+      sessionId: `sess_${ref}`,
+      ref,
+      label: "Root session",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
+}
+
+function activityTree(ref: string, jobId: string, description: string): ActivityTree {
+  const job: ActivityJob = {
+    jobId,
+    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
+    ownerRef: ref,
+    type: "shell",
+    status: "completed",
+    outcome: "success",
+    transcriptRef: `job:${jobId}`,
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description,
+    startedAt: "2026-09-13T20:00:00Z",
+    endedAt: "2026-09-13T20:00:01Z",
+    exitCode: 0,
+    outputBytes: 12,
+  };
+  return {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: `sess_${ref}`,
+      ref,
+      label: "root",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 1, complete: true },
+      entries: [{ kind: "shell", job }],
+      branch: {},
+    },
+  };
+}
+
+function readOnlyEntityThread(ref: string, text: string): ThreadReadResponse {
+  return readResponse(ref, {
+    turns: [
+      {
+        id: "turn_entities",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_entities",
+            turnId: "turn_entities",
+            type: "agentMessage",
+            text,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -219,6 +302,8 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetNavigationStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -234,6 +319,8 @@ afterEach(() => {
   cleanup();
   resetPendingTurnsStoreForTests();
   resetAskDockStoreForTests();
+  resetActivityPanelStoreForTests();
+  resetActivitySummaryStoreForTests();
   resetWorkspaceStoreForTests();
   window.history.pushState({}, "", "/");
   vi.useRealTimers();
@@ -268,6 +355,70 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+});
+
+test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil";
+  const ref = `local:${owner}`;
+  const otherRef = "local:other-entity-session";
+  const ownJob = `job_${owner}_000000000123`;
+  const otherJob = `job_${owner}_000000000456`;
+  const ownTree = activityTree(ref, ownJob, "Owned by the requested ref");
+  const otherTree = activityTree(otherRef, otherJob, "Must not leak across refs");
+  activityPanelStore.setState({
+    entries: new Map([
+      [ref, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: ownTree } }],
+      [otherRef, { ...EMPTY_ACTIVITY_PANEL_ENTRY, established: true, load: { kind: "ready", tree: otherTree } }],
+    ]),
+  });
+  activitySummaryStore.setState({
+    entries: new Map([
+      [
+        otherRef,
+        {
+          ...EMPTY_ACTIVITY_SUMMARY_ENTRY,
+          counts: otherTree.root.counts,
+          established: true,
+          requestID: 1,
+        },
+      ],
+    ]),
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readOnlyEntityThread(ref, `Own ${ownJob}. Other ${otherJob}.`));
+
+  render(
+    <ClientProvider client={fake}>
+      <ReadOnlyTranscript params={{ ref }} paneId="read-only-entities" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1));
+  expect(screen.getByTestId("entity-trigger").textContent).toBe(ownJob);
+  expect(screen.getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
+  expect(screen.getByText(otherJob).closest('[data-testid="entity-trigger"]')).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
+});
+
+test("a read-only entity consumer does not initiate activity discovery", async () => {
+  const owner = "02wMz5TxvEMoJEDTDGOTil";
+  const ref = `local:${owner}`;
+  const job = `job_${owner}_000000000789`;
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readOnlyEntityThread(ref, `Passive reference ${job}.`));
+
+  render(
+    <ClientProvider client={fake}>
+      <ReadOnlyTranscript params={{ ref }} paneId="read-only-passive" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(job)).toBeTruthy());
+  await flushUntil(() => false, 5);
+  expect(screen.queryByTestId("entity-trigger")).toBeNull();
+  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
+  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(0);
 });
 
 // A ref stays on "Loading transcript…" forever when thread/read simply never
@@ -3043,6 +3194,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   const ref = "local:fenced-not-loaded";
   setNavigationTitle(ref, "Fenced saved session");
   let stopped = false;
+  const activityRefs: unknown[] = [];
   fake.on("thread/read", () => {
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = !stopped;
@@ -3052,6 +3204,10 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     // what kills the composer's follow-up card and its chrome mount.
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
+  });
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
   });
   fake.on("evener/thread/forceStop", () => {
     stopped = true;
@@ -3063,8 +3219,13 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
       <Toast />
     </ClientProvider>,
   );
+  expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
+  expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
   // The fence kills the composer card entirely - no invitation, no chrome.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
   const user = userEvent.setup();
   await user.click(menuTrigger);

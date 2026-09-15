@@ -1,6 +1,8 @@
 import { expect, test } from "vitest";
 import type { ActivityJob, ActivitySessionNode, ActivityShellEntry, ActivityTree } from "./activityData";
-import { activityDelegateState, buildActivityRows, foldRowID } from "./activityRows";
+import { activityDelegateState, buildActivityRows, foldRowID, indexActivityEntities } from "./activityRows";
+
+const TERMINAL_JOB_ID = "terminal";
 
 function shell(jobId: string, terminal: boolean, status = terminal ? "completed" : "running") {
   return {
@@ -87,6 +89,104 @@ function session(entries: unknown[], counts = { active: 0, failed: 0, completed:
 function tree(entries: unknown[]): ActivityTree {
   return { revision: 1, root: session(entries) as ActivityTree["root"] };
 }
+
+test("indexes completed entries hidden behind a collapsed fold", () => {
+  const activityTree = tree([shell(TERMINAL_JOB_ID, true)]);
+
+  expect(buildActivityRows(activityTree, new Set()).some((row) => row.id === `job:${TERMINAL_JOB_ID}`)).toBe(false);
+  expect(indexActivityEntities(activityTree).has(TERMINAL_JOB_ID)).toBe(true);
+  expect(indexActivityEntities(activityTree).get(TERMINAL_JOB_ID)).toMatchObject({ parentRef: activityTree.root.ref });
+});
+
+// The index is disclosure-independent, and it also keeps the session's own
+// entry order: entityView builds its entity map by iterating this index, so the
+// walk must not reorder entries into the panel's live-then-folded shape.
+test("the entity index visits entries in transcript order, disclosed or not", () => {
+  const activityTree = tree([shell("a", false), shell("b", true), shell("c", true), shell("d", false)]);
+
+  expect([...indexActivityEntities(activityTree).keys()]).toEqual(["a", "b", "c", "d"]);
+});
+
+test("indexed level-1 inactive row matches its fold-revealed panel row", () => {
+  const inactiveJob = shell("level-one-inactive", true) as ActivityShellEntry;
+  inactiveJob.job.transcriptRef = "job:level-one-inactive";
+  const activityTree = tree([inactiveJob]);
+  const panelRow = buildActivityRows(activityTree, new Set([foldRowID("session:sess_root")])).find(
+    (row) => row.id === "job:level-one-inactive",
+  );
+  const indexedRow = indexActivityEntities(activityTree).get("level-one-inactive");
+
+  if (panelRow?.kind !== "job" || indexedRow?.kind !== "job") throw new Error("expected level-1 inactive job rows");
+  expect({
+    id: indexedRow.id,
+    level: indexedRow.level,
+    defaultDetailOpen: indexedRow.defaultDetailOpen,
+    transcriptRef: indexedRow.transcriptRef,
+    parentRef: indexedRow.parentRef,
+  }).toEqual({
+    id: panelRow.id,
+    level: panelRow.level,
+    defaultDetailOpen: panelRow.defaultDetailOpen,
+    transcriptRef: panelRow.transcriptRef,
+    parentRef: panelRow.parentRef,
+  });
+});
+
+test("indexed rows match fully disclosed panel row fields deep in the tree", () => {
+  const deepJob = shell("deep", true) as ActivityShellEntry;
+  deepJob.job.transcriptRef = "job:deep";
+  const child = session([deepJob]) as ActivitySessionNode;
+  child.sessionId = "sess_child";
+  child.ref = "ref_dlg_parent";
+  const activityTree = tree([delegate("dlg_parent", { active: true, child })]);
+  const panelRow = buildActivityRows(activityTree, new Set([foldRowID("session:sess_child")])).find(
+    (row) => row.id === "job:deep",
+  );
+  const indexedRow = indexActivityEntities(activityTree).get("deep");
+
+  if (panelRow?.kind !== "job" || indexedRow?.kind !== "job") throw new Error("expected deep job rows");
+  expect({
+    id: indexedRow.id,
+    level: indexedRow.level,
+    defaultDetailOpen: indexedRow.defaultDetailOpen,
+    transcriptRef: indexedRow.transcriptRef,
+    parentRef: indexedRow.parentRef,
+  }).toEqual({
+    id: panelRow.id,
+    level: panelRow.level,
+    defaultDetailOpen: panelRow.defaultDetailOpen,
+    transcriptRef: panelRow.transcriptRef,
+    parentRef: panelRow.parentRef,
+  });
+});
+
+test("indexes nested delegate children independently of fold disclosure", () => {
+  const leaf = session([shell("nested-child", true)]) as ActivitySessionNode;
+  leaf.sessionId = "sess_leaf";
+  leaf.ref = "ref_dlg_nested";
+  const middle = session([delegate("dlg_nested", { child: leaf })]) as ActivitySessionNode;
+  middle.sessionId = "sess_middle";
+  middle.ref = "ref_dlg_outer";
+  const activityTree = tree([delegate("dlg_outer", { child: middle })]);
+  const expandedFolds = new Set([
+    foldRowID("session:sess_root"),
+    foldRowID("session:sess_middle"),
+    foldRowID("session:sess_leaf"),
+  ]);
+
+  const beforeFoldChange = [...indexActivityEntities(activityTree).keys()];
+  expect(buildActivityRows(activityTree, new Set()).some((row) => row.id === "job:nested-child")).toBe(false);
+  const afterCollapsedBuild = [...indexActivityEntities(activityTree).keys()];
+  expect(buildActivityRows(activityTree, expandedFolds).some((row) => row.id === "job:nested-child")).toBe(true);
+  const afterExpandedBuild = [...indexActivityEntities(activityTree).keys()];
+
+  expect(afterCollapsedBuild).toEqual(beforeFoldChange);
+  expect(afterExpandedBuild).toEqual(beforeFoldChange);
+  expect(indexActivityEntities(activityTree).get("nested-child")).toMatchObject({
+    kind: "job",
+    parentRef: "ref_dlg_nested",
+  });
+});
 
 test("stable delegate lineage stays one row and nests its ParentDelegateID shell", () => {
   const stable = {

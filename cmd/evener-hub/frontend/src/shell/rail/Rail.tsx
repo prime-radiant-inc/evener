@@ -1,7 +1,16 @@
+import type {
+  NavigationCatalogs,
+  NavigationProjectPage,
+  NavigationProjectResource,
+  NavigationProjectSummary,
+  NavigationSessionSummary,
+} from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import {
   type ChangeEvent,
   type CSSProperties,
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -10,14 +19,6 @@ import {
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { errorText } from "../../protocol/errors";
-import type {
-  NavigationCatalogs,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-  NavigationSessionSummary,
-} from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
 import {
   nextNavigationOffset,
@@ -55,7 +56,8 @@ import { Menu } from "../../widgets/menu";
 import { Tree, type TreeProps, type TreeRowInfo } from "../../widgets/tree";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
-import { navigate, paneToURL } from "../routing";
+import { navigate } from "../routing";
+import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
 import { workspaceStore } from "../workspace";
 import {
@@ -117,6 +119,11 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
+// Section-fold keys. Archived is the only one that starts collapsed; every
+// other tier is where you expect to find your work.
+const LIVE_SECTION_KEY = "section:live";
+const PROJECTS_SECTION_KEY = "section:projects";
+const TEST_RUNS_SECTION_KEY = "section:test_runs";
 const ARCHIVED_SECTION_KEY = "section:archived";
 type CatalogKind = keyof NavigationCatalogs;
 const sessionModelCache = new WeakMap<object, Map<string, RailSession>>();
@@ -138,10 +145,40 @@ const archivedProjectModelCache = new WeakMap<object, RailProject>();
 interface RailSectionProps {
   title: string;
   nodes: RailNode[];
+  open: boolean;
+  onToggleOpen: () => void;
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
   projectRetryCallback: (key: string) => () => void;
+}
+
+// The rail's one section heading: an <h3> wrapping a disclosure button, so
+// every tier folds the same way and keeps its heading role for assistive tech.
+// The heading takes its name from the button's text (the chevron is
+// aria-hidden), so there is no second aria-label to keep in step. The chevron
+// TRAILS the title (matching RailRow's own trailing row chevrons) rather than
+// leading it, and an optional action slot hosts a heading-level menu (pin
+// sections).
+interface SectionHeadingProps {
+  label: string;
+  open: boolean;
+  onToggleOpen: () => void;
+  staticLabel: boolean;
+  action?: ReactNode;
+}
+function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: SectionHeadingProps) {
+  return (
+    <div className={CLASS.sectionHeadingRow}>
+      <h3 className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}>
+        <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+          {label}
+          <Chevron direction={open ? "down" : "right"} />
+        </button>
+      </h3>
+      {action !== undefined && <div className={CLASS.sectionHeadingAction}>{action}</div>}
+    </div>
+  );
 }
 interface NavigationRailRowProps {
   node: RailNode;
@@ -190,7 +227,16 @@ function renderRailRow(actions: RailRowActions, projectRetryCallback: (key: stri
   );
 }
 function isPassiveRailNode(node: RailNode): boolean {
-  return node.kind === "loading" || node.kind === "job";
+  return (
+    node.kind === "loading" ||
+    node.kind === "job" ||
+    // A watch row is a leaf with no disclosure of its own: the wire row
+    // (active, cadence, note) is the whole truth, exactly like a job row. An
+    // Enter must not persist an expansion override for a row that cannot
+    // expand.
+    node.kind === "watch" ||
+    (node.kind === "overflow" && node.passive === true)
+  );
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on
@@ -205,20 +251,27 @@ function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   return <Tree {...props} releaseModifierKeys={!isMobile} />;
 }
 
-function RailSection({ title, nodes, onToggle, onActivate, actions, projectRetryCallback }: RailSectionProps) {
+function RailSection({
+  title,
+  nodes,
+  open,
+  onToggleOpen,
+  onToggle,
+  onActivate,
+  actions,
+  projectRetryCallback,
+}: RailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <h3 className={`${CLASS.sectionTitle} ${CLASS.staticSectionLabel}`}>{title}</h3>
-      <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
+      <SectionHeading label={title} open={open} onToggleOpen={onToggleOpen} staticLabel />
+      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
 }
 interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
   section: RailPinSection;
-  open: boolean;
-  onToggleOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
   isExpanded: ReturnType<typeof overrideLookup>;
@@ -239,13 +292,12 @@ function PinnedRailSection({
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <div className={CLASS.sectionHeadingRow}>
-        <h3 className={CLASS.sectionTitle} aria-label={section.name}>
-          <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-            <Chevron direction={open ? "down" : "right"} /> {section.name}
-          </button>
-        </h3>
-        <div className={CLASS.sectionHeadingAction}>
+      <SectionHeading
+        label={section.name}
+        open={open}
+        onToggleOpen={onToggleOpen}
+        staticLabel={false}
+        action={
           <Menu
             variant="quiet"
             trigger={
@@ -259,8 +311,8 @@ function PinnedRailSection({
               { id: "delete", label: "Delete", onSelect: onDelete },
             ]}
           />
-        </div>
-      </div>
+        }
+      />
       {open && (
         <RailTree
           nodes={[
@@ -283,8 +335,6 @@ function PinnedRailSection({
 }
 interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
   count: number;
-  open: boolean;
-  onToggleOpen: () => void;
   projectRetryCallback: (key: string) => () => void;
 }
 function ArchivedSection({
@@ -298,16 +348,10 @@ function ArchivedSection({
   projectRetryCallback,
 }: ArchivedSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+  const label = `Archived sessions (${count})`;
   return (
     <section className={CLASS.section}>
-      <button
-        type="button"
-        className={`${CLASS.sectionDisclosure} ${CLASS.staticSectionLabel}`}
-        aria-expanded={open}
-        onClick={onToggleOpen}
-      >
-        <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
-      </button>
+      <SectionHeading label={label} open={open} onToggleOpen={onToggleOpen} staticLabel />
       {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
@@ -905,6 +949,36 @@ function NavigationRail({
     },
     [expandedOverrides],
   );
+  // A reveal lands on a row that may be sitting inside a section fold the
+  // reader closed (or that starts closed, like Archived). Open it and report
+  // that the caller should re-run rather than scroll to a hidden row.
+  const openRevealSection = useCallback(
+    (key: string, defaultOpen: boolean) => {
+      if (isExpanded(key, defaultOpen)) return true;
+      setExpanded(key, true);
+      return false;
+    },
+    [isExpanded, setExpanded],
+  );
+  // Where a revealed project's row lives: the fold it is rendered in, whether
+  // that fold starts open, and the catalog that carries it. Archived is the
+  // tier that folds under "Archived sessions" and starts closed; a test-run
+  // project folds - and is catalogued - under "Test runs".
+  const projectPlacement = useCallback(
+    (location: { project_key?: string; tier?: string }) => {
+      // A whole-archived project's sessions keep their own tier, so the
+      // catalog is the reliable membership test there and the tier is not.
+      const archived =
+        location.tier === "archived" ||
+        resources.archivedProjects.some((project) => project.key === location.project_key);
+      if (archived)
+        return { sectionKey: ARCHIVED_SECTION_KEY, defaultOpen: false, catalog: "archived_projects" as const };
+      if (resources.testRuns.some((project) => project.key === location.project_key))
+        return { sectionKey: TEST_RUNS_SECTION_KEY, defaultOpen: true, catalog: "test_runs" as const };
+      return { sectionKey: PROJECTS_SECTION_KEY, defaultOpen: true, catalog: "projects" as const };
+    },
+    [resources],
+  );
   const rootLoadsInFlight = useRef(new Set<string>());
   const rootGeneration = useRef("");
   const loadProjectRoot = useCallback((key: string) => {
@@ -1023,14 +1097,21 @@ function NavigationRail({
         setExpanded(projectID, true);
         return;
       }
-      const catalog = location.tier === "archived" ? "archived_projects" : "projects";
-      requestRevealResource(revealTarget, `catalog:${catalog}`, () => navigationStore.getState().loadCatalog(catalog));
+      // One decision covers both which fold must open and which catalog holds
+      // the row; deriving them separately is how a test run ends up opening
+      // one fold while loading another catalog's rows.
+      const placement = projectPlacement(location);
+      if (!openRevealSection(placement.sectionKey, placement.defaultOpen)) return;
+      requestRevealResource(revealTarget, `catalog:${placement.catalog}`, () =>
+        navigationStore.getState().loadCatalog(placement.catalog),
+      );
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
       );
       return;
     }
     if (location.pin_section_id) {
+      if (!openRevealSection(pinSectionDisclosureID(location.pin_section_id), true)) return;
       requestRevealResource(revealTarget, "pin_catalog", () => navigationStore.getState().loadPinCatalog());
       requestRevealResource(revealTarget, `pin:${location.pin_section_id}`, () =>
         navigationStore.getState().loadPinSection(location.pin_section_id as string),
@@ -1038,8 +1119,20 @@ function NavigationRail({
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
+    // needs_you has no fold of its own, and the rail renders none of its rows
+    // today, so Live is the only section that can hide this one.
+    if (section === "live" && !openRevealSection(LIVE_SECTION_KEY, true)) return;
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
-  }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
+  }, [
+    revealTarget,
+    resources,
+    expandedOverrides,
+    consumeReveal,
+    setExpanded,
+    requestRevealResource,
+    openRevealSection,
+    projectPlacement,
+  ]);
 
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
@@ -1056,9 +1149,11 @@ function NavigationRail({
       loadProjectRoot(node.project.key);
     }
   }
+  function toggleSection(key: string, defaultOpen: boolean) {
+    setExpanded(key, !isExpanded(key, defaultOpen));
+  }
   function openSession(session: RailSession) {
-    const url = paneToURL("session", { ref: session.ref });
-    if (url) navigate(url);
+    openSessionByRef(session.ref);
   }
   function handleActivate(node: RailNode) {
     if (isPassiveRailNode(node)) return;
@@ -1490,6 +1585,8 @@ function NavigationRail({
             <RailSection
               title="Live"
               nodes={liveNodes}
+              open={isExpanded(LIVE_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -1500,9 +1597,7 @@ function NavigationRail({
                 key={section.id}
                 section={section}
                 open={isExpanded(pinSectionDisclosureID(section.id), true)}
-                onToggleOpen={() =>
-                  setExpanded(pinSectionDisclosureID(section.id), !isExpanded(pinSectionDisclosureID(section.id), true))
-                }
+                onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                 onRename={() => openSectionRename(section)}
                 onDelete={() => void requestSectionDelete(section)}
                 isExpanded={isExpanded}
@@ -1520,6 +1615,8 @@ function NavigationRail({
                 "catalog:projects",
                 "projects",
               )}
+              open={isExpanded(PROJECTS_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -1533,6 +1630,8 @@ function NavigationRail({
                 "catalog:test_runs",
                 "test_runs",
               )}
+              open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -1542,7 +1641,7 @@ function NavigationRail({
               <ArchivedSection
                 count={archivedCount(resources.archivedProjects, unarchived)}
                 open={archivedOpen}
-                onToggleOpen={() => setExpanded(ARCHIVED_SECTION_KEY, !archivedOpen)}
+                onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
                 nodes={archivedNodes}
                 onToggle={handleToggle}
                 onActivate={handleActivate}

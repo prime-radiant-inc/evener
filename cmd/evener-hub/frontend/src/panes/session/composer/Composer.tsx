@@ -20,6 +20,20 @@
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
+
+import {
+  decideSteerRoute,
+  decideSubmitRoute,
+  deriveSendQueueAvailability,
+  filterSlashMenuItems,
+  isTurnActive,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  sessionActionError,
+  spliceSlashCommand,
+} from "@evener/appwire-client";
 import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -30,17 +44,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "../../../protocol/slashCompletion";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -95,6 +98,7 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
+import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
 import { addSkillSelection, removeSkillSelection } from "./skillSelections";
@@ -921,6 +925,15 @@ export function Composer({ ref, focused }: ComposerProps) {
   // focus: a restored draft, or a blur with text still in the field, must not
   // strand a typed message with no visible way to send it.
   const followUpEngaged = followUpFocused || hasContent;
+  // While the card rests, its control row - and with it the composer chrome
+  // that opts into initial activity discovery - is not mounted. A saved
+  // notLoaded session with send enabled is exactly that shape, so mount a
+  // chrome-less discovery owner for the interval instead; once the card is
+  // engaged the chrome above owns discovery, so exactly one owner exists at a
+  // time (issue #1335). A send-disabled ended session is left alone: it renders
+  // no card at all, and a local notLoaded one is already owned by Session.tsx's
+  // own menu mount - this must never become a second owner there.
+  const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     editText(event.target.value);
@@ -1014,18 +1027,16 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (activeRecoveryIdRef.current === null) persistDraftSelections();
   }
 
-  // A chip's details: the skill's own description plus a diagnostic when the
-  // live catalog report no longer backs the selection (the skill vanished, or
-  // its current flags block selection). Command rows never render here, so
-  // these details are skill-only by construction.
+  // A chip's details: the skill's own description, or - when the live catalog
+  // report no longer backs the selection - the name plus why it cannot be
+  // found. Command rows never render here, so these details are skill-only by
+  // construction. The daemon publishes only available, user-invocable skills
+  // (agent/status.go), so a present entry is always usable and there is no
+  // unavailable/not-invocable diagnostic to report.
   function skillChipDetails(name: string): string {
     const info = model?.skills?.find((skill) => skill.name === name);
     if (!info) return `${name} — no longer in this session's skill catalog`;
-    const diagnostics: string[] = [];
-    if (!info.available) diagnostics.push("currently unavailable");
-    if (!info.userInvocable) diagnostics.push("not user-invocable right now");
-    const description = info.description ?? name;
-    return diagnostics.length > 0 ? `${description} (${diagnostics.join("; ")})` : description;
+    return info.description ?? name;
   }
 
   // restoreTextToComposer implements the shared "put text back into the
@@ -1628,7 +1639,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} discoverActivity />
                     </div>
                   )
                 }
@@ -1714,6 +1725,19 @@ export function Composer({ ref, focused }: ComposerProps) {
           </form>
         </div>
       )}
+      {/* The card's own chrome is the discovery opt-in, so while the card rests
+          something has to own initial discovery for it - otherwise the
+          transcript's entity ids stay plain text until the card is engaged.
+          Renders nothing visible (the panel's only control is hidden and its
+          sheet is closed). */}
+      {discoveryOnlyChrome && <SessionChrome ref={ref} discoveryOnly />}
+      {/* The session's working dir and git branch, in one quiet line under the
+          card. Reference material, not a control: it stays put across every
+          composer state (including an ended session's collapsed card and the
+          ask-pending input swap), so "where is this agent working" never
+          disappears with the input row. Only a local session's cwd is looked up
+          for a branch: a source-backed session's cwd is another host's path. */}
+      <RepoLocation cwd={model.cwd} local={ref.startsWith("local:")} />
     </div>
   );
 }

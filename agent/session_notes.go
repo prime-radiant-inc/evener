@@ -1,12 +1,16 @@
 package agent
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/afero"
@@ -45,9 +49,182 @@ func ReadCanonicalHumanNote(stateDir, sessionID string) (note string, present bo
 	return *snapshot.HumanNote, true, nil
 }
 
+// notesHumanNoteEscapedKeyProbes are the escape spellings that could hide the
+// human-note key. An escaped ASCII character is written "\u00XX" with either hex
+// case, so any escaped spelling of the key contains one of these.
+var notesHumanNoteEscapedKeyProbes = func() [][]byte {
+	probes := make([][]byte, 0, 2*len(notesHumanNoteFieldKey))
+	for _, r := range notesHumanNoteFieldKey {
+		if r == '"' {
+			continue
+		}
+		probes = append(probes, []byte(fmt.Sprintf(`\u%04x`, r)), []byte(fmt.Sprintf(`\u%04X`, r)))
+	}
+	return probes
+}()
+
+// containsEscapedNotesKey reports whether the document contains an escape that
+// could spell part of the human-note key. Every probe contains a backslash byte,
+// so a document with no backslash byte cannot hold any escape spelling and the
+// probe loop is skipped after one single-byte scan. A document that does contain
+// a backslash pays one extra single-byte pass before the probes.
+func containsEscapedNotesKey(data []byte) bool {
+	if bytes.IndexByte(data, '\\') < 0 {
+		return false
+	}
+	for _, probe := range notesHumanNoteEscapedKeyProbes {
+		if bytes.Contains(data, probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// notesHumanNoteFieldKey is the persisted snapshot's JSON key for the canonical
+// human note, as a quoted byte literal so the reader's absence pre-filter looks
+// for the field rather than for the word appearing inside some string value.
+const notesHumanNoteFieldKey = `"human_note"`
+
+// ReadPersistedHumanNote extracts the top-level human_note value from a
+// session's persisted mutation snapshot without decoding the journal or
+// validating the snapshot. It exists for the hub's read-only past-session
+// roster, which projects one note per entry and must not pay a full
+// snapshot decode and validation per entry. ReadCanonicalHumanNote remains the
+// strict authority for every caller that can act on a note; the roster only
+// displays it.
+//
+// The tolerated rejections are deliberate and bounded to display: the document
+// may carry unknown fields, a version or session_id the strict validator
+// refuses, a journal or later fields that do not decode, or trailing bytes
+// after the top-level object, and the first top-level human_note wins even if
+// the strict decoder would take a later duplicate. Nothing after the value it
+// finds is examined — that is what keeps the read cheap on journal-sized
+// documents — so a note this reader returns is a projection, never authority.
+//
+// An absent snapshot file, a document that never spells the key, or a
+// null human_note all return ("", false, nil): each of those cannot carry a
+// note, so the roster reads them the same way. A document that does carry the
+// key but fails to parse at or before the value, or whose human_note is not a
+// string or null, returns an error.
+func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bool, err error) {
+	if err := schema.ValidateSessionID(sessionID); err != nil {
+		return "", false, err
+	}
+	if stateDir == "" {
+		return "", false, nil
+	}
+	data, err := afero.ReadFile(afero.NewOsFs(), clientMutationFilePath(stateDir, sessionID))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read client mutation snapshot: %w", err)
+	}
+	// Absence is decided by the key's bytes rather than by parsing: a document
+	// that never spells the top-level key cannot carry a note, so the roster
+	// answers "no canonical note" from one scan of the bytes instead of a walk
+	// over every value after the key's position. The roster pays this read once
+	// per past entry and the absent case is the common one, which is why the
+	// walk was worth removing. A false positive (the spelling inside some string
+	// value) costs only the walk this used to do unconditionally.
+	// The pre-filter trusts the key's bytes unless the document could spell the
+	// key escaped: "\u0068uman_note" is a valid JSON spelling of the same key and
+	// the strict reader decodes it, so the probes below look for an escape of any
+	// character the key is made of and only then fall through to the token walk.
+	// Escapes for quotes, newlines and the HTML-sensitive characters (\u0022,
+	// \u003c, \u003e, \u0026) are not probes, so an ordinary journal keeps the
+	// fast path (roborev's eleventh round).
+	if !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) && !containsEscapedNotesKey(data) {
+		return "", false, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	open, err := decoder.Token()
+	if err != nil {
+		return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+	}
+	if delim, ok := open.(json.Delim); !ok || delim != '{' {
+		return "", false, errors.New("decode client mutation snapshot: top-level value is not an object")
+	}
+	// skipValue consumes one complete JSON value without materializing it. It is
+	// a closure rather than a package helper so no other caller can skip a value
+	// that needs the strict decode.
+	skipValue := func() error {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return nil
+		}
+		if delim != '{' && delim != '[' {
+			return fmt.Errorf("unexpected delimiter %v", delim)
+		}
+		depth := 1
+		for depth > 0 {
+			token, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if delim, ok := token.(json.Delim); ok {
+				switch delim {
+				case '{', '[':
+					depth++
+				case '}', ']':
+					depth--
+				}
+			}
+		}
+		return nil
+	}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+		}
+		if key, _ := keyToken.(string); key == "human_note" {
+			var value *string
+			if err := decoder.Decode(&value); err != nil {
+				return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+			}
+			if value == nil {
+				return "", false, nil
+			}
+			// The roster renders what this returns and never goes through a
+			// Session, so the load-path strip has to happen here too.
+			return stripTextControls(*value), true, nil
+		}
+		if err := skipValue(); err != nil {
+			return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+		}
+	}
+	// Consume the closing brace: a document truncated before it must read as an
+	// error, not as an absence, and More() cannot tell the two apart.
+	closing, err := decoder.Token()
+	if err != nil {
+		return "", false, fmt.Errorf("decode client mutation snapshot: %w", err)
+	}
+	if delim, ok := closing.(json.Delim); !ok || delim != '}' {
+		return "", false, errors.New("decode client mutation snapshot: top-level object does not close")
+	}
+	return "", false, nil
+}
+
 // normalizeNote collapses every run of whitespace (including newlines) to one
-// space and clamps to sessionNoteMaxRunes Unicode characters.
+// space, strips terminal control characters, and clamps to sessionNoteMaxRunes
+// Unicode characters.
+//
+// The strip runs before the collapse and leaves the whitespace controls for it:
+// stripping those first would join words ("a\nb" would store "ab"), and
+// stripping after the collapse would leave a double space wherever a control sat
+// between two spaces ("a \x1b b" would store "a  b"). What the strip removes is
+// what the collapse cannot consume — ESC, DEL, the C1 introducers — which carry
+// no meaning as note content while stored notes, labels, and URLs are printed by
+// terminals (the TUI details drawer, the transcript's human-note echo, the notes
+// tool output).
 func normalizeNote(text string) string {
+	text = stripNoteControls(text)
 	collapsed := strings.Join(strings.Fields(text), " ")
 	runes := []rune(collapsed)
 	if len(runes) > sessionNoteMaxRunes {
@@ -56,8 +233,131 @@ func normalizeNote(text string) string {
 	return collapsed
 }
 
-// setAgentNote normalizes and clamps the agent whiteboard.
+// stripNoteControls removes every non-whitespace control character from text
+// bound for stored notes state or a terminal, leaving the whitespace controls
+// to the caller's collapse. It is the write-path rule and the load-path rule in
+// one place: values persisted before the strip existed are normalized when they
+// are read back again (the restore path, the mutation-snapshot load, and the
+// roster's own reader), so a legacy note cannot reach a terminal.
+func stripNoteControls(text string) string {
+	if !strings.ContainsFunc(text, isNoteControl) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if isNoteControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// sanitizeRestoredURLs normalizes a persisted URL list on load. Labels are note
+// text and are normalized like one, and a URL's own control characters are
+// stripped: canonicalSessionURL refuses such input today, so only rows written
+// before that check can carry any.
+func sanitizeRestoredURLs(urls []schema.SessionURL) []schema.SessionURL {
+	if len(urls) == 0 {
+		return nil
+	}
+	sanitized := make([]schema.SessionURL, 0, len(urls))
+	for _, entry := range urls {
+		// A URL and its id are single tokens printed inline by the drawer and the
+		// notes tool output, and neither ever went through the note collapse, so
+		// every control goes here, whitespace controls included — the note rule
+		// leaves those back for a collapse that these values never see.
+		entry.URL = stripDisplayControls(entry.URL)
+		entry.ID = stripDisplayControls(entry.ID)
+		// Only controls are removed on the way in: the load path must not reshape
+		// what was persisted (a label already carries the write path's collapse).
+		entry.Label = stripTextControls(entry.Label)
+		sanitized = append(sanitized, entry)
+	}
+	return sanitized
+}
+
+// stripDisplayControls removes every control character from a value displayed as
+// a single token (a URL, an entry id): unlike stripNoteControls it keeps nothing
+// back for a whitespace collapse, because there are no meaningful whitespace runs
+// to preserve in those values.
+func stripDisplayControls(text string) string {
+	if !strings.ContainsFunc(text, unicode.IsControl) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
+// stripTextControls removes every control character except the newline that gives
+// stored text its shape. It is the load-path rule for text re-served to a model
+// or a terminal: unlike stripNoteControls it also removes the whitespace controls
+// (C1 NEL, for one) that no later collapse consumes on those paths, and unlike
+// stripDisplayControls it keeps line structure for multi-line text.
+func stripTextControls(text string) string {
+	if !strings.ContainsFunc(text, isTextControl) {
+		return text
+	}
+	var stripped strings.Builder
+	stripped.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == '\n':
+			stripped.WriteRune(r)
+		case r == '\r':
+			// Dropped rather than spaced: a CRLF pair must not leave a trailing
+			// space behind on the line.
+		case unicode.IsControl(r) && unicode.IsSpace(r):
+			// A whitespace control (tab, NEL (U+0085), vertical tab) keeps words
+			// apart as a space instead of gluing them together.
+			stripped.WriteByte(' ')
+		case unicode.IsControl(r):
+			// Every other control goes.
+		default:
+			stripped.WriteRune(r)
+		}
+	}
+	return stripped.String()
+}
+
+// isTextControl reports whether r is a control character that must not survive
+// into re-served text: every control except the newline.
+func isTextControl(r rune) bool {
+	return unicode.IsControl(r) && r != '\n'
+}
+
+// SanitizeNoteTextForDisplay strips the control characters that must not reach a
+// client that renders notes text — the hub's past-session projection, whose
+// payload the TUI prints directly. It is the same rule the agent's own load paths
+// apply, exported so the hub uses one definition instead of a copy.
+func SanitizeNoteTextForDisplay(text string) string { return stripTextControls(text) }
+
+// SanitizeURLValueForDisplay is the same rule for a single-token URL value: an
+// entry id and a URL never went through the note collapse, so every control goes.
+func SanitizeURLValueForDisplay(text string) string { return stripDisplayControls(text) }
+
+// isNoteControl reports whether r is a control character the whitespace collapse
+// cannot consume: C0 apart from the whitespace controls, DEL, and C1 apart from
+// the C1 whitespace (NEL), which strings.Fields collapses like any other space.
+func isNoteControl(r rune) bool {
+	return unicode.IsControl(r) && !unicode.IsSpace(r)
+}
+
+// setAgentNote normalizes and clamps the agent whiteboard and publishes the
+// resulting committed notes cut. It is the direct-commit entry point; the
+// serialized notes mutators write through stageAgentNote instead, because their
+// value is not committed until their metadata save lands.
 func (s *Session) setAgentNote(note string) (stored string, changed bool) {
+	stored, changed = s.stageAgentNote(note)
+	s.publishStandaloneNotesCommit()
+	return stored, changed
+}
+
+// stageAgentNote is setAgentNote's live-store write alone: no publication, for
+// a mutator that owns the commit point and already holds notesUpdateMu.
+func (s *Session) stageAgentNote(note string) (stored string, changed bool) {
 	normalized := normalizeNote(note)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -68,12 +368,26 @@ func (s *Session) setAgentNote(note string) (stored string, changed bool) {
 	return normalized, true
 }
 
-// addSessionURL validates url plus label, canonicalizes the URL, and appends
-// it to the session list. A re-add of an existing canonical URL updates the
-// label and returns the existing entry (id, addedBy, addedAt unchanged).
-// It performs no fetch. The caller persists (maybeAutoSave) and emits
-// EventUrlsUpdated after a successful add.
+// addSessionURL validates url plus label, canonicalizes the URL, appends it to
+// the session list, and publishes the resulting committed notes cut. It is the
+// direct-commit entry point (AddSessionURLForTest and the notes tests); the
+// serialized notes mutators stage through stageSessionURLAdd and publish only
+// after their metadata save lands.
 func (s *Session) addSessionURL(rawURL, label string) (schema.SessionURL, error) {
+	entry, err := s.stageSessionURLAdd(rawURL, label)
+	if err != nil {
+		return schema.SessionURL{}, err
+	}
+	s.publishStandaloneNotesCommit()
+	return entry, nil
+}
+
+// stageSessionURLAdd is addSessionURL's live-store write alone: no
+// publication, for a mutator that owns the commit point. A re-add of an
+// existing canonical URL updates the label and returns the existing entry (id,
+// addedBy, addedAt unchanged). It performs no fetch. The mutator persists
+// (maybeAutoSave) and emits EventUrlsUpdated after a successful add.
+func (s *Session) stageSessionURLAdd(rawURL, label string) (schema.SessionURL, error) {
 	cwd := s.notesCWD()
 	canonical, err := canonicalSessionURL(rawURL, cwd)
 	if err != nil {
@@ -109,8 +423,22 @@ func (s *Session) addSessionURL(rawURL, label string) (schema.SessionURL, error)
 	return entry, nil
 }
 
-// removeSessionURL deletes the entry with id, reporting whether one was found.
+// removeSessionURL deletes the entry with id, reporting whether one was found,
+// and publishes the resulting committed notes cut when one was removed. It is
+// the direct-commit entry point; the serialized notes mutators stage through
+// stageSessionURLRemove instead.
 func (s *Session) removeSessionURL(id string) bool {
+	removed := s.stageSessionURLRemove(id)
+	if removed {
+		s.publishStandaloneNotesCommit()
+	}
+	return removed
+}
+
+// stageSessionURLRemove is removeSessionURL's live-store write alone: no
+// publication, for a mutator that owns the commit point and already holds
+// notesUpdateMu.
+func (s *Session) stageSessionURLRemove(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.sessionURLs {
@@ -120,6 +448,18 @@ func (s *Session) removeSessionURL(id string) bool {
 		}
 	}
 	return false
+}
+
+// publishStandaloneNotesCommit publishes the live store after a direct-commit
+// write (setAgentNote, addSessionURL, removeSessionURL — the store helpers the
+// tests and AddSessionURLForTest call). The serialized notes mutators stage
+// their write and hold notesUpdateMu until their metadata save has published,
+// so taking the lock here serializes this publish with them and never publishes
+// a staged value.
+func (s *Session) publishStandaloneNotesCommit() {
+	s.notesUpdateMu.Lock()
+	defer s.notesUpdateMu.Unlock()
+	s.publishCommittedNotesLocked()
 }
 
 // notesCWD returns the session's working directory for bare-path resolution,
@@ -143,6 +483,15 @@ func canonicalSessionURL(raw, cwd string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return "", errors.New("urls/add: empty URL")
+	}
+	// A stored URL is printed by terminals (the TUI details drawer, the notes
+	// tool output) and sent to the model, so a control character in the raw
+	// input is refused rather than carried: url.Parse rejects ASCII controls but
+	// accepts a C1 control, and it keeps one in RawQuery verbatim, which is how
+	// a CSI introducer could reach a terminal from a stored link.
+	if idx := strings.IndexFunc(trimmed, unicode.IsControl); idx >= 0 {
+		control, _ := utf8.DecodeRuneInString(trimmed[idx:])
+		return "", fmt.Errorf("urls/add: URL contains the control character %q", control)
 	}
 	if utf8.RuneCountInString(trimmed) > sessionURLMaxLen {
 		return "", fmt.Errorf("urls/add: URL exceeds %d characters", sessionURLMaxLen)

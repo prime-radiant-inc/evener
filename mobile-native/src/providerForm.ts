@@ -2,7 +2,7 @@ import type {
   InstanceCreateParams,
   InstanceEditParams,
   ProviderDescriptor,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 export interface ProviderDraft {
   name: string;
   base: string;

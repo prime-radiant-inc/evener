@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -113,12 +112,12 @@ func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64,
 // was — see historicalJobFold.records). The returned epoch is
 // historicalJobFoldCache's generation counter for jobsPath at the moment of
 // this read — see foldcache.Result.Epoch and activityContinuation.JobsEpoch.
-func loadCachedJobRecords(ctx context.Context, jobsPath string) ([]*jobstore.JobRecord, uint64, error) {
+func loadCachedJobRecords(ctx context.Context, jobsPath string) ([]*jobstore.JobRecord, uint64, bool, error) {
 	result, err := historicalJobFoldCache.Get(ctx, jobsPath, extendHistoricalJobFold)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
-	return result.Value.records, result.Epoch, nil
+	return result.Value.records, result.Epoch, result.Absent, nil
 }
 
 // historicalDelegateFold is delegatestore's fold-cache payload. Unlike
@@ -183,7 +182,7 @@ func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset i
 type rootDelegateIndex struct {
 	byOwner     map[string][]string // ownerSessionID -> sorted delegate IDs
 	state       delegatestore.State
-	epoch       uint64
+	journal     activityJournalState
 	diagnostics []string
 }
 
@@ -241,7 +240,19 @@ func newHistoricalActivityCache(ctx context.Context, rootID string) *historicalA
 // (loadHistoricalStableActivityWithAttention) — go through here so the
 // diagnostic wording stays defined once instead of drifting between two
 // copies.
-func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, uint64, []string, error) {
+// activityJournalState is what a session knows about one journal besides its
+// contents: the generation it folded at, and the two conditions a generation
+// cannot express — the journal was not there, or it was there and could not
+// be read. Both report generation 0, which is also what a journal folded once
+// and never rewritten reports, so a continuation carries these alongside the
+// generation rather than trusting the number alone.
+type activityJournalState struct {
+	epoch      uint64
+	absent     bool
+	unreadable bool
+}
+
+func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) (delegatestore.State, activityJournalState, []string, error) {
 	path := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
 	result, err := historicalDelegateFoldCache.Get(ctx, path, extendHistoricalDelegateFold)
 	if err != nil {
@@ -261,15 +272,19 @@ func scanRootDelegateState(ctx context.Context, stateDir, rootSessionID string) 
 			// one for) with a diagnostic that names the file and line
 			// (err's own message already carries both), rather than
 			// failing the caller outright.
-			return delegatestore.State{}, 0, []string{fmt.Sprintf("delegate_journal_line_too_long: %v", err)}, nil
+			// The generation reported here is not one this read earned:
+			// nothing was folded. Recording the condition instead lets a
+			// resume tell it apart from a journal folded once and never
+			// rewritten, which reports the same 0.
+			return delegatestore.State{}, activityJournalState{unreadable: true}, []string{fmt.Sprintf("delegate_journal_line_too_long: %v", err)}, nil
 		}
-		return nil, 0, nil, err
+		return nil, activityJournalState{}, nil, err
 	}
 	var diagnostics []string
 	if result.Value.tornTail {
 		diagnostics = append(diagnostics, "delegate_journal_torn_tail: ignored unterminated trailing batch")
 	}
-	return result.Value.state, result.Epoch, diagnostics, nil
+	return result.Value.state, activityJournalState{epoch: result.Epoch, absent: result.Absent}, diagnostics, nil
 }
 
 // rootDelegates returns rootSessionID's delegate index, folding
@@ -283,7 +298,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	if idx, ok := c.delegateIndex[rootSessionID]; ok {
 		return idx, nil
 	}
-	state, epoch, diagnostics, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
+	state, journal, diagnostics, err := scanRootDelegateState(c.ctx, stateDir, rootSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +313,7 @@ func (c *historicalActivityCache) rootDelegates(stateDir, rootSessionID string) 
 	for owner := range byOwner {
 		sort.Strings(byOwner[owner])
 	}
-	idx := &rootDelegateIndex{byOwner: byOwner, state: state, epoch: epoch, diagnostics: diagnostics}
+	idx := &rootDelegateIndex{byOwner: byOwner, state: state, journal: journal, diagnostics: diagnostics}
 	c.delegateIndex[rootSessionID] = idx
 	return idx, nil
 }
@@ -369,35 +384,28 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 	meta, metaErr := schema.LoadSessionMeta(stateDir, sessionID)
 	rootID := activityRootIDFromMeta(sessionID, meta)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")
-	var jobs []*jobstore.JobRecord
-	var jobsEpoch uint64
-	if _, err := historicalJobsStat(jobsPath); err != nil {
-		if !os.IsNotExist(err) {
-			return activityLoadedBase{}, err
-		}
-		if required {
-			return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
-		}
-	} else {
-		// This session's COMPLETE job history loads unconditionally here —
-		// historicalJobFoldCache makes that O(events appended since the
-		// last read of this path in this process), not O(file size), so
-		// there is no reason to cap it at the traversal's remaining
-		// work-unit budget. That budget still bounds how many SESSIONS get
-		// visited (buildActivityFullSnapshot's per-child
-		// activityConsumeWorkUnit), just not how much of any ONE session's
-		// own journal gets read. How much of THIS session's jobs actually
-		// get RENDERED is purely projectActivitySessionAt's call, backed
-		// by a real, advancing continuation rather than a load-time
-		// truncation with nothing to resume into.
-		records, epoch, err := loadCachedJobRecords(cache.ctx, jobsPath)
-		if err != nil {
-			return activityLoadedBase{}, err
-		}
-		jobs = records
-		jobsEpoch = epoch
+	// This session's COMPLETE job history loads unconditionally here —
+	// historicalJobFoldCache makes that O(events appended since the
+	// last read of this path in this process), not O(file size), so
+	// there is no reason to cap it at the traversal's remaining
+	// work-unit budget. That budget still bounds how many SESSIONS get
+	// visited (buildActivityFullSnapshot's per-child
+	// activityConsumeWorkUnit), just not how much of any ONE session's
+	// own journal gets read. How much of THIS session's jobs actually
+	// get RENDERED is purely projectActivitySessionAt's call, backed
+	// by a real, advancing continuation rather than a load-time
+	// truncation with nothing to resume into. The fold reports whether the
+	// journal was there at all, from the same stat it reads through, so
+	// nothing here can see the file appear or vanish between a presence
+	// check and the read.
+	jobs, jobsEpoch, jobsAbsent, err := loadCachedJobRecords(cache.ctx, jobsPath)
+	if err != nil {
+		return activityLoadedBase{}, err
 	}
-	stable, delegatesEpoch, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
+	if jobsAbsent && required {
+		return activityLoadedBase{}, fmt.Errorf("child session %q unavailable in state directory", sessionID)
+	}
+	stable, delegates, diagnostics, err := loadHistoricalStableActivity(cache, stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
@@ -413,7 +421,11 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 		Usage:           historicalActivityUsage(stateDir, sessionID, meta),
 		Diagnostics:     diagnostics,
 		JobsEpoch:       jobsEpoch,
-		DelegatesEpoch:  delegatesEpoch,
+		DelegatesEpoch:  delegates.epoch,
+
+		JobsJournalAbsent:          jobsAbsent,
+		DelegatesJournalAbsent:     delegates.absent,
+		DelegatesJournalUnreadable: delegates.unreadable,
 	}}, nil
 }
 
@@ -422,17 +434,17 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool, cache
 // journal itself is folded at most once per root across the whole
 // traversal (see historicalActivityCache), plus the fold-cache's current
 // epoch for that journal (see activityContinuation.DelegatesEpoch).
-func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, uint64, []string, error) {
+func loadHistoricalStableActivity(cache *historicalActivityCache, stateDir, rootSessionID, ownerSessionID string) (map[string]delegateSnapshot, activityJournalState, []string, error) {
 	idx, err := cache.rootDelegates(stateDir, rootSessionID)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, activityJournalState{}, nil, err
 	}
 	ids := idx.byOwner[ownerSessionID]
 	rows := make(map[string]delegateSnapshot, len(ids))
 	for _, id := range ids {
 		rows[id] = captureDelegateSnapshot(idx.state[id])
 	}
-	return rows, idx.epoch, idx.diagnostics, nil
+	return rows, idx.journal, idx.diagnostics, nil
 }
 
 // loadHistoricalStableActivityWithAttention is LoadSessionDelegateStatus'

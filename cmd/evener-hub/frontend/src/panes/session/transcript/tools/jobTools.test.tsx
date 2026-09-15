@@ -1,9 +1,11 @@
+import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
+import { buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
-import type { ItemModel } from "../../../../protocol/model";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 afterEach(() => {
   cleanup();
@@ -11,6 +13,62 @@ afterEach(() => {
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
+}
+
+function jobEntityViews(ids: string[]) {
+  const tree: ActivityTree = {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "s",
+      ref: "local:s",
+      label: "root",
+      aggregate: "running",
+      counts: { active: ids.length, failed: 0, completed: 0, complete: false },
+      entries: ids.map((jobId) => ({
+        kind: "shell",
+        job: {
+          jobId,
+          ownerSessionId: "s",
+          ownerRef: "local:s",
+          type: "shell",
+          status: "running",
+          terminal: false,
+          background: true,
+          hasOutput: false,
+          description: "Background test job",
+          startedAt: "2026-09-14T00:00:00Z",
+          outputBytes: 0,
+        },
+      })),
+      branch: {},
+    },
+  };
+  return buildEntityView({ sessionRef: "local:s", tree, turns: [], stale: false, ended: false });
+}
+
+function delegateEntityViews(id: string) {
+  const delegate: EvenerDelegateInfo = {
+    delegateId: id,
+    ownerSessionId: "s",
+    rootSessionId: "s",
+    childSessionId: "child",
+    transcriptRef: "local:child",
+    type: "delegate",
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    resumable: true,
+    needsAttention: false,
+    projectionRevision: 1,
+  };
+  return buildEntityView({
+    sessionRef: "local:s",
+    delegates: [delegate],
+    turns: [],
+    stale: false,
+    ended: false,
+  });
 }
 
 // --- job_status (+ legacy job_read_output alias) -------------------------
@@ -46,6 +104,15 @@ test("job controls keep same-owner job suffixes distinct in summaries", () => {
     expect(summary(second)).toContain("000000000002");
     expect(summary(first)).not.toBe(summary(second));
   }
+});
+
+test("job_status: summary renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("job_status");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const output = JSON.stringify({ id, type: "shell", status: "running" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: id }), output }))).toBe(
+    `Checked ${id} · running`,
+  );
 });
 
 test("job_status: body falls back to raw text when item.raw is absent (legacy/stored transcript)", () => {
@@ -109,6 +176,25 @@ test("job_status: body renders a structured card with the delegate ID", () => {
   const output = JSON.stringify(raw);
   render(<Body item={item({ toolName: "job_status", output, raw })} live={false} />);
   expect(screen.getByText("dlg_034HQ2kSDXfKFq1mm3idL1")).toBeTruthy();
+});
+
+test("job_status: delegate ID is a trigger and the footer remains the single Open control", () => {
+  const d = toolRendererFor("job_status");
+  const Body = d.body!;
+  const raw = delegateStatusRaw();
+  const id = (raw as { id: string }).id;
+  render(
+    <TranscriptRenderProvider entities={delegateEntityViews(id)}>
+      <Body
+        item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })}
+        live={false}
+        sessionRef="local:s"
+      />
+    </TranscriptRenderProvider>,
+  );
+
+  expect(screen.getByTestId("entity-trigger").textContent).toBe(id);
+  expect(screen.getAllByRole("button", { name: /Open/ })).toHaveLength(1);
 });
 
 test("job_status: body shows a running status pill", () => {
@@ -412,6 +498,35 @@ test("job_list: body renders stable direct raw state when the producer supplies 
   expect(screen.queryByText("formatted listing text")).toBeNull();
 });
 
+test("job_list: rows render one entity ref and exactly one open control per identity", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  const ids = ["job_alpha", "job_beta"];
+  render(
+    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+      <Body
+        item={item({
+          toolName: "job_list",
+          raw: {
+            items: ids.map((id) => ({ id, type: "shell", status: "running" })),
+            count: ids.length,
+            total: ids.length,
+          },
+        })}
+        live={false}
+      />
+    </TranscriptRenderProvider>,
+  );
+
+  const rows = screen.getAllByTestId("job-list-row");
+  expect(rows).toHaveLength(ids.length);
+  for (const [index, row] of rows.entries()) {
+    expect(within(row).getAllByTestId("entity-trigger")).toHaveLength(1);
+    expect(within(row).getByTestId("entity-trigger").textContent).toBe(ids[index]);
+    expect(within(row).getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
+  }
+});
+
 // --- job_stop -----------------------------------------------------------
 
 test("job_stop: summary shows the target job and the tool's own outcome footer", () => {
@@ -427,6 +542,14 @@ test("job_stop: no footer yet (request in flight) shows just the target", () => 
   const d = toolRendererFor("job_stop");
   const args = JSON.stringify({ target: "job_8" });
   expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output: "" }))).toBe("Stopped job_8");
+});
+
+test("job_stop: summary renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("job_stop");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: JSON.stringify({ target: id }), output: "" }))).toBe(
+    `Stopped ${id}`,
+  );
 });
 
 // --- delegate_send (+ legacy job_send_message alias) ---------------------
@@ -452,6 +575,15 @@ test("delegate_send: summary degrades gracefully with no target arg", () => {
   const d = toolRendererFor("delegate_send");
   expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output: "" }))).toBe(
     "Sent a message to a delegate",
+  );
+});
+
+test("delegate_send: summary renders the full target id, never a clipped one", () => {
+  const d = toolRendererFor("delegate_send");
+  const target = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const args = JSON.stringify({ to: target, message: "status?" });
+  expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: args, output: "" }))).toBe(
+    `Sent a message to delegate ${target}`,
   );
 });
 

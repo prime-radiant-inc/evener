@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 // Archive is a decision about a TOP-LEVEL row, so only a top-level row
 // offers it. hubcore's nodeKind (internal/hubcore/tree.go) names the kinds

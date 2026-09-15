@@ -307,10 +307,11 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 // removeSkillCompactionHandoffsLocked removes the pending handoff receipts
 // identified by publication identity — the consumption that prevents repeat
 // delivery after a handoff's reload or reminder was durably admitted. Only the
-// named publications are removed: identity-less terminal cancellations keep
-// their records, and the cycle's operation slot (PendingCompaction) is never
-// touched, so a concurrent newer pending operation is undisturbed. Callers
-// hold s.mu; the return reports whether anything was removed.
+// named publications are removed: identity-less terminal cancellations are
+// retired separately by retireSkillCompactionCancellationsLocked, and the
+// cycle's operation slot (PendingCompaction) is never touched, so a concurrent
+// newer pending operation is undisturbed. Callers hold s.mu; the return reports
+// whether anything was removed.
 func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) bool {
 	if len(publications) == 0 || len(s.skillLifecycle.PendingHandoffs) == 0 {
 		return false
@@ -326,6 +327,51 @@ func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bo
 	}
 	s.skillLifecycle.PendingHandoffs = kept
 	return removed
+}
+
+// retireSkillCompactionCancellationsLocked removes every terminal cancellation
+// receipt from the pending handoffs. A cancellation receipt authorizes nothing —
+// the same save that recorded it already cleared the operation slot it retired —
+// and, carrying no publication identity, it never coalesces with a later
+// receipt. Leaving it pending therefore grows the persisted snapshot (cloned on
+// every autosave) and every per-request scan by one per cancellation for the
+// session's lifetime. Callers hold s.mu; the return reports whether anything was
+// removed.
+func (s *Session) retireSkillCompactionCancellationsLocked() bool {
+	if len(s.skillLifecycle.PendingHandoffs) == 0 {
+		return false
+	}
+	kept := s.skillLifecycle.PendingHandoffs[:0]
+	removed := false
+	for _, handoff := range s.skillLifecycle.PendingHandoffs {
+		if handoff.Phase == skillCompactionReceiptCancelled {
+			removed = true
+			continue
+		}
+		kept = append(kept, handoff)
+	}
+	s.skillLifecycle.PendingHandoffs = kept
+	return removed
+}
+
+// retireSkillCompactionCancellations retires the terminal cancellation receipts
+// and persists the result. A failed save is only warned: the in-memory list is
+// already retired, so the persisted snapshot keeps the records only until the
+// next successful save (which persists the retired list) or a restart, after
+// which the next request retires them again.
+func (s *Session) retireSkillCompactionCancellations() {
+	s.mu.Lock()
+	removed := s.retireSkillCompactionCancellationsLocked()
+	if removed {
+		s.skillLifecycle.Revision++
+	}
+	s.mu.Unlock()
+	if !removed {
+		return
+	}
+	if err := s.saveMeta(); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("retiring compaction cancellation receipts failed", err))
+	}
 }
 
 // capturableAutomaticCompaction returns a detached copy of the pending

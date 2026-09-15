@@ -11,8 +11,9 @@
 // sheet's Refresh reads it - see MarketplaceSheet's own comment); on top of
 // those it owns the page-level states activeSegment, selectedPlugin and
 // selectedMarketplace.
+
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { EmptyState, SegmentedControl, Skeleton } from "../../../../widgets";

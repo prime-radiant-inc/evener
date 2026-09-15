@@ -1,11 +1,16 @@
 // @vitest-environment node
 
+import type {
+  AnyNotification,
+  ConnectionState,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { ConnectionState } from "../../../../protocol/client";
-import { hydrateThread } from "../../../../protocol/reducer";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import {
   putThreadModel,

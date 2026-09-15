@@ -22,6 +22,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -31,7 +32,7 @@ import (
 // The fixture exceeds the removed 32,000-character default tail policy.
 func TestSkillDelivery_CompleteBody(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a complete delivery line\n", 2000)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -231,7 +232,7 @@ func TestSkillDelivery_FailedReinvocationPreservesInventory(t *testing.T) {
 // open once the source disables model invocation.
 func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -288,7 +289,7 @@ func TestSkillDelivery_UserReinvocationRecordsAuthorization(t *testing.T) {
 // the dispatch still carries exactly one complete current body.
 func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -340,7 +341,7 @@ func TestSkillDelivery_PreDispatchCompaction(t *testing.T) {
 // provisional outcome is corrected without a second new-body event.
 func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -439,7 +440,7 @@ func TestSkillDelivery_RevalidateAfterFold(t *testing.T) {
 // notice, never a false already-present delivery of stale bytes.
 func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	oldBody := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
@@ -517,7 +518,7 @@ func TestSkillDelivery_ChangedSourceBeforeDispatch(t *testing.T) {
 // outcome alone.
 func TestSkillDelivery_ChangedSourceRecordsPreviousProvenance(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	oldBody := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+oldBody)
@@ -752,7 +753,7 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 // complete body and no duplicate success event fires.
 func TestSkillDelivery_TransportRetry(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -816,9 +817,9 @@ func TestSkillDelivery_TransportRetry(t *testing.T) {
 // success.
 func TestSkillDelivery_SaveRestore(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
-	stateDir := t.TempDir()
+	stateDir := skillFixtureRoot(t)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
 	source := filepath.Join(root, "skills", "opaque", "SKILL.md")
@@ -874,7 +875,7 @@ func TestSkillDelivery_SaveRestore(t *testing.T) {
 // activation.
 func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -941,7 +942,7 @@ func TestSkillDelivery_FrozenPlusOrdinary(t *testing.T) {
 // the switched request's actual shape before committing.
 func TestSkillDelivery_ProjectionModelSwitch(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1096,7 +1097,7 @@ func newContinuationSession(t *testing.T, adapter *skillContinuationAdapter, dir
 // the typed causal notification and the rebuilt request commits through the
 // same seam.
 func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1188,7 +1189,7 @@ func TestSkillDelivery_ResponsesContinuationPlanning(t *testing.T) {
 // session rebuilds the request from full history; the seam revalidates and
 // commits against that rebuilt shape.
 func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1255,7 +1256,7 @@ func TestSkillDelivery_FullHistoryRecovery(t *testing.T) {
 // revalidated and committed through the same seam.
 func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := skillFixtureRoot(t)
 	markGitRoot(t, root)
 	body := strings.Repeat("BODY_7f2a\n", 64)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\n"+body)
@@ -1526,4 +1527,108 @@ func TestSkillToolRound_CarrierWriteFailureIsVisible(t *testing.T) {
 	if got := lifecycleObligations(s); len(got) != 1 {
 		t.Fatalf("obligations after the failed carrier write = %+v, want the durable pending obligation", got)
 	}
+}
+
+// TestSkillDelivery_SaveFailureNotificationReconciledAtRestore pins the
+// save-failure half of prepareSkillDelivery's notification transaction. The
+// notification turn is durably recorded (the model's copy is kept) and the
+// matching obligation is finalized or identity-corrected in the LIVE snapshot,
+// but the metadata save that would persist that transition can fail. The
+// durable turn is then the authority a restart must reconcile from: drop an
+// obligation whose failure the turn already explains, adopt a corrected
+// identity — never re-process the same obligation and append the same
+// notification a second time.
+func TestSkillDelivery_SaveFailureNotificationReconciledAtRestore(t *testing.T) {
+	// reconcileSetup drives the shared path: one pending obligation for a real
+	// fixture, then mutate the source, break the metadata path, run the REAL
+	// prepareSkillDelivery (which durably records its notification and fails to
+	// persist the transition), and return the session, the stale snapshot a
+	// restart would load, and the transcript entries it would replay.
+	reconcileSetup := func(t *testing.T, mutate func(root string)) (*Session, *schema.SkillLifecycleSnapshot, []transcript.Entry) {
+		t.Helper()
+		root := t.TempDir()
+		markGitRoot(t, root)
+		writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reconcile_original\n")
+		s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("unused")}
+		}, reloadSummaryResponder("SUMMARY_reconcile", nil))
+		old := plantOrdinaryRecord(t, s, root, "opaque", false)
+		s.mu.Lock()
+		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+			InvocationID: "inv-reconcile",
+			Identity:     old,
+			Route:        "model_tool",
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+		if err := s.saveMeta(); err != nil {
+			t.Fatalf("persist the seeded pending obligation: %v", err)
+		}
+		stale, err := schema.LoadSessionMeta(s.stateDir, s.Meta().ID)
+		if err != nil {
+			t.Fatalf("LoadSessionMeta: %v", err)
+		}
+		if stale.Skills == nil || len(stale.Skills.Obligations) != 1 {
+			t.Fatalf("test setup: persisted skills = %+v, want the seeded pending obligation", stale.Skills)
+		}
+		mutate(root)
+		repair := breakSessionMetaPath(t, s)
+		if _, _, err := s.prepareSkillDelivery(context.Background(), nil, nil, llm.Request{}); err == nil {
+			t.Fatal("a failed metadata save must surface an error")
+		}
+		repair()
+		s.mu.Lock()
+		entries := make([]transcript.Entry, 0, len(s.history))
+		for _, turn := range s.history {
+			entries = append(entries, transcript.Entry{Turn: turn})
+		}
+		s.mu.Unlock()
+		return s, stale.Skills, entries
+	}
+
+	t.Run("failed reload finalizes", func(t *testing.T) {
+		s, stale, entries := reconcileSetup(t, func(root string) {
+			if err := os.Remove(filepath.Join(root, "skills", "opaque", "SKILL.md")); err != nil {
+				t.Fatalf("remove the fixture source: %v", err)
+			}
+		})
+		reconcileSkillCompactionReceipts(entries, stale, s.id)
+		if len(stale.Obligations) != 0 {
+			t.Fatalf("reconciled obligations = %+v, want none: the durable failure notification already finalized it", stale.Obligations)
+		}
+	})
+
+	t.Run("changed identity corrected", func(t *testing.T) {
+		s, stale, entries := reconcileSetup(t, func(root string) {
+			writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reconcile_changed\n")
+		})
+		before := stale.Obligations[0].Identity
+		var delivered *schema.SkillActivationOutcome
+		for _, entry := range entries {
+			state := entry.Turn.SkillState
+			if state == nil {
+				continue
+			}
+			for i := range state.Outcomes {
+				outcome := state.Outcomes[i]
+				if outcome.InvocationID == "inv-reconcile" && outcome.Status == "delivered" {
+					outcome := outcome
+					delivered = &outcome
+				}
+			}
+		}
+		if delivered == nil {
+			t.Fatal("test setup: the durable notification recorded no delivered outcome")
+		}
+		if delivered.Identity == before {
+			t.Fatal("test setup: the source change did not produce a new identity")
+		}
+		reconcileSkillCompactionReceipts(entries, stale, s.id)
+		if len(stale.Obligations) != 1 {
+			t.Fatalf("reconciled obligations = %+v, want the one corrected obligation", stale.Obligations)
+		}
+		if got := stale.Obligations[0].Identity; got != delivered.Identity {
+			t.Fatalf("reconciled identity = %+v, want the durable notification's corrected identity %+v", got, delivered.Identity)
+		}
+	})
 }

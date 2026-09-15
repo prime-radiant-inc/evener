@@ -5,8 +5,8 @@
 // per this file's own ToolRendererDescriptor contract (there is no separate
 // target/result slot on the wire like the legacy DOM had).
 
-import type { ItemModel } from "../../../../protocol/model";
-import { clip, lineCount, parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { clip, lineCount, parseArgs, str } from "@evener/appwire-client";
 import { CodeBlock } from "../../../../widgets";
 import { registerToolRenderer, type ToolRendererDescriptor, type ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";

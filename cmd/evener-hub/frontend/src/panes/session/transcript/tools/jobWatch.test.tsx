@@ -9,16 +9,23 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import type { ItemModel } from "@evener/appwire-client";
+import { buildEntityView } from "@evener/appwire-client";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test } from "vitest";
-import type { ItemModel } from "../../../../protocol/model";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
 import "../tools";
 import "./jobWatch";
 
 afterEach(() => {
   cleanup();
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
 });
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -168,13 +175,85 @@ test("list body renders one row per watch with a status chip and the watch id", 
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
   const text = screen.getByTestId("job-watch-body").textContent ?? "";
-  // Long ids clip in the row (mockup §C truncates them) with the full id on
-  // the hover title; the short id renders whole.
-  expect(text).toContain("watch_034KEfj…foUaPeHJcLXY");
+  // Ids no longer clip: the row prints the full id (a clipped id is not even
+  // detectable as an entity, so the card could never attach), and the hover
+  // title still carries it verbatim.
+  expect(text).toContain("watch_034KEfjYFbfoUaPeHJcLXY");
+  expect(text).not.toContain("…");
   expect(screen.getByTitle("watch_034KEfjYFbfoUaPeHJcLXY")).toBeTruthy();
   expect(text).toContain("watch_09QmWzRtNvxK");
   expect(text).toContain("watching");
   expect(text).toContain("ended");
+});
+
+test("list watch IDs are full-id entity triggers with no open control or navigation", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const id = "watch_034KEfjYFbfoUaPeHJcLXY";
+  const listed = watchItem(
+    { operation: "list" },
+    { recent_watches: [{ watch_id: id, watching: false, end_reason: "cleared" }], count: 0 },
+  );
+  listed.position = { entry: 1, item: 1 };
+  const entities = buildEntityView({
+    sessionRef: "local:s",
+    turns: [{ id: "turn_1", status: "completed", items: [listed] }],
+    stale: false,
+    ended: false,
+  });
+  render(
+    <TranscriptRenderProvider entities={entities}>
+      <Body item={listed} live={false} />
+    </TranscriptRenderProvider>,
+  );
+
+  const row = screen.getByTestId("job-watch-row");
+  const trigger = within(row).getByTestId("entity-trigger");
+  expect(trigger.textContent).toBe("watch_034KEfjYFbfoUaPeHJcLXY");
+  expect(trigger.getAttribute("tabindex")).toBe("0");
+  expect(within(row).queryByRole("button")).toBeNull();
+  fireEvent.click(trigger);
+  expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+test("detail-bearing watch IDs are embedded triggers and the row remains the disclosure control", () => {
+  const d = toolRendererFor("job_watch");
+  const Body = d.body!;
+  const id = "watch_034KEfjYFbfoUaPeHJcLXY";
+  const listed = watchItem(
+    { operation: "list" },
+    {
+      watches: [{ watch_id: id, source: "job_a1b2", watching: true, condition: "output_match: ready" }],
+      count: 1,
+    },
+  );
+  listed.position = { entry: 1, item: 1 };
+  const entities = buildEntityView({
+    sessionRef: "local:s",
+    turns: [{ id: "turn_1", status: "completed", items: [listed] }],
+    stale: false,
+    ended: false,
+  });
+  render(
+    <TranscriptRenderProvider entities={entities}>
+      <Body item={listed} live={false} />
+    </TranscriptRenderProvider>,
+  );
+
+  const row = screen.getByTestId("job-watch-row");
+  const trigger = within(row).getByTestId("entity-trigger");
+  expect(row.tagName).toBe("BUTTON");
+  expect(trigger.getAttribute("tabindex")).toBeNull();
+  expect(screen.queryByRole("button", { name: /Open/ })).toBeNull();
+
+  fireEvent.click(row);
+  expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
+  fireEvent.click(row);
+  expect(screen.queryByTestId("job-watch-row-detail")).toBeNull();
+
+  fireEvent.click(trigger);
+  expect(workspaceStore.getState().panes).toEqual([]);
+  expect(screen.getByTestId("job-watch-row-detail").textContent).toContain("ready");
 });
 
 test("list rows are buttons that expand the row's detail sentence (RoboRev PR #954)", async () => {
@@ -404,9 +483,10 @@ test("absent structured state falls back to the raw footer text (RoboRev PR #954
 test("clear summary names the cleared watch id", () => {
   const d = toolRendererFor("job_watch");
   const cleared = { watch_id: "watch_034KEfjYFbfoUaPeHJcLXY", source: "", watching: false };
-  // The long id clips (mockup §D truncates it); a short id renders whole.
+  // The id renders whole (no clip): the summary quotes the same id the entity
+  // card keys off, so the row can attach the card to it.
   expect(d.summary(watchItem({ operation: "clear", watch_id: "watch_034KEfjYFbfoUaPeHJcLXY" }, cleared))).toBe(
-    "Cleared watch_034KEfj…foUaPeHJcLXY",
+    "Cleared watch_034KEfjYFbfoUaPeHJcLXY",
   );
   expect(
     d.summary(watchItem({ operation: "clear", watch_id: "watch_short" }, { ...cleared, watch_id: "watch_short" })),

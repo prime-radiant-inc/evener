@@ -12,9 +12,9 @@
 // item/completed with no item/started leg), so unlike agentMessage/reasoning
 // there is no live/settled branch here at all.
 
+import type { ItemModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { memo, type ReactNode, useState } from "react";
-import { sessionActionError } from "../../../../protocol/errors";
-import type { ItemModel } from "../../../../protocol/model";
 import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
 import { IconButton, useToasts } from "../../../../widgets";
@@ -23,6 +23,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 // and does not re-export SpeakerAvatar yet.
 import { SpeakerAvatar, type SpeakerAvatarSpeaker } from "../../../../widgets/speakeravatar";
 import { writeDraft } from "../../composer/draft";
+import { EntityText } from "../EntityText";
 import { ImageGallery } from "../flow/ImageGallery";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { MessageTimestamp } from "./MessageTimestamp";
@@ -103,6 +104,7 @@ export function UserMessageView({
   speaker = "user",
   name = "You",
   timeIso,
+  entityText = false,
 }: {
   item: ItemModel;
   actions?: ReactNode;
@@ -114,6 +116,8 @@ export function UserMessageView({
   speaker?: SpeakerAvatarSpeaker;
   name?: string;
   timeIso?: string;
+  /** Reserved for real user messages; tool-output callers keep literal text. */
+  entityText?: boolean;
 }) {
   // Missing or invalid server timestamps stay absent rather than showing a guess.
   const time = Date.parse(timeIso ?? item.startedAt ?? "");
@@ -137,7 +141,7 @@ export function UserMessageView({
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
         <div className={CLASS.body} data-testid="user-bubble">
-          <div className={CLASS.text}>{item.text}</div>
+          <div className={CLASS.text}>{entityText ? <EntityText text={item.text} /> : item.text}</div>
           <ImageGallery images={item.images} />
         </div>
       </div>
@@ -167,7 +171,7 @@ export const UserMessageItem = memo(function UserMessageItem({ item, sessionRef 
     sessionRef && entryIndex !== undefined && entryIndex > 0 ? (
       <ForkFromHereButton sessionRef={sessionRef} transcriptEntryIndex={entryIndex} />
     ) : undefined;
-  return <UserMessageView item={item} actions={actions} />;
+  return <UserMessageView item={item} actions={actions} entityText />;
 }, ignoringTurn);
 
 registerItemRenderer("userMessage", UserMessageItem);

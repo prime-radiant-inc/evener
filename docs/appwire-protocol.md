@@ -122,7 +122,7 @@ no router (reserved).
 | `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
-| `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads git HEAD for a working directory. |
+| `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v2 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
@@ -307,6 +307,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthApiKeySetParams`
@@ -315,6 +317,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthCredentialJsonSetParams`
@@ -323,6 +327,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollParams`
@@ -331,6 +337,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollResponse`
@@ -374,6 +381,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
 | `redirectUrl` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLoginCompleteResponse`
@@ -404,6 +412,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLogoutResponse`
@@ -448,6 +458,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthTestResponse`
@@ -497,6 +508,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `provider` | `string` | yes |  |
 | `activeSource` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `EvenerDelegateInfo`
@@ -632,6 +644,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `cwd` | `string` |  |  |
+| `includeOrigin` | `bool` | yes |  |
 
 
 ### `GitHeadResponse`
@@ -639,6 +652,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `head` | `string` |  |  |
+| `originUrl` | `string` | yes |  |
 
 
 ### `GoalSetParams`
@@ -741,6 +755,7 @@ _(no fields)_
 | `surface` | `string` | yes |  |
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
+| `endpointFingerprint` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
@@ -774,6 +789,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`

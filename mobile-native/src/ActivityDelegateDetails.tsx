@@ -8,10 +8,11 @@ import {
 } from "react-native";
 import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskTime";
 import {
+  type ActivityDelegate,
+  activityDelegateDiagnostics,
   formatElapsed,
   splitMandate,
-} from "../../appwire-client/typescript/displayFormat";
-import type { ActivityDelegate } from "../../appwire-client/typescript/activityData";
+} from "@evener/appwire-client";
 import {
   delegateModel,
   delegatePacket,
@@ -143,6 +144,7 @@ export function ActivityDelegateDetails({
   }, [clock]);
 
   const model = delegateModel(delegate);
+  const diagnostics = activityDelegateDiagnostics(delegate);
   const instruction = delegate.mandate ?? delegate.task;
   const hasResult = delegate.structuredResult !== undefined;
   const hasResultInfo =
@@ -209,9 +211,9 @@ export function ActivityDelegateDetails({
           <Messages messages={delegate.warnings} />
         </DetailSection>
       ) : null}
-      {delegate.diagnostics?.length ? (
+      {diagnostics.length ? (
         <DetailSection title="Diagnostics">
-          <Messages messages={delegate.diagnostics} />
+          <Messages messages={diagnostics} />
         </DetailSection>
       ) : null}
 

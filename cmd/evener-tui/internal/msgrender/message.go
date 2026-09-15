@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/toolsummary"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 	"primeradiant.com/evener/llm"
 )
@@ -232,8 +233,10 @@ func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 		return RenderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render(body), focused)
 	case transcript.MsgSteering:
 		// Steering placeholder or authoritative chip. tuitheme.SystemStyle is the
-		// closest existing style; refine later if needed.
-		return RenderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+body), focused)
+		// closest existing style; refine later if needed. A legacy human-note
+		// update is persisted as a steering turn, so this body is another reader
+		// that prints notes text: strip the terminal-boundary controls here.
+		return RenderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+prefix+tuitext.StripControls(msg.Text)+suffix), focused)
 	}
 	return ""
 }

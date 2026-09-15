@@ -164,6 +164,9 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	if probe.JSONRPC != nil {
 		return errors.New("jsonrpc field is not part of AppWire")
 	}
+	// A frame decoded into a reused Message must replace whatever it held, or a
+	// stale pointer survives alongside the new one and Kind() picks the wrong one.
+	*m = Message{}
 	switch {
 	case len(probe.Error) > 0:
 		var resp ErrorResponse

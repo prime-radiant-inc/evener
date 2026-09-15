@@ -21,7 +21,7 @@ import { create } from "zustand";
 import {
   isStaleCursorError,
   WireError,
-} from "../../../appwire-client/typescript/errors";
+} from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
@@ -29,7 +29,7 @@ import type {
   QueueState,
   ThreadCapabilities,
   ThreadItem,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type {
   ActivityDetail,
   MobileCapabilities,

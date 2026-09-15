@@ -1,5 +1,5 @@
+import type { LaunchOption } from "@evener/appwire-client";
 import { describe, expect, test, vi } from "vitest";
-import type { LaunchOption } from "../../../../protocol/types.gen";
 import { validatePathListAdd } from "./pathListAdd";
 
 function pathListOption(pathKind: string | undefined, wireField = "skillsDirs"): LaunchOption {

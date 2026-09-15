@@ -1,15 +1,16 @@
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { ActivityCounts } from "../protocol/activityData";
-import { parseActivityTree } from "../protocol/activityData";
+import type { ActivityCounts } from "@evener/appwire-client";
 import {
   errorKind,
   errorText,
   friendlyErrorMessage,
+  isActionUnavailable,
+  isThreadNotFound,
+  parseActivityTree,
   sessionActionError,
   sessionActionHeadline,
-} from "../protocol/errors";
-import { isActionUnavailable, isThreadNotFound } from "../protocol/sessionErrors";
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { type ActivityFetchResult, activityPanelStore, retainedActivityTree } from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 

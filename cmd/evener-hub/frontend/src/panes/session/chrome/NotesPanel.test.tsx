@@ -2,19 +2,20 @@
 // and the live remove wiring. Mirrors DetailsPanel.test.tsx's harness
 // (testModel with capability overrides); the body renders directly here
 // (no Sheet trigger to click through - the desktop pane mounts the body).
+
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
-import { WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { resetPendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -216,35 +217,69 @@ test("clean focused editors accept authoritative store updates without a write",
   expect(seen).toHaveLength(0);
 });
 
-test.each(["ended", "capability", "instance"])(
-  "deadline rechecks %s without changing the original fence",
-  async (loss) => {
-    const { fake, user } = clockClient();
-    const model = testModel({ instanceId: "original-instance" });
-    threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-    await threadsStore.getState().ensureThread(model.ref);
-    const seen: unknown[] = [];
-    fake.on("notes/human/set", (params) => {
-      seen.push(params);
-      return noteResponse(params);
-    });
-    render(<LivePanel sessionRef={model.ref} />);
-    await user.type(editor(), "retained sentinel");
-    await user.tab();
-    const changed =
-      loss === "ended"
-        ? { ...model, status: { type: "ended" as const } }
-        : loss === "capability"
-          ? { ...model, capabilities: { ...model.capabilities, sharedNotes: false } }
-          : { ...model, instanceId: "replacement-instance" };
-    act(() => threadsStore.setState({ threads: new Map([[model.ref, changed]]) }));
-    await advance(10_000);
-    expect(seen).toHaveLength(0);
-    act(() => threadsStore.setState({ threads: new Map([[model.ref, model]]) }));
-    expect(editor().value).toBe("retained sentinel");
-    expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
-  },
-);
+test.each(["ended", "capability"])("deadline rechecks %s without changing the original fence", async (loss) => {
+  const { fake, user } = clockClient();
+  const model = testModel({ instanceId: "original-instance" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  const seen: unknown[] = [];
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    return noteResponse(params);
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "retained sentinel");
+  await user.tab();
+  const changed =
+    loss === "ended"
+      ? { ...model, status: { type: "ended" as const } }
+      : { ...model, capabilities: { ...model.capabilities, sharedNotes: false } };
+  act(() => threadsStore.setState({ threads: new Map([[model.ref, changed]]) }));
+  await advance(10_000);
+  expect(seen).toHaveLength(0);
+  act(() => threadsStore.setState({ threads: new Map([[model.ref, model]]) }));
+  expect(editor().value).toBe("retained sentinel");
+  expect(screen.getByTestId("shared-notes-error")).toBeTruthy();
+});
+
+// A rotation the client has observed is not a refusal: the drafts path asserts
+// the tracked model's identity at send time, and the daemon's own
+// ExpectedInstanceID fence is what rejects a write aimed at a session instance
+// the client does not know about. A blur-time capture would refuse this
+// saveable rotation.
+test("an observed instance rotation at the deadline saves against the current instance", async () => {
+  const { fake, user } = clockClient();
+  const model = testModel({ instanceId: "original-instance" });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  await threadsStore.getState().ensureThread(model.ref);
+  const seen: unknown[] = [];
+  let submittedResolve!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    submittedResolve = resolve;
+  });
+  fake.on("notes/human/set", (params) => {
+    seen.push(params);
+    submittedResolve();
+    return noteResponse(params);
+  });
+  render(<LivePanel sessionRef={model.ref} />);
+  await user.type(editor(), "rotated sentinel");
+  await user.tab();
+  act(() =>
+    threadsStore.setState({ threads: new Map([[model.ref, { ...model, instanceId: "replacement-instance" }]]) }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10_000);
+    await submitted;
+  });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({
+    ref: model.ref,
+    note: "rotated sentinel",
+    expectedInstanceId: "replacement-instance",
+  });
+  expect(screen.queryByTestId("shared-notes-error")).toBeNull();
+});
 
 test("a definite refusal stays visible and keeps its draft across close and reopen", async () => {
   const { fake, user } = clockClient();
@@ -271,6 +306,7 @@ test("a definite refusal stays visible and keeps its draft across close and reop
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetPendingUrlRemovals();
   resetToastStoreForTests();
 });
 
@@ -723,6 +759,292 @@ test("remove dispatches urls/remove", async () => {
   await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
 
   await waitFor(() => expect(called).toMatchObject({ ref: model.ref, id: "u1" }));
+});
+
+test("a second Remove click while the first is in flight is ignored and stays silent", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const firstInFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", (params) => {
+    calls += 1;
+    // The reported defect: the first request succeeds and the second reports the
+    // entry as already gone, which must not reach the user as an error toast.
+    if (calls === 1) return firstInFlight.then(() => ({}));
+    throw new WireError("link not found", -32004, { id: (params as { id: string }).id });
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  void user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // The double-click's second click lands while the first request is pending.
+  await user.click(button);
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await firstInFlight;
+  });
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+});
+
+test("two Remove clicks in the same tick fire one request", async () => {
+  const { fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const firstInFlight = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return firstInFlight.then(() => ({}));
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  // Both clicks land before React re-renders. A guard that reads the pending set
+  // from the render closure still sees the pre-click value on the second click,
+  // which is the double-click the disabled attribute cannot prevent: the button
+  // is not disabled until that re-render.
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await waitFor(() => expect(calls).toBe(1));
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await firstInFlight;
+  });
+  expect(calls).toBe(1);
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+});
+
+test("a duplicate Remove after the response reports no error", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    if (calls === 1) return answered.then(() => ({}));
+    // The entry is already gone server-side: the unknown-id rejection the old
+    // guard existed to suppress.
+    throw new WireError("no URL entry with id u1", -32602, { evenerErrorInfo: "invalidParams" });
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  release();
+  await act(async () => {
+    await answered;
+  });
+  // The guard is released when the request settles, so this click reaches the
+  // wire; the missing-entry answer must read as success, because the user's
+  // intent (this link gone) is already true.
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(2));
+  expect(screen.queryByText(/Couldn't remove link/i)).toBeNull();
+
+  // The push lands and the model drops the entry: the row disappears with it.
+  panel.rerender(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={{ ...model, sessionUrls: [] }} />
+      <Toast />
+    </>,
+  );
+  expect(screen.queryByTestId("shared-notes-url-remove-u1")).toBeNull();
+});
+
+test("a re-added URL row is removable again", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return Promise.resolve({});
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // Another client re-adds the same canonical URL, so the id never leaves the
+  // model: the guard must not outlive the request and wedge the live row.
+  panel.rerender(
+    <>
+      <NotesPanelBody
+        sessionRef={model.ref}
+        model={{ ...model, sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] }}
+      />
+      <Toast />
+    </>,
+  );
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(2));
+});
+
+test("a failed Remove clears the guard so a retry can fire", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  fake.on("urls/remove", () => {
+    calls += 1;
+    if (calls === 1) throw new WireError("link not found", -32004, { id: "u1" });
+    return Promise.resolve({});
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1");
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(1));
+  // The failure has to surface before the guard is expected to be released.
+  await waitFor(() => expect(screen.queryByText(/Couldn't remove link/i)).not.toBeNull());
+  // The failure left the entry in place, so the guard must have been released:
+  // the user's retry has to reach the wire.
+  await user.click(button);
+  await waitFor(() => expect(calls).toBe(2));
+});
+
+test("a Remove in flight survives closing and reopening the panel", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return answered.then(() => ({}));
+  });
+
+  const model = testModel({ sessionUrls: [{ id: "u1", url: "https://x.test/y", label: "x" }] });
+  threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+  void threadsStore.getState().ensureThread(model.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  await waitFor(() => expect(calls).toBe(1));
+
+  // The mobile sheet unmounts the body while the request is still in flight; a
+  // guard that lives in the component resets here and lets a duplicate through.
+  panel.unmount();
+  render(
+    <>
+      <NotesPanelBody sessionRef={model.ref} model={model} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  expect(calls).toBe(1);
+
+  release();
+  await act(async () => {
+    await answered;
+  });
+});
+
+test("a pending removal does not disable another session's row", async () => {
+  const { user, fake } = clockClient();
+  let calls = 0;
+  let release!: () => void;
+  const answered = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  fake.on("urls/remove", () => {
+    calls += 1;
+    return answered.then(() => ({}));
+  });
+
+  const first = testModel({
+    ref: "local:aaaa",
+    threadId: "aaaa",
+    sessionUrls: [{ id: "u1", url: "https://a.test/y", label: "a" }],
+  });
+  threadsStore.setState({ threads: new Map([[first.ref, first]]) });
+  void threadsStore.getState().ensureThread(first.ref);
+  const panel = render(
+    <>
+      <NotesPanelBody sessionRef={first.ref} model={first} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByTestId("shared-notes-url-remove-u1"));
+  await waitFor(() => expect(calls).toBe(1));
+
+  // The same mounted pane, a different session: the guard is keyed by session,
+  // so this row is its own.
+  const second = testModel({
+    ref: "local:bbbb",
+    threadId: "bbbb",
+    sessionUrls: [{ id: "u1", url: "https://b.test/y", label: "b" }],
+  });
+  threadsStore.setState({ threads: new Map([[second.ref, second]]) });
+  void threadsStore.getState().ensureThread(second.ref);
+  panel.rerender(
+    <>
+      <NotesPanelBody sessionRef={second.ref} model={second} />
+      <Toast />
+    </>,
+  );
+  const button = screen.getByTestId("shared-notes-url-remove-u1") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+
+  release();
+  await act(async () => {
+    await answered;
+  });
 });
 
 // --- save coalescing -------------------------------------------------------------

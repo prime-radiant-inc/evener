@@ -1,6 +1,6 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import { ClientProvider, useClient } from "./clientContext";
 
 afterEach(cleanup);

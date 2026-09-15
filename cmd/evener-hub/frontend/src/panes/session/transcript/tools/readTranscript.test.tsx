@@ -1,6 +1,6 @@
+import type { ItemModel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel } from "../../../../protocol/model";
 import { toolRendererFor } from "../toolRenderers";
 import "./readTranscript";
 
@@ -91,6 +91,12 @@ test("summary: same-owner job reads retain their complete distinct suffixes", ()
   expect(first).toContain("000000000001");
   expect(second).toContain("000000000002");
   expect(first).not.toBe(second);
+});
+
+test("summary: a job log read renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("read_transcript");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  expect(d.summary(call({ transcript_ref: `job:${id}` }))).toBe(`Read job log ${id}`);
 });
 
 test("summary: an expand_turn read names the turn it expanded", () => {

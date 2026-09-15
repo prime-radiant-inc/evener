@@ -15,9 +15,10 @@
 // case, which updates the reasoning ladder alongside modelProvider/model),
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { useCallback } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
 import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
@@ -45,8 +46,8 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const disabled = !model.capabilities.changeModel;
   const currentModelLabel = modelLabel(model.modelProvider, model.model);
 
-  const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
-    return modelListToCatalog(await threadsStore.getState().listModels());
+  const loadCatalog = useCallback(async (refresh?: boolean): Promise<ModelCatalog> => {
+    return modelListToCatalog(await threadsStore.getState().listModels(refresh));
   }, []);
 
   async function handlePick(entry: ModelCatalogEntry): Promise<void> {

@@ -1,14 +1,21 @@
+import type {
+  ActivityTree,
+  NavigationSessionSummary,
+  NavigationWatchSummary,
+  ThreadCapabilities,
+  ThreadModel,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ActivityTree } from "../../protocol/activityData";
-import { WireError } from "../../protocol/errors";
-import type { ThreadModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activityPanel";
 import { activitySummaryStore } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
+import { navigationStore } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -99,6 +106,37 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 
 function seedModel(model: ThreadModel): void {
   threadsStore.setState({ threads: new Map([[model.ref, model]]) });
+}
+
+// seedNavigationWatches materializes one live navigation section summary so the
+// standalone Activity pane's selectSessionWatches sees the session's rows.
+function seedNavigationWatches(ref: string, watches: NavigationWatchSummary[]): void {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const summary = {
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "p",
+    state: "idle",
+    kind: "session",
+    live: true,
+    watches,
+    children: [],
+  } as unknown as NavigationSessionSummary;
+  const resource: ResourceState = {
+    key: sectionKey,
+    data: { sessions: [summary] },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "tag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  navigationStore.setState({ resources: new Map([[keyID(sectionKey), resource]]) });
 }
 
 function connectFakeClient(): FakeClient {
@@ -441,6 +479,48 @@ test.each(["tasks", "activity"] as const)("%s pane does not install the Details 
   // only that neither pane installs the Details clock's NOW_TICK_MS cadence.
   expect(setIntervalSpy).not.toHaveBeenCalledWith(expect.any(Function), NOW_TICK_MS);
   setIntervalSpy.mockRestore();
+});
+
+// The standalone Activity pane installs no clock of its own, yet an OPEN watch
+// row must still count down: the meta reads the tree's own live tick, which
+// ActivityTree enables for a session carrying watch rows. This is the
+// regression the chrome-hosted panel (which passes its own `now`) used to hide.
+test("standalone activity pane shows an open watch row's countdown without its own clock", () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-08-05T15:00:12.000Z"));
+  try {
+    const model = testModel({ jobsUpdatedAt: 1 });
+    seedModel(model);
+    const tree = retainedActivity();
+    const entry: ActivityPanelEntry = {
+      load: { kind: "ready", tree },
+      disclosure: { expandedIDs: [], selectedID: undefined, selectionPruned: false, tree },
+      established: true,
+      continuationFailures: {},
+      requestID: 0,
+      expandedFoldIDs: [],
+    };
+    activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
+    seedNavigationWatches(model.ref, [
+      {
+        id: "watch_open",
+        source: "self",
+        deliveries: 0,
+        created_at: "2026-08-05T12:48:00Z",
+        active: true,
+        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: "2026-08-05T15:04:12Z" }],
+      },
+    ]);
+
+    render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-watch" focused kind="activity" />);
+
+    const row = screen.getByRole("treeitem", { name: /Watch:/ });
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(row.textContent).toContain("next ~4m");
+  } finally {
+    navigationStore.setState({ resources: new Map() });
+    vi.useRealTimers();
+  }
 });
 
 test("Details owns a clock after hydration", () => {

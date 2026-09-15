@@ -18,7 +18,7 @@
 // conveys activity; this line's entire job is to say something honest when
 // that activity stops.
 
-import type { ModelRetryState } from "../../../../protocol/model";
+import type { ModelRetryState } from "@evener/appwire-client";
 import { useThreadsStore } from "../../../../stores/threads";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnScopeKey, useRunningSubagentCount } from "../tools/subagentModuleStore";

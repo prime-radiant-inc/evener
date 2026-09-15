@@ -1,11 +1,12 @@
+import { docFileRawURL, docImageURL } from "@evener/appwire-client";
 import { type ReactPortal, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { docFileRawURL, docImageURL } from "../../../../protocol/docContent";
 import * as paneActions from "../../../../shell/paneActions";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Markdown } from "../../../../widgets/markdown";
 import { OpenButton } from "../../../../widgets/openbutton";
 import { browserDocPort } from "../../../doc/browserDocPort";
+import { useEntityTextEnhancement } from "../EntityText";
 import { fileDocParams } from "../fileOpenBeside";
 import { isValidTranscriptRef } from "./steeringClassify";
 
@@ -35,6 +36,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   const [affordances, setAffordances] = useState<ReactPortal[]>([]);
   // Portal updates must not replace the innerHTML that owns their mount points.
   const markdown = useMemo(() => <Markdown ref={root} source={source} live={live} />, [source, live]);
+  const entityPortals = useEntityTextEnhancement(root, [source, live]);
 
   // source/live determine when Markdown replaces its sanitized DOM. Rebind even
   // when the session is unchanged, including streamed and settled transitions.
@@ -77,6 +79,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     <>
       {markdown}
       {affordances}
+      {entityPortals}
     </>
   );
 }

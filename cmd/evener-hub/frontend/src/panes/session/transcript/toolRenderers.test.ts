@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import type { ItemModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel } from "../../../protocol/model";
 import { RawToolOutput } from "./RawToolOutput";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 

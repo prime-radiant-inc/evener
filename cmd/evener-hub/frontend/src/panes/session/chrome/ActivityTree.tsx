@@ -1,5 +1,24 @@
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
-  createContext,
+  type ActivityDelegate,
+  type ActivityDelegateRow,
+  type ActivityFoldRow,
+  type ActivityJobRow,
+  type ActivityRow,
+  type ActivitySessionNode,
+  type ActivityTree as ActivityTreeData,
+  type ActivityWatchRow,
+  activityDelegateBranch,
+  activityDelegateState,
+  activityNodeID,
+  buildActivityRows,
+  buildWatchRows,
+  type EntityView,
+  jobIsFailed,
+  watchMeta,
+  watchName,
+} from "@evener/appwire-client";
+import {
   Fragment,
   forwardRef,
   type KeyboardEvent,
@@ -14,32 +33,32 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  type ActivityDelegate,
-  type ActivitySessionNode,
-  type ActivityTree as ActivityTreeData,
-  activityNodeID,
-} from "../../../protocol/activityData";
-import {
-  type ActivityDelegateRow,
-  type ActivityFoldRow,
-  type ActivityJobRow,
-  type ActivityRow,
-  activityDelegateState,
-  buildActivityRows,
-  jobIsFailed,
-} from "../../../protocol/activityRows";
+import { WatchGlyph } from "../../../shell/rail/RailRow";
+import { armedWatchCount } from "../../../shell/rail/railNodes";
+import { openSessionByRef } from "../../../shell/sessionPlacement";
 import { Button, Chevron } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../transcript/openTranscript";
-import { ActivityRowDetail } from "./ActivityRowDetail";
+import { ActivityRowDetail, ActivityWatchDetail } from "./ActivityRowDetail";
 import { formatQuietAge, formatUsagePair, jobStatusDotState, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
+import { TreeNowContext, useTreeNow } from "./treeNow";
 
 export interface ActivityTreeProps {
   tree: ActivityTreeData;
   expandedFoldIDs: string[];
   onToggleFold: (foldID: string) => void;
+  // The session's live watches, absent-able: an old daemon omits the list, and
+  // undefined renders exactly as an empty list does.
+  watches?: NavigationWatchSummary[];
+  // Rows the hub projected away (over the per-session cap, or shed by the byte
+  // fitter). The Watches group header reports them as "+N more" so the panel
+  // never silently undercounts what the session holds.
+  omittedWatches?: number;
+  // The armed subset of those omitted rows. Without it the header's armed count
+  // would report only the retained rows, understating a session whose armed
+  // watches exceed the hub's per-session cap.
+  omittedArmedWatches?: number;
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
@@ -48,6 +67,11 @@ export interface ActivityTreeProps {
   // already loading blocks the others the same way: the panel carries one
   // request at a time, so only the branch that asked first can be answered.
   rootRefreshing?: boolean;
+  /** The session's entity map (ActivityPanelBody's `useEntityView`): the
+   * detail strips open outside the transcript subtree, so the panel hands the
+   * map down the tree for the ids those strips name. Optional - rows render
+   * their ids as plain text without it. */
+  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface ActivityTreeHandle {
@@ -71,7 +95,16 @@ const CLASS = {
   rowActions: requireClass(styles.rowActions, "activitypanel.module.css", "rowActions"),
   rowContinuation: requireClass(styles.rowContinuation, "activitypanel.module.css", "rowContinuation"),
   indentGuide: requireClass(styles.indentGuide, "activitypanel.module.css", "indentGuide"),
+  watchGlyph: requireClass(styles.watchGlyph, "activitypanel.module.css", "watchGlyph"),
+  srOnly: requireClass(styles.srOnly, "activitypanel.module.css", "srOnly"),
+  watchGroup: requireClass(styles.watchGroup, "activitypanel.module.css", "watchGroup"),
+  watchGroupTitle: requireClass(styles.watchGroupTitle, "activitypanel.module.css", "watchGroupTitle"),
+  watchGroupCount: requireClass(styles.watchGroupCount, "activitypanel.module.css", "watchGroupCount"),
 };
+
+// Every row kind that owns an expandable detail strip (a fold row toggles its
+// own list instead, through onToggleFold).
+type DetailRow = ActivityJobRow | ActivityDelegateRow | ActivityWatchRow;
 
 function delegateStatusText(delegate: ActivityDelegate): string {
   return activityDelegateState(delegate).status;
@@ -198,6 +231,9 @@ interface ContinuationStrip {
   afterRowID: string;
   token?: string;
   branchError?: string;
+  // openSessionRef is activityDelegateBranch's — the ref that reaches a
+  // child the page stopped short of with nothing to page.
+  openSessionRef?: string;
 }
 
 // subtreeLastRowID finds the last visible row belonging to a delegate's
@@ -244,15 +280,18 @@ function collectContinuations(
       if (entry.kind !== "delegate") continue;
       const delegate = entry.delegate;
       const targetID = activityNodeID(entry);
-      const token = delegate.child?.branch.continuation ?? delegate.branch.continuation;
-      if (token || continuationFailures[targetID] !== undefined) {
+      // Both of a delegate's branch states, read the one way the package
+      // defines — see activityDelegateBranch.
+      const branch = activityDelegateBranch(delegate);
+      if (branch.continuation || branch.openSessionRef || continuationFailures[targetID] !== undefined) {
         const afterRowID = subtreeLastRowID(rows, targetID);
         if (afterRowID) {
           strips.push({
             targetID,
             afterRowID,
-            token,
-            branchError: delegate.child?.branch.error ?? delegate.branch.error,
+            token: branch.continuation,
+            branchError: branch.error,
+            openSessionRef: branch.openSessionRef,
           });
         }
       }
@@ -262,12 +301,6 @@ function collectContinuations(
   visitDelegates(root);
   return strips;
 }
-
-// TreeNowContext carries the live rows' ticking clock. TreeTickProvider is
-// the only setInterval in this file, and only context consumers (the live
-// meta cluster and live detail strips) re-render on each tick: memoized rows
-// and the tree chrome never subscribe, so a tick touches live leaves only.
-const TreeNowContext = createContext<number>(0);
 
 function TreeTickProvider({ live, children }: { live: boolean; children: ReactNode }): ReactNode {
   const [now, setNow] = useState(() => Date.now());
@@ -318,16 +351,28 @@ const StaticMetaSegments = memo(function StaticMetaSegments({
   return <RowSegments segments={segments} />;
 });
 
-function LiveRowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+function LiveRowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
   const now = useContext(TreeNowContext);
-  return <ActivityRowDetail row={row} now={now} />;
+  return <ActivityRowDetail row={row} now={now} entities={entities} />;
 }
 
 // Static detail strips carry no running age (metaText's terminal line has no
 // clock term), so they render once with a dummy instant and never subscribe.
-const RowDetail = memo(function RowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
-  if (!row.live) return <ActivityRowDetail row={row} now={0} />;
-  return <LiveRowDetail row={row} />;
+const RowDetail = memo(function RowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
+  if (!row.live) return <ActivityRowDetail row={row} now={0} entities={entities} />;
+  return <LiveRowDetail row={row} entities={entities} />;
 });
 
 interface FoldRowViewProps {
@@ -388,11 +433,74 @@ const FoldRowView = memo(function FoldRowView({
   );
 });
 
-interface DenseRowViewProps {
-  row: ActivityJobRow | ActivityDelegateRow;
+interface RowShellProps {
+  row: DetailRow;
+  name: string;
   detailOpen: boolean;
   tabIndex: number;
-  onSetDetailOpen: (row: ActivityJobRow | ActivityDelegateRow, open: boolean) => void;
+  onSetDetailOpen: (row: DetailRow, open: boolean) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+  children: ReactNode;
+}
+
+// RowShell is the chrome every expandable dense row shares: a shell job, a
+// delegate, and a watch row all draw the same treeitem wrapper with the same
+// aria wiring, focus/keydown/ref handlers, and chevron disclosure button. Only
+// the body after the chevron differs, so the row views cannot drift apart.
+function RowShell({
+  row,
+  name,
+  detailOpen,
+  tabIndex,
+  onSetDetailOpen,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+  children,
+}: RowShellProps): ReactNode {
+  return (
+    <div
+      ref={(element) => {
+        registerRowRef(row.id, element);
+      }}
+      role="treeitem"
+      aria-label={name}
+      aria-level={row.level}
+      aria-expanded={detailOpen}
+      tabIndex={tabIndex}
+      className={CLASS.denseRow}
+      onFocus={() => onFocusRow(row.id)}
+      onKeyDown={(event) => onKeyDown(event, row)}
+      // Clicking the title toggles the disclosure, same as the chevron; the
+      // transcript opens only from the row's own open button.
+      onClick={() => onSetDetailOpen(row, !detailOpen)}
+    >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
+        aria-expanded={detailOpen}
+        className={CLASS.rowToggle}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSetDetailOpen(row, !detailOpen);
+        }}
+      >
+        <Chevron direction={detailOpen ? "down" : "right"} size={12} />
+      </button>
+      {children}
+    </div>
+  );
+}
+
+interface DenseRowViewProps {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+  detailOpen: boolean;
+  tabIndex: number;
+  onSetDetailOpen: (row: DetailRow, open: boolean) => void;
   onFocusRow: (id: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
@@ -404,6 +512,7 @@ interface DenseRowViewProps {
 // quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
+  entities,
   detailOpen,
   tabIndex,
   onSetDetailOpen,
@@ -423,35 +532,16 @@ const DenseRowView = memo(function DenseRowView({
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
-      <div
-        ref={(element) => {
-          registerRowRef(row.id, element);
-        }}
-        role="treeitem"
-        aria-label={name}
-        aria-level={row.level}
-        aria-expanded={detailOpen}
+      <RowShell
+        row={row}
+        name={name}
+        detailOpen={detailOpen}
         tabIndex={tabIndex}
-        className={CLASS.denseRow}
-        onFocus={() => onFocusRow(row.id)}
-        onKeyDown={(event) => onKeyDown(event, row)}
-        // Clicking the title toggles the disclosure, same as the chevron;
-        // the transcript opens only from the row's open button.
-        onClick={() => onSetDetailOpen(row, !detailOpen)}
+        onSetDetailOpen={onSetDetailOpen}
+        onFocusRow={onFocusRow}
+        onKeyDown={onKeyDown}
+        registerRowRef={registerRowRef}
       >
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
-          aria-expanded={detailOpen}
-          className={CLASS.rowToggle}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetDetailOpen(row, !detailOpen);
-          }}
-        >
-          <Chevron direction={detailOpen ? "down" : "right"} size={12} />
-        </button>
         <span
           role="img"
           aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
@@ -462,11 +552,95 @@ const DenseRowView = memo(function DenseRowView({
         <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
         {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
         {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}
-      </div>
-      {detailOpen && <RowDetail row={row} />}
+      </RowShell>
+      {detailOpen && <RowDetail row={row} entities={entities} />}
     </Fragment>
   );
 });
+
+interface WatchRowViewProps {
+  row: ActivityWatchRow;
+  detailOpen: boolean;
+  tabIndex: number;
+  onSetDetailOpen: (row: DetailRow, open: boolean) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+}
+
+// A watch row shares the dense row grammar (toggle, name, right-hand meta) but
+// has no live clock cluster of its own: its clock-derived parts - the meta's
+// countdown and the detail's ages - exist only while the row is open, and they
+// read the tree's own tick (OpenWatchMeta, ActivityWatchDetail) rather than a
+// prop. The row chrome is therefore all snapshot data, so the memoized view
+// re-renders only when its own row or disclosure changes - never on a tick.
+const WatchRowView = memo(function WatchRowView({
+  row,
+  detailOpen,
+  tabIndex,
+  onSetDetailOpen,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+}: WatchRowViewProps): ReactNode {
+  const name = `Watch: ${watchName(row.watch)}`;
+  return (
+    <Fragment>
+      <RowShell
+        row={row}
+        name={name}
+        detailOpen={detailOpen}
+        tabIndex={tabIndex}
+        onSetDetailOpen={onSetDetailOpen}
+        onFocusRow={onFocusRow}
+        onKeyDown={onKeyDown}
+        registerRowRef={registerRowRef}
+      >
+        <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
+        <span className={CLASS.srOnly}>Watch:</span>
+        <span className={CLASS.denseName}>{watchName(row.watch)}</span>
+        {detailOpen ? (
+          <OpenWatchMeta watch={row.watch} />
+        ) : (
+          // A collapsed row is all snapshot data: no clock, no countdown. It
+          // renders the static meta directly so it never subscribes to the tree
+          // ticker (see OpenWatchMeta).
+          <span className={CLASS.denseMeta}>{watchMeta(row.watch, undefined)}</span>
+        )}
+      </RowShell>
+      {detailOpen && <ActivityWatchDetail row={row} />}
+    </Fragment>
+  );
+});
+
+// OpenWatchMeta is the open watch row's right-hand meta, and the only place the
+// row's own countdown renders. It is mounted only while the row is open, so a
+// collapsed row never subscribes to the tree clock and never re-renders per
+// tick. It reads the tick straight from context, which ActivityTree enables for
+// any session carrying watch rows - exactly as ActivityWatchDetail does for the
+// detail strip.
+function OpenWatchMeta({ watch }: { watch: NavigationWatchSummary }): ReactNode {
+  const now = useTreeNow();
+  return <span className={CLASS.denseMeta}>{watchMeta(watch, now)}</span>;
+}
+
+// The Watches group title that leads the panel body, with the count of armed
+// watches on its right. No "needs a look" count: the projection tracks no
+// drops, so there is no abnormal count to report.
+//
+// `armed` is the true total: the retained armed rows plus the armed rows the
+// hub omitted. Whenever rows were omitted the figure is labelled `N armed
+// total`, because it covers rows the panel does not list and the label must
+// never understate the session's armed watches.
+function WatchGroupHeader({ armed, omitted }: { armed: number; omitted: number }): ReactNode {
+  const count = omitted > 0 ? `${armed} armed total · +${omitted} more` : `${armed} armed`;
+  return (
+    <div className={CLASS.watchGroup} data-testid="watch-group">
+      <span className={CLASS.watchGroupTitle}>Watches</span>
+      <span className={CLASS.watchGroupCount}>{count}</span>
+    </div>
+  );
+}
 
 interface ContinuationStripViewProps {
   strip: ContinuationStrip;
@@ -486,8 +660,23 @@ const ContinuationStripView = memo(function ContinuationStripView({
   return (
     <div className={CLASS.rowActions}>
       <span className={CLASS.rowContinuation}>
-        {failure ?? strip.branchError ?? "This branch is partially retained."}
+        {failure ??
+          strip.branchError ??
+          (strip.openSessionRef ? "This branch continues in its own session." : "This branch is partially retained.")}
       </span>
+      {strip.openSessionRef && (
+        <Button
+          variant="quiet"
+          size="xs"
+          tabIndex={-1}
+          onClick={(event) => {
+            event.stopPropagation();
+            openSessionByRef(strip.openSessionRef ?? "");
+          }}
+        >
+          Open session
+        </Button>
+      )}
       {strip.token && (
         <Button
           variant="quiet"
@@ -508,12 +697,13 @@ const ContinuationStripView = memo(function ContinuationStripView({
 
 interface RowBlockProps {
   slice: ActivityRow[];
+  entities?: ReadonlyMap<string, EntityView>;
   stripsByAfterRowID: Map<string, ContinuationStrip[]>;
   expandedFolds: Set<string>;
   effectiveFocusedID: string | null;
-  isDetailOpen: (row: ActivityJobRow | ActivityDelegateRow) => boolean;
+  isDetailOpen: (row: DetailRow) => boolean;
   onToggleFold: (foldID: string) => void;
-  onSetDetailOpen: (row: ActivityJobRow | ActivityDelegateRow, open: boolean) => void;
+  onSetDetailOpen: (row: DetailRow, open: boolean) => void;
   onFocusRow: (id: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
   registerRowRef: (id: string, element: HTMLDivElement | null) => void;
@@ -529,6 +719,7 @@ interface RowBlockProps {
 // re-renders it on real data/focus/detail changes - never on a tick.
 function RowBlock({
   slice,
+  entities,
   stripsByAfterRowID,
   expandedFolds,
   effectiveFocusedID,
@@ -562,11 +753,25 @@ function RowBlock({
           registerRowRef={registerRowRef}
         />,
       );
+    } else if (row.kind === "watch") {
+      out.push(
+        <WatchRowView
+          key={row.id}
+          row={row}
+          detailOpen={isDetailOpen(row)}
+          tabIndex={tabIndex}
+          onSetDetailOpen={onSetDetailOpen}
+          onFocusRow={onFocusRow}
+          onKeyDown={onKeyDown}
+          registerRowRef={registerRowRef}
+        />,
+      );
     } else {
       out.push(
         <DenseRowView
           key={row.id}
           row={row}
+          entities={entities}
           detailOpen={isDetailOpen(row)}
           tabIndex={tabIndex}
           onSetDetailOpen={onSetDetailOpen}
@@ -603,6 +808,7 @@ function RowBlock({
         <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
           <RowBlock
             slice={slice.slice(cursor + 1, end)}
+            entities={entities}
             stripsByAfterRowID={stripsByAfterRowID}
             expandedFolds={expandedFolds}
             effectiveFocusedID={effectiveFocusedID}
@@ -626,7 +832,19 @@ function RowBlock({
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID, rootRefreshing },
+  {
+    tree,
+    entities,
+    expandedFoldIDs,
+    onToggleFold,
+    watches,
+    omittedWatches = 0,
+    omittedArmedWatches = 0,
+    continuationFailures = {},
+    onContinue,
+    loadingContinuationID,
+    rootRefreshing,
+  },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -636,16 +854,19 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // rows stay inert - they are only ever read for rows the current tree
   // actually renders.
   const [detailOverrides, setDetailOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const rows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
+  const activityRows = useMemo(() => buildActivityRows(tree, new Set(expandedFoldIDs)), [tree, expandedFoldIDs]);
+  const watchRows = useMemo(() => buildWatchRows(watches), [watches]);
+  const rows = useMemo(() => [...watchRows, ...activityRows], [watchRows, activityRows]);
+  const armedWatches = useMemo(() => armedWatchCount(watches) + omittedArmedWatches, [watches, omittedArmedWatches]);
 
   // Stable callbacks so the memoized row views below only re-render when
   // their own row's data, disclosure, or focus actually changes.
   const isDetailOpen = useCallback(
-    (row: ActivityJobRow | ActivityDelegateRow): boolean => detailOverrides.get(row.id) ?? row.defaultDetailOpen,
+    (row: DetailRow): boolean => detailOverrides.get(row.id) ?? row.defaultDetailOpen,
     [detailOverrides],
   );
 
-  const setDetailOpen = useCallback((row: ActivityJobRow | ActivityDelegateRow, open: boolean): void => {
+  const setDetailOpen = useCallback((row: DetailRow, open: boolean): void => {
     setDetailOverrides((current) => {
       const next = new Map(current);
       next.set(row.id, open);
@@ -656,7 +877,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   // The ticking clock lives in TreeTickProvider below, gated on this same
   // flag: no live rows, no interval - the old effect's contract, minus the
   // tree-wide setNow that re-rendered every row each second.
-  const hasLive = rows.some((row) => row.kind !== "fold" && row.live);
+  const hasLive = activityRows.some((row) => "live" in row && row.live);
 
   const strips = useMemo(
     () => collectContinuations(tree, rows, continuationFailures),
@@ -794,10 +1015,18 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
   );
 
   return (
-    <TreeTickProvider live={hasLive}>
+    // A session whose only work is a watch still needs the clock: armed ages,
+    // the "now" label and the timeline's end marker are all derived from it.
+    // The tree owns that clock outright - TreeNowContext is the only source, no
+    // caller passes one in - so a watch-only session must still enable it.
+    <TreeTickProvider live={hasLive || watchRows.length > 0}>
+      {(watchRows.length > 0 || omittedWatches > 0) && (
+        <WatchGroupHeader armed={armedWatches} omitted={omittedWatches} />
+      )}
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}
+          entities={entities}
           stripsByAfterRowID={stripsByAfterRowID}
           expandedFolds={expandedFolds}
           effectiveFocusedID={effectiveFocusedID}

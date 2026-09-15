@@ -9,12 +9,14 @@
 // For a job_status call whose output isn't a delegate status (a shell job,
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
+
+import { formatClockTime, formatElapsed, splitMandate } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { formatClockTime, formatElapsed, splitMandate } from "../../../../protocol/displayFormat";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
 import { scopedDisclosureId } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import type { ToolRenderProps } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
@@ -311,7 +313,9 @@ export function DelegateStatusBody({ item, sessionRef }: ToolRenderProps) {
     <div className={CLASS.card} data-testid="delegate-status-body">
       {/* Header: delegate ID + status chip */}
       <div className={CLASS.head}>
-        <span className={CLASS.headId}>{state.id}</span>
+        <span className={CLASS.headId}>
+          <EntityRef id={state.id ?? ""} triggerOnly />
+        </span>
         <span className={CLASS.headSpacer} />
         <Chip tone={tone}>{label}</Chip>
       </div>

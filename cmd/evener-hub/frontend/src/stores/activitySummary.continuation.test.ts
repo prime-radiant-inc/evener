@@ -1,5 +1,5 @@
+import type { ActivityTree } from "@evener/appwire-client";
 import { beforeEach, expect, test, vi } from "vitest";
-import type { ActivityTree } from "../protocol/activityData";
 import { activityPanelStore, retainedActivityTree } from "./activityPanel";
 import { activitySummaryStore } from "./activitySummary";
 

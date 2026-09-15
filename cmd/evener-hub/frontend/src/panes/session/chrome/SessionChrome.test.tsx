@@ -1,17 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type {
-  NavigationSessionLocation,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
@@ -397,7 +392,7 @@ test.each([
   },
 );
 
-test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
+test("SessionChrome keeps its actions-menu tasks entry count-free", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -414,10 +409,10 @@ test("SessionChrome shows task outcome aggregates in its actions menu", async ()
 
   render(<SessionChrome ref="ref_outcomes" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
-test("SessionChrome infers a missing zero outcome in its task label", async () => {
+test("SessionChrome keeps the menu entry count-free even when an outcome is omitted", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -434,7 +429,7 @@ test("SessionChrome infers a missing zero outcome in its task label", async () =
 
   render(<SessionChrome ref="ref_remaining" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
@@ -803,10 +798,9 @@ test("mobile chrome opens Sheets without changing workspace panes", async () => 
 
 // --- activity panel background refresh ---------------------------------------
 //
-// The panels stay mounted triggerless, and ActivityPanel's refreshWhenHidden
-// is unconditional: the menu's "Activity · N" label reads the same summary
-// the hidden panel refreshes, so background refresh must run without any
-// trigger on the row.
+// The panels stay mounted triggerless. Established summaries refresh in the
+// background for the menu's "Activity · N" label, while initial discovery is
+// an explicit opt-in at live-session chrome mounts.
 
 test("triggerless chrome refreshes an established Activity summary in the background", async () => {
   const fake = connectFakeClient();

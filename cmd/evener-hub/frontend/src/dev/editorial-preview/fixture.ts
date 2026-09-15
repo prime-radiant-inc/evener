@@ -1,6 +1,6 @@
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
-import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "../../protocol/types.gen";
+import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { wireV2 } from "../../stores/navigation/testing";
 import { summaries as initialSummaries, initialThreads, PARENT, parentRefs, QUESTION } from "./data";
 
@@ -146,6 +146,13 @@ export function createEditorialClient(): EditorialClient {
     read(ref);
     return { data: [] };
   });
+  // The session composer's location line resolves the branch and origin from
+  // the session's cwd; a fixture hub must answer it like every other method the
+  // mounted panes request. A fixture repo URL keeps the forge link renderable.
+  client.on("evener/git/head", () => ({
+    head: "fixture-branch",
+    originUrl: "git@github.com:fixture/editorial.git",
+  }));
   client.on("evener/subagentPreview", ({ ref }) => ({
     ref,
     items: read(ref).thread.turns?.flatMap((turn) => turn.items ?? []) ?? [],

@@ -1,8 +1,8 @@
+import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { Toast } from "../../../../widgets";
@@ -20,6 +20,19 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
     credentialRequired: true,
     ...overrides,
   };
+}
+
+/** A row the hub cannot key: an endpoint the user can see and NO
+ * endpointFingerprint at all. The key is deleted rather than left out of the
+ * literal on purpose - the instance() helpers in the neighbouring suites stand
+ * in an `fp-fixture` default, and a row carrying a fingerprint takes the other
+ * arm of draftIdentity, proving nothing about the one this suite is written
+ * for. The absence is asserted in the tests that use it, so a helper that
+ * starts injecting one fails loudly instead of quietly retargeting them. */
+function unkeyable(fields: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
+  const row = instance(fields);
+  delete row.endpointFingerprint;
+  return row;
 }
 
 function noopHandlers() {
@@ -880,6 +893,164 @@ describe("the form", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
+  // A name frees when an instance is removed, and anything can be recreated
+  // under it. The retained draft was typed against the instance that left;
+  // saving it would write those edits onto the replacement. The draft survives
+  // the listing swap (the effect above must not clobber edits), so the save
+  // itself is where the identity has to be checked.
+  test("a remove/recreate under the same name cannot take the retained draft's edit", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialRequired: true,
+    });
+    const replacement = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-after",
+      credentialRequired: true,
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/stale");
+
+    act(() => {
+      credentialsStore.setState({ instances: [replacement], availableProviders: [OPENAI] });
+    });
+    // The premise: the draft is retained across the swap, still dirty.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/stale");
+    expect(saveButton().disabled).toBe(false);
+
+    await user.click(saveButton());
+    // The stale edit must not reach the replacement...
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    // ...and the form re-anchors to the instance now on screen.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v2");
+  });
+
+  // The fingerprint is the part of the identity baseUrl cannot show: two
+  // endpoints that differ only in a query parameter read identically, and a
+  // recreation that changes only the query is still a different instance.
+  test("a recreation differing only in the endpoint fingerprint is refused too", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialRequired: true,
+    });
+    const replacement = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-after",
+      credentialRequired: true,
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "STALE_KEY");
+
+    act(() => {
+      credentialsStore.setState({ instances: [replacement], availableProviders: [OPENAI] });
+    });
+    expect(field("API key environment variable").value).toBe("STALE_KEY");
+
+    await user.click(saveButton());
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
+    expect(field("API key environment variable").value).toBe("");
+  });
+
+  // The hub cannot key every row: one whose endpoint it could not fingerprint
+  // serves no endpointFingerprint, and the digest is the only part of the
+  // identity two rows at different destinations differ in - baseUrl, protocol,
+  // surface and the credential fields are what a draft edits, so they are
+  // deliberately not identity on their own (DRAFT_IDENTITY_FIELDS). Built from
+  // name/provider/base/auth alone, then, a same-name replacement at another
+  // endpoint is the SAME identity, and the retained draft - typed against the
+  // endpoint that left - is written onto the replacement. Something the user
+  // can see has to stand in for the digest the hub could not compute.
+  test("an unkeyable same-name replacement at another endpoint does not inherit the draft", async () => {
+    const original = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://original.example/v1" });
+    const replacement = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://replacement.example/v2" });
+    // The premise: neither row serves a fingerprint, so nothing but the visible
+    // endpoint can tell them apart.
+    expect("endpointFingerprint" in original).toBe(false);
+    expect("endpointFingerprint" in replacement).toBe(false);
+
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(original, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "STALE_KEY");
+
+    // A concurrent change puts a different endpoint under the same name. The
+    // draft survives the swap (the reseed is per instance, not per listing), so
+    // the save is where the identity has to be checked.
+    await refreshList(fake, [replacement]);
+    expect(field("Base URL").value).toBe("https://original.example/v1");
+    expect(field("API key environment variable").value).toBe("STALE_KEY");
+
+    await user.click(saveButton());
+    // The stale draft must not reach the replacement through either write path.
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("replaced under the same name"));
+    // ...and the form re-anchors to the endpoint now on screen.
+    expect(field("Base URL").value).toBe("https://replacement.example/v2");
+    expect(field("API key environment variable").value).toBe("");
+  });
+
+  // The other half of the same fallback: a row that is still the one the draft
+  // was seeded from has to save as usual, fingerprint or not. Reading "no
+  // fingerprint" as "not the seeded instance" would turn fingerprinting being
+  // unavailable into an instance that can never be edited from this sheet.
+  test("an unkeyable row whose listing did not move still saves", async () => {
+    const row = unkeyable({ name: "work", providerId: "openai", baseUrl: "https://original.example/v1" });
+    expect("endpointFingerprint" in row).toBe(false);
+
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({
+      instances: [{ ...row, apiKeyEnv: "PORTKEY_KEY" }],
+      availableProviders: [OPENAI],
+    }));
+    connectionStore.getState().connect(fake);
+    renderSheet(row, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("API key environment variable"), "PORTKEY_KEY");
+
+    // The same row re-read: same visible endpoint, still no fingerprint. Its
+    // identity is unchanged, so nothing about the save is.
+    await refreshList(fake, [{ ...row }]);
+    expect(field("Base URL").value).toBe("https://original.example/v1");
+
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY" });
+    await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Reseeded from the instance the save answered with: clean again, showing
+    // what landed rather than a refusal.
+    expect(field("API key environment variable").value).toBe("PORTKEY_KEY");
+    expect(saveButton().disabled).toBe(true);
+  });
+
   // The guard that keeps a rename's vanish from closing the sheet is spent by
   // the section's re-selection: a guard that outlived the rename would swallow
   // the next genuine removal too, leaving an editor open on a ghost.
@@ -1148,6 +1319,202 @@ describe("the form", () => {
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename that also edits an endpoint-affecting field necessarily changes
+  // the listing's endpointFingerprint: the digest is derived from the resolved
+  // endpoint, which baseUrl/vars/protocol/surface are exactly what it resolves
+  // from. Comparing that derived field as though the save left it untouched
+  // rejects the store's own confirmation of a rename that plainly landed. It
+  // stands as an independent identity field only when this save did not touch
+  // what it derives from.
+  test("a superseded rename that also edits the endpoint is confirmed by the store's own listing", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+
+    const renamed = {
+      ...WORK,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-work2",
+    };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename frees its old name for anyone to take: a removal and a recreation
+  // under it, or another instance's own rename onto it. The store's list then
+  // holds the new name without holding this save's rename, and steering the
+  // sheet onto that entry would title one instance with another's values.
+  test("a superseded rename whose new name now belongs to another instance claims nothing", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    await refreshList(fake, [{ ...OTHER, name: "work2" }]);
+    await act(async () => finish({ instances: [{ ...OTHER, name: "work2" }], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // The rename's identity comparison has to cover every field the entry
+  // carries that this save did not touch, not only the ones baseUrl can show:
+  // endpointFingerprint is the digest of the complete resolved endpoint, so a
+  // different instance whose query-only difference leaves every visible field
+  // identical is still not the one that performed this rename. A save that
+  // edits only a credential field derives no new digest, so the fingerprint
+  // remains an independent identity field for it.
+  test("a superseded rename that leaves the endpoint untouched is not confirmed by a differing fingerprint", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("API key environment variable"));
+    await user.type(field("API key environment variable"), "PORTKEY_KEY_2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      apiKeyEnv: "PORTKEY_KEY_2",
+    });
+
+    const lookAlike = {
+      ...WORK,
+      name: "work2",
+      apiKeyEnv: "PORTKEY_KEY_2",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // Same for the auth scheme: an instance that authenticates differently is a
+  // different instance, however alike the rest of its listing entry reads.
+  test("a superseded rename is not confirmed by a look-alike differing only in auth", async () => {
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    const lookAlike = { ...WORK, name: "work2", auth: "oauth-openai-codex" };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // Renaming a curated-shadow instance does change its listing's `base`: the
+  // entry held the curated provider's own name, and that name is what its
+  // configuration is inherited through, so the hub pins the old name into
+  // base to keep the inherited configuration after the name is gone. That is
+  // this rename carrying base over, not a different instance wearing the new
+  // name, and reading it as a difference rejects the store's own confirmation.
+  // The pre-save entry carries no `base` key at all: the wire drops the empty
+  // value (json:"base,omitempty"), so an empty base arrives absent and the
+  // comparison has to normalize it.
+  test("a superseded rename of a curated shadow is confirmed though the rename pinned base", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      apiKeyEnv: "PORTKEY_KEY",
+      endpointFingerprint: "fp-shadow",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    const renamed = { ...shadow, name: "openai-work", base: "openai" };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // The same rename answered by the store instead of superseded: the edit
+  // response applies, so the sheet steers on its own request and the section
+  // re-selects the new name. The pre-save entry is the wire shape again, with
+  // no base, so a normalization applied to one path only would leave the
+  // sheet pinned to the old name here.
+  test("a rename of a curated shadow the store applied steers the sheet onto the new name", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      apiKeyEnv: "PORTKEY_KEY",
+      endpointFingerprint: "fp-shadow",
+    });
+    const fake = new FakeClient("ready");
+    const renamed = { ...shadow, name: "openai-work", base: "openai" };
+    fake.on("evener/instance/edit", () => ({ instances: [renamed], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // The pinning is the old name, exactly: a listing whose base is some other
+  // value is not this rename carried over but a different instance, and
+  // steering the sheet onto it would title one instance with another's values.
+  test("a superseded rename is not confirmed by a listing whose base is not the old name", async () => {
+    const shadow = instance({
+      name: "openai",
+      providerId: "openai",
+      endpointFingerprint: "fp-shadow",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(shadow, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+
+    const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
+    await refreshList(fake, [lookAlike]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved openai-work")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   test("a plain save the store superseded keeps the draft and does not claim a save", async () => {

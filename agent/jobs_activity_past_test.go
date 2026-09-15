@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -403,7 +404,7 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	writePastStableDelegates(t, stateDir, rootID, descriptors...)
 
 	cont := activityContinuation{
-		Version: activityContinuationV1, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
+		Version: activityContinuationVersion, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
 	}
 	token := encodeActivityContinuation(cont)
 
@@ -513,23 +514,38 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 	if depth > activityMaxNewDepth {
 		t.Fatalf("loaded chain %d levels deep, want at most activityMaxNewDepth=%d", depth, activityMaxNewDepth)
 	}
-	// The delegate at the depth boundary must report an honest
-	// Truncated+Continuation branch — the same shape projection's own
-	// work-unit exhaustion already produces — not a generic "child
-	// session unavailable" branch error, which is what a load phase that
-	// leaves snapshot.Children unpopulated for a depth-skipped child
-	// causes projection to fall back to.
+	// The delegate at the depth boundary reports an honest truncated branch
+	// that says where to read the rest — not a generic "child session
+	// unavailable" branch error, and not a continuation: a depth-truncated
+	// token would name that child as a fresh root at position 0, which is
+	// the page a request for the child returns anyway, and this page never
+	// loaded that child's journals to fence one with.
 	if stoppedAt == nil {
 		t.Fatal("chain never reached a depth-truncated delegate")
 	}
 	if stoppedAt.Branch.Error != "" {
-		t.Fatalf("depth-boundary delegate branch.Error = %q, want empty (a placeholder child, not a load error)", stoppedAt.Branch.Error)
+		t.Fatalf("depth-boundary delegate branch.Error = %q, want empty (the bound is not a failure)", stoppedAt.Branch.Error)
 	}
 	if !stoppedAt.Branch.Truncated {
 		t.Fatalf("depth-boundary delegate branch.Truncated = false, want true")
 	}
-	if stoppedAt.Branch.Continuation == "" {
-		t.Fatal("depth-boundary delegate branch.Continuation is empty, want the token markActivityDelegateTruncated mints (whether a resubmitted depth continuation makes further progress is a separate question this test does not cover)")
+	if stoppedAt.Branch.Continuation != "" {
+		t.Fatalf("depth-boundary delegate offers a continuation (%q); the bound hands the reader the session to request instead", stoppedAt.Branch.Continuation)
+	}
+	if len(stoppedAt.Diagnostics) == 0 || !strings.Contains(stoppedAt.Diagnostics[0], stoppedAt.ChildSessionID) {
+		t.Fatalf("depth-boundary delegate diagnostics = %q, want one naming the session to request", stoppedAt.Diagnostics)
+	}
+	// And what that diagnostic tells the reader to do returns the page it
+	// promises: the child rendered from its own top, with its own budget.
+	direct, err := LoadSessionJobActivityTree(context.Background(), stateDir, stoppedAt.ChildSessionID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("requesting %s directly, as the diagnostic says to: %v", stoppedAt.ChildSessionID, err)
+	}
+	if direct.Root.SessionID != stoppedAt.ChildSessionID {
+		t.Fatalf("direct request returned session %q, want %q", direct.Root.SessionID, stoppedAt.ChildSessionID)
+	}
+	if len(direct.Root.Entries) == 0 {
+		t.Fatalf("direct request for %s returned no entries; the diagnostic promises the page the bound withheld", stoppedAt.ChildSessionID)
 	}
 }
 
@@ -582,7 +598,7 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 	}
 	targetID := sessionIDs[activityMaxNewDepth]
 	cont := activityContinuation{
-		Version: activityContinuationV1, RootID: sessionIDs[0], SessionID: targetID, Path: path,
+		Version: activityContinuationVersion, RootID: sessionIDs[0], SessionID: targetID, Path: path,
 	}
 	token := encodeActivityContinuation(cont)
 
@@ -637,83 +653,6 @@ func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildre
 	}
 	if !found {
 		t.Fatalf("target's own child entries = %+v, want to find job %q -- the child was loaded as an empty placeholder instead of its real content", targetDelegate.Child.Entries, wantJobID)
-	}
-}
-
-// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable
-// asserts a depth-boundary continuation can actually be resubmitted.
-// Depth truncation mints a continuation whose Path names the
-// depth-boundary delegate ITSELF (so a resume can treat it as a fresh
-// depth-0 root, the same pattern work-budget truncation uses), meaning
-// the minted Path is exactly depth+1 hops long when it fires at depth ==
-// activityMaxNewDepth, i.e. activityMaxNewDepth+1 hops --
-// decodeActivityContinuation must accept a path that long, not reject it
-// as too long and turn a legitimately-minted boundary continuation into
-// an end-to-end dead end.
-func TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable(t *testing.T) {
-	stateDir := t.TempDir()
-	started := time.Unix(700, 0).UTC()
-
-	const chainLen = activityMaxNewDepth + 5
-	sessionIDs := make([]string, chainLen)
-	for i := range sessionIDs {
-		sessionIDs[i] = fmt.Sprintf("depthboundarychain%d", i)
-	}
-	var descriptors []delegatestore.Descriptor
-	for i, id := range sessionIDs {
-		s1cov_writeJobLog(t, stateDir, id,
-			jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id, Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started},
-		)
-		if i == 0 {
-			savePastActivityMeta(t, stateDir, id, "Root")
-		} else {
-			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
-		}
-		if i+1 < len(sessionIDs) {
-			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
-		}
-	}
-	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
-
-	first, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree: %v", err)
-	}
-
-	// Descend to the depth-truncated delegate (BoundsRecursionDepth already
-	// proves this chain produces exactly one, at the depth boundary) and
-	// grab its minted continuation.
-	session := first.Root
-	var boundaryToken string
-	for {
-		var delegate *appwire.JobActivityDelegate
-		for i := range session.Entries {
-			if session.Entries[i].Delegate != nil {
-				delegate = session.Entries[i].Delegate
-			}
-		}
-		if delegate == nil {
-			t.Fatal("chain never reached a depth-truncated delegate")
-		}
-		if delegate.Child == nil {
-			if delegate.Branch.Continuation == "" {
-				t.Fatal("depth-boundary delegate has no continuation to submit")
-			}
-			boundaryToken = delegate.Branch.Continuation
-			break
-		}
-		session = *delegate.Child
-	}
-
-	// The actual regression: decodeActivityContinuation must accept the
-	// Path depth truncation legitimately mints, not reject it as
-	// too-long.
-	second, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: boundaryToken})
-	if err != nil {
-		t.Fatalf("LoadSessionJobActivityTree (resumed with the depth-boundary continuation): %v -- a continuation depth truncation legitimately mints must be submittable", err)
-	}
-	if len(second.Root.Entries) == 0 {
-		t.Fatalf("resumed tree has no entries, want the boundary delegate's own rendered content")
 	}
 }
 
@@ -780,19 +719,16 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 // doesn't go through).
 func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
 	// activityMaxContinuationPathLength (activityMaxNewDepth+1), not
-	// activityMaxNewDepth itself, is the real limit: a depth-boundary
-	// continuation legitimately mints a path exactly activityMaxNewDepth+1
-	// hops long (see
-	// TestLoadSessionJobActivityTree_DepthBoundaryContinuationIsSubmittable),
-	// so this test's own path must exceed THAT to prove genuinely-too-long
-	// paths are rejected without also rejecting that legitimate boundary
-	// case.
+	// activityMaxNewDepth itself, is the real limit: the extra hop is slack
+	// this build still accepts (see that constant's doc comment), so this
+	// test's own path must exceed THAT to prove genuinely-too-long paths are
+	// rejected without also rejecting a token the decoder still honours.
 	path := make([]string, activityMaxContinuationPathLength+1)
 	for i := range path {
 		path[i] = fmt.Sprintf("hop%d", i)
 	}
 	token := encodeActivityContinuation(activityContinuation{
-		Version: activityContinuationV1, RootID: "root", SessionID: "session", Path: path,
+		Version: activityContinuationVersion, RootID: "root", SessionID: "session", Path: path,
 	})
 	if _, err := decodeActivityContinuation(token, "root"); err == nil {
 		t.Fatal("expected an error for a continuation path longer than activityMaxContinuationPathLength")
@@ -831,7 +767,7 @@ func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t
 	// "dlg_" + childSessionID here), not the child session ID itself --
 	// buildActivityContinuationAt looks each hop up in
 	// loaded.snapshot.StableDelegates, which is keyed by delegate ID.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
+	cont := activityContinuation{Version: activityContinuationVersion, RootID: rootID, SessionID: childID, Path: []string{"dlg_" + childID}}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: rootID}
 	if _, _, _, err := buildActivityContinuationAt(root, cont, 0, map[string]bool{rootID: true}, false, cache); err == nil {
 		t.Fatal("expected an error: the load budget is already exhausted before resolving even the first continuation hop")
@@ -1406,18 +1342,24 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 	// nested continuation is checked against.
 	savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
 
-	// Warm the fold caches at these journals' current size and mtime, then
-	// move both mtimes: a same-size rewrite is what bumps a generation, so
-	// every page below reads a nonzero one.
-	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
-		t.Fatalf("warm the fold caches: %v", err)
-	}
-	rewritten := time.Unix(1_000_000, 0)
-	for _, path := range []string{filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), childJobsPath} {
-		if err := os.Chtimes(path, rewritten, rewritten); err != nil {
-			t.Fatalf("restamp %s: %v", path, err)
+	// Warm the fold caches at these journals, then move both generations by
+	// letting each cache observe the journal gone and restoring it, so every
+	// page below is checked against a nonzero generation rather than the
+	// zeros a never-rewritten journal reports.
+	warm := func() {
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+			t.Fatalf("warm the fold caches: %v", err)
 		}
 	}
+	warm()
+	bumpFoldGeneration(t, filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl"), warm)
+	// A session load stats a missing jobs.jsonl and skips it without asking
+	// the fold cache, so that cache has to observe the absence itself.
+	bumpFoldGeneration(t, childJobsPath, func() {
+		if _, err := historicalJobFoldCache.Get(context.Background(), childJobsPath, extendHistoricalJobFold); err != nil {
+			t.Fatalf("observe the child jobs journal gone: %v", err)
+		}
+	})
 
 	var walk pastActivityWalk
 	pending := []string{""}
@@ -1449,6 +1391,18 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 	}
 	if pages < 3 {
 		t.Fatalf("got %d page(s), want at least 3 -- the fixture must force a trim on a page that is itself a resume", pages)
+	}
+	sawJobsGeneration, sawDelegatesGeneration := false, false
+	for _, token := range walk.continuations {
+		cont, decodeErr := decodeActivityContinuation(token, rootID)
+		if decodeErr != nil {
+			t.Fatalf("decode a minted continuation: %v", decodeErr)
+		}
+		sawJobsGeneration = sawJobsGeneration || cont.JobsEpoch != 0
+		sawDelegatesGeneration = sawDelegatesGeneration || cont.DelegatesEpoch != 0
+	}
+	if !sawJobsGeneration || !sawDelegatesGeneration {
+		t.Fatalf("minted continuations carried a nonzero jobs generation: %t, delegates generation: %t -- both must be nonzero or the fixture stopped moving a generation and this walk proves nothing about nonzero ones", sawJobsGeneration, sawDelegatesGeneration)
 	}
 	if len(walk.branchErrors) != 0 {
 		t.Fatalf("branch errors %q, want none", walk.branchErrors)
@@ -1730,5 +1684,426 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 		if id := fmt.Sprintf("child_%02d", i); counts[id] != 1 {
 			t.Fatalf("%s delivered %d times, want exactly once -- the child's entries must survive its delegate being trimmed", id, counts[id])
 		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath measures the
+// two bounds against each other. The depth budget a resumed page spends is
+// relative to the continuation's target -- the target is projection's own
+// depth 0 however many hops led to it -- while the path a trim mints is
+// absolute, counted from the tree's root through the filtered ancestor
+// chain. A page resumed two hops down can therefore reach an absolute depth
+// of len(Path)+activityMaxNewDepth, and decodeActivityContinuation rejects
+// anything past activityMaxContinuationPathLength. If that arithmetic is
+// reachable, the page hands back a token its own decoder refuses and the
+// subtree below it is stranded.
+func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T) {
+	stateDir := t.TempDir()
+	started := time.Unix(800, 0).UTC()
+	const chainLen = activityMaxNewDepth + 3
+	sessionIDs := make([]string, chainLen)
+	for i := range sessionIDs {
+		sessionIDs[i] = fmt.Sprintf("deep%d", i)
+	}
+	description := strings.Repeat("d", 250_000)
+	var descriptors []delegatestore.Descriptor
+	for i, id := range sessionIDs {
+		events := []jobstore.Event{{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + id,
+			Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &started,
+		}}
+		if i == len(sessionIDs)-1 {
+			// The deepest session carries enough to force a trim, so the
+			// entry that gets dropped is the one whose path is longest.
+			for j := range 24 {
+				ts := started.Add(time.Duration(j) * time.Second)
+				events = append(events, jobstore.Event{
+					Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%s_%02d", id, j),
+					Type: jobstore.JobShell, OwnerSessionID: id, VisibleToSession: id, StartedAt: &ts,
+					Description: description,
+				})
+			}
+		}
+		s1cov_writeJobLog(t, stateDir, id, events...)
+		if i == 0 {
+			savePastActivityMeta(t, stateDir, id, "Root")
+		} else {
+			savePastActivityMetaWithTreeRevision(t, stateDir, id, "Node", sessionIDs[0], 0)
+		}
+		if i+1 < len(sessionIDs) {
+			descriptors = append(descriptors, pastStableDescriptor(id, sessionIDs[i+1], "next"))
+		}
+	}
+	writePastStableDelegates(t, stateDir, sessionIDs[0], descriptors...)
+
+	// Resume two hops down, which is what makes the absolute path the trim
+	// mints longer than the depth budget alone would allow.
+	resume := encodeActivityContinuation(activityContinuation{
+		Version:   activityContinuationVersion,
+		RootID:    sessionIDs[0],
+		SessionID: sessionIDs[2],
+		Path:      []string{"dlg_" + sessionIDs[1], "dlg_" + sessionIDs[2]},
+	})
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, sessionIDs[0], appwire.JobsListParams{Continuation: resume})
+	if err != nil {
+		t.Fatalf("resume two hops down: %v", err)
+	}
+	var walk pastActivityWalk
+	collectPastActivityPage(t, &tree.Root, &walk)
+	for _, token := range walk.continuations {
+		if _, decodeErr := decodeActivityContinuation(token, sessionIDs[0]); decodeErr != nil {
+			t.Fatalf("the page minted a token its own decoder refuses: %v -- the subtree below it cannot be requested", decodeErr)
+		}
+	}
+
+	// The deepest session is the one whose absolute path runs past the
+	// limit, so it is the one that has to name itself instead.
+	deepest := &tree.Root
+	hops := 0
+	for {
+		var next *appwire.JobActivitySession
+		for i := range deepest.Entries {
+			if delegate := deepest.Entries[i].Delegate; delegate != nil && delegate.Child != nil {
+				next = delegate.Child
+			}
+		}
+		if next == nil {
+			break
+		}
+		deepest = next
+		hops++
+	}
+	if hops != activityMaxNewDepth+2 {
+		t.Fatalf("the page reached %d hops below the root, want %d -- the fixture must resume 2 hops down and spend the whole depth budget past that", hops, activityMaxNewDepth+2)
+	}
+	if !deepest.Branch.Truncated {
+		t.Fatalf("session %q lost an entry to the trim but is not marked truncated", deepest.SessionID)
+	}
+	if deepest.Branch.Continuation != "" {
+		t.Fatalf("session %q minted a continuation whose path (%d hops) exceeds %d; it must report itself instead", deepest.SessionID, hops, activityMaxContinuationPathLength)
+	}
+	want := activityUnreachableByPathDiagnostic(deepest.SessionID)
+	copies := 0
+	for _, diagnostic := range deepest.Diagnostics {
+		if diagnostic == want {
+			copies++
+		}
+	}
+	// The trim drops one entry per pass and strikes this session on every
+	// one of them, so an unguarded append reports the same sentence once
+	// per dropped entry.
+	if copies != 1 {
+		t.Fatalf("diagnostics %q on session %q carry %d copies of %q, want exactly 1", deepest.Diagnostics, deepest.SessionID, copies, want)
+	}
+}
+
+// seedAbsentJournalActivityRoot writes a root whose delegate entries are big
+// enough to force a trim, with no jobs.jsonl of its own, and returns the
+// root's jobs.jsonl path and its delegate IDs in render order.
+func seedAbsentJournalActivityRoot(t *testing.T, stateDir, rootID string, delegates int) (string, []string) {
+	t.Helper()
+	started := time.Unix(900, 0).UTC()
+	task := strings.Repeat("t", 250_000)
+	var descriptors []delegatestore.Descriptor
+	var ids []string
+	for i := range delegates {
+		childID := fmt.Sprintf("%schild%02d", rootID, i)
+		descriptors = append(descriptors, pastStableDescriptor(rootID, childID, task))
+		ids = append(ids, "dlg_"+childID)
+		s1cov_writeJobLog(t, stateDir, childID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + childID,
+			Type: jobstore.JobShell, OwnerSessionID: childID, VisibleToSession: childID, StartedAt: &started,
+		})
+		savePastActivityMetaWithTreeRevision(t, stateDir, childID, "Child", rootID, 0)
+	}
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	writePastStableDelegates(t, stateDir, rootID, descriptors...)
+	rootJobsPath := filepath.Join(jobsDir(stateDir, rootID), "jobs.jsonl")
+	if _, err := os.Stat(rootJobsPath); !os.IsNotExist(err) {
+		t.Fatalf("stat %s: %v, want the journal absent", rootJobsPath, err)
+	}
+	sort.Strings(ids)
+	return rootJobsPath, ids
+}
+
+// TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal pins that a
+// session with no jobs.jsonl at all can still be paged to the end. Its
+// delegates are entries like any other, and a page that trims them has to
+// hand back something the next request can use; refusing to mint over the
+// absent journal leaves everything past the first page unreachable forever,
+// since the journal is never going to appear.
+func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "nojobsroot"
+	_, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+
+	walkActivityDelegatesToExhaustion(t, stateDir, rootID, want)
+}
+
+// walkActivityDelegatesToExhaustion follows rootID's continuations until a
+// page mints none, and fails unless every delegate in want was delivered.
+func walkActivityDelegatesToExhaustion(t *testing.T, stateDir, rootID string, want []string) {
+	t.Helper()
+	delivered := map[string]bool{}
+	continuation := ""
+	for page := 1; ; page++ {
+		if page > 8 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d of %d delegates", page, len(delivered), len(want))
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Delegate != nil {
+				delivered[entry.Delegate.DelegateID] = true
+			}
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			if tree.Root.Branch.Truncated {
+				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q", page, tree.Root.Diagnostics)
+			}
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted the continuation it was loaded with", page)
+		}
+		continuation = next
+	}
+	for _, id := range want {
+		if !delivered[id] {
+			t.Fatalf("delegate %q was never delivered across the walk", id)
+		}
+	}
+}
+
+// TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted pins
+// that a journal disappearing leaves the rest of the tree reachable. The
+// fold cache records a deletion by advancing the path's generation, and
+// advancing it again on every later look would refuse each page's own
+// continuation on the request that carries it: the walk would never move
+// past page two, and the delegates would be unreachable for good.
+func TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "deletedjobsroot"
+	rootJobsPath, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+	started := time.Unix(900, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+		Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	// Fold the journal while it is there, so its deletion is something the
+	// cache has to record rather than a path it never knew.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{}); err != nil {
+		t.Fatalf("warm the fold: %v", err)
+	}
+	if err := os.Remove(rootJobsPath); err != nil {
+		t.Fatal(err)
+	}
+
+	walkActivityDelegatesToExhaustion(t, stateDir, rootID, want)
+}
+
+// TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges pins what
+// a generation cannot say. An absent journal reports 0 and a journal folded
+// for the first time reports 0, so presence travels in the token beside the
+// generations and is compared the same way: a journal that appeared, or one
+// that went away, moves the entries the position counts against.
+func TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges(t *testing.T) {
+	t.Run("job journal appears after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "appearsroot"
+		rootJobsPath, _ := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		started := time.Unix(900, 0).UTC()
+		s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+		if _, err := os.Stat(rootJobsPath); err != nil {
+			t.Fatalf("stat %s: %v, want the journal present now", rootJobsPath, err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token minted before the job journal existed; its position counts delegates only, and jobs now render ahead of them")
+		}
+	})
+
+	t.Run("job journal goes away after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "vanishesroot"
+		rootJobsPath, _ := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		started := time.Unix(900, 0).UTC()
+		s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started, JobID: "job_root_a",
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+		})
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		if err := os.Remove(rootJobsPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token whose job journal has been deleted; the entries its position counts are gone with it")
+		}
+	})
+
+	t.Run("delegate journal goes away after the mint", func(t *testing.T) {
+		stateDir := t.TempDir()
+		rootID := "dlgvanishesroot"
+		seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+		token := firstActivityContinuation(t, stateDir, rootID)
+
+		if err := os.Remove(filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+			t.Fatal("resumed a token whose delegate journal has been deleted; every entry its position counts came from that journal")
+		}
+	})
+}
+
+// firstActivityContinuation returns the continuation the first, unpaged
+// request for rootID mints, failing the test when there is none.
+func firstActivityContinuation(t *testing.T, stateDir, rootID string) string {
+	t.Helper()
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if tree.Root.Branch.Continuation == "" {
+		t.Fatalf("the first page minted no continuation; truncated=%t diagnostics=%q", tree.Root.Branch.Truncated, tree.Root.Diagnostics)
+	}
+	return tree.Root.Branch.Continuation
+}
+
+// TestLoadSessionJobActivityTree_RefusesAResumeAfterTheDelegateJournalBecomesUnreadable
+// pins what the degraded read may and may not claim. A delegate journal with
+// a line no scanner will read is contained rather than fatal: the page is
+// served with an empty delegate set and a diagnostic. But the generation it
+// reports for that journal is invented — it read nothing — and reporting 0
+// makes it indistinguishable from a journal folded once and never rewritten,
+// so a continuation minted while the journal was readable is accepted against
+// a page whose delegate list is now empty, and its position counts entries
+// that are not there.
+func TestLoadSessionJobActivityTree_RefusesAResumeAfterTheDelegateJournalBecomesUnreadable(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "unreadabledlgroot"
+	seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
+	token := firstActivityContinuation(t, stateDir, rootID)
+	cont, err := decodeActivityContinuation(token, rootID)
+	if err != nil {
+		t.Fatalf("decode the minted token: %v", err)
+	}
+	if cont.DelegatesEpoch != 0 {
+		t.Fatalf("minted delegates generation %d, want 0 -- this test is about a token that cannot be told apart from the degraded read's invented 0", cont.DelegatesEpoch)
+	}
+
+	// Something lands in the journal that the scanner refuses. The appended
+	// bytes are what make the fold look again; the scan override is what
+	// makes that look fail, standing in for a line past the reader's cap
+	// without writing one.
+	delegatesPath := filepath.Join(jobsDir(stateDir, rootID), "delegates.jsonl")
+	f, err := os.OpenFile(delegatesPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("{\"unreadable\":true}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, fmt.Errorf("delegates.jsonl line 13: %w", delegatestore.ErrLineTooLong)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	// The contained read still serves a page.
+	degraded, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("a page over an unreadable delegate journal must still be served: %v", err)
+	}
+	found := false
+	for _, diagnostic := range degraded.Root.Diagnostics {
+		if strings.Contains(diagnostic, "delegate_journal_line_too_long") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("diagnostics %q, want one naming the unreadable journal", degraded.Root.Diagnostics)
+	}
+
+	// The resume is not.
+	if _, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token}); err == nil {
+		t.Fatal("resumed a token minted while the delegate journal was readable; the page it resumes into has no delegates at all, so its position counts entries that are not there")
+	}
+}
+
+// TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal pins
+// that a session whose delegate journal cannot be read still pages to the
+// end. The unreadable state is stable — nothing is going to repair that
+// journal between two requests — so it is not a reason to refuse a resume,
+// and a mint that forgets to record it hands out a token this build then
+// refuses forever. The work-unit cutoff is the mint site the trim does not
+// exercise, so the fixture drives it: more shell jobs than the budget
+// renders.
+func TestLoadSessionJobActivityTree_PagesWithAnUnreadableDelegateJournal(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "unreadablepagingroot"
+	started := time.Unix(1200, 0).UTC()
+	const jobCount = activityMaxWorkUnits + 120
+	events := make([]jobstore.Event, 0, jobCount)
+	for i := range jobCount {
+		ts := started.Add(time.Duration(i) * time.Second)
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%04d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &ts,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+	writePastStableDelegates(t, stateDir, rootID, pastStableDescriptor(rootID, "unreadablepagingchild", "task"))
+	savePastActivityMetaWithTreeRevision(t, stateDir, "unreadablepagingchild", "Child", rootID, 0)
+
+	// Unreadable before the first page is built, and still unreadable when
+	// the next one asks: the state never changes across this walk.
+	original := scanDelegateJournal
+	scanDelegateJournal = func(context.Context, string, int64, delegatestore.ScanLimits) ([]delegatestore.Event, int64, delegatestore.ReadDiagnostics, error) {
+		return nil, 0, delegatestore.ReadDiagnostics{}, fmt.Errorf("delegates.jsonl line 1: %w", delegatestore.ErrLineTooLong)
+	}
+	defer func() { scanDelegateJournal = original }()
+
+	delivered := map[string]bool{}
+	continuation := ""
+	for page := 1; ; page++ {
+		if page > 6 {
+			t.Fatalf("walked %d pages without exhausting the tree; delivered %d of %d jobs", page, len(delivered), jobCount)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v -- the delegate journal was unreadable when this token was minted and is unreadable still, so nothing about it changed", page, err)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job != nil {
+				delivered[entry.Job.JobID] = true
+			}
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			if tree.Root.Branch.Truncated {
+				t.Fatalf("page %d is truncated but minted no continuation; diagnostics %q", page, tree.Root.Diagnostics)
+			}
+			break
+		}
+		if next == continuation {
+			t.Fatalf("page %d re-minted the continuation it was loaded with", page)
+		}
+		continuation = next
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d jobs across the walk, want %d", len(delivered), jobCount)
 	}
 }

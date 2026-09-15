@@ -14,12 +14,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { ActivityList } from "../../appwire-client/typescript/activityList";
-import {
-  type ActivityRow,
-  buildActivityRows,
-} from "../../appwire-client/typescript/activityRows";
-import { stableDelegateDisplayStatus } from "../../appwire-client/typescript/stableDelegate";
+import { ActivityList, type ActivityRow, buildActivityRows, stableDelegateDisplayStatus } from "@evener/appwire-client";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ActivityDelegateDetails } from "./ActivityDelegateDetails";
@@ -154,6 +149,10 @@ export function ActivitySheet({
   } | null>(null);
   const rows = state.tree ? buildActivityRows(state.tree, folds) : [];
   function renderRow(row: ActivityRow) {
+    // Mobile does not surface watches yet. buildActivityRows never emits one,
+    // but the shared row union widened to include them, so narrow the case away
+    // here and keep the rest of this renderer the job/delegate shape it was.
+    if (row.kind === "watch") return null;
     const indent = Math.min(row.level - 1, 4) * 12;
     if (row.kind === "fold")
       return (
@@ -339,9 +338,14 @@ export function ActivitySheet({
                 <View style={{ gap: 12, paddingTop: 12 }}>
                   {list.branches().map((branch) => (
                     <View key={branch.id}>
-                      <Copy
-                        muted
-                      >{`${branch.label}: ${branch.error ?? "Some activity is not loaded."}`}</Copy>
+                      {branch.error || branch.truncated || branch.continuation ? (
+                        <Copy
+                          muted
+                        >{`${branch.label}: ${branch.error ?? "Some activity is not loaded."}`}</Copy>
+                      ) : null}
+                      {branch.diagnostics?.map((diagnostic) => (
+                        <Copy muted key={diagnostic}>{`${branch.label}: ${diagnostic}`}</Copy>
+                      ))}
                       {branch.continuation ? (
                         <Action
                           disabled={!connected || state.loading}
@@ -354,6 +358,16 @@ export function ActivitySheet({
                           }}
                         >
                           Load more activity
+                        </Action>
+                      ) : null}
+                      {branch.openSessionRef ? (
+                        <Action
+                          onPress={() => {
+                            if (branch.openSessionRef)
+                              openSession(branch.openSessionRef, branch.label);
+                          }}
+                        >
+                          Open session
                         </Action>
                       ) : null}
                     </View>

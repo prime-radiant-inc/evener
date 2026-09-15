@@ -1,11 +1,16 @@
+import type {
+  ConnectionState,
+  InputItem,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ConnectionState } from "../../../../protocol/client";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -13,12 +18,12 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 const originalClipboard = navigator.clipboard;
 
@@ -553,6 +558,133 @@ describe("row rendering", () => {
 
     const rows = await screen.findAllByRole("listitem");
     expect(within(rows[0]!).getByText(`${"x".repeat(140)}…`)).toBeTruthy();
+  });
+
+  // The daemon's own preview names skills only generically ("[skill]" /
+  // "[N skills]"), while every other surface of the SAME submission (the
+  // optimistic queue row and a durable outbox row) names them. Without the
+  // row's own canonical queue.skillNames the marker the user watched appear on
+  // the pending row vanishes the moment the authoritative row replaces it.
+  test("an authoritative row appends its skill markers to the daemon's preview text", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: ["audit the tests"],
+          preview: ["audit the tests"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("audit the tests [skill: pkg:probe]")).toBeTruthy();
+  });
+
+  test("a skill-only authoritative row shows its named marker rather than staying generic", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[skill]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText(/\[skill: pkg:probe\]/)).toBeTruthy();
+  });
+
+  // The daemon's generic "[skill]" placeholder describes exactly the content
+  // the named markers do, so a skill-only row must name the selection ONCE.
+  // The looser "[skill: pkg:probe] is present" assertion above cannot see the
+  // difference, which is how "[skill] [skill: pkg:probe]" slipped through.
+  test("a skill-only authoritative row drops the daemon's generic placeholder instead of doubling it", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[skill]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("[skill: pkg:probe]")).toBeTruthy();
+    expect(row.textContent).not.toMatch(/\[skill\](\s|$)/);
+  });
+
+  // Only the generic skill placeholder is redundant with the named markers.
+  // An entry that also holds an image must keep its image placeholder: dropping
+  // every preview for a no-prose entry would silently hide the attachment.
+  test("a no-prose row with an image and a skill keeps both the image placeholder and the named marker", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [""],
+          preview: ["[image]"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("[image] [skill: pkg:probe]")).toBeTruthy();
+  });
+
+  // The prose can come from the daemon's preview alone (no texts entry), which
+  // is exactly the case a "does the entry have text?" check gets wrong: the
+  // preview is not a skill placeholder, so it must survive with the markers
+  // appended after it.
+  test("a row whose prose arrives only in the preview keeps that prose alongside its named marker", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, skillInput: true },
+        queue: {
+          revision: 0,
+          depth: 1,
+          ids: ["q1"],
+          texts: [],
+          preview: ["audit the tests"],
+          skillNames: [["pkg:probe"]],
+        },
+      },
+    });
+    renderStrip(defaultProps());
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("audit the tests [skill: pkg:probe]")).toBeTruthy();
   });
 
   test("each row exposes steer-now, edit, and remove actions", async () => {
@@ -1117,6 +1249,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 
@@ -1144,6 +1278,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
@@ -1179,6 +1315,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 

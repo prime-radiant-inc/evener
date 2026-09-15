@@ -1,38 +1,52 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { NavigationWatchSummary, ThreadModel } from "@evener/appwire-client";
 import {
   type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
+  errorText,
   parseActivityTree,
-} from "../../../protocol/activityData";
-import { errorText } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
+} from "@evener/appwire-client";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
   EMPTY_ACTIVITY_SUMMARY_ENTRY,
   useActivitySummaryStore,
 } from "../../../stores/activitySummary";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { threadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useEntityView } from "../transcript/useEntityView";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import styles from "./activitypanel.module.css";
+import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
 
 export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
-  now: number;
+  // The session's live watches, absent-able: an old daemon omits the list.
+  watches?: NavigationWatchSummary[];
+  // Rows the hub omitted from `watches`; the Watches header reports "+N more".
+  omittedWatches?: number;
+  // The armed subset of those omitted rows; folded into the header's armed total.
+  omittedArmedWatches?: number;
   hideTrigger?: boolean;
   // SessionChrome's desktop replacement button hides this panel's own
   // trigger, but still needs the trigger-owned background summary refresh.
   // The store's loading/bump gate keeps this second owner duplicate-free.
   refreshWhenHidden?: boolean;
+  // Defaults to refreshWhenHidden for direct hidden owners. SessionChrome
+  // opts in only at live-session mount sites so isolated/read-only chrome
+  // consumers keep the body's established first-attempt ownership contract.
+  discoverWhenHidden?: boolean;
 }
 
 export interface ActivityPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  watches?: NavigationWatchSummary[];
+  omittedWatches?: number;
+  omittedArmedWatches?: number;
 }
 
 export interface ActivityPanelHandle {
@@ -66,35 +80,52 @@ function emptyPageIsPartial(tree: ActivityTreeData): boolean {
   return Boolean(tree.root.branch.continuation || tree.root.branch.error);
 }
 
+// emptyWatchTree is the page the watch group renders through when there is no
+// retained tree at all -- a load that failed, or a source that does not support
+// retained activity. Watches are session data, so they are independent of that
+// page, and the group itself lives in the tree's row list: giving the tree an
+// empty page renders exactly the watch rows, through the same machinery and the
+// same vocabulary as a loaded session, instead of a second renderer that could
+// drift from it.
+function emptyWatchTree(ref: string): ActivityTreeData {
+  return {
+    revision: 0,
+    root: {
+      kind: "session",
+      sessionId: "",
+      ref,
+      label: "",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
+}
+
 function triggerLabel(counts: ActivityCounts | undefined): string {
   if (!counts?.complete) return "Activity";
   return `Activity · ${counts.active}`;
 }
 
-function refreshRoot(
-  sessionRef: string,
-  bump: number | null,
-  onFailure?: (sentence: string) => void,
-  force = false,
-): number | null {
-  return activitySummaryStore
-    .getState()
-    .refreshRoot(sessionRef, bump, (ref) => threadsStore.getState().listJobs(ref), onFailure, force);
-}
-
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
+export const ActivityPanelBody = memo(function ActivityPanelBody({
+  sessionRef,
+  model,
+  watches,
+  omittedWatches,
+  omittedArmedWatches,
+}: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
   const bodyGenerationRef = useRef(0);
   const currentSessionRef = useRef(sessionRef);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
-  const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
-  // Bumped on every full-snapshot publish (reconnect, targeted resync). It is
-  // the freshness effect's only way to notice a wholesale model replacement
-  // whose jobsUpdatedAt is null on both sides - see threads.ts's own comment.
-  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
+  // The same builder the transcript uses, over the same session: the detail
+  // strips open in this panel (the delegate line names its delegate id), and
+  // the panel is the owner that has both the session ref and the model.
+  const entities = useEntityView(sessionRef, model);
   currentSessionRef.current = sessionRef;
 
   useEffect(() => {
@@ -108,11 +139,14 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     };
   }, [sessionRef]);
 
+  const handleRefreshFailure = useCallback((sentence: string) => toasts.push("error", sentence), [toasts]);
+  useActivityRefresh(sessionRef, model, { kind: "body", onFailure: handleRefreshFailure });
+
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
         const bodyGeneration = bodyGenerationRef.current;
-        refreshRoot(
+        refreshActivityRoot(
           sessionRef,
           model.jobsUpdatedAt,
           (sentence) => {
@@ -159,56 +193,78 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     [model.jobsUpdatedAt, sessionRef, toasts],
   );
 
-  // The mount fetch preserves the old visible-fetch contract exactly: a
-  // changed jobs bump is fresh, while idle/failed/unsupported/ended retained
-  // states are retried even when the bump has not changed. Store completions
-  // stay live after this body unmounts, so this effect intentionally does not
-  // depend on completion state and cannot loop after a failed request.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the gate is sampled on mount and jobsUpdatedAt pushes; store completion changes must not turn a retained failure into a retry loop
-  useEffect(() => {
-    const bumpMismatch = summary.lastFetchedBump !== model.jobsUpdatedAt;
-    const retainedNonReady =
-      entry.load.kind === "idle" ||
-      entry.load.kind === "failed" ||
-      entry.load.kind === "unsupported" ||
-      entry.load.kind === "ended";
-    // A null bump can't prove retained data is current: jobsUpdatedAt only
-    // ever comes from live pushes and re-hydrates to null after a thread-model
-    // eviction, so bumps seen while nothing held the model are gone. Force the
-    // fetch past the store's established/bump dedupe in that case.
-    const unprovenFreshness = model.jobsUpdatedAt === null;
-    if (bumpMismatch || retainedNonReady || unprovenFreshness) {
-      fetchRoot(undefined, retainedNonReady || unprovenFreshness);
-    }
-    // hydrationGeneration is a dependency precisely so a mounted body re-runs
-    // this check after a wholesale rehydration that changed nothing visible.
-  }, [fetchRoot, hydrationGeneration, model.jobsUpdatedAt, sessionRef]);
-
   function handleContinue(nodeID: string, token: string) {
     fetchRoot({ nodeID, token });
   }
 
   function renderBody() {
+    // A session whose watch rows were all omitted by the hub's cap still holds
+    // watch content: ActivityTree renders the watch group and its "+N more".
+    // Only a session with neither retained nor omitted watches is empty.
+    const hasWatchContent = (watches?.length ?? 0) > 0 || (omittedWatches ?? 0) > 0;
+    // The watch group is part of the tree's row list, so a session whose
+    // retained activity never loaded still renders it through the same
+    // machinery. An armed watch is often the only pending work a session has --
+    // the rail counts it on the row -- so hiding it behind the load state's
+    // message would contradict the rest of the chrome.
+    function renderWatchTree(tree: ActivityTreeData) {
+      return (
+        <div className={CLASS.panelColumn}>
+          <ActivityTree
+            ref={treeRef}
+            tree={tree}
+            entities={entities}
+            watches={watches}
+            omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
+            expandedFoldIDs={entry.expandedFoldIDs}
+            onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
+            continuationFailures={entry.continuationFailures}
+            onContinue={handleContinue}
+            loadingContinuationID={entry.continuationLoadingID}
+            rootRefreshing={entry.pending?.kind === "root"}
+          />
+        </div>
+      );
+    }
+    const watchFallback = hasWatchContent ? renderWatchTree(emptyWatchTree(sessionRef)) : null;
     if (entry.load.kind === "unsupported") {
       return (
-        <EmptyState title="Activity isn't available" hint="This session's source doesn't support retained activity." />
+        <>
+          {watchFallback}
+          <EmptyState
+            title="Activity isn't available"
+            hint="This session's source doesn't support retained activity."
+          />
+        </>
       );
     }
     if (entry.load.kind === "failed") {
       return (
-        <EmptyState
-          title={entry.load.error.headline}
-          hint={entry.load.error.detail}
-          action={
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
-              Try again
-            </Button>
-          }
-        />
+        <>
+          {watchFallback}
+          <EmptyState
+            title={entry.load.error.headline}
+            hint={entry.load.error.detail}
+            action={
+              <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
+                Try again
+              </Button>
+            }
+          />
+        </>
       );
     }
     if (entry.load.kind === "idle" || entry.load.kind === "loading") {
-      return <p className={CLASS.state}>Loading activity…</p>;
+      // A request that has not answered yet is not a session without watches:
+      // the group renders above the loading line for the same reason it renders
+      // above the failure state.
+      return (
+        <>
+          {watchFallback}
+          <p className={CLASS.state}>Loading activity…</p>
+        </>
+      );
     }
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
@@ -216,10 +272,13 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
-          <EmptyState
-            title="This session has ended"
-            hint="Its daemon has exited, and there's no retained activity to fall back on."
-          />
+          <>
+            {watchFallback}
+            <EmptyState
+              title="This session has ended"
+              hint="Its daemon has exited, and there's no retained activity to fall back on."
+            />
+          </>
         )}
         {ended && currentTree && (
           <div className={CLASS.stale}>
@@ -243,7 +302,12 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
         {currentTree && !currentTree.root.counts.complete && (
           <p className={CLASS.state}>Activity coverage is incomplete.</p>
         )}
-        {currentTree && currentTree.root.entries.length === 0 ? (
+        {currentTree?.root.diagnostics?.map((diagnostic) => (
+          <p className={CLASS.state} key={diagnostic}>
+            {diagnostic}
+          </p>
+        ))}
+        {currentTree && currentTree.root.entries.length === 0 && !hasWatchContent ? (
           emptyPageIsPartial(currentTree) ? (
             // A page can come back with no rows and still have more behind it:
             // the agent drops an entry it cannot encode, says so on the root
@@ -279,39 +343,30 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             />
           )
         ) : currentTree ? (
-          <div className={CLASS.panelColumn}>
-            <ActivityTree
-              ref={treeRef}
-              tree={currentTree}
-              expandedFoldIDs={entry.expandedFoldIDs}
-              onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
-              continuationFailures={entry.continuationFailures}
-              onContinue={handleContinue}
-              loadingContinuationID={entry.continuationLoadingID}
-              rootRefreshing={entry.pending?.kind === "root"}
-            />
-          </div>
+          renderWatchTree(currentTree)
         ) : null}
       </div>
     );
   }
 
   return renderBody();
-}
+});
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
-  { sessionRef, model, now: _now, hideTrigger = false, refreshWhenHidden = false },
+  {
+    sessionRef,
+    model,
+    watches,
+    omittedWatches,
+    omittedArmedWatches,
+    hideTrigger = false,
+    refreshWhenHidden = false,
+    discoverWhenHidden = refreshWhenHidden,
+  },
   ref,
 ) {
   const [open, setOpen] = useState(false);
   const summary = useActivitySummaryStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_SUMMARY_ENTRY;
-  // Same rehydration signal the body watches (see ActivityPanelBody): while
-  // the trigger owns background refresh, a wholesale model replacement with a
-  // null bump on both sides changes no other dependency of the effect below.
-  const hydrationGeneration = useThreadsStore((state) => state.hydrations.get(sessionRef) ?? 0);
-  // The generation this owner last considered handled. Initialized to the
-  // current value so mounting never manufactures a refresh by itself.
-  const handledGenerationRef = useRef(hydrationGeneration);
 
   useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
@@ -320,36 +375,14 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
     setOpen(false);
   }, [sessionRef]);
 
-  // A closed Sheet has no mounted body, so its trigger owns the established
-  // background refresh. The desktop chrome keeps this owner mounted behind
-  // its replacement trigger, but refreshWhenHidden is false while that
-  // trigger row is collapsed. The root result also reconciles the panel store.
-  useEffect(() => {
-    if (open || summary.mountedBodies > 0) {
-      // A mounted body owns freshness (including the rehydration check), so
-      // any generation seen while it owns is handled by it, not queued here.
-      handledGenerationRef.current = hydrationGeneration;
-      return;
-    }
-    if (hideTrigger && !refreshWhenHidden) return;
-    if (!summary.established) return;
-    const generationChanged = hydrationGeneration !== handledGenerationRef.current;
-    if (!generationChanged && summary.lastFetchedBump === model.jobsUpdatedAt) return;
-    handledGenerationRef.current = hydrationGeneration;
-    // force pushes past the store's established/bump dedupe for the
-    // null-to-null rehydration case the bump comparison cannot see.
-    refreshRoot(sessionRef, model.jobsUpdatedAt, undefined, generationChanged);
-  }, [
-    hideTrigger,
-    hydrationGeneration,
-    model.jobsUpdatedAt,
-    open,
-    refreshWhenHidden,
-    sessionRef,
-    summary.established,
-    summary.lastFetchedBump,
-    summary.mountedBodies,
-  ]);
+  useActivityRefresh(sessionRef, model, {
+    kind: "background",
+    bodyOwnsFreshness: open || summary.mountedBodies > 0,
+    suppressed: hideTrigger && !refreshWhenHidden,
+    // SessionChrome's hidden owner is the only closed trigger that establishes
+    // a fresh summary; ordinary visible triggers retain their fetch-on-open contract.
+    discoverUnestablished: hideTrigger && discoverWhenHidden,
+  });
 
   return (
     <>
@@ -359,7 +392,15 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} /> : null}
+        {open ? (
+          <ActivityPanelBody
+            sessionRef={sessionRef}
+            model={model}
+            watches={watches}
+            omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
+          />
+        ) : null}
       </Sheet>
     </>
   );

@@ -15,13 +15,18 @@
 // sendBatch for how the in-flight submission race is actually resolved:
 // freeze the batch until its durable outbox commit, then let the outbox and
 // recovery surfaces own later network outcomes.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import {
+  type AskBatch,
+  type AskResolution,
+  composeAskAnswers,
+  liveAskQuestions,
+  reconcileBatches,
+  sessionActionError,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { type AskResolution, composeAskAnswers } from "../../../../protocol/askAnswers";
-import { liveAskQuestions } from "../../../../protocol/deriveAskQuestions";
-import { sessionActionError } from "../../../../protocol/errors";
-import type { ThreadModel } from "../../../../protocol/model";
-import { type AskBatch, reconcileBatches } from "../../../../protocol/reconcileBatches";
 import { threadsStore } from "../../../../stores/threads";
 
 export interface AskAnswerState {
