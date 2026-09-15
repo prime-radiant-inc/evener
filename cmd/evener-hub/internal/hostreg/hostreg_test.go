@@ -200,7 +200,7 @@ func TestRegistryConcurrentGetAll(t *testing.T) {
 
 // TestNameAcceptanceMatchesRefGrammar pins hostreg's name acceptance to the
 // exported appwire ref grammar: a name is accepted exactly when
-// appwire.ValidRefPart accepts it, minus the stricter ".." and "local" rules
+// appwire.ValidRefPart accepts it, minus the stricter "." / ".." and "local" rules
 // this package adds on purpose. It also cross-checks ParseRef so the grammar
 // cannot drift behind the exported helper.
 func TestNameAcceptanceMatchesRefGrammar(t *testing.T) {
@@ -213,6 +213,7 @@ func TestNameAcceptanceMatchesRefGrammar(t *testing.T) {
 		_, parseErr := appwire.ParseRef(name + ":x")
 		want := appwire.ValidRefPart(name) &&
 			!strings.Contains(name, "..") &&
+			name != "." &&
 			name != ReservedName
 		// ParseRef must agree with the exported helper on this corpus.
 		if got := parseErr == nil; got != appwire.ValidRefPart(name) {
@@ -296,6 +297,38 @@ func TestUpstreamNamesRejectBlank(t *testing.T) {
 	}
 	if err := r.SetUpstreams("a", []string{"   "}); !errors.Is(err, ErrInvalidName) {
 		t.Fatalf("SetUpstreams with a blank upstream = %v, want ErrInvalidName", err)
+	}
+}
+
+func TestUpstreamNamesRejectBadGrammar(t *testing.T) {
+	r, err := New([]Host{host("a")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// An edge that could never name a registered host would sit forever as an
+	// unresolvable leaf, so the grammar is checked up front.
+	for _, upstream := range []string{"a/b", "a:b", "..", "."} {
+		if err := r.SetUpstreams("a", []string{upstream}); !errors.Is(err, ErrInvalidName) {
+			t.Errorf("SetUpstreams(%q) = %v, want ErrInvalidName", upstream, err)
+		}
+	}
+}
+
+// Lookup names are normalized like every other name: a padded spelling must find
+// its host rather than failing as unknown and skipping the cycle check.
+func TestPaddedLookupNamesFindTheirHost(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := r.Get("  a  "); !ok {
+		t.Error("Get with a padded name missed the host")
+	}
+	if err := r.SetUpstreams("  b  ", []string{"a"}); err != nil {
+		t.Fatalf("SetUpstreams with a padded name: %v", err)
+	}
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("cycle through the padded target = %v, want ErrHostCycle", err)
 	}
 }
 

@@ -61,11 +61,13 @@ type Host struct {
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
-// ReservedName, matching the AppWire ref grammar, and free of "..".
+// ReservedName, matching the AppWire ref grammar, and neither "." nor
+// containing "..".
 //
-// The ".." rule is stricter than appwire.ParseRef, which rejects ".." only in
-// the thread part (appwire/refs.go). We reject it in names too because a host
-// name also appears in URL paths, where ".." is a traversal hazard.
+// The dot rules are stricter than appwire.ParseRef, which rejects ".." only in
+// the thread part (appwire/refs.go). We reject both in names because a host name
+// also appears in URL paths and as a filesystem segment, where "." and ".." are
+// path-cleaning hazards.
 func ValidateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: %q", ErrInvalidName, name)
@@ -75,6 +77,9 @@ func ValidateName(name string) error {
 	}
 	if !appwire.ValidRefPart(name) {
 		return fmt.Errorf("%w: %q", ErrInvalidName, name)
+	}
+	if name == "." {
+		return fmt.Errorf("%w: %q is not a usable host name", ErrInvalidName, name)
 	}
 	if strings.Contains(name, "..") {
 		return fmt.Errorf("%w: %q must not contain %q", ErrInvalidName, name, "..")
@@ -200,6 +205,12 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 // component 05 records what the attach handshake learned about them. A refusal
 // leaves the recorded edges unchanged.
 func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
+	// The target is normalized like every other name, so a padded spelling still
+	// finds its host instead of failing as unknown and skipping the cycle check.
+	name = strings.TrimSpace(name)
+	if err := ValidateName(name); err != nil {
+		return err
+	}
 	upstreamNames, err := normalizeUpstreams(upstreamNames)
 	if err != nil {
 		return err
@@ -216,10 +227,11 @@ func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
 	return nil
 }
 
-// normalizeUpstreams trims upstream names and refuses ones that are empty after
-// trimming. Storing them verbatim made " b " a key distinct from "b", so the
-// padded spelling looked like a host with no edges and a cycle through it went
-// undetected — while recording an edge nothing could ever resolve.
+// normalizeUpstreams trims upstream names and validates each one as a host name.
+// Storing them verbatim made " b " a key distinct from "b", so the padded
+// spelling looked like a host with no edges and a cycle through it went
+// undetected. The grammar check matters for the same reason: an edge that could
+// never name a registered host would sit forever as an unresolvable leaf.
 func normalizeUpstreams(names []string) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
@@ -227,8 +239,8 @@ func normalizeUpstreams(names []string) ([]string, error) {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			return nil, fmt.Errorf("%w: empty upstream name", ErrInvalidName)
+		if err := ValidateName(trimmed); err != nil {
+			return nil, err
 		}
 		out = append(out, trimmed)
 	}
@@ -280,6 +292,9 @@ func (r *Registry) checkCycleLocked(candidate string, upstreamNames []string) er
 
 // Get returns the host registered under name.
 func (r *Registry) Get(name string) (Host, bool) {
+	// Trimmed like every other name, so a padded spelling finds the host rather
+	// than silently missing it.
+	name = strings.TrimSpace(name)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	host, ok := r.hosts[name]
