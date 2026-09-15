@@ -42,3 +42,23 @@ func tempRootTrusted(info fs.FileInfo) bool {
 	}
 	return cacheDirOwnedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
 }
+
+// ancestorDirTrusted reports whether a directory above the cache root cannot be
+// replaced by other users: it carries the sticky bit, or it is owned by this
+// user or by root with no group or other write. Ownership by root is accepted
+// here, unlike for the root itself, because the platform's temp chain above a
+// user's own directory is normally root-owned; what matters is that no other
+// user can rename the directories on the way to the cache.
+func ancestorDirTrusted(info fs.FileInfo) bool {
+	if info.Mode()&os.ModeSticky != 0 {
+		return true
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return int(stat.Uid) == os.Getuid() || stat.Uid == 0
+}

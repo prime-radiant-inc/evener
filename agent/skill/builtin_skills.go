@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,17 +17,11 @@ import (
 	"primeradiant.com/evener/internal/bundled"
 )
 
-// embeddedSkillsPrefix names the content-addressed cache directories that hold
-// the bundled skills: the published copy and the private staging directory a
-// publish writes before renaming into place.
+// embeddedSkillsPrefix names every directory this package creates under the temp
+// or cache root: the content-addressed cache directories (the published copy and
+// the private staging directory a publish writes before renaming into place) and
+// the one private extraction a process keeps for its lifetime.
 const embeddedSkillsPrefix = "evener-skills-"
-
-// retainedSkillsPrefix names a private fallback copy that could not take the
-// published name and is handed to the caller for the process lifetime. It is
-// deliberately not the staging prefix: staging directories are reaped after a
-// day, while a retained copy is left for much longer because a live process
-// reads it for its lifetime.
-const retainedSkillsPrefix = embeddedSkillsPrefix + "copy-"
 
 // Bounds on what the digest will read from a tree. They exist to stop a hostile
 // occupant of a shared cache name from being read without limit, so they are
@@ -44,20 +36,11 @@ const (
 	// staleStagingMaxAge is how long a staging directory abandoned by a failed
 	// publish is left before a later publish reaps it.
 	staleStagingMaxAge = 24 * time.Hour
-	// fallbackRetryInterval is how long a private fallback copy is reused before
-	// the shared cache is tried again.
-	fallbackRetryInterval = 5 * time.Minute
-	// staleRetainedMaxAge is how long a retained fallback copy, a superseded
-	// published directory, or a randomized fallback base is left before a later
-	// publish reaps it. It is deliberately long: a process that resolves a copy
-	// once and keeps reading it refreshes mtime only when it resolves again, so
-	// the age is a use signal, not a hard lifetime.
+	// staleRetainedMaxAge is how long a superseded published directory is left
+	// before a later publish reaps it. It is deliberately long: a process that
+	// resolves a copy once and keeps reading it refreshes mtime only when it
+	// resolves again, so the age is a use signal, not a hard lifetime.
 	staleRetainedMaxAge = 30 * 24 * time.Hour
-	// maxHeldLeases caps how many superseded fallback leases are retained. The
-	// staleness window bounds them in time and this bounds them in number, so a
-	// base that flaps between unusable and usable cannot exhaust descriptors;
-	// the oldest copies are dropped first.
-	maxHeldLeases = 8
 )
 
 // embeddedSkillsCache holds the published bundled-skills directory, the digest
@@ -73,33 +56,10 @@ var embeddedSkillsCache struct {
 	verified  bool
 	lease     skillsLease
 	leasedDir string
-	// fallback marks a private copy created when the shared cache could not be
-	// leased, along with the private base it was published into. It is reaped by
-	// reapStaleFallbackBases and removed when replaced.
-	fallback      bool
-	fallbackBase  string
-	fallbackUntil time.Time
-	// heldLeases keeps leases on fallback copies this process has moved on from.
-	// Sessions created while a fallback was current hold SkillFile paths inside
-	// it and read them on demand, so its lease is retained rather than dropped
-	// when the cache moves on. Retention is bounded by protectUntil, the same
-	// staleness window the age reaper uses as its "no reader remains" assumption.
-	// That assumes a reader older than the window is gone; tracking exact reader
-	// lifetimes would mean wiring every session into this cache, which is the
-	// accepted tradeoff. A copy is added only when the cache moves off a fallback
-	// it was serving, so a retry that keeps the same copy adds nothing.
-	heldLeases []heldSkillsLease
 	// dirIdentity is the directory this process validated for dir. Comparing
 	// identities rejects a replacement at the same path without re-digesting the
 	// tree on every resolution.
 	dirIdentity fs.FileInfo
-}
-
-// heldSkillsLease is the lease this process keeps on a fallback copy it no
-// longer serves, and the time after which the age reaper may collect it.
-type heldSkillsLease struct {
-	lease        skillsLease
-	protectUntil time.Time
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -111,16 +71,75 @@ var embeddedSkillsBaseDir = defaultEmbeddedSkillsBaseDir
 // It is a seam so tests can exercise a platform that cannot name that root.
 var skillsBaseRoot = defaultSkillsBaseRoot
 
+// The shared content-addressed cache is best-effort: when no copy can be
+// resolved, the process keeps one private extraction of the bundled skills for
+// the rest of its lifetime, exactly as a process did before the shared cache
+// existed. Nothing reaps this copy and it is never removed: sessions read the
+// SkillFile paths inside it for as long as the process runs.
+var (
+	processSkillsOnce sync.Once
+	processSkillsDir  string
+	errProcessSkills  error
+
+	processSkillsMetaMu sync.Mutex
+	processSkillsMeta   map[string]SkillMeta
+)
+
+// processSkillsTempPattern names the process-lifetime extraction. It is
+// deliberately not the staging name that reapStaleCopies collects, because
+// nothing in this package reaps it.
+const processSkillsTempPattern = embeddedSkillsPrefix + "process-*"
+
+// embeddedProcessSkillsDir returns the process-lifetime private extraction,
+// creating it at most once. It extracts through the same implementation as
+// ExtractEmbeddedSkills, under its own temp name so the copy that outlives every
+// caller is not confused with the staging directories the cache reaps by age.
+func embeddedProcessSkillsDir() (string, error) {
+	processSkillsOnce.Do(func() {
+		processSkillsDir, errProcessSkills = extractEmbeddedSkills(bundled.Skills(), func(_, _ string) (string, error) {
+			return os.MkdirTemp("", processSkillsTempPattern)
+		})
+	})
+	return processSkillsDir, errProcessSkills
+}
+
+// embeddedProcessSkills returns the metadata of the process-lifetime extraction,
+// scanning the tree at most once.
+func embeddedProcessSkills() (map[string]SkillMeta, error) {
+	dir, err := embeddedProcessSkillsDir()
+	if err != nil {
+		return nil, err
+	}
+	processSkillsMetaMu.Lock()
+	defer processSkillsMetaMu.Unlock()
+	if processSkillsMeta == nil {
+		skills := make(map[string]SkillMeta)
+		ScanSkillsDir(dir, skills)
+		processSkillsMeta = skills
+	}
+	return cloneSkillMetaMap(processSkillsMeta), nil
+}
+
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
 // once per distinct embedded content and shared by every caller and every later
 // process. The published copy is immutable: a binary whose embedded content
 // changed publishes beside the old copy under its own digest, so a session
-// already reading the old directory keeps a stable path. Callers MUST treat the
+// already reading the old directory keeps a stable path. When no shared copy can
+// be resolved, the process-lifetime extraction is returned instead, so the
+// bundled skills survive an unusable cache root. Callers MUST treat the
 // directory as read-only and MUST NOT remove it.
 func EmbeddedSkillsDir() (string, error) {
 	embeddedSkillsCache.mu.Lock()
-	defer embeddedSkillsCache.mu.Unlock()
-	return ensureEmbeddedSkillsLocked()
+	dir, cacheErr := ensureEmbeddedSkillsLocked()
+	embeddedSkillsCache.mu.Unlock()
+	if cacheErr == nil {
+		return dir, nil
+	}
+	processDir, processErr := embeddedProcessSkillsDir()
+	if processErr != nil {
+		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", cacheErr, processErr)
+	}
+	return processDir, nil
 }
 
 // ExtractEmbeddedSkills writes the embedded skills to a fresh temporary
@@ -137,34 +156,25 @@ func ExtractEmbeddedSkills() (string, error) {
 // the same shared content-addressed copy EmbeddedSkillsDir returns.
 func EmbeddedSkills() (map[string]SkillMeta, error) {
 	embeddedSkillsCache.mu.Lock()
-	defer embeddedSkillsCache.mu.Unlock()
-	if _, err := ensureEmbeddedSkillsLocked(); err != nil {
-		return nil, err
+	_, cacheErr := ensureEmbeddedSkillsLocked()
+	skills := cloneSkillMetaMap(embeddedSkillsCache.skills)
+	embeddedSkillsCache.mu.Unlock()
+	if cacheErr == nil {
+		return skills, nil
 	}
-	return cloneSkillMetaMap(embeddedSkillsCache.skills), nil
+	processSkills, processErr := embeddedProcessSkills()
+	if processErr != nil {
+		return nil, fmt.Errorf("bundled skills cache unavailable (last: %w): %w", cacheErr, processErr)
+	}
+	return processSkills, nil
 }
 
 // ensureEmbeddedSkillsLocked publishes the bundled skills when the cached copy
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
-	releaseExpiredHeldLeasesLocked(time.Now())
-	// retryFallbackDir is a live fallback copy whose retry window has passed. It
-	// is kept while the shared cache is retried and reused if that retry fails,
-	// so an outage does not accumulate a copy and a lease per retry.
-	retryFallbackDir := ""
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
 		switch {
-		case embeddedSkillsCache.fallback && embeddedSkillsCache.verified &&
-			cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity):
-			// A fallback copy is only usable while its own lease is held, and it
-			// is only reused until the shared cache is due for another try.
-			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() &&
-				time.Now().Before(embeddedSkillsCache.fallbackUntil) {
-				touchDir(cached)
-				return cached, nil
-			}
-			retryFallbackDir = cached
 		case embeddedSkillsCache.verified && cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity):
 			if err := claimEmbeddedSkillsLocked(cached); err == nil &&
 				cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity) {
@@ -186,31 +196,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			forgetEmbeddedSkillsLocked()
 		}
 	}
-	// reuseFallbackLocked keeps serving the fallback copy this process still
-	// leases, extending its retry window. It reports false when that copy is gone
-	// or can no longer be protected.
-	reuseFallbackLocked := func() (string, bool) {
-		if retryFallbackDir == "" || embeddedSkillsCache.dir != retryFallbackDir ||
-			embeddedSkillsCache.skills == nil ||
-			!cacheDirUnchanged(retryFallbackDir, embeddedSkillsCache.dirIdentity) ||
-			embeddedSkillsCache.lease == nil || !embeddedSkillsCache.lease.Valid() {
-			return "", false
-		}
-		embeddedSkillsCache.fallback = true
-		embeddedSkillsCache.verified = true
-		embeddedSkillsCache.fallbackBase = filepath.Dir(retryFallbackDir)
-		embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
-		touchDir(retryFallbackDir)
-		return retryFallbackDir, true
-	}
-	// Fallback bases are created by MkdirTemp, so they live under the temp dir
-	// even where the cache base does not. The caller holds the cache mutex.
-	reapStaleFallbackBases(os.TempDir(), time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
-		if dir, ok := reuseFallbackLocked(); ok {
-			return dir, nil
-		}
 		return "", err
 	}
 	const publishAttempts = 4
@@ -218,9 +205,6 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	for range publishAttempts {
 		dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, embeddedSkillsCache.dir)
 		if err != nil {
-			if fallbackDir, ok := reuseFallbackLocked(); ok {
-				return fallbackDir, nil
-			}
 			return "", err
 		}
 		if err := claimEmbeddedSkillsLocked(dir); err != nil {
@@ -240,53 +224,12 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.digest = digest
 		embeddedSkillsCache.skills = skills
 		embeddedSkillsCache.verified = true
-		embeddedSkillsCache.fallback = false
-		embeddedSkillsCache.fallbackBase = ""
-		embeddedSkillsCache.fallbackUntil = time.Time{}
 		rememberCacheDirLocked(dir)
-		// A replaced fallback base is deliberately not removed here: sessions
-		// from its window may still read skill files inside it, and the age-based
-		// reaper collects it once nothing holds it.
 		return dir, nil
 	}
-	// The shared cache is still unusable, so keep serving the copy this process
-	// already leased instead of publishing a replacement.
-	if dir, ok := reuseFallbackLocked(); ok {
-		return dir, nil
-	}
-	// The shared cache kept being reaped. Publish a private base under the reaped
-	// per-user prefix instead, so the copy has the same lease protection and age
-	// bound as every other fallback base, and let a later call retry the shared
-	// cache.
-	base, err = os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
-	if err != nil {
-		return "", fmt.Errorf("creating private skills cache: %w", err)
-	}
-	dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, "")
-	if err != nil {
-		_ = os.RemoveAll(base)
-		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", lastErr, err)
-	}
-	// Tear down the previous copy first: forget releases any lease held for it
-	// (and removes an old fallback base), so the lease taken below survives.
-	forgetEmbeddedSkillsLocked()
-	if err := claimEmbeddedSkillsLocked(dir); err != nil {
-		// A copy that cannot be leased cannot be protected from the reaper, so it
-		// is refused rather than cached and returned.
-		_ = os.RemoveAll(base)
-		return "", fmt.Errorf("leasing private skills cache (last: %w): %w", lastErr, err)
-	}
-	skills := make(map[string]SkillMeta)
-	ScanSkillsDir(dir, skills)
-	embeddedSkillsCache.dir = dir
-	embeddedSkillsCache.digest = digest
-	embeddedSkillsCache.skills = skills
-	embeddedSkillsCache.verified = true
-	embeddedSkillsCache.fallback = true
-	embeddedSkillsCache.fallbackBase = base
-	embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
-	rememberCacheDirLocked(dir)
-	return dir, nil
+	// The shared cache stayed unusable through every attempt. No private copy is
+	// published: EmbeddedSkillsDir falls back to the process-lifetime extraction.
+	return "", fmt.Errorf("bundled skills cache unavailable (last: %w)", lastErr)
 }
 
 // errSkillsLeaseContended reports that another process holds the exclusive lease
@@ -294,9 +237,9 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 var errSkillsLeaseContended = errors.New("bundled skills copy is being reaped")
 
 // claimEmbeddedSkillsLocked takes a shared lease on the copy this process will
-// read, releasing the lease held for a previous copy. The caller holds the cache
-// mutex. A copy that cannot be leased is not returned to callers: it could be
-// removed while they are reading it.
+// read, releasing the lease held for a previous copy once the new copy is
+// protected. The caller holds the cache mutex. A copy that cannot be leased is
+// not returned to callers: it could be removed while they are reading it.
 func claimEmbeddedSkillsLocked(dir string) error {
 	if embeddedSkillsCache.lease != nil && embeddedSkillsCache.leasedDir == dir {
 		if embeddedSkillsCache.lease.Valid() {
@@ -317,71 +260,11 @@ func claimEmbeddedSkillsLocked(dir string) error {
 		return err
 	}
 	// The lease held for the previous copy is dropped only once the new copy is
-	// protected, so a failed claim leaves a fallback copy leased and a retry can
-	// keep serving it rather than publish a replacement.
-	releasePreviousSkillsLeaseLocked()
+	// protected, so a failed claim never leaves the copy being read unprotected.
+	releaseSkillsLeaseLocked()
 	embeddedSkillsCache.lease = lease
 	embeddedSkillsCache.leasedDir = dir
 	return nil
-}
-
-// releasePreviousSkillsLeaseLocked drops the lease held for a copy this process
-// is leaving behind. A fallback copy's lease is retained instead: sessions
-// created while it was current read its files on demand, so the base must stay
-// leased until the reaper's staleness window has passed. The caller holds the
-// cache mutex.
-func releasePreviousSkillsLeaseLocked() {
-	if embeddedSkillsCache.lease == nil {
-		return
-	}
-	if embeddedSkillsCache.fallback && embeddedSkillsCache.lease.Valid() {
-		retainHeldLeaseLocked(embeddedSkillsCache.lease)
-		embeddedSkillsCache.lease = nil
-		embeddedSkillsCache.leasedDir = ""
-		// The superseded copy is no longer the cached fallback: if the replacement
-		// turns out to be unusable, forget must release its lease rather than
-		// retain it as if it protected a fallback.
-		embeddedSkillsCache.fallback = false
-		embeddedSkillsCache.fallbackBase = ""
-		embeddedSkillsCache.fallbackUntil = time.Time{}
-		return
-	}
-	releaseSkillsLeaseLocked()
-}
-
-// retainHeldLeaseLocked keeps lease on a superseded fallback copy until the
-// reaper's staleness window passes, dropping the oldest retained lease once the
-// cap is reached so a flapping base cannot exhaust descriptors. The caller holds
-// the cache mutex.
-func retainHeldLeaseLocked(lease skillsLease) {
-	held := embeddedSkillsCache.heldLeases
-	if len(held) >= maxHeldLeases {
-		// Drop the oldest copy first: a flapping base must not leave this process
-		// holding a descriptor per epoch for the whole staleness window.
-		_ = held[0].lease.Release()
-		held[0] = heldSkillsLease{}
-		held = held[1:]
-	}
-	held = append(held, heldSkillsLease{
-		lease:        lease,
-		protectUntil: time.Now().Add(staleRetainedMaxAge),
-	})
-	embeddedSkillsCache.heldLeases = held
-}
-
-// releaseExpiredHeldLeasesLocked drops the retained leases whose protection
-// window has passed, so the age reaper can collect those bases. The caller holds
-// the cache mutex.
-func releaseExpiredHeldLeasesLocked(now time.Time) {
-	kept := make([]heldSkillsLease, 0, len(embeddedSkillsCache.heldLeases))
-	for _, held := range embeddedSkillsCache.heldLeases {
-		if now.Before(held.protectUntil) {
-			kept = append(kept, held)
-			continue
-		}
-		_ = held.lease.Release()
-	}
-	embeddedSkillsCache.heldLeases = kept
 }
 
 // releaseSkillsLeaseLocked drops the held lease, if any. The caller holds the
@@ -394,45 +277,26 @@ func releaseSkillsLeaseLocked() {
 	embeddedSkillsCache.leasedDir = ""
 }
 
-// forgetEmbeddedSkillsLocked drops the cached copy and its lease. A private
-// fallback copy is NOT removed with it: sessions created while it was current
-// hold SkillFile paths inside it and read them on demand, so it stays until
-// reapStaleFallbackBases collects it by age. The caller holds the cache mutex.
+// forgetEmbeddedSkillsLocked drops the cached copy and its lease, so the next
+// resolution publishes or adopts a copy again. The caller holds the cache mutex.
 func forgetEmbeddedSkillsLocked() {
-	fallback := embeddedSkillsCache.fallback
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
 	embeddedSkillsCache.dirIdentity = nil
 	embeddedSkillsCache.verified = false
-	embeddedSkillsCache.fallback = false
-	embeddedSkillsCache.fallbackBase = ""
-	embeddedSkillsCache.fallbackUntil = time.Time{}
-	if fallback && embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
-		// Sessions created while this fallback was current may still read its
-		// files, so its lease is retained until the reaper's staleness window has
-		// passed.
-		retainHeldLeaseLocked(embeddedSkillsCache.lease)
-		embeddedSkillsCache.lease = nil
-		embeddedSkillsCache.leasedDir = ""
-		return
-	}
 	releaseSkillsLeaseLocked()
 }
-
-// privateSkillsBaseMu guards privateSkillsBase, the randomized base this process
-// resolved when the predictable name was unusable.
-var (
-	privateSkillsBaseMu sync.Mutex
-	privateSkillsBase   string
-)
 
 // defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
 // lives in. It sits under the temp dir because a session confined to its
 // worktree can still read temp, while the config root is sandbox-denylisted and
 // the cache root is outside a restricted session's readable roots. It is
 // namespaced by user and verified private, so another user on a shared host
-// cannot occupy the name or read the published copy.
+// cannot occupy the name or read the published copy. A root or a per-user name
+// that cannot be verified fails the resolution rather than publishing a copy
+// into a directory this process does not own; EmbeddedSkillsDir then serves the
+// process-lifetime extraction instead.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
 	root, err := skillsBaseRoot()
 	if err != nil {
@@ -440,43 +304,30 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 		// to a shared temp root it cannot verify.
 		return "", err
 	}
-	// A root the platform cannot name must not become a predictable path under a
-	// shared temp root: joining an empty root would produce a relative name, so
-	// the randomized private base below is used instead.
-	if root != "" {
-		if err := ensureTrustedRoot(root); err != nil {
-			return "", err
-		}
-		dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
-		if err := ensurePrivateCacheDir(dir); err == nil {
-			return dir, nil
-		}
+	if root == "" {
+		// A root the platform cannot name must not become a predictable path under
+		// a shared temp root: joining an empty root would produce a relative name.
+		return "", errors.New("skill cache root unavailable")
 	}
-	// The predictable name can still be squatted on a shared host, and the
-	// sticky bit prevents removing a foreign directory. A randomized private
-	// directory keeps the bundled skills available instead of failing the
-	// session; it is not shared between processes, which is the price of the
-	// name being unusable. It is resolved once per process: publishing into a
-	// fresh base on every retry would keep a copy and a lease per retry.
-	if err := ensureTrustedRoot(os.TempDir()); err != nil {
+	if err := ensureTrustedRoot(root); err != nil {
 		return "", err
 	}
-	privateSkillsBaseMu.Lock()
-	defer privateSkillsBaseMu.Unlock()
-	if privateSkillsBase != "" && cacheDirExists(privateSkillsBase) {
-		return privateSkillsBase, nil
+	dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
+	if err := ensurePrivateCacheDir(dir); err != nil {
+		return "", err
 	}
-	fallback, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
-	if err != nil {
-		return "", fmt.Errorf("creating private skill cache: %w", err)
-	}
-	privateSkillsBase = fallback
-	return fallback, nil
+	return dir, nil
 }
 
-// ensureTrustedRoot reports whether root may hold a per-user cache. A root this
-// process owns privately, or one carrying the sticky bit, cannot have its
-// per-user entry replaced by another user between validation and use.
+// ensureTrustedRoot reports whether root may hold a per-user cache. Root itself
+// must be a real directory, never a symlink, that is either sticky or owned
+// privately by this process's user: that is what stops another user replacing
+// the per-user entry between validation and use. The chain above root is checked
+// too, because a writable ancestor lets another user replace the directories on
+// the way to it; an ancestor may be owned by this user or by root as long as no
+// other user can write to it, since the platform's temp chain is normally
+// root-owned, and ancestors are resolved through symlinks the way path lookup
+// resolves them.
 func ensureTrustedRoot(root string) error {
 	info, err := os.Lstat(root)
 	if err != nil {
@@ -488,91 +339,23 @@ func ensureTrustedRoot(root string) error {
 	if !tempRootTrusted(info) {
 		return fmt.Errorf("skill cache root %s can be replaced by other users", root)
 	}
-	return nil
-}
-
-// reapStaleFallbackBases removes randomized fallback bases this user's earlier
-// processes abandoned. Only this user's exact prefix is matched, and only when
-// old enough that no live process is plausibly still reading it; a base holding
-// a leased cache directory is left alone. liveBase and liveDir are this
-// process's own copy, whose base is never removed.
-func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir string) {
-	prefix := embeddedSkillsPrefix + processOwnerTag() + "-"
-	entries, err := os.ReadDir(tmpBase)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), prefix) {
-			continue
-		}
-		info, err := entry.Info()
+	for dir := filepath.Dir(root); ; {
+		parent := filepath.Dir(dir)
+		info, err := os.Stat(dir)
 		if err != nil {
-			continue
+			return fmt.Errorf("checking skill cache ancestor %s: %w", dir, err)
 		}
-		if !dirInfo(info) {
-			if info.Mode()&os.ModeSymlink == 0 {
-				// A regular or special file under this name is not this package's
-				// to remove.
-				continue
-			}
-			// A symlink or Windows reparse point under a fallback base name is
-			// never a base: unlink the entry itself rather than traverse it, so it
-			// can neither be removed through nor shadow a real base.
-			_ = os.Remove(filepath.Join(tmpBase, entry.Name()))
-			continue
+		if !info.IsDir() {
+			return fmt.Errorf("skill cache ancestor %s is not a directory", dir)
 		}
-		if now.Sub(info.ModTime()) < staleRetainedMaxAge {
-			continue
+		if !ancestorDirTrusted(info) {
+			return fmt.Errorf("skill cache ancestor %s can be replaced by other users", dir)
 		}
-		// Only a directory this user owns, with no group or other access, is ours
-		// to remove: the name is predictable enough for someone else to create.
-		if !cacheDirOwnedByCurrentUser(info) || !cacheDirHasPrivatePermissions(info) {
-			continue
+		if parent == dir {
+			return nil
 		}
-		path := filepath.Join(tmpBase, entry.Name())
-		if path == liveBase || (liveDir != "" && (path == filepath.Dir(liveDir) || path == liveDir)) {
-			// Never remove this process's own live copy.
-			continue
-		}
-		leases, ok := leaseFallbackBase(path)
-		if !ok {
-			continue
-		}
-		removeFallbackBase(path, leases)
+		dir = parent
 	}
-}
-
-// leaseFallbackBase takes the exclusive lease on every cache copy inside base,
-// reporting whether the whole base is free to remove. The leases stay held until
-// the caller has removed the base, so a reader cannot acquire one in the gap
-// between the check and the removal.
-func leaseFallbackBase(base string) ([]skillsLease, bool) {
-	locks := filepath.Join(base, skillsLockDirName)
-	entries, err := os.ReadDir(locks)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, true
-		}
-		// A lock directory that cannot be read must not be treated as unleased:
-		// the base could still be held.
-		return nil, false
-	}
-	var leases []skillsLease
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		lease, ok := tryExclusiveLease(filepath.Join(locks, entry.Name()))
-		if !ok {
-			for _, held := range leases {
-				_ = held.Release()
-			}
-			return nil, false
-		}
-		leases = append(leases, lease)
-	}
-	return leases, true
 }
 
 // ensurePrivateCacheDir creates dir mode 0700 if it is absent and verifies that
@@ -610,8 +393,8 @@ func ensurePrivateCacheDir(dir string) error {
 // in a private directory and renamed into place, so a concurrent publisher
 // leaves a complete copy and readers never see a partial tree. An occupant of
 // the published name is adopted only when its content matches the digest; any
-// other occupant leaves the staged private copy in place, because a session
-// without its bundled skills is worse than one that did not reuse the cache.
+// other occupant fails the publish, and the caller serves the process-lifetime
+// extraction instead.
 func materializeEmbeddedSkills(skillsFS fs.FS, base, skipDir string) (string, string, error) {
 	digest, err := digestSkillsFS(skillsFS)
 	if err != nil {
@@ -628,12 +411,7 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base, skipDir string) (string, st
 	if err != nil {
 		return "", "", fmt.Errorf("staging embedded skills: %w", err)
 	}
-	keepStaging := false
-	defer func() {
-		if !keepStaging {
-			_ = os.RemoveAll(staging)
-		}
-	}()
+	defer func() { _ = os.RemoveAll(staging) }()
 
 	if err := copyEmbeddedSkills(skillsFS, staging); err != nil {
 		return "", "", fmt.Errorf("extracting embedded skills: %w", err)
@@ -652,53 +430,16 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base, skipDir string) (string, st
 			touchDir(dest)
 			return dest, digest, nil
 		}
-		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
-		return dir, keptDigest, nil
+		return "", "", fmt.Errorf("published skills name %s is occupied by other content", dest)
 	}
 	if err := os.Rename(staging, dest); err != nil {
 		if publishedSkillsDir(dest, digest) {
 			touchDir(dest)
 			return dest, digest, nil
 		}
-		dir, keptDigest := retainStagedCopy(staging, base, digest, &keepStaging)
-		return dir, keptDigest, nil
+		return "", "", fmt.Errorf("publishing embedded skills to %s: %w", dest, err)
 	}
 	return dest, digest, nil
-}
-
-// retainStagedCopy hands back the private copy already staged when the published
-// name is unusable. It renames the staging directory under the retained prefix,
-// which reapStaleCopies leaves alone for far longer than the staging age, so a
-// live process's copy is not reaped out from under it. A rename that cannot
-// reserve a name leaves the staging directory in place (and keepStaging set)
-// rather than failing the caller, because the caller having its bundled skills
-// matters more than where they came from.
-//
-// The caller caches a retained copy as a verified copy rather than a fallback:
-// it is content-addressed and leased like a published one, and retrying the
-// published name would re-stage the whole tree and keep a fresh copy per retry
-// while the name stays occupied. The accepted consequence is that this process
-// keeps serving the retained copy even if the published name heals.
-func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, string) {
-	// Renaming onto a fresh random name avoids the placeholder race and works
-	// where a rename cannot replace an existing directory.
-	for range 8 {
-		candidate := filepath.Join(base, retainedSkillsPrefix+randomToken())
-		if err := os.Rename(staging, candidate); err == nil {
-			return candidate, digest
-		}
-	}
-	*keepStaging = true
-	return staging, digest
-}
-
-// randomToken returns a short random name component for a retained copy.
-func randomToken() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	return hex.EncodeToString(b[:])
 }
 
 // publishedSkillsDir reports whether dest holds a complete copy of the content
@@ -761,8 +502,7 @@ func cacheDirUnchanged(dir string, identity fs.FileInfo) bool {
 
 // touchDir refreshes a cache directory's modification time, and its base's, so
 // the reaper can tell a directory a live process keeps resolving from one
-// nobody uses. The mtime does not otherwise change when skills are read, and a
-// randomized fallback base is aged by its own mtime.
+// nobody uses. The mtime does not otherwise change when skills are read.
 func touchDir(dir string) {
 	now := time.Now()
 	_ = os.Chtimes(dir, now, now)
@@ -772,10 +512,10 @@ func touchDir(dir string) {
 // reapStaleCopies removes cache entries an earlier publish abandoned, so a
 // machine does not accumulate a copy of the embedded tree per run or per binary.
 // Only this package's prefixes are matched: staging directories are transient,
-// while retained fallback copies and superseded published directories are kept
-// until they are old enough that no live process is plausibly still reading
-// them. keepDigest is the digest about to be published and skipDir is this
-// process's own resolved copy; neither is reaped.
+// while superseded published directories are kept until they are old enough that
+// no live process is plausibly still reading them. keepDigest is the digest
+// about to be published and skipDir is this process's own resolved copy; neither
+// is reaped.
 func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -852,8 +592,6 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		switch {
 		case strings.HasPrefix(rest, "stage-"):
 			maxAge = staleStagingMaxAge
-		case strings.HasPrefix(rest, "copy-"):
-			maxAge = staleRetainedMaxAge
 		case len(rest) == sha256.Size*2:
 			maxAge = staleRetainedMaxAge
 		default:

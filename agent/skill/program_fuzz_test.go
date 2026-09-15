@@ -202,12 +202,17 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatal("cloneSkillMetaMap exposed the original map")
 		}
 
-		// A publish failure must propagate rather than hand back a stale or
+		// A publish failure must be reported rather than hand back a stale or
 		// empty cache: point the materializer at a base that cannot be used.
 		// The restore is registered as cleanup so a t.Fatal above cannot leave
 		// the globals pointing at this case's temporary directory.
 		savedBase := embeddedSkillsBaseDir
 		saved := saveEmbeddedSkillsCache()
+		t.Cleanup(func() {
+			restoreEmbeddedSkillsCache(saved)
+			embeddedSkillsBaseDir = savedBase
+		})
+		embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(root, "missing-base"), nil }
 		embeddedSkillsCache.mu.Lock()
 		if embeddedSkillsCache.lease != nil {
 			_ = embeddedSkillsCache.lease.Release()
@@ -216,18 +221,18 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		embeddedSkillsCache.digest = ""
 		embeddedSkillsCache.skills = nil
 		embeddedSkillsCache.verified = false
-		embeddedSkillsCache.fallback = false
-		embeddedSkillsCache.fallbackBase = ""
 		embeddedSkillsCache.lease = nil
 		embeddedSkillsCache.leasedDir = ""
+		_, cacheErr := ensureEmbeddedSkillsLocked()
 		embeddedSkillsCache.mu.Unlock()
-		embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(root, "missing-base"), nil }
-		t.Cleanup(func() {
-			restoreEmbeddedSkillsCache(saved)
-			embeddedSkillsBaseDir = savedBase
-		})
-		if _, err := EmbeddedSkills(); err == nil {
-			t.Fatal("EmbeddedSkills publish failure did not propagate")
+		if cacheErr == nil {
+			t.Fatal("shared-cache publish failure was not reported")
+		}
+		// The bundled skills survive the failure: resolution serves the
+		// process-lifetime extraction instead of nothing.
+		processSkills, err := EmbeddedSkills()
+		if err != nil || len(processSkills) == 0 {
+			t.Fatalf("EmbeddedSkills publish failure = %d entries, %v", len(processSkills), err)
 		}
 
 		skillProgramAssertExtractionFailures(t)

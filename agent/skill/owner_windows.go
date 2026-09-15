@@ -39,3 +39,9 @@ func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }
 // through fs.FileInfo. The cache root is the user cache directory, which the OS
 // protects with per-user ACLs, and the temp root is per-user by convention.
 func tempRootTrusted(fs.FileInfo) bool { return true }
+
+// ancestorDirTrusted cannot be checked portably on Windows either: the ACLs
+// that decide whether another account can write an ancestor are not exposed
+// through fs.FileInfo, and the user cache directory's chain is protected by the
+// OS. The accepted limit is the same as tempRootTrusted's.
+func ancestorDirTrusted(fs.FileInfo) bool { return true }

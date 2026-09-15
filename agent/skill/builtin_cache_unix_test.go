@@ -3,12 +3,9 @@
 package skill
 
 import (
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestEnsurePrivateCacheDir_CreatesPrivateDir(t *testing.T) {
@@ -65,70 +62,6 @@ func TestEnsurePrivateCacheDir_RefusesUnsafeDirectories(t *testing.T) {
 	}
 }
 
-// A predictable per-user path another local user has already taken must not
-// cost the session its bundled skills.
-func TestDefaultEmbeddedSkillsBaseDir_FallsBackWhenPredictableNameIsUnusable(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	squatted := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag())
-	if err := os.Mkdir(squatted, 0o700); err != nil {
-		t.Fatalf("create squatted path: %v", err)
-	}
-	// Chmod, not the Mkdir mode, so the ambient umask cannot leave it private.
-	if err := os.Chmod(squatted, 0o755); err != nil {
-		t.Fatalf("open up squatted path: %v", err)
-	}
-
-	dir, err := defaultEmbeddedSkillsBaseDir()
-	if err != nil {
-		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if dir == squatted {
-		t.Fatalf("used the squatted path %q", dir)
-	}
-	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		t.Fatalf("fallback base dir = %q, %v, %v", dir, info, err)
-	}
-}
-
-// A link squatting a fallback base name must never be followed: the reaper
-// unlinks the entry itself and leaves whatever it points at alone.
-func TestReapStaleFallbackBases_UnlinksALinkWithoutFollowingIt(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	target := filepath.Join(t.TempDir(), "target")
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-	canary := filepath.Join(target, "keep")
-	if err := os.WriteFile(canary, []byte("keep"), 0o600); err != nil {
-		t.Fatalf("write canary: %v", err)
-	}
-	link := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag()+"-planted")
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	// A regular file under the same prefix is not this package's to remove.
-	stray := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag()+"-stray")
-	if err := os.WriteFile(stray, []byte("stray"), 0o600); err != nil {
-		t.Fatalf("write stray file: %v", err)
-	}
-
-	reapStaleFallbackBases(os.TempDir(), time.Now(), "", "")
-
-	if _, err := os.Lstat(link); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("planted link still present: %v", err)
-	}
-	if _, err := os.Lstat(stray); err != nil {
-		t.Fatalf("reaper removed a regular file: %v", err)
-	}
-	if _, err := os.Stat(canary); err != nil {
-		t.Fatalf("reaper removed the link's target: %v", err)
-	}
-}
-
 // A temp root another user could replace entries in must not be trusted with the
 // per-user cache.
 func TestDefaultEmbeddedSkillsBaseDir_RefusesAnUntrustedTempRoot(t *testing.T) {
@@ -143,59 +76,55 @@ func TestDefaultEmbeddedSkillsBaseDir_RefusesAnUntrustedTempRoot(t *testing.T) {
 	if err := os.Chmod(root, os.ModeSticky|0o777); err != nil {
 		t.Fatalf("make temp root sticky: %v", err)
 	}
-	t.Cleanup(func() {
-		privateSkillsBaseMu.Lock()
-		base := privateSkillsBase
-		privateSkillsBase = ""
-		privateSkillsBaseMu.Unlock()
-		if base != "" {
-			_ = os.RemoveAll(base)
-		}
-	})
 	if _, err := defaultEmbeddedSkillsBaseDir(); err != nil {
 		t.Fatalf("refused a sticky temp root: %v", err)
 	}
 }
 
-// A predictable base another user has squatted must yield one private base for
-// the process, not a fresh one per call: a retry that resolves a new base would
-// publish another copy there and keep another lease.
-func TestDefaultEmbeddedSkillsBaseDir_ReusesItsPrivateBase(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	squatted := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag())
-	if err := os.Mkdir(squatted, 0o700); err != nil {
-		t.Fatalf("create squatted path: %v", err)
+// The whole chain above the cache root decides whether another user can replace
+// the per-user entry: a world-writable, non-sticky ancestor is refused, while a
+// sticky or non-writable chain is accepted.
+func TestEnsureTrustedRoot_ChecksTheAncestorChain(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "inner")
+	if err := os.Mkdir(inner, 0o700); err != nil {
+		t.Fatalf("create inner: %v", err)
 	}
-	// Chmod, not the Mkdir mode, so the ambient umask cannot make it private.
-	if err := os.Chmod(squatted, 0o755); err != nil {
-		t.Fatalf("open up squatted path: %v", err)
+	if err := ensureTrustedRoot(inner); err != nil {
+		t.Fatalf("refused a private chain: %v", err)
 	}
-	t.Cleanup(func() {
-		privateSkillsBaseMu.Lock()
-		base := privateSkillsBase
-		privateSkillsBase = ""
-		privateSkillsBaseMu.Unlock()
-		if base != "" {
-			_ = os.RemoveAll(base)
-		}
-	})
 
-	first, err := defaultEmbeddedSkillsBaseDir()
-	if err != nil {
-		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
+	// Chmod rather than Mkdir, so the ambient umask cannot hide the case.
+	if err := os.Chmod(outer, 0o777); err != nil {
+		t.Fatalf("open up ancestor: %v", err)
 	}
-	if first == squatted {
-		t.Fatalf("used the squatted path %q", first)
+	if err := ensureTrustedRoot(inner); err == nil {
+		t.Fatal("accepted a world-writable ancestor")
 	}
-	second, err := defaultEmbeddedSkillsBaseDir()
-	if err != nil {
-		t.Fatalf("defaultEmbeddedSkillsBaseDir (again): %v", err)
+	if err := os.Chmod(outer, 0o770); err != nil {
+		t.Fatalf("make ancestor group-writable: %v", err)
 	}
-	if first != second {
-		t.Fatalf("private base changed between calls: %q then %q", first, second)
+	if err := ensureTrustedRoot(inner); err == nil {
+		t.Fatal("accepted a group-writable ancestor")
 	}
-	if !cacheDirExists(second) {
-		t.Fatalf("private base %q is not a directory", second)
+
+	// The sticky bit stops another user replacing the entry named inside it.
+	if err := os.Chmod(outer, os.ModeSticky|0o777); err != nil {
+		t.Fatalf("make ancestor sticky: %v", err)
+	}
+	if err := ensureTrustedRoot(inner); err != nil {
+		t.Fatalf("refused a sticky ancestor: %v", err)
+	}
+
+	// A non-writable ancestor is accepted, and the final component still obeys
+	// its own rule: the cache root itself must not be group- or other-accessible.
+	if err := os.Chmod(outer, 0o700); err != nil {
+		t.Fatalf("restore ancestor: %v", err)
+	}
+	if err := os.Chmod(inner, 0o770); err != nil {
+		t.Fatalf("make root group-writable: %v", err)
+	}
+	if err := ensureTrustedRoot(inner); err == nil {
+		t.Fatal("accepted a group-accessible cache root")
 	}
 }
