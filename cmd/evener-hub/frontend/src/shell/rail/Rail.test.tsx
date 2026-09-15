@@ -209,6 +209,21 @@ function render(ui: ReactElement, client = new FakeClient()) {
   return renderUI(ui, { wrapper: ({ children }) => <ClientProvider client={client}>{children}</ClientProvider> });
 }
 
+/** The disclosure button inside the heading named `name` - the rail's section
+ * fold, the same control however the section is authored. */
+function sectionDisclosure(name: string | RegExp): HTMLElement {
+  const heading = screen.getByRole("heading", { name });
+  return within(heading).getByRole("button", { name });
+}
+
+/** The <section> a heading owns - so a row-name assertion can't be satisfied
+ * by the same text appearing in some unrelated section's row gloss. */
+function sectionRoot(name: string | RegExp): HTMLElement {
+  const section = screen.getByRole("heading", { name }).closest("section");
+  if (!section) throw new Error(`no section for ${String(name)}`);
+  return section;
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetNavigationStoreForTests();
@@ -247,7 +262,7 @@ describe("resource-backed Rail", () => {
     for (const label of ["Live", "Projects"]) {
       expect(screen.getByRole("heading", { name: label }).className).toMatch(/staticSectionLabel/);
     }
-    expect(screen.getByRole("button", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
+    expect(screen.getByRole("heading", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
     const authored = screen.getByRole("heading", { name });
     const disclosure = within(authored).getByRole("button", { name });
     expect(authored.className).not.toMatch(/staticSectionLabel/);
@@ -278,6 +293,135 @@ describe("resource-backed Rail", () => {
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");
       expect(rule).not.toContain("letter-spacing:");
+    }
+  });
+
+  // One comparable section of every kind the rail renders: a global tier
+  // (Live), an authored pin section, both project catalogs, and the archived
+  // tier - so a single assertion loop covers every heading.
+  function sectionFoldResources(): ResourceState[] {
+    return [
+      sectionResource("live", [summary({ ref: "local:live", title: "Live row" })]),
+      catalogResource([{ key: "p", name: "Proj", session_count: 1 }]),
+      projectResource("p", [summary({ ref: "local:proj", title: "Project row" })]),
+      resource(
+        { kind: "catalog", catalog: "test_runs", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "tr", name: "Test run", session_count: 0 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "old", name: "Old project", session_count: 1 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "notes", name: "Notes", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "notes", offset: 0, limit: 50 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          sessions: [summary({ ref: "local:pinned", title: "Pinned row" })],
+          remaining: 0,
+        },
+      ),
+    ];
+  }
+
+  // Every heading is a fold, not just the archived one, and the chevron sits
+  // AFTER the title - matching RailRow's own trailing row chevrons rather than
+  // the leading position the pinned and archived disclosures used to have.
+  test("every section heading carries a disclosure whose chevron trails the title", () => {
+    installState(sectionFoldResources());
+    render(<Rail />);
+
+    for (const name of ["Live", "Notes", "Projects", "Test runs", /Archived sessions/] as const) {
+      const disclosure = sectionDisclosure(name);
+      const chevron = disclosure.querySelector("svg");
+      expect(chevron).toBeTruthy();
+      expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+      expect(disclosure.lastElementChild).toBe(chevron);
+    }
+  });
+
+  test("section folds hide their rows and remember that across a remount", () => {
+    installState(sectionFoldResources());
+    const first = render(<Rail />);
+
+    expect(sectionDisclosure("Live").getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(sectionDisclosure("Live"));
+    expect(sectionDisclosure("Live").getAttribute("aria-expanded")).toBe("false");
+    expect(within(sectionRoot("Live")).queryByText("Live row")).toBeNull();
+
+    fireEvent.click(sectionDisclosure("Projects"));
+    expect(within(sectionRoot("Projects")).queryByText("Proj")).toBeNull();
+
+    // Archived starts collapsed and opens on click, like today.
+    expect(sectionDisclosure(/Archived sessions/).getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(sectionDisclosure(/Archived sessions/));
+    expect(within(sectionRoot(/Archived sessions/)).getByText("Old project")).toBeTruthy();
+
+    first.unmount();
+    render(<Rail />);
+
+    expect(sectionDisclosure("Live").getAttribute("aria-expanded")).toBe("false");
+    expect(within(sectionRoot("Live")).queryByText("Live row")).toBeNull();
+    expect(within(sectionRoot("Projects")).queryByText("Proj")).toBeNull();
+    expect(sectionDisclosure(/Archived sessions/).getAttribute("aria-expanded")).toBe("true");
+    expect(within(sectionRoot(/Archived sessions/)).getByText("Old project")).toBeTruthy();
+  });
+
+  // A section fold must not break the /project reveal: the row it asks for can
+  // be sitting inside a section the reader folded away.
+  test("a reveal opens the Live section it lands in", async () => {
+    const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    if (!originalScroll) {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: () => undefined,
+        writable: true,
+      });
+    }
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
+    installState([
+      sectionResource("live", [summary({ ref: "local:target", title: "Target row" })]),
+      resource(
+        { kind: "location", ref: "local:target" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:target",
+          top_level_ref: "local:target",
+          top_level: true,
+          tier: "live",
+          session: summary({ ref: "local:target", title: "Target row" }),
+        },
+      ),
+    ]);
+    const consumed = vi.fn();
+    try {
+      const view = render(<Rail />);
+      fireEvent.click(sectionDisclosure("Live"));
+      expect(within(sectionRoot("Live")).queryByText("Target row")).toBeNull();
+      view.rerender(<Rail revealTarget="local:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(sectionDisclosure("Live").getAttribute("aria-expanded")).toBe("true");
+      expect(within(sectionRoot("Live")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      scroll.mockRestore();
+      if (originalScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
+      else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
     }
   });
 

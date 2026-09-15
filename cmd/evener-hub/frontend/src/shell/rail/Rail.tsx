@@ -2,6 +2,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -118,6 +119,11 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
+// Section-fold keys. Archived is the only one that starts collapsed; every
+// other tier is where you expect to find your work.
+const LIVE_SECTION_KEY = "section:live";
+const PROJECTS_SECTION_KEY = "section:projects";
+const TEST_RUNS_SECTION_KEY = "section:test_runs";
 const ARCHIVED_SECTION_KEY = "section:archived";
 type CatalogKind = keyof NavigationCatalogs;
 const sessionModelCache = new WeakMap<object, Map<string, RailSession>>();
@@ -139,10 +145,41 @@ const archivedProjectModelCache = new WeakMap<object, RailProject>();
 interface RailSectionProps {
   title: string;
   nodes: RailNode[];
+  open: boolean;
+  onToggleOpen: () => void;
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
   projectRetryCallback: (key: string) => () => void;
+}
+
+// The rail's one section heading: a disclosure button wrapping an <h3>, so
+// every tier folds the same way and keeps its heading role for assistive tech.
+// The chevron TRAILS the title (matching RailRow's own trailing row chevrons)
+// rather than leading it, and an optional action slot hosts a heading-level
+// menu (pin sections).
+interface SectionHeadingProps {
+  label: string;
+  open: boolean;
+  onToggleOpen: () => void;
+  staticLabel: boolean;
+  action?: ReactNode;
+}
+function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: SectionHeadingProps) {
+  return (
+    <div className={CLASS.sectionHeadingRow}>
+      <h3
+        className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}
+        aria-label={label}
+      >
+        <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
+          {label}
+          <Chevron direction={open ? "down" : "right"} />
+        </button>
+      </h3>
+      {action !== undefined && <div className={CLASS.sectionHeadingAction}>{action}</div>}
+    </div>
+  );
 }
 interface NavigationRailRowProps {
   node: RailNode;
@@ -206,17 +243,26 @@ function RailTree(props: Omit<TreeProps<RailNode>, "releaseModifierKeys">) {
   return <Tree {...props} releaseModifierKeys={!isMobile} />;
 }
 
-function RailSection({ title, nodes, onToggle, onActivate, actions, projectRetryCallback }: RailSectionProps) {
+function RailSection({
+  title,
+  nodes,
+  open,
+  onToggleOpen,
+  onToggle,
+  onActivate,
+  actions,
+  projectRetryCallback,
+}: RailSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   if (nodes.length === 0) return null;
   return (
     <section className={CLASS.section}>
-      <h3 className={`${CLASS.sectionTitle} ${CLASS.staticSectionLabel}`}>{title}</h3>
-      <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />
+      <SectionHeading label={title} open={open} onToggleOpen={onToggleOpen} staticLabel />
+      {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
 }
-interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
+interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes" | "open" | "onToggleOpen"> {
   section: RailPinSection;
   open: boolean;
   onToggleOpen: () => void;
@@ -240,13 +286,12 @@ function PinnedRailSection({
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
   return (
     <section className={CLASS.section}>
-      <div className={CLASS.sectionHeadingRow}>
-        <h3 className={CLASS.sectionTitle} aria-label={section.name}>
-          <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-            <Chevron direction={open ? "down" : "right"} /> {section.name}
-          </button>
-        </h3>
-        <div className={CLASS.sectionHeadingAction}>
+      <SectionHeading
+        label={section.name}
+        open={open}
+        onToggleOpen={onToggleOpen}
+        staticLabel={false}
+        action={
           <Menu
             variant="quiet"
             trigger={
@@ -260,8 +305,8 @@ function PinnedRailSection({
               { id: "delete", label: "Delete", onSelect: onDelete },
             ]}
           />
-        </div>
-      </div>
+        }
+      />
       {open && (
         <RailTree
           nodes={[
@@ -282,7 +327,7 @@ function PinnedRailSection({
     </section>
   );
 }
-interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
+interface ArchivedSectionProps extends Omit<RailSectionProps, "title" | "open" | "onToggleOpen"> {
   count: number;
   open: boolean;
   onToggleOpen: () => void;
@@ -299,16 +344,10 @@ function ArchivedSection({
   projectRetryCallback,
 }: ArchivedSectionProps) {
   const renderRow = useMemo(() => renderRailRow(actions, projectRetryCallback), [actions, projectRetryCallback]);
+  const label = `Archived sessions (${count})`;
   return (
     <section className={CLASS.section}>
-      <button
-        type="button"
-        className={`${CLASS.sectionDisclosure} ${CLASS.staticSectionLabel}`}
-        aria-expanded={open}
-        onClick={onToggleOpen}
-      >
-        <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
-      </button>
+      <SectionHeading label={label} open={open} onToggleOpen={onToggleOpen} staticLabel />
       {open && <RailTree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRow} />}
     </section>
   );
@@ -1039,6 +1078,14 @@ function NavigationRail({
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
+    // A row cannot be revealed inside a fold the reader closed. Only an
+    // EXPLICIT collapse is opened here: an absent key means the section's own
+    // default (open), and rewriting it would just churn the map on a reveal
+    // that needs nothing.
+    if (section === "live" && expandedOverrides.get(LIVE_SECTION_KEY) === false) {
+      setExpanded(LIVE_SECTION_KEY, true);
+      return;
+    }
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
   }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
 
@@ -1056,6 +1103,9 @@ function NavigationRail({
     ) {
       loadProjectRoot(node.project.key);
     }
+  }
+  function toggleSection(key: string, defaultOpen: boolean) {
+    setExpanded(key, !isExpanded(key, defaultOpen));
   }
   function openSession(session: RailSession) {
     openSessionByRef(session.ref);
@@ -1490,6 +1540,8 @@ function NavigationRail({
             <RailSection
               title="Live"
               nodes={liveNodes}
+              open={isExpanded(LIVE_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -1520,6 +1572,8 @@ function NavigationRail({
                 "catalog:projects",
                 "projects",
               )}
+              open={isExpanded(PROJECTS_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -1533,6 +1587,8 @@ function NavigationRail({
                 "catalog:test_runs",
                 "test_runs",
               )}
+              open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
+              onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
