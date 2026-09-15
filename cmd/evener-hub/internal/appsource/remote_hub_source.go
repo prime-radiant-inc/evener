@@ -23,10 +23,11 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // controller's "<host>:<thread>" namespace and the remote hub's
 // "local:<thread>" namespace.
 //
-// This is components 05a-05c: the read path (ID, ListThreads, ReadThread,
-// ListTurns, ListModels) plus registration, subscription fan-out, and the
+// This is components 05a-05d: the read path (ID, ListThreads, ReadThread,
+// ListTurns, ListModels) plus registration, subscription fan-out, the
 // turn/thread lifecycle mutations (including mutation-unknown mapping) that
-// live in remote_hub_mutations.go. The capability probe (05d) is still staged.
+// live in remote_hub_mutations.go, and the capability probe in
+// remote_hub_probe.go.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -36,9 +37,19 @@ type RemoteHubSource struct {
 	roots  []string
 	client RemoteHubClientFunc
 
+	// facts is the optional component-04 preflight seam for the facts AppWire
+	// cannot report on an already-initialized connection (see HostFacts).
+	facts HostFactsFunc
+
 	subMu  sync.Mutex
 	subs   map[string]*remoteHubSubscription // key: remote thread ID
 	drains map[*appwire.Client]struct{}      // clients whose notification stream is being drained
+
+	// probeMu guards probe (the last successful probe, cached against the
+	// client it ran on) and facts (the preflight seam HostCapabilities reads
+	// while probing). It is never held across a wire call.
+	probeMu sync.Mutex
+	probe   *remoteHubProbe
 }
 
 var _ Source = (*RemoteHubSource)(nil)
@@ -54,6 +65,20 @@ func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *
 }
 
 func (s *RemoteHubSource) ID() string { return s.id }
+
+// SetHostFacts installs the component-04 preflight facts seam used by the
+// capability probe. It is optional and expected to be called once at
+// registration before the source serves. With no facts seam a probe leaves
+// ProtocolVersion, HubVersion, OS, Arch, and Features zero-valued.
+//
+// The write is guarded by probeMu, the same lock HostCapabilities reads the
+// seam under, so a caller that installs facts while a probe is in flight does
+// not race the read.
+func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.facts = fn
+}
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
@@ -71,6 +96,17 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
+		return s.mapCallError(err)
+	}
+	return s.callOn(ctx, client, method, params, out)
+}
+
+// callOn forwards one request on an already-resolved client and translates any
+// refs in the response. The capability probe uses it so every wire call runs on
+// the exact client its cache was keyed against, not on whatever client the
+// connector returns between calls.
+func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {

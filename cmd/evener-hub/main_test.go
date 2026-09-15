@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -571,5 +573,29 @@ func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
 				t.Fatalf("fresh runtime directory: err=%v ready=%v", err, ready)
 			}
 		})
+	}
+}
+
+// TestRemoteHostFactsReportRestartedHubVersion pins that a channel whose
+// preflight facts predate a version-mismatch redeploy reports the build the
+// host hub was restarted from, not the stale pre-deploy version. sshconn keeps
+// the pre-deploy facts on the attached channel, so the old code reported the
+// host's old build while Features came from the new hub.
+func TestRemoteHostFactsReportRestartedHubVersion(t *testing.T) {
+	pf := sshconn.Preflight{
+		Protocol: "1",
+		Version:  "host-build-before-redeploy",
+		OS:       "linux",
+		Arch:     "amd64",
+	}
+	got := remoteHostFacts(pf, appwire.FeatureSet{ThreadList: true})
+	if got.HubVersion != buildinfo.Version() {
+		t.Fatalf("HubVersion = %q, want %q: the attached hub runs the controller's deployed build", got.HubVersion, buildinfo.Version())
+	}
+	if got.ProtocolVersion != "1" || got.OS != "linux" || got.Arch != "amd64" {
+		t.Fatalf("preflight fields = %+v, want protocol/OS/arch preserved", got)
+	}
+	if !got.Features.ThreadList {
+		t.Fatalf("Features = %+v, want the client's advertised set", got.Features)
 	}
 }
