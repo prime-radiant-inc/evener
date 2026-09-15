@@ -175,6 +175,18 @@
   outline-offset: -2px;
 }
 
+/* Touch target: a section heading is a real control now (a disclosure
+ * button), so on a coarse pointer it needs the platform's 44px tap floor the
+ * same way every other tappable thing in this sheet does - see
+ * RailRow.module.css's own .railRow block. min-height, not height, so this
+ * only ever GROWS the heading and the desktop geometry stays the desktop
+ * rule. */
+@media (pointer: coarse) {
+  .sectionDisclosure {
+    min-height: var(--tap-min);
+  }
+}
+
 /* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
  * its own on its nested-children container (only aria-level on each
  * treeitem), so this reaches into its role=group element by attribute,
