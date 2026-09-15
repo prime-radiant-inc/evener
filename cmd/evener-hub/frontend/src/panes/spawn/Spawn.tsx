@@ -61,7 +61,6 @@ import {
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
-import { isStaleConnectDialogChunkError, loadConnectDialog } from "./connectDialogChunk";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";

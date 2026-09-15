@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   AuthStatusResponse,
@@ -1134,6 +1135,152 @@ describe("ApiKeyDialog", () => {
       }),
     );
     expect(onSuccess).toHaveBeenCalled();
+  });
+
+  // The guard above only sees a change the client's listing already reflects.
+  // A move that lands between that listing and the write is invisible here -
+  // the hub is the one that sees it, and it refuses the assertion
+  // (appwire.Conflict: -32013 with evenerErrorInfo "conflict"). That refusal is
+  // the same change, so it gets the same recovery the local guard makes: drop
+  // the secret, re-read the listing, and re-anchor to the row now on screen, so
+  // the retype the message asks for asserts the destination the user can
+  // review. Reported as a generic save failure it left the dialog retrying a
+  // dead assertion until something else refreshed.
+  test("a hub endpoint-refusal drops the secret, re-reads the listing, and re-anchors to the row now on screen", async () => {
+    const fake = connectFakeClient();
+    const MOVED = instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" });
+    fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
+    let attempts = 0;
+    fake.on("evener/auth/apiKey/set", () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new WireError(
+          "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+          -32013,
+          { evenerErrorInfo: "conflict" },
+        );
+      }
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    // The toast queue is a module singleton shared across this file's tests;
+    // clear it so "no save-failure toast" means this refusal pushed none.
+    resetToastStoreForTests();
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The refusal is reported as the change it is, never as a save failure: the
+    // hub's own words stay out of the alert and no "Save failed" toast goes up.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("different endpoint"));
+    expect(screen.getByRole("alert").textContent).not.toContain("no longer resolves");
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // The value belonged to the endpoint that is gone.
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+    // The write that was refused asserted the endpoint the dialog opened on...
+    expect(fake.calls.find((c) => c.method === "evener/auth/apiKey/set")?.params).toEqual({
+      provider: "work",
+      value: "sk-secret",
+      expectedEndpointFingerprint: "fp-original",
+      originClientId: "test-tab",
+    });
+    // ...and the dialog re-read the listing to find the row now on screen.
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
+    // The parent renders this dialog's row from the listing, so the refreshed
+    // row is what the dialog now shows; the next submit's guard compares
+    // against the destination the re-anchor just adopted.
+    rerender(
+      <>
+        <ApiKeyDialog
+          instance={MOVED}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+
+    // The re-typed value asserts that row's endpoint, so the retry the message
+    // asks for saves against the destination the user can review instead of
+    // being refused forever against the one that already moved.
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
+        provider: "work",
+        value: "sk-secret-again",
+        expectedEndpointFingerprint: "fp-changed",
+        originClientId: "test-tab",
+      }),
+    );
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
+  // The same refusal with nothing left to re-anchor to: the re-read no longer
+  // shows a row for the name at all. There is no destination on screen to
+  // assert, so the dialog says the connection changed and the value was not
+  // saved - it neither keeps a retry that silently goes nowhere nor empties the
+  // assertion, which would let the retype land on whatever the name resolves to
+  // next, unverified.
+  test("a hub endpoint-refusal whose row is gone reports the change and saves nothing", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: "conflict" },
+      );
+    });
+    resetToastStoreForTests();
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
+    expect(screen.getByRole("alert").textContent).not.toContain("no longer resolves");
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
+    expect(onSuccess).not.toHaveBeenCalled();
+
+    // A retry while the row is still gone is answered by the same honest
+    // message, and it still asserts the endpoint the user last reviewed rather
+    // than saving unverified.
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("no longer in the provider list"));
+    expect(fake.calls.filter((c) => c.method === "evener/auth/apiKey/set")[1]?.params).toEqual({
+      provider: "work",
+      value: "sk-secret-again",
+      expectedEndpointFingerprint: "fp-original",
+      originClientId: "test-tab",
+    });
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 
   test("a saved key whose listing read is lost is still reported as saved", async () => {

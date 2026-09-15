@@ -22,7 +22,7 @@ import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../.
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { FINGERPRINT_UNAVAILABLE_ERROR } from "./credentialLabels";
+import { FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -49,6 +49,15 @@ const CLASS = {
 // can see.
 const ENDPOINT_CHANGED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the value again.";
+
+// The same refusal whose re-read finds no row for the name: the destination is
+// not merely different, it is gone from the listing, so there is nothing on
+// screen to re-anchor the assertion to. The value is dropped and said so. The
+// assertion itself stays where the user last reviewed it rather than being
+// emptied - an empty one would let the retype land on whatever the name
+// resolves to next, unverified, which is the save the guard above refuses.
+const ENDPOINT_VANISHED_ERROR =
+  "This connection changed and is no longer in the provider list, so the value was not saved. Reopen this editor from the current list to continue.";
 
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set
@@ -477,12 +486,52 @@ function CredentialValueDialog({
       onSuccess();
     } catch (err) {
       if (!active.current) return;
+      // A hub refusal of the asserted destination is the change the guard above
+      // makes locally when the client's listing already reflects it - the
+      // window the client cannot see is the one between that listing and this
+      // write. It is not a save failure, and the value must not be sent again
+      // against the endpoint that is gone: drop it, re-read the listing, and
+      // re-anchor to the row now on screen, so the retype the message asks for
+      // saves against the destination the user can review. ProviderConnection
+      // recovers a refused assertion the same way.
+      if (isEndpointConflict(err)) {
+        await recoverChangedEndpoint();
+        return;
+      }
       const message = errorText(err);
       setError(message);
       toast.push("error", `Save failed: ${message}`);
     } finally {
       if (active.current) setBusy(false);
     }
+  }
+
+  // The recovery a refused assertion gets, mirroring the guided flow's
+  // recoverChangedEndpoint: re-read the listing, drop the value typed for the
+  // endpoint that is gone, and re-anchor the expectation to the row the
+  // listing now holds for this name. The read owns its own failure
+  // (refreshListingAfterMutation), so a dropped connection leaves the last
+  // listing this client saw in place - the only expectation it can honestly
+  // re-anchor to. The re-anchor is safe for the same reason the local guard's
+  // is: the row it names is the destination the dialog renders, the value was
+  // cleared so proceeding takes a deliberate retype, and the hub re-checks the
+  // assertion under its credential lock at write time, so a second change is
+  // refused again instead of landing anywhere new.
+  async function recoverChangedEndpoint(): Promise<void> {
+    await refreshListingAfterMutation();
+    if (!active.current) return;
+    setValue("");
+    const row = credentialsStore.getState().instances.find((candidate) => candidate.name === instance.name);
+    if (!row) {
+      // No row to re-anchor to: the name is gone from the listing, so there is
+      // no destination on screen to assert and nothing this dialog can retry
+      // against. Report the change and the dropped value rather than keep a
+      // stale assertion or dress the refusal up as a failed save.
+      setError(ENDPOINT_VANISHED_ERROR);
+      return;
+    }
+    expected.current = row.endpointFingerprint;
+    setError(ENDPOINT_CHANGED_ERROR);
   }
 
   return (
