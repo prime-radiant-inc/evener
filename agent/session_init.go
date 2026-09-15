@@ -77,13 +77,6 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
-// initEnvContext constructs the session's environment-context collector and
-// tracker (agent/envctx), seeding the tracker from persisted (nil on
-// a fresh session; meta.EnvContext on resume, itself possibly nil for a
-// session that predates this feature or never emitted a block). Requires s.cfg
-// and s.env to already be set. Called once, before any turn is processed:
-// NewSession right after its struct literal, RestoreSessionFromMetaWithConfig
-// the same.
 // escapeInheritedHistory escapes a forked session's inherited prefix for the
 // model copy. No journal is in reach, and that is deliberate: the prefix belongs
 // to the parent's session, whose records the child's journal does not hold -- and
@@ -94,6 +87,13 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
 }
 
+// initEnvContext constructs the session's environment-context collector and
+// tracker (agent/envctx), seeding the tracker from persisted (nil on
+// a fresh session; meta.EnvContext on resume, itself possibly nil for a
+// session that predates this feature or never emitted a block). Requires s.cfg
+// and s.env to already be set. Called once, before any turn is processed:
+// NewSession right after its struct literal, RestoreSessionFromMetaWithConfig
+// the same.
 func (s *Session) initEnvContext(persisted *envctx.State) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
