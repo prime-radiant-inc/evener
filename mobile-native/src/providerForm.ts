@@ -36,13 +36,20 @@ export function createProviderParams(
     credentialHeader: credentialHeader || undefined,
   };
 }
-/** editProviderParams carries the endpoint fingerprint the editor displayed, so
- * the hub can refuse an edit whose name another client re-pointed between the
- * listing this editor was opened from and the RPC
+/** The instance fields an edit reads off a row. */
+interface EditableInstance {
+  name: string;
+  baseUrl?: string;
+  endpointFingerprint?: string;
+}
+
+/** editProviderParams carries the endpoint fingerprint the row was served with,
+ * so the hub can refuse an edit whose name another client re-pointed between
+ * that listing and the RPC
  * (appwire.InstanceEditParams.ExpectedEndpointFingerprint). A row the hub could
  * not key serves no fingerprint and asserts nothing, which the hub accepts. */
 export function editProviderParams(
-  instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
+  instance: EditableInstance,
   value: string,
 ): InstanceEditParams {
   const params: InstanceEditParams = { name: instance.name };
@@ -53,4 +60,20 @@ export function editProviderParams(
   if (baseUrl) params.baseUrl = baseUrl;
   else params.clearBaseUrl = true;
   return params;
+}
+
+/** openedEditParams is editProviderParams over the row the editor was OPENED on,
+ * falling back to the row the listing holds now when nothing was opened (a
+ * create). The listing refreshes under an open editor on every
+ * evener/auth/updated broadcast - including the hub's own instance-edit
+ * broadcasts - so a fingerprint read live at save time would swap the assertion
+ * out from under a stale draft and let the save write onto the replacement
+ * instead of being refused. Null when there is no row at all. */
+export function openedEditParams(
+  opened: EditableInstance | undefined,
+  current: EditableInstance | undefined,
+  value: string,
+): InstanceEditParams | null {
+  const row = opened ?? current;
+  return row === undefined ? null : editProviderParams(row, value);
 }

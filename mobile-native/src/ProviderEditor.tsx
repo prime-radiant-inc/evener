@@ -7,6 +7,7 @@ import type {
 import {
   createProviderParams,
   editProviderParams,
+  openedEditParams,
   type ProviderDraft,
 } from "./providerForm";
 import type { ProviderInstances } from "./providerInstances";
@@ -47,6 +48,11 @@ export function ProviderEditor({
   const [choosing, setChoosing] = useState(false);
   const [query, setQuery] = useState("");
   const [saving, setSaving] = useState(false);
+  // The row this editor was opened on. The parent recomputes `instance` from a
+  // listing that refreshes on every evener/auth/updated, so a save must assert
+  // the endpoint the user reviewed rather than whatever the name resolves to by
+  // then.
+  const opened = useRef(instance);
   const busy = disabled || saving;
   function field(
     label: string,
@@ -77,7 +83,7 @@ export function ProviderEditor({
     let create: ReturnType<typeof createProviderParams> | undefined;
     let edit: ReturnType<typeof editProviderParams> | undefined;
     try {
-      if (instance) edit = editProviderParams(instance, draft.baseUrl);
+      if (instance) edit = openedEditParams(opened.current, instance, draft.baseUrl) ?? undefined;
       else create = createProviderParams(draft, providers);
     } catch (failure) {
       setError(
