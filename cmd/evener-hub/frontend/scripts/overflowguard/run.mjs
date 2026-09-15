@@ -1282,6 +1282,25 @@ async function main() {
             `${label} ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
           );
         }
+        // The wrap rule itself (promptcard.module.css): under the status row's
+        // 399px phone threshold a three-verb cluster sits below the row; two
+        // verbs stay inline there, and three stay inline above it.
+        const cluster = result.currentWork.verbCluster;
+        const expectedVerbs = steer ? 3 : 2;
+        const expectWrapped = width < 400 && expectedVerbs === 3;
+        const wrapped =
+          cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
+        if (cluster.controls !== expectedVerbs || wrapped !== expectWrapped) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - verb cluster: expected ${expectedVerbs} verbs ${expectWrapped ? "below" : "beside"} the status row, ` +
+              `got ${cluster.controls} verbs at top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+          );
+        } else {
+          console.log(
+            `${label} verbs ... PASS - ${cluster.controls} verbs ${wrapped ? "below" : "beside"} the status row`,
+          );
+        }
         if (
           width === 390 &&
           (!result.subagentCard.found ||

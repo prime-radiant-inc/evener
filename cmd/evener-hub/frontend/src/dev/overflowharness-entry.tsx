@@ -1590,6 +1590,21 @@ function measure() {
       ),
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
+      // The verb cluster (Stop, Send, Steer) against the status row it shares
+      // the control row with: promptcard.module.css drops a three-verb cluster
+      // below the row at phone width, and the guard asserts that geometry
+      // (wrapped exactly when three verbs meet a phone-width card, inline
+      // otherwise) rather than only that each verb is present and contained.
+      verbCluster: (() => {
+        const verbs = controls.filter(
+          (control) => control.testId !== "composer-attach" && control.present && control.box,
+        );
+        return {
+          controls: verbs.length,
+          top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
+          statusRowBottom: status ? status.getBoundingClientRect().bottom : null,
+        };
+      })(),
       sharedPaneWithoutOverflow:
         !!currentWork &&
         !!composerCard &&
