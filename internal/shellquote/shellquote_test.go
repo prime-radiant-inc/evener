@@ -25,7 +25,14 @@ func TestLiteralAndRemoteWord(t *testing.T) {
 		{name: "embedded single quote", in: "it's", literal: `'it'\''s'`, remote: `'it'\''s'`},
 		{name: "only single quote", in: "'", literal: `''\'''`, remote: `''\'''`},
 		{name: "unicode with space", in: "héllo wörld", literal: "'héllo wörld'", remote: "'héllo wörld'"},
-		{name: "unicode no space", in: "café", literal: "'café'", remote: "'café'"},
+		{name: "unicode no space", in: "café", literal: "café", remote: "café"},
+		// An accented path with no metacharacter stays bare: high bytes are not
+		// POSIX metacharacters, and on Windows cmd.exe (which these command
+		// lines reach via ExecCommand) a single quote is a literal character, so
+		// quoting the word would pass the apostrophes through as data. This
+		// pins the pre-consolidation deny-list behavior.
+		{name: "accented path", in: "/tmp/café/menu", literal: "/tmp/café/menu", remote: "/tmp/café/menu"},
+		{name: "accented with metacharacter", in: "café;rm", literal: "'café;rm'", remote: "'café;rm'"},
 		{name: "substitution", in: "$(id)", literal: "'$(id)'", remote: "'$(id)'"},
 		{name: "backticks", in: "`id`", literal: "'`id`'", remote: "'`id`'"},
 		{name: "newline", in: "a\nb", literal: "'a\nb'", remote: "'a\nb'"},
@@ -85,6 +92,32 @@ func TestMetacharactersAreQuoted(t *testing.T) {
 	}
 }
 
+// TestHighBytesAreLeftBare pins the allow-list's one deliberate liberty: every
+// byte in 0x80-0xFF is safe to leave bare, because no high byte is a POSIX
+// metacharacter or word separator. Quoting them would be shell-equivalent for sh
+// but wrong for cmd.exe, where the apostrophes are literal (see the package
+// doc). A high byte mixed with a real metacharacter is still quoted whole.
+func TestHighBytesAreLeftBare(t *testing.T) {
+	words := []string{"café", "naïve", "Straße", "日本語", "/tmp/Ünïcode/path"}
+	for _, w := range words {
+		if got := Literal(w); got != w {
+			t.Errorf("Literal(%q) = %q, want the bare word for cmd.exe compatibility", w, got)
+		}
+		if got := RemoteWord(w); got != w {
+			t.Errorf("RemoteWord(%q) = %q, want the bare word for cmd.exe compatibility", w, got)
+		}
+	}
+
+	// Control bytes are still unsafe: only the high half of the byte range is
+	// trusted bare, not the ASCII control characters.
+	for _, c := range []byte{0x01, 0x1f, 0x7f} {
+		in := "a" + string(c) + "b"
+		if got := Literal(in); got == in {
+			t.Errorf("Literal(%q) left a control byte bare", in)
+		}
+	}
+}
+
 func TestArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -120,6 +153,7 @@ func TestShellRoundTrip(t *testing.T) {
 	words := []string{
 		"", "plain", "a b", "it's", "$(id)", "`id`", "a;b", "a|b", "a&b",
 		"a\nb", `a\b`, "héllo wörld", "*", "?", "[x]", "{x,y}", "#c", `"d"`,
+		"café", "/tmp/café/menu",
 	}
 	for _, w := range words {
 		out, err := exec.Command(sh, "-c", "printf '%s' "+Literal(w)).Output()

@@ -4,19 +4,30 @@
 //
 // A word is left bare only when EVERY byte is on a conservative allow-list of
 // bytes that POSIX sh never treats as a metacharacter or a word separator
-// (alphanumerics plus _ - . / : , @ % + =). Anything else — whitespace, quotes,
-// backslashes, the substitution and redirection operators, glob and comment
-// syntax, and any byte outside the list such as non-ASCII — is wrapped in
-// single quotes. An embedded single quote is emitted with the POSIX splice
-// (close the quote, backslash-escape one quote, reopen), which is the only byte
-// that needs care inside single quotes. An empty string becomes an empty quoted
-// word:
+// (alphanumerics plus _ - . / : , @ % + =, and every byte with the high bit set,
+// 0x80-0xFF). Anything else — whitespace, quotes, backslashes, the substitution
+// and redirection operators, glob and comment syntax, and the ASCII control
+// bytes — is wrapped in single quotes. An embedded single quote is emitted with
+// the POSIX splice (close the quote, backslash-escape one quote, reopen), which
+// is the only byte that needs care inside single quotes. An empty string becomes
+// an empty quoted word:
 //
 //	'\''   the splice for a literal single quote
 //	''     an empty string
 //
 // This is an allow-list rather than a deny-list on purpose: a byte nobody
 // thought to deny is quoted rather than trusted.
+//
+// # High bytes stay bare on purpose
+//
+// A byte in 0x80-0xFF is not a POSIX metacharacter, so quoting it buys sh no
+// safety, and the deny-lists this package replaced left it bare. It must stay
+// bare because these words are not only handed to sh: callers render a Grep or
+// git command line with Literal/Args and ExecCommand runs it through cmd.exe on
+// Windows, where a single quote is an ordinary character rather than a
+// delimiter. Quoting "café" would hand cmd.exe the literal bytes 'café', quotes
+// included. Leaving high bytes bare keeps the pre-consolidation behavior on
+// every platform.
 //
 // # Two entry points, one divergence
 //
@@ -50,6 +61,7 @@ func isSafeWord(s string, allowTilde bool) bool {
 		case c == '_' || c == '-' || c == '.' || c == '/' || c == ':' ||
 			c == ',' || c == '@' || c == '%' || c == '+' || c == '=':
 		case c == '~' && allowTilde:
+		case c >= 0x80:
 		default:
 			return false
 		}

@@ -2752,5 +2752,7 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 // path can never inject shell metacharacters. The quoting itself lives in
 // internal/shellquote so the whole product shares one implementation; this name
 // is kept for its callers, and each argument is rendered with
-// shellquote.Literal.
+// shellquote.Literal. ExecCommand runs the rendered line through cmd.exe on
+// Windows, so the shared helper keeps high bytes (non-ASCII) bare rather than
+// POSIX-quoting them — a single quote is an ordinary character to cmd.exe.
 func ShellEscapeArgs(args ...string) string { return shellquote.Args(args...) }

@@ -201,6 +201,11 @@ func TestRemoteWord(t *testing.T) {
 		"`id`":                   "'`id`'",
 		"it's":                   `'it'\''s'`,
 		"a\tb":                   "'a\tb'",
+		// A non-ASCII word keeps its bare form: high bytes are not remote-shell
+		// metacharacters, so the pre-consolidation deny-list left them bare and
+		// the shared helper must too.
+		"café":                "café",
+		"/opt/Ünïcode/evener": "/opt/Ünïcode/evener",
 	}
 	for in, want := range cases {
 		if got := shellquote.RemoteWord(in); got != want {
