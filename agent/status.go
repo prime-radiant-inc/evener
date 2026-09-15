@@ -293,9 +293,17 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	// Jobs.
 	if s.jobManager != nil {
 		ds.Jobs = projectJobStatusInfos(detailedStatusJobRecords(s.jobManager.list(listFilter{})))
-		// Aggregate descendant managers too: a receiver watch on a descendant's
-		// job is held in the descendant's manager, not this session's.
-		ds.Watches = s.liveWatchStatuses()
+		// This manager's own rows only. Aggregating descendants here would reach
+		// into other sessions' job-manager locks from inside the envelope-sampling
+		// surface, which the sampling contract forbids (session_envelope_sampling.go:
+		// a sampled method may take this session's mu and nothing else -- the event
+		// bridge calls it, and a manager lock held across an emit would then block
+		// event consumption). The receiver rollup -- a watch armed on a descendant's
+		// job, held in that descendant's manager -- is sampled by the thread LIST
+		// path instead (Session.LiveWatchRowsForSessions), which runs off the bridge
+		// and merges onto each row; this envelope facet carries what the session
+		// itself owns.
+		ds.Watches = s.jobManager.liveWatchStatusesForSession(s.ID())
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID

@@ -222,6 +222,56 @@ func TestLiveWatchesForDescendantKnownEmptyIsNotEmptyAnswer(t *testing.T) {
 	}
 }
 
+// liveWatchStatuses answers for a KNOWN session with no watches with the same
+// non-nil empty slice its public siblings use. nil there means "this session
+// cannot be answered for", never "it has no watches now", so a caller following
+// the documented contract cannot mis-handle the empty case.
+func TestLiveWatchStatusesKnownEmptyIsNotEmptyAnswer(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	rows := root.liveWatchStatuses()
+	if rows == nil || len(rows) != 0 {
+		t.Fatalf("known empty session = %+v, want a non-nil empty answer", rows)
+	}
+}
+
+// The sampled envelope facet carries only what THIS session's manager owns; the
+// receiver rollup that reaches into a descendant's manager is sampled by the
+// thread LIST path instead. The split is the sampling contract's: a method on
+// the envelope surface runs on the event bridge, where taking another session's
+// manager lock could block event consumption (see session_envelope_sampling.go),
+// so the rollup has to leave the bridge -- and it does, because the LIST path
+// answers the same question outside it.
+func TestDetailedStatusWatchesStayOffTheDescendantManagers(t *testing.T) {
+	root := newDescendantWatchSession(t)
+	child := newDescendantWatchSession(t)
+	registerDescendantSession(t, root, child)
+
+	root.jobManager.mu.Lock()
+	root.jobManager.watches[watchKey{Target: "job_root"}] = &watchConfig{
+		id: "watch-root", watchID: "watch-root", sourcePublic: "self", target: "job_root",
+		createdAt: frozenTestTime,
+	}
+	root.jobManager.mu.Unlock()
+	child.jobManager.mu.Lock()
+	child.jobManager.watches[watchKey{Target: "job_child", ReceiverSessionID: root.ID()}] = &watchConfig{
+		id: "watch-for-root", watchID: "watch-for-root", sourcePublic: "self", target: "job_child",
+		receiverSessionID: root.ID(), createdAt: frozenTestTime,
+	}
+	child.jobManager.mu.Unlock()
+
+	ds := root.DetailedStatus()
+	if len(ds.Watches) != 1 || ds.Watches[0].ID != "watch-root" {
+		t.Fatalf("DetailedStatus.Watches = %+v, want only the root manager's own row", ds.Watches)
+	}
+	// The LIST path still carries the receiver row, from the same walk it always
+	// used -- off the bridge.
+	page := root.LiveWatchRowsForSessions([]string{root.ID()})
+	rows := page[root.ID()]
+	if len(rows) != 2 {
+		t.Fatalf("list page rows = %+v, want the root's own row and the receiver row", rows)
+	}
+}
+
 func newDescendantWatchSession(t *testing.T) *Session {
 	t.Helper()
 	return newSession(t, withConfig(SessionConfig{
