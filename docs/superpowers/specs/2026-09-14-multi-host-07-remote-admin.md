@@ -228,14 +228,43 @@ Read side (local):
   (`store.go`) — but the push does **not** write the
   local store; it only reads it.
 
-Write side (remote): for each local entry, call the remote hub's
-`evener/auth/apiKey/set` with `{provider, value}`
-(`appwire/types.go`) via the same `evener/host/request` channel. The
-host's `hubAuthController.ApiKeySet` (`app_auth.go`) validates, calls
+**The instance→provider join rule (required, unambiguous).** The local store is
+keyed by **instance name**, and the wire APIs are keyed by `Provider`; the join
+is **identity on that name**, not a lookup through `Base`/`ProviderID`.
+Concretely:
+
+- The unit of the push is the local credentials-store entry (`Store.Names()`);
+  its key **is** the instance name and is sent verbatim as the wire `Provider`
+  value in both `evener/auth/status` and `evener/auth/apiKey/set`.
+- The remote resolves `Provider` the way `hubAuthController.Status` does
+  (`app_auth.go`): first `registry.Instance(name)` (an explicit instance), then
+  the implicit-provider fallback `registry.Provider(name)` when that provider is
+  `Implicit`. A name that is neither is "not present on the host".
+- The remote `evener/instance/list` is the authority for "present": an explicit
+  instance is matched by `InstanceEntry.Name`; the implicit-provider fallback is
+  matched by `AvailableProviders[].ID`. The push **never** keys on
+  `InstanceEntry.ProviderID` or `Base`: several instances can share a `Base`
+  (and thus a `ProviderID`), so keying by provider would collapse them and write
+  one instance's credential into another's slot.
+- When a local store key has **no** remote counterpart (neither a `Name` nor an
+  implicit provider `ID`), the result is **skipped** with reason "no matching
+  instance on the host" — the table row below. The local key is not pushed under
+  a guessed provider.
+
+**Implementation status:** this join rule is the 07c requirement, not a present
+fact; the shipped wire types (`AuthStatusParams.Provider`,
+`AuthApiKeySetParams.Provider`, `InstanceEntry.Name/Base/ProviderID`,
+`appwire/types.go`) do not themselves disambiguate instance from provider.
+
+Write side (remote): for each local entry (whose key is the instance name), call
+the remote hub's `evener/auth/apiKey/set` with `{provider: <name>, value}` —
+`provider` is that same instance name and `value` is `Store.Get(name)`
+(`appwire/types.go`) via the same `evener/host/request` channel. The host's
+`hubAuthController.ApiKeySet` (`app_auth.go`) validates, calls
 `c.setCredential` (= `creds.Set`), reloads the registry, and returns
-`AuthStatusResponse`. The host therefore writes
-its own `credentials.toml` atomically with the correct mode; the controller
-never sees the file path or writes it.
+`AuthStatusResponse`. The host therefore writes its own `credentials.toml`
+atomically with the correct mode; the controller never sees the file path or
+writes it.
 
 **Merge / no-clobber policy.** Before writing, the pusher asks the remote
 `evener/auth/status` for the instance (`app_auth.go`) and reads
@@ -312,7 +341,7 @@ Decompose component 07 into four landable PRs.
   per-host client accessor. It allow-lists methods against the **exact method
   set** enumerated under "Proxy method" (fail closed; no prefix matching); the
   allow-list is the security boundary.
-- Notification fan-out: **subscribe to component 05's per-client notification
+- Notification fan-out: **subscribe to component 05's source-level notification
   broker**, never to `Client.Notifications()` directly (component 05, §"One
   notification consumer per client — the broker"). `Notifications()` is a single
   channel that component 05's `drainLoop` already reads; a second reader would
@@ -320,7 +349,11 @@ Decompose component 07 into four landable PRs.
   hands this component each notification (or a copy on its own buffered
   channel), and the admin fan-out re-emits the config notifications it owns to
   the controller's browser clients through the `evener/host/notification`
-  envelope (§"Notification envelope"). The existing broadcast
+  envelope (§"Notification envelope"). Registration is against the component-05
+  `RemoteHubSource`, not a specific `appwire.Client`, so a reconnect's fresh
+  client drain rebinds the consumer automatically; an admin-only consumer
+  registered with no thread subscribers receives notifications because
+  registration itself starts the drain. The existing broadcast
   helpers (`notifyAuthUpdated`, `notifyLaunchUpdated`,
   `notifyMarketplaceUpdated`, `notifyPluginUpdated`) are the model for the
   controller-side notification shape; `notifyInstanceUpdated` is *not* a
@@ -353,7 +386,9 @@ Decompose component 07 into four landable PRs.
   `credentials.LoadStore(cmdutil.CredentialsPath())`; enumerate with `Names()`
   and `Get()` (`internal/credentials/store.go`).
 - Query the remote `evener/auth/status` and `evener/instance/list` through the
-  proxy channel; write through `evener/auth/apiKey/set`.
+  proxy channel; write through `evener/auth/apiKey/set`. Every local store key
+  is used verbatim as the wire `Provider` (the instance→provider join rule
+  above); a key with no remote `Name`/implicit-`ID` counterpart is skipped.
 - Add the push action to the remote-credentials pane in the frontend
   (`src/panes/settings/sections/credentials/`).
 - No new on-disk state on the controller.

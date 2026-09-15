@@ -292,25 +292,43 @@ source ID), and `hubThreadStart` resolves it ahead of the legacy
 `launchSourceID(params)` harness fallback (`app_threadlifecycle.go`);
 the field is on the wire type, not on `RemoteHubSource`.
 
+**Precedence and the legacy `Harness` fallback.** `ThreadStartParams.Source` is
+the sole authority when set; the legacy `launchSourceID(params.Harness)` fallback
+is consulted only when `Source` is empty (`app_threadlifecycle.go`:
+`sourceID := strings.TrimSpace(params.Source); if sourceID == "" { sourceID =
+launchSourceID(params) }`). That fallback maps `"evener"` to `local` and any
+other non-empty harness string to a source ID, so a harness value that happens
+to equal a configured host name would silently retarget the spawn to that host.
+Component 06's write contract therefore requires that a harness value naming a
+configured host source be refused, or the harness-as-source fallback retired
+(component 06, §"Write contract (session targeting)").
+
 **The host selector is controller-only and is stripped at the remote
 boundary.** `ThreadStartParams.Source` names a source in the *controller's*
 registry; the remote hub would resolve the same string against *its own*
 registry and fail ("spawn source is not available: <name>") or target the wrong
-source. `RemoteHubSource.StartThread` therefore clears it before forwarding
-(component 05c's `remote_hub_mutations.go`):
+source. The legacy `Harness` field carries the same hazard: `launchSourceID`
+reads any non-empty, non-`evener` harness as a source ID, so a forwarded request
+that still carries a controller-side harness can route to a nonexistent or
+unintended source on the remote hub. `RemoteHubSource.StartThread` must
+therefore clear **both** `Source` and `Harness` before forwarding (component
+05c's `remote_hub_mutations.go`):
 
 ```go
 remote := params
-// Source names this source in the controller's registry; the remote hub
-// would resolve it against its own, so it is cleared before forwarding.
+// Source and Harness name sources in the controller's registry; the remote hub
+// would resolve them against its own, so both are cleared before forwarding.
 remote.Source = ""
+remote.Harness = ""
 ```
 
 The controller's chosen host is expressed purely by *which*
 `RemoteHubSource` handled the call; the remote hub sees a plain `thread/start`
 with its own default routing. No other `Source` method carries a host selector:
 every other method addresses an existing thread by `Ref`, which is translated
-(above).
+(above). **Implementation status:** the shipped 05c `StartThread` forwards
+`params` verbatim today — it clears neither field — so clearing both is the 05c
+requirement, not a present fact.
 
 `hubThreadResume` already routes a non-local ref to its source
 (`app_threadlifecycle.go`), so resuming a remote session by
@@ -370,15 +388,36 @@ Rule: there is exactly **one** drain goroutine per per-host client, and it is a
 **broker that fans the stream out to every consumer**, not a thread-only router.
 Component 05 owns the drain (it already keys it to the client:
 `ensureDrainLocked`/`drains`, `remote_hub_subscription.go`) and must expose a
-registration point — a method such as `registerNotificationConsumer(client, fn)`
-or a small per-client fan-out type — so component 07 subscribes instead of
-reading the channel. The broker is scoped to the client, so a reconnect's new
-client gets a fresh drain and every registered consumer is rebound (or told its
-client ended) exactly as `subs`/`drains` are today
-(§"Reconnect handoff"). A consumer callback must not be able to stall thread
-subscriptions: the broker hands each consumer its own buffered channel or
-dispatches on its own goroutine, because a slow admin consumer must not block a
-`turn/completed`.
+**source-level** registration point — a method such as
+`source.RegisterNotificationConsumer(fn)`, **not**
+`registerNotificationConsumer(client, fn)` — so component 07 subscribes instead
+of reading the channel. Two lifecycle requirements follow, and both are the
+implementing PR's contract:
+
+- **Registration starts the drain.** The drain must not start only from
+  `SubscribeThread`. Remote administration can register a consumer with no
+  thread subscribers at all (a settings-only session), and in that normal case
+  nothing reads `Client.Notifications()`, so config notifications are never
+  delivered. Registering a consumer must itself ensure the drain for the current
+  client is running (`ensureDrainLocked` on registration), and the broker must
+  start it whenever it resolves a fresh client. The acceptance test is an
+  admin-only consumer registered **before** any thread subscription that still
+  receives a notification.
+- **Registration is at the source/host level, so a reconnect rebinds it.** A
+  per-client registration is dropped with its client on reconnect, and component
+  07 has no relay loop to re-register the way thread subscriptions recover
+  through the relay's EOF detection. Registration is therefore against the
+  source, which holds the consumer list and attaches every registered consumer
+  to each fresh client's drain (the same per-call client resolution that
+  re-probes capabilities). A consumer is removed by unregistering from the
+  source, or is told its client ended, exactly as `subs`/`drains` are today
+  (§"Reconnect handoff"). Because the source resolves the client per call, the
+  fresh drain starts when the next call (the admin request, or the relay's
+  re-subscribe) resolves the new client — the documented laziness.
+
+A consumer callback must not be able to stall thread subscriptions: the broker
+hands each consumer its own buffered channel or dispatches on its own goroutine,
+because a slow admin consumer must not block a `turn/completed`.
 
 Shipped today, `drainLoop` is the only reader and there is no registration
 point, so the broker seam is the implementing PR's requirement. Component 07
@@ -470,17 +509,27 @@ Ref translation detail (`remote_hub_refs.go`):
     (`app_threadlist.go`), which returns false for a non-empty filter that omits
     the source — is the mechanism; `ListThreads` must not be called in that case,
     and if it is, it must error rather than forward an empty filter;
-  - an empty filter is forwarded as empty **only** when the incoming filter was
-    itself empty (an unfiltered fleet-wide list). A non-empty filter that remaps
-    to empty is *not* a licence to forward unfiltered: that would ask the remote
-    hub for *all* of its threads, including the ones its own nested remote
-    sources own, whose non-`local` refs the single-level translation cannot
-    represent (see §"Error handling", "Nested remote hosts", and the reject in
-    `fromRemoteRefString`, `remote_hub_refs.go`). The shipped
-    `remapRemoteSourceIDs` (`remote_hub_refs.go`) implements the mapping but
-    returns an empty slice for an omitting filter, which `ListThreads` then
-    forwards as unfiltered; the "must not reach the remote / must error" half is
-    the implementing PR's requirement, not a present fact.
+  - an **empty** incoming filter (an unfiltered fleet-wide list) is forwarded as
+    `["local"]`, **not** as empty. Forwarding empty would make the remote
+    `hubThreadList` fan out to *all* of its own allowed sources — including
+    nested remote hosts it is itself a controller for — which is transitive
+    fan-out and request amplification, and would return non-`local` refs the
+    single-level translation cannot represent. `["local"]` asks the remote for
+    exactly its own local threads. A non-empty filter that remaps to empty is
+    likewise never a licence to forward unfiltered.
+  - **Nested-row handling is explicit.** With `["local"]` the remote cannot
+    return a nested row (its filter compares `thread.Source` to `local`), so the
+    reject in `fromRemoteRefString` is not reachable on the list path. If a
+    non-`local` ref nonetheless appears on a returned row (a remote misbehaving,
+    or a future remote), the row is **dropped** with a logged warning rather than
+    failing the whole call: one unrepresentable row must not blank the host's
+    fleet view.
+  - **Implementation status:** the shipped `remapRemoteSourceIDs`
+    (`remote_hub_refs.go`, `multi-host-pr05a-remote-hub-source`) returns `nil`
+    for an empty incoming filter — which `ListThreads` forwards as unfiltered —
+    and returns an empty slice for an omitting filter. The `["local"]`-for-empty
+    rule, the "must not reach the remote / must error" half, and the per-row drop
+    are the implementing PR's requirements, not present facts.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same
   way (sub-thread aliases). Leave `Thread.Evener.InstanceID` untouched: it is an
@@ -572,10 +621,13 @@ questions for the atomicity tradeoff.
 - **Bridge stdout corruption.** A framing/JSON error from the component-01
   transport is a broken channel: close the client, fail pending requests, and
   mark the source offline. Never attempt to resynchronize a corrupt stream. This
-  is the caller side of component 01's contract: the transport does not close
-  itself on a bad frame (it only goes permanently unusable after an
-  oversize-frame error), so **the caller must `Close`** and treat the channel as
-  dead.
+  is the caller side of component 01's contract: a torn frame
+  (`io.ErrUnexpectedEOF`), an oversize-frame read, and a partial/zero-byte write
+  all **poison** the transport permanently, so any such `Recv` or `Send` error
+  is terminal for the channel. A JSON *decode* error does not itself poison the
+  transport (the offending line is fully consumed), but it is still a framing
+  error the caller must not resume from: **the caller must `Close`** on the
+  first `Recv` error and treat the channel as dead.
 - **Mutation outcome unknown.** Remote mutations carry the flag-day mutation
   envelope (`appwire/protocol.go`). When a mutation's response is lost,
   map it the way `localDaemonMutationCallError` does
@@ -587,9 +639,11 @@ questions for the atomicity tradeoff.
 - **Nested remote hosts.** If the remote hub is itself a controller and returns
   a thread whose ref is not `local:`, that ref cannot be represented in the
   controller's `SourceID:ThreadID` namespace without collision (ref grammar has
-  no separator beyond the first colon, `appwire/refs.go`). v1 should refuse
-  such refs with a clear error rather than pass them through. See §Open
-  questions.
+  no separator beyond the first colon, `appwire/refs.go`). v1 refuses such refs
+  with a clear error rather than passing them through. On the **list path** this
+  cannot arise when `ListThreads` is forwarded as `SourceIDs:["local"]` (above),
+  which asks the remote only for its local threads; a stray non-`local` row is
+  dropped, not fatal (see the `ListThreads` remap above). See §Open questions.
 - **Secrets.** The host capability token lives in the component-04 SSH/bridge
   layer and is never logged by `RemoteHubSource`; use the hub log sink
   (`hubConnectionLogf`, `cmd/evener-hub/internal/appsource/transport.go`)
@@ -631,7 +685,12 @@ network.
    mismatch → `ProtocolVersionMismatchError`; lost mutation response →
    `ErrorMutationOutcomeUnknown`.
 7. **SourceIDs remap.** `ListThreads{SourceIDs:["host"]}` must reach the remote
-   as `SourceIDs:["local"]` and return the host's threads.
+   as `SourceIDs:["local"]` and return the host's threads. An **empty**
+   fleet-wide `SourceIDs` must also reach the remote as `SourceIDs:["local"]`,
+   never as an empty/unfiltered filter (assert the forwarded params), and a
+   response carrying a non-`local` ref must drop that row rather than fail the
+   call. A filter that omits `s.id` must not reach the remote at all (the gate),
+   and a direct call must error rather than forward empty.
 8. **Catalog guard.** A test asserting every wire method in the coverage table is
    in `appwire.CatalogMethodNames(appwire.ScopeHub)` (that helper includes
    `ScopeBoth`, `appwire/protocol.go`), so a future re-scope of a mapped
@@ -642,7 +701,11 @@ network.
     thread subscription and a recording admin consumer), one emitted
     notification is delivered to both and neither loses it; the drain goroutine
     stays the only reader of `Client.Notifications()`. A consumer that stops
-    reading does not block delivery to the other.
+    reading does not block delivery to the other. An **admin-only** consumer
+    registered before any thread subscription receives a notification (the drain
+    starts on registration, not only on `SubscribeThread`), and after a client
+    replacement (reconnect) the registered consumer receives notifications from
+    the fresh client's drain without re-registering.
 
 ## Acceptance criteria
 
@@ -653,7 +716,9 @@ network.
 - Against a scripted hub over an in-memory stream: `thread/list`,
   `thread/read`, `thread/turns/list`, one lifecycle mutation, and a live
   subscription all round-trip with refs translated in both directions.
-- `ListThreads` with `SourceIDs` naming the host returns that host's threads.
+- `ListThreads` with `SourceIDs` naming the host returns that host's threads,
+  and an empty fleet-wide `SourceIDs` is forwarded to the remote as `["local"]`
+  rather than unfiltered.
 - `newHubSourceRegistry` registers one source per configured host and leaves the
   empty-ref default as `local` (`app_sources.go`).
 - The capability probe returns protocol version, hub version, features, launch
@@ -706,17 +771,19 @@ splitting per the above keeps each PR reviewable.
 3. **Nested hosts.** A remote hub that is itself a controller returns refs the
    controller namespace cannot represent (see §Error handling). Refuse, drop, or
    introduce a ref grammar change? Parent design allows a hub to be a host; v1
-   refuses only what the config alone can see (duplicate names, invalid names,
-   self-edges — see item 4), so a depth-2 chain is *not* prevented and no ref
-   grammar exists for it.
+   refuses only what the config alone can see (duplicate names and invalid
+   names; a self-edge is refused only through an explicit upstream list — see
+   item 4), so a depth-2 chain is *not* prevented and no ref grammar exists for
+   it.
 4. **Attach-time cross-hub cycle detection (deferred).** Component 03 exposes
    `AddWithUpstreams(entry, upstreamNames)` so a cycle can be refused at the
    moment an upstream host list is learned, but v1 has no way to learn one: no
    AppWire method reports a hub's configured hosts, and the attach handshake
    returns server info, protocol version, source ID, and features only
    (`InitializeResponse`, `appwire/types.go`). So v1 refuses what the
-   config alone can see (duplicate names, self-edges) and does **not** perform
-   A→B→A attach-time detection. Closing this needs a new `ScopeHub` host-list
+   config alone can see (duplicate names and invalid names; a self-edge needs an
+   explicit upstream list) and does **not** perform A→B→A attach-time detection.
+   Closing this needs a new `ScopeHub` host-list
    method plus a call from the attach path into `hostreg.AddWithUpstreams`;
    component 03 records the same deferral.
 5. **Controller-side past/recovery fencing.** Non-local refs bypass the

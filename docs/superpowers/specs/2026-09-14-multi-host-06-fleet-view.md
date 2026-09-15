@@ -131,16 +131,34 @@ There is no source/host field on the start request today:
 and the generated `ThreadStartParams` matches
 (`appwire-client/typescript/types.gen.ts`). This component adds an
 explicit `source` field to `thread/start` — a bare source ID, not a ref —
-rather than overloading `Harness`. `hubThreadStart` resolves it ahead of the
-legacy `launchSourceID` harness fallback.
+rather than overloading `Harness`. `hubThreadStart` gives it **sole authority
+when set**, consulting the legacy `launchSourceID` harness fallback only when it
+is empty (`app_threadlifecycle.go`:
+`sourceID := strings.TrimSpace(params.Source); if sourceID == "" { sourceID =
+launchSourceID(params) }`).
 
-**The field is controller-only and must not reach the remote hub.**
-`ThreadStartParams.Source` names a source in the controller's registry; the
-remote hub would resolve the same string against its own registry (wrong target
-or `spawn source is not available`). `RemoteHubSource.StartThread` clears it
-before forwarding (component 05, §"Registration and default-source selection"),
-so a host picker read on the wire never changes what the remote hub does: the
-chosen host is expressed by which `RemoteHubSource` handled the start.
+**The legacy fallback must not name a configured host.** `launchSourceID` treats
+any non-empty, non-`evener` harness string as a source ID, so a harness value
+that happens to equal a configured host name (say a harness literally named
+`m4`) would silently retarget the spawn to that remote host. The required
+contract is therefore: when `Source` is empty and the harness fallback yields a
+value that names a configured host source, the start is refused
+(`InvalidParams`) rather than routed there; alternatively the harness-as-source
+fallback is retired outright. **Implementation status:** the shipped 06a
+`hubThreadStart` resolves the fallback unconditionally
+(`multi-host-pr06a-fleet-view-go`, **pending merge, not on `main`**), so this
+refusal is a requirement, not a present fact.
+
+**The field — and the legacy harness — are controller-only and must not reach
+the remote hub.** `ThreadStartParams.Source` names a source in the controller's
+registry; the remote hub would resolve the same string against its own registry
+(wrong target or `spawn source is not available`). The legacy `Harness` field
+carries the same hazard: `launchSourceID` reads any non-empty, non-`evener`
+harness as a source ID. `RemoteHubSource.StartThread` therefore clears **both**
+`Source` and `Harness` before forwarding (component 05, §"Registration and
+default-source selection"), so a host picker read on the wire never changes what
+the remote hub does: the chosen host is expressed by which `RemoteHubSource`
+handled the start.
 
 ## Implementation approach
 
@@ -228,9 +246,12 @@ only `local`, so the fan-out currently degenerates to one source.
      source via `launchSourceID(params)` (`app_threadlifecycle.go`),
      which treats the **`harness`** value as a source ID (returns `"local"` for
      `"evener"`, the harness string otherwise, `""` for empty). Add an explicit
-     source ref field to `ThreadStartParams` and resolve it here, ahead of the
-     harness fallback. Target the named source via `sources.Source(id)` and
-     call `source.StartThread(ctx, params)` (the existing branch at
+     source ref field to `ThreadStartParams` and resolve it here with sole
+     authority when set, consulting the harness fallback only when it is empty
+     and refusing a harness value that names a configured host source (so a
+     harness cannot silently retarget a spawn to a remote host). Target the
+     named source via `sources.Source(id)` and call
+     `source.StartThread(ctx, params)` (the existing branch at
      `app_threadlifecycle.go`).
    - Note: the ref-default path the brief referenced is `sourceForThread`
      (`app_sources.go`), which defaults to source `"local"` when no ref
@@ -430,8 +451,8 @@ This is larger than a single tight PR if done at once. A natural split:
 - **Wire field shape for targeting (settled)**: `ThreadStartParams.Source` — a
   bare source ID, serialized as `source` — is the chosen shape; reusing the
   existing `ref` or overloading `Harness` were the rejected alternatives. The
-  field is controller-only and is stripped before any remote forward
-  (§"Write contract").
+  field is controller-only; it **and** the legacy `Harness` are stripped before
+  any remote forward (§"Write contract").
 - **`Kind` value for hosts**: reuse `"appwire"` or introduce a host-specific
   value? The frontend cannot currently tell an attached host from any other
   appwire source; if grouping/labels need that distinction, pick a value now to

@@ -33,9 +33,10 @@ not open connections, does not spawn SSH, and does not implement a source.
   it is validated at load time. (Implementation status: the shipped
   `validateHostConfigs` builds a throwaway `hostreg.Registry` and has no count
   check yet; the limit is the implementing PR's requirement.)
-- An in-memory `hostreg.Registry` built from the validated list, with add-time
-  cycle rejection (duplicates/self-edges; see §"Source registration hook" and
-  "Open questions" for the multi-hop deferral).
+- An in-memory `hostreg.Registry` built from the validated list, rejecting
+  duplicates at add time (a self-edge is rejected only when an explicit upstream
+  list is supplied; see §"Source registration hook" and "Open questions" for the
+  cycle and multi-hop deferral).
 - A registration hook the hub calls once at startup so component 05 (remote hub
   source) can attach a source per host.
 
@@ -248,17 +249,19 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      - rejects `name == "local"` (`ErrReservedName`);
      - rejects an invalid `name` (`ErrInvalidName`);
      - rejects a self-edge and any back-edge that would close a cycle
-       (`ErrHostCycle`). Per the shipped `checkCycleLocked`: the registry stores
-       directed edges keyed by each host name, and the DFS starts at the
-       **candidate being added**, seeded with the candidate itself on the
-       current path. It refuses when it reaches the candidate again (self-edge
-       or back-edge) or a node already on the current path (a cycle among the
-       upstreams). No hub identity is involved, which is why `New` needs no
-       `self` parameter (finding 13).
+       (`ErrHostCycle`) **when an upstream list is supplied**. Per the shipped
+       `checkCycleLocked`: the registry stores directed edges keyed by each host
+       name, and the DFS starts at the **candidate being added**, seeded with
+       the candidate itself on the current path. It refuses when it reaches the
+       candidate again (self-edge or back-edge) or a node already on the current
+       path (a cycle among the upstreams). `Add` passes no upstreams, so it
+       cannot produce `ErrHostCycle`; only `AddWithUpstreams`/`SetUpstreams`
+       can. No hub identity is involved, which is why `New` needs no `self`
+       parameter (finding 13).
    - **Self / cross-hub cycle identity.** The config file alone cannot see
      another hub's host list, so a pure config load can only catch
-     intra-config duplicates and self-reference; the A→B→A case is knowable
-     only when B's host list is learned over the channel. The registry therefore
+     intra-config duplicates; the A→B→A case is knowable only when B's host
+     list is learned over the channel. The registry therefore
      exposes the cycle check as `Add` plus an attach-time variant whose
      upstream list component 05 supplies from the attach handshake:
      `AddWithUpstreams(entry Host, upstreamHostNames []string) error`.
@@ -272,14 +275,16 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      rooted at the candidate (§"Host registry"), and upstream names are a call
      argument, never constructor state.
    - **What v1 actually promises (qualified).** The parent design's "cycles are
-     refused at add time" must be read as **intra-config** rejection: duplicate
-     names, invalid/reserved names, and self-edges (`m4` upstream `m4`) fail at
-     load/add time, and a supplied upstream list is checked for back-edges. It
-     is **not** multi-hop A→B→A detection: the config file cannot see another
-     hub's host list, so a controller A configured with host B and B configured
-     with host A loads cleanly on both sides. Multi-hop detection requires the
-     deferred host-list RPC (component 05, §Open questions item 4) that supplies
-     `upstreamHostNames`; record it as deferred, not as enforced.
+     refused at add time" must be read narrowly: **no cycle check runs from the
+     config file alone.** Duplicate names and invalid/reserved names fail at
+     load/add time, but a self-edge (`m4` upstream `m4`) is caught *only* when an
+     explicit upstream list is supplied, because `Add` is
+     `AddWithUpstreams(entry, nil)` and `[[hosts]]` has no upstream field. It is
+     **not** multi-hop A→B→A detection either: the config file cannot see
+     another hub's host list, so a controller A configured with host B and B
+     configured with host A loads cleanly on both sides. Multi-hop detection
+     requires the deferred host-list RPC (component 05, §Open questions item 4)
+     that supplies `upstreamHostNames`; record it as deferred, not as enforced.
 
      **v1 performs no cycle detection at all from the config alone, and that must
      be stated plainly rather than implied.** `Add` is `AddWithUpstreams(entry,
@@ -445,7 +450,9 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
 - **`evener_path` empty vs set (resolved).** Empty means "resolve `evener` on the
   remote `PATH`" for the invocation, and component 04's push deploy resolves the
   absolute install target with the host's own `command -v evener` plus
-  `readlink -f` before the atomic `mv` (`sshconn/deploy.go`), so the deployed
-  build lands at the path the host runs rather than at a literal file named
-  `evener`. A configured path means "the binary lives here" (its directory must
-  exist on the host). No default is baked into the schema.
+  component 04's POSIX-sh symlink resolver (plain `readlink`, never
+  `readlink -f`, which BSD/macOS rejects) before the atomic `mv`
+  (`sshconn/deploy.go`), so the deployed build lands at the path the host runs
+  rather than at a literal file named `evener`. A configured path means "the
+  binary lives here" (its directory must exist on the host). No default is baked
+  into the schema.

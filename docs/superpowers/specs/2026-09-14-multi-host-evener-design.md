@@ -17,13 +17,18 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 
 - **Topology**: any hub can act as a controller for hosts it can see. A static
   per-hub host list in config. No multi-master, no leader election, no shared
-  state. A hub can also be a host. **Cycle rejection in v1 is intra-config
-  only**: duplicate names, invalid/reserved names, and self-edges are refused at
-  load/add time, and a supplied upstream list is checked for back-edges. The
-  multi-hop case A→B→A is *not* detected, because a controller sees only its own
-  `[[hosts]]` table and no AppWire method reports another hub's host list; that
-  detection is deferred with the host-list RPC (component 03, §Open questions;
-  component 05, §Open questions item 4).
+  state. A hub can also be a host. **Cycle rejection in v1 does not run from the
+  config file alone.** Duplicate names and invalid/reserved names are refused at
+  load/add time, but no cycle check runs on that path: a config-loaded host
+  enters through `Add`, which is `AddWithUpstreams(entry, nil)`, and `[[hosts]]`
+  has no upstream field. Only a caller that supplies an **explicit upstream
+  list** — a direct `AddWithUpstreams`/`SetUpstreams` call — is checked for a
+  self-edge or back-edge, and that is what can yield `ErrHostCycle` (component
+  03, §"Host registry"). The multi-hop case A→B→A is likewise *not*
+  detected, because a controller sees only its own `[[hosts]]` table and no
+  AppWire method reports another hub's host list; that detection is deferred
+  with the host-list RPC (component 03, §Open questions; component 05, §Open
+  questions item 4).
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -76,7 +81,8 @@ Ordered by dependency; each is independently reviewable and landable.
    proxies AppWire between that WebSocket and its own stdin/stdout. stdout
    carries framed AppWire only; all logs go to stderr. *Spike done.*
 3. **Host configuration** (`cmd/evener-hub`) — the `[[hosts]]` config schema and
-   the in-memory host registry, with cycle rejection.
+   the in-memory host registry, with config-load rejection (duplicates,
+   invalid/reserved names) and a cycle-check seam for an explicit upstream list.
 4. **SSH connection manager** — spawn `ssh`, own the channel, keepalive and
    reconnect, preflight (OS/arch, HOME/XDG, existing version/protocol), deploy
    (push matching binary or run installer), and version auto-match on attach.
@@ -114,10 +120,12 @@ Ordered by dependency; each is independently reviewable and landable.
   daemon-scoped calls; some methods may lack a hub-scoped counterpart. Enumerate
   and either compose or add hub RPCs. This is the biggest unknown.
 - **Multi-hop cycle detection (deferred)**: v1 cannot see an upstream hub's host
-  list, so A→B→A is not refused; only duplicates, self-edges, and supplied
-  upstream back-edges are checked (see §2 "Topology"). Closing this needs a new
-  hub-scoped host-list method; until then, treat configuration as acyclic *by
-  convention* for multi-hop chains.
+  list, so A→B→A is not refused. From the config alone only duplicates and
+  invalid/reserved names are checked; a self-edge or a supplied upstream
+  back-edge is checked only when an explicit upstream list is passed to
+  `AddWithUpstreams`/`SetUpstreams` (see §2 "Topology"). Closing this needs a
+  new hub-scoped host-list method; until then, treat configuration as acyclic
+  *by convention* for multi-hop chains.
 - **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
   sub-thread aliases.
 - **Version-match restart** drops live browser/controller connections; decide
