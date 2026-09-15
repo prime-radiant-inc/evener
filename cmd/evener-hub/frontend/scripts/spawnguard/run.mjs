@@ -61,6 +61,11 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     if (directoryFailures.length) throw new Error(`Directory picker at ${width}px: ${directoryFailures.join("; ")}`);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
     await evaluate(send, "window.settledSpawn");
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html?onboarding=1`);
+    const onboardingFailures = await evaluate(send, "window.exerciseProviderOnboarding()");
+    if (onboardingFailures.length) throw new Error(`Provider onboarding component guard at ${width}px: ${onboardingFailures.join("; ")}`);
+    await navigateTo(page, `http://127.0.0.1:${vitePort}/spawnguard.html`);
+    await evaluate(send, "window.settledSpawn");
     // Stage before measuring, at every width: the page is navigated fresh per
     // width, and the staged-attachment row exists only once something is in
     // it. A staging failure has to name itself here rather than surfacing
@@ -369,7 +374,7 @@ async function main() {
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(
-          `${width}px ... PASS - Spawn directory picker, breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
+          `${width}px ... PASS - Spawn provider onboarding component integration, directory picker, breakpoint, in-card control row, rows, accessibility, ${STAGED_ATTACHMENTS} staged attachment tiles, and overflow`,
         );
       } else {
         failed++;

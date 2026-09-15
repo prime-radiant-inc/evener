@@ -8,14 +8,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"net/url"
 
 	"github.com/coder/websocket"
 

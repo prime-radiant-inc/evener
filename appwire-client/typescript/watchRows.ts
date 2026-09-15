@@ -466,10 +466,21 @@ function mergePresent(_prior: WatchSummary, row: SummaryRow): Partial<WatchSumma
   };
 }
 
-function compareTranscriptPosition(left: ItemModel, right: ItemModel): number {
+// Orders watch snapshots by where they sit in the transcript. An item that
+// carries no position has no place in that order, so it sorts after every
+// positioned one rather than comparing equal to it: comparing 0 across that
+// boundary makes the ordering non-transitive, and a non-transitive sort leaves
+// the fold's row order and the memo key dependent on caller order for mixed
+// lists. Positionless items compare equal to each other, so among themselves
+// they keep caller order, which for well-ordered input is the transcript's own.
+export function compareTranscriptPosition(left: ItemModel, right: ItemModel): number {
   const leftPosition = left.position;
   const rightPosition = right.position;
-  if (!leftPosition || !rightPosition) return 0;
+  if (!leftPosition || !rightPosition) {
+    if (leftPosition) return -1;
+    if (rightPosition) return 1;
+    return 0;
+  }
   return leftPosition.entry - rightPosition.entry || leftPosition.item - rightPosition.item;
 }
 

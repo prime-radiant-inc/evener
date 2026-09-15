@@ -922,6 +922,15 @@ export function Composer({ ref, focused }: ComposerProps) {
   // focus: a restored draft, or a blur with text still in the field, must not
   // strand a typed message with no visible way to send it.
   const followUpEngaged = followUpFocused || hasContent;
+  // While the card rests, its control row - and with it the composer chrome
+  // that opts into initial activity discovery - is not mounted. A saved
+  // notLoaded session with send enabled is exactly that shape, so mount a
+  // chrome-less discovery owner for the interval instead; once the card is
+  // engaged the chrome above owns discovery, so exactly one owner exists at a
+  // time (issue #1335). A send-disabled ended session is left alone: it renders
+  // no card at all, and a local notLoaded one is already owned by Session.tsx's
+  // own menu mount - this must never become a second owner there.
+  const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
   function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
     editText(event.target.value);
@@ -1713,6 +1722,12 @@ export function Composer({ ref, focused }: ComposerProps) {
           </form>
         </div>
       )}
+      {/* The card's own chrome is the discovery opt-in, so while the card rests
+          something has to own initial discovery for it - otherwise the
+          transcript's entity ids stay plain text until the card is engaged.
+          Renders nothing visible (the panel's only control is hidden and its
+          sheet is closed). */}
+      {discoveryOnlyChrome && <SessionChrome ref={ref} discoveryOnly />}
       {/* The session's working dir and git branch, in one quiet line under the
           card. Reference material, not a control: it stays put across every
           composer state (including an ended session's collapsed card and the
