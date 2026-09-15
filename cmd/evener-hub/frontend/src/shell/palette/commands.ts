@@ -160,8 +160,8 @@ const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;
 const drainAvailable = (model: ThreadModel) => controlsFor(model).reason.drain;
 
 // runWhenAvailable is the shared run guard for commands with an `available`
-// rule: it refuses with the command's own reason (the status floor message, or
-// the palette's one capability text) and otherwise runs against the focused ref.
+// rule: it refuses with the command's own reason -- the status floor message,
+// or the shared capability sentence -- and otherwise runs against the focused ref.
 function runWhenAvailable(
   ctx: PaletteRunContext,
   id: string,
@@ -171,7 +171,7 @@ function runWhenAvailable(
   const model = focusedModel(ctx.sessionRef);
   if (!ctx.sessionRef || !model) return blocked(`${id} failed: ${NO_ACTIVE_TURN}`);
   const reason = available(model);
-  if (reason !== undefined) return blocked(`${id} failed: ${reason === NO_ACTIVE_TURN ? reason : UNAVAILABLE_REASON}`);
+  if (reason !== undefined) return blocked(reason === NO_ACTIVE_TURN ? `${id} failed: ${reason}` : reason);
   return run(ctx.sessionRef);
 }
 

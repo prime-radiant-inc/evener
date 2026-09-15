@@ -5,6 +5,7 @@ import type { ThreadModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import "../../panes/sessionPanels";
+import { QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "../../protocol/submitRouting";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -584,11 +585,11 @@ test("/steer sends turn/steer while the session is active with no open turn row 
 // advertises no steer (or no queue) is refused here, never sent a request the
 // daemon answers Unavailable.
 test.each([
-  ["steer", "turn/steer", { steer: false }],
-  ["queue", "turn/queue", { queue: false }],
+  ["steer", "turn/steer", { steer: false }, STEER_UNAVAILABLE],
+  ["queue", "turn/queue", { queue: false }, QUEUE_UNAVAILABLE],
 ] as const)(
   "/%s on a busy session whose harness lacks the capability is blocked and sends nothing",
-  (id, method, missing) => {
+  (id, method, missing, reason) => {
     const fake = connectFake();
     focusSession("ref_a");
     seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, ...missing } });
@@ -596,8 +597,31 @@ test.each([
     if (c.args?.kind !== "free") throw new Error("expected free args");
     const result = c.args.run(runContext(), "go left");
     expect(isBlocked(result)).toBe(true);
-    expect(blockedMessage(result)).toBe(`${id} failed: ${UNAVAILABLE_REASON}`);
+    expect(blockedMessage(result)).toBe(reason);
     expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  },
+);
+
+// /drain-as-steer carries the same per-action reason: the capability sentence
+// on a busy session whose harness cannot steer, the status floor with nothing
+// running and nothing parked.
+test.each([
+  ["active", 0, { steer: false }, STEER_UNAVAILABLE],
+  ["idle", 0, {}, "drain failed: no active turn"],
+] as const)(
+  "/drain-as-steer at %s with depth %d and %o is blocked with the shared reason",
+  (statusType, depth, missing, message) => {
+    const fake = connectFake();
+    focusSession("ref_a");
+    seedModel("ref_a", {
+      status: { type: statusType },
+      activeTurnId: statusType === "active" ? "t1" : undefined,
+      capabilities: { ...CAPS, ...missing },
+      queue: { revision: 0, depth },
+    });
+    const result = cmd("drain-as-steer").run?.(runContext());
+    expect(blockedMessage(result)).toBe(message);
+    expect(fake.calls.some((call) => call.method === "turn/drainAsSteer")).toBe(false);
   },
 );
 
