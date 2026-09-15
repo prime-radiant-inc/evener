@@ -99,6 +99,19 @@ type Options struct {
 	// the Ensure and the reconnect paths. Tests use it to drop the just-published
 	// channel deterministically.
 	afterPublish func(name string, ch *Channel)
+	// beforeHostGate, when set, runs at the top of Ensure, before the caller waits
+	// for the host gate. Tests use it to establish, without a sleep, that one
+	// contender has reached a gate the test holds before another one does.
+	beforeHostGate func(name string)
+	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
+	// the link drop and before it contends for the host gate. Tests use it to park
+	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
+	// interleaving is exact rather than a race the sleep had to bias.
+	beforeSuperviseGate func(name string, ch *Channel)
+	// superviseExited, when set, runs after a supervisor goroutine has returned
+	// and released any gate it held. Tests use it to observe "the supervisor
+	// stood down" instead of sleeping long enough to hope it did.
+	superviseExited func(name string)
 }
 
 func (o Options) runner() Runner {
@@ -279,6 +292,9 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// a second per-host lock.
 	name = host.Name
 
+	if m.opts.beforeHostGate != nil {
+		m.opts.beforeHostGate(name)
+	}
 	lock := m.hostLock(name)
 	// Honor the caller's context while waiting for the host gate: a canceled
 	// caller must not park behind another Ensure's or a supervisor's long
@@ -809,6 +825,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 		return
 	}
 
+	if m.opts.beforeSuperviseGate != nil {
+		m.opts.beforeSuperviseGate(host.Name, ch)
+	}
 	lock.Lock()
 	// Ownership, not liveness, decides whether this supervisor still has work: the
 	// manager closing ends it, and a replaced channel means the replacement's
@@ -828,6 +847,9 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	lock.Unlock()
 	_ = ch.Close()
 
+	// BackoffMax bounds every reconnect delay, the first one included: a caller
+	// that configures a maximum below the base must not have its first retry wait
+	// longer than the bound it asked for.
 	delay := m.opts.backoffBase()
 	for {
 		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
@@ -889,6 +911,11 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 			}
 			m.mu.Unlock()
 			cancel()
+			// Announce the exit only after the gate is released, so a test that
+			// waits on it can assert on the supervisor's final state.
+			if m.opts.superviseExited != nil {
+				m.opts.superviseExited(host.Name)
+			}
 		}()
 		m.supervise(ctx, host, ch, lock)
 	})

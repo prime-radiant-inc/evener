@@ -35,6 +35,90 @@ func goodStartFn(t *testing.T) func(context.Context, []string, io.Writer) (Stdio
 	}
 }
 
+// gateHook replaces the fixed sleeps that used to order a test goroutine against
+// a host gate the test holds. Its hook signals arrival at the gate and parks the
+// caller until open, so the test decides which contender runs first rather than
+// hoping a sleep was long enough. It stays inert until armed, because the
+// manager is built — and usually attached — before the interleaving begins.
+type gateHook struct {
+	arrived  chan struct{}
+	release  chan struct{}
+	armed    atomic.Bool
+	once     sync.Once
+	openOnce sync.Once
+}
+
+func newGateHook() *gateHook {
+	return &gateHook{arrived: make(chan struct{}), release: make(chan struct{})}
+}
+
+// arm makes subsequent hook calls signal and park.
+func (g *gateHook) arm() { g.armed.Store(true) }
+
+// hook reports the first armed caller's arrival and parks it; a later contender
+// arriving before open proceeds without parking, since the arrival it would
+// report has already been observed.
+func (g *gateHook) hook() {
+	if !g.armed.Load() {
+		return
+	}
+	var first bool
+	g.once.Do(func() {
+		first = true
+		close(g.arrived)
+	})
+	if first {
+		<-g.release
+	}
+}
+
+func (g *gateHook) wait(t *testing.T, what string) {
+	t.Helper()
+	select {
+	case <-g.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s to reach the host gate", what)
+	}
+}
+
+// open releases a parked caller. Idempotent, so a test can defer it and still
+// release explicitly once the interleaving is established.
+func (g *gateHook) open() { g.openOnce.Do(func() { close(g.release) }) }
+
+// exitSignal turns "the supervisor stood down" into an observation. Tests that
+// used to sleep long enough to hope a supervisor had finished wait on it
+// instead, so the assertion is ordered against the supervisor's own exit.
+type exitSignal struct {
+	mu     sync.Mutex
+	n      int
+	want   int
+	closed bool
+	done   chan struct{}
+}
+
+func newExitSignal(want int) *exitSignal {
+	return &exitSignal{want: want, done: make(chan struct{})}
+}
+
+func (s *exitSignal) hook(string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.n++
+	if !s.closed && s.n >= s.want {
+		s.closed = true
+		close(s.done)
+	}
+}
+
+func (s *exitSignal) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %d supervisor(s) to return", s.want)
+	}
+}
+
 func TestEnsurePreflightAndAttach(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
@@ -318,7 +402,10 @@ func TestEnsureAfterCloseFailsWithErrManagerClosed(t *testing.T) {
 func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	arrival := newGateHook()
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		beforeHostGate: func(string) { arrival.hook() },
+	})
 
 	// Hold the host gate, the way a long preflight or attach does.
 	lock := m.hostLock("alpha")
@@ -327,13 +414,17 @@ func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	arrival.arm()
 	go func() {
 		_, err := m.Ensure(ctx, "alpha")
 		done <- err
 	}()
-	// Let the caller reach the gate before canceling, so the waiting path is the
-	// one under test.
-	time.Sleep(20 * time.Millisecond)
+	// Wait for the caller to reach the gate — an explicit handoff, so the waiting
+	// path is the one under test instead of a race against its arrival — then let
+	// it through the hook. The gate is still held, so it parks there, and the
+	// cancel lands on the waiting path.
+	arrival.wait(t, "the caller")
+	arrival.open()
 	cancel()
 
 	select {
@@ -504,66 +595,111 @@ func TestReconnectAttemptIsBounded(t *testing.T) {
 	}
 }
 
-// When Ensure wins the race against a dropped channel's supervisor and its own
-// attach fails, the host must still recover through supervision rather than sit
-// disconnected with nothing retrying it.
+// When Ensure and a dropped channel's supervisor both run for the host and
+// Ensure's own attach fails, the host must still recover through supervision
+// rather than sit disconnected with nothing retrying it. Both orders are
+// constructed exactly: one parks the supervisor so Ensure consumes the injected
+// failure, the other parks Ensure so the supervisor consumes it. Either way the
+// host must end attached again and supervised.
 func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	reg := testRegistry(t, host)
+	cases := []struct {
+		name       string
+		parkEnsure bool
+	}{
+		{"Ensure runs first and consumes the failure", false},
+		{"the supervisor runs first and consumes the failure", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+			reg := testRegistry(t, host)
 
-	var mu sync.Mutex
-	failNext := false
-	fr := &fakeRunner{
-		runFn: cannedRun(nil),
-		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
-			mu.Lock()
-			fail := failNext
-			failNext = false
-			mu.Unlock()
-			if fail {
-				return nil, errors.New("ssh: connect to host alpha.example port 22: Connection refused")
+			var mu sync.Mutex
+			failNext := false
+			fr := &fakeRunner{
+				runFn: cannedRun(nil),
+				startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+					mu.Lock()
+					fail := failNext
+					failNext = false
+					mu.Unlock()
+					if fail {
+						return nil, errors.New("ssh: connect to host alpha.example port 22: Connection refused")
+					}
+					return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+				},
 			}
-			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
-		},
-	}
-	events := make(chan Event, 128)
-	m := newTestManager(t, reg, fr, Options{
-		OnEvent:     func(ev Event) { events <- ev },
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
-	})
-	ch1, err := m.Ensure(context.Background(), "alpha")
-	if err != nil {
-		t.Fatalf("Ensure: %v", err)
-	}
-	waitForEvent(t, events, EventAttached) // drain the initial attach
+			events := make(chan Event, 128)
+			supGate := newGateHook()
+			ensureGate := newGateHook()
+			opts := Options{
+				OnEvent:     func(ev Event) { events <- ev },
+				BackoffBase: time.Millisecond,
+				BackoffMax:  time.Millisecond,
+				sleep:       func(context.Context, time.Duration) error { return nil },
+				jitter:      func(d time.Duration) time.Duration { return d },
+			}
+			if tc.parkEnsure {
+				opts.beforeHostGate = func(string) { ensureGate.hook() }
+			} else {
+				opts.beforeSuperviseGate = func(string, *Channel) { supGate.hook() }
+			}
+			m := newTestManager(t, reg, fr, opts)
+			ch1, err := m.Ensure(context.Background(), "alpha")
+			if err != nil {
+				t.Fatalf("Ensure: %v", err)
+			}
+			waitForEvent(t, events, EventAttached) // drain the initial attach
 
-	// Freeze the dropped channel's supervisor at its precondition check so
-	// Ensure can win the race, then let both run.
-	lock := m.hostLock("alpha")
-	lock.Lock()
-	mu.Lock()
-	failNext = true
-	mu.Unlock()
-	ch1.markLost()
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.Ensure(context.Background(), "alpha")
-		done <- err
-	}()
-	time.Sleep(20 * time.Millisecond)
-	lock.Unlock()
+			mu.Lock()
+			failNext = true
+			mu.Unlock()
+			ch1.markLost()
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Ensure never returned")
+			// Park the chosen contender at the host gate, then let the other one
+			// run to completion, so which goroutine consumes the failure is exact.
+			gate := supGate
+			if tc.parkEnsure {
+				gate = ensureGate
+			}
+			gate.arm()
+			defer gate.open()
+			done := make(chan error, 1)
+			go func() {
+				_, err := m.Ensure(context.Background(), "alpha")
+				done <- err
+			}()
+			gate.wait(t, "the contender under test")
+
+			if tc.parkEnsure {
+				// The supervisor runs freely and eats the injected failure; its
+				// recovery Attached is the proof, so Ensure is released only after it.
+				waitForEvent(t, events, EventAttached)
+				gate.open()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatalf("Ensure after the supervisor recovered = %v, want the live channel", err)
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("Ensure never returned")
+				}
+				return
+			}
+			// Ensure runs first and eats the failure; the parked supervisor must
+			// still find the host its own and recover it.
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrSSHStart) {
+					t.Fatalf("Ensure = %v, want the retryable failure it consumed", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Ensure never returned")
+			}
+			gate.open()
+			waitForEvent(t, events, EventAttached)
+		})
 	}
-	// Either goroutine may have consumed the failure; both orders must end with
-	// the host attached again and supervised.
-	waitForEvent(t, events, EventAttached)
 }
 
 // The supervisor's backoff sleep can reach BackoffMax. A concurrent Ensure must
@@ -594,13 +730,18 @@ func TestReconnectSleepDoesNotHoldHostLock(t *testing.T) {
 	}
 	defer releaseOnce.Do(func() { close(release) })
 
+	// The retired supervisor is the only loop that ends here (the fresh channel's
+	// stays waiting on its link), so its exit is the observation that replaces the
+	// sleep which used to stand in for "it had time to clobber the host by now".
+	exited := newExitSignal(1)
 	events := make(chan Event, 128)
 	m := newTestManager(t, reg, fr, Options{
-		OnEvent:     func(ev Event) { events <- ev },
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Second,
-		sleep:       sleepFn,
-		jitter:      func(d time.Duration) time.Duration { return d },
+		OnEvent:         func(ev Event) { events <- ev },
+		BackoffBase:     time.Millisecond,
+		BackoffMax:      time.Second,
+		sleep:           sleepFn,
+		jitter:          func(d time.Duration) time.Duration { return d },
+		superviseExited: exited.hook,
 	})
 	ch1, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -637,7 +778,7 @@ func TestReconnectSleepDoesNotHoldHostLock(t *testing.T) {
 	// Waking up, the supervisor must stand down instead of clobbering the fresh
 	// channel with a second reconnect.
 	releaseOnce.Do(func() { close(release) })
-	time.Sleep(50 * time.Millisecond)
+	exited.wait(t)
 	mu.Lock()
 	got := starts
 	mu.Unlock()
@@ -767,33 +908,36 @@ func TestReconnectPreflightAuthMarkerIsRetryable(t *testing.T) {
 func TestEnsureAnnouncesDetachForRetiredChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	supGate := newGateHook()
+	exited := newExitSignal(1)
 	events := make(chan Event, 256)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		OnEvent:     func(ev Event) { events <- ev },
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
+		OnEvent:             func(ev Event) { events <- ev },
+		BackoffBase:         time.Millisecond,
+		BackoffMax:          time.Millisecond,
+		sleep:               func(context.Context, time.Duration) error { return nil },
+		jitter:              func(d time.Duration) time.Duration { return d },
+		beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
+		superviseExited:     exited.hook,
 	})
 	ch1, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	// Freeze the dropped channel's supervisor behind the host lock and queue
-	// Ensure first, so Ensure is the one that retires the stale channel.
-	lock := m.hostLock("alpha")
-	lock.Lock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = m.Ensure(context.Background(), "alpha")
-	}()
-	time.Sleep(10 * time.Millisecond)
+	// Park the dropped channel's supervisor just before the host gate, so Ensure —
+	// not a race — is the one that retires the stale channel.
+	supGate.arm()
+	defer supGate.open()
 	ch1.markLost()
-	time.Sleep(10 * time.Millisecond)
-	lock.Unlock()
-	<-done
+	supGate.wait(t, "the dropped channel's supervisor")
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// Let the parked supervisor wake and stand down for the replacement, so the
+	// event stream is complete before it is read.
+	supGate.open()
+	exited.wait(t)
 
 	var kinds []EventKind
 	for {
@@ -1006,10 +1150,7 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 				// keeps that interleaving deterministic; Close itself blocks on the
 				// lock Ensure is holding until Ensure releases it.
 				go func() { closed <- m.Close() }()
-				deadline := time.Now().Add(2 * time.Second)
-				for !m.isClosed() && time.Now().Before(deadline) {
-					time.Sleep(time.Millisecond)
-				}
+				waitUntil(t, "Close to publish its closed flag", m.isClosed)
 			}
 		},
 	})
@@ -1104,8 +1245,9 @@ func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 		t.Fatal("Close did not cancel the in-flight initial attach")
 	}
 	// Close already accounted for the in-flight Ensure, so the return above cannot
-	// be followed by one of its terminal/error events.
-	time.Sleep(50 * time.Millisecond)
+	// be followed by one of its terminal/error events. The wait above is the
+	// observation that replaces the sleep: it returns only once that Ensure
+	// goroutine — the only emitter left — has run to completion.
 	mu.Lock()
 	defer mu.Unlock()
 	if len(kinds) != atClose {
@@ -1195,6 +1337,8 @@ func TestLostPublishedReplacementPreservesSupervision(t *testing.T) {
 			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
 		},
 	}
+	supGate := newGateHook()
+	exited := newExitSignal(1)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		// Drop exactly the second Ensure's just-published channel, between the
 		// publish and the post-publish validation.
@@ -1203,56 +1347,40 @@ func TestLostPublishedReplacementPreservesSupervision(t *testing.T) {
 				ch.markLost()
 			}
 		},
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
+		BackoffBase:         time.Millisecond,
+		BackoffMax:          time.Millisecond,
+		sleep:               func(context.Context, time.Duration) error { return nil },
+		jitter:              func(d time.Duration) time.Duration { return d },
+		beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
+		superviseExited:     exited.hook,
 	})
 	ch1, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	// Queue the second Ensure ahead of ch1's supervisor, then drop ch1, so Ensure
-	// is the goroutine that retires the stale channel (the ordering pattern the
-	// other race tests use).
-	lock := m.hostLock("alpha")
-	lock.Lock()
+	// Park ch1's supervisor at the host gate, then drop ch1, so Ensure is the
+	// goroutine that retires the stale channel exactly rather than by a margin.
+	supGate.arm()
+	defer supGate.open()
 	drop.Store(true)
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.Ensure(context.Background(), "alpha")
-		done <- err
-	}()
-	time.Sleep(10 * time.Millisecond)
 	ch1.markLost()
-	time.Sleep(10 * time.Millisecond)
-	lock.Unlock()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrSSHStart) {
-			t.Fatalf("Ensure = %v, want the retryable drop", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Ensure never returned")
+	supGate.wait(t, "ch1's supervisor")
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("Ensure = %v, want the retryable drop", err)
 	}
+	supGate.open()
 
 	// The discarded replacement was Ensure's own attach (Start #2). ch1's
 	// supervisor can only produce Start #3 if the slot was restored to it: the
-	// pre-fix clearChannel left it nothing to own.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		mu.Lock()
-		got := starts
-		mu.Unlock()
-		if got >= 3 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Start calls = %d, want 3: the lost replacement orphaned the host", got)
-		}
-		time.Sleep(time.Millisecond)
+	// pre-fix clearChannel left it nothing to own. Its exit follows that
+	// re-attach, so waiting on the exit orders the count without a poll.
+	exited.wait(t)
+	mu.Lock()
+	got := starts
+	mu.Unlock()
+	if got < 3 {
+		t.Fatalf("Start calls = %d, want at least 3: the lost replacement orphaned the host", got)
 	}
 }
 
@@ -1380,6 +1508,8 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 		},
 	}
 	events := make(chan Event, 128)
+	supGate := newGateHook()
+	exited := newExitSignal(1)
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
 			events <- ev
@@ -1392,38 +1522,29 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 				mu.Unlock()
 			}
 		},
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
+		BackoffBase:         time.Millisecond,
+		BackoffMax:          time.Millisecond,
+		sleep:               func(context.Context, time.Duration) error { return nil },
+		jitter:              func(d time.Duration) time.Duration { return d },
+		beforeSuperviseGate: func(string, *Channel) { supGate.hook() },
+		superviseExited:     exited.hook,
 	})
 	ch1, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	// Queue Ensure ahead of the supervisor, as in the Close-race test, so the
-	// terminal failure is this call's.
-	lock := m.hostLock("alpha")
-	lock.Lock()
+	// Park the dropped channel's supervisor before the host gate, so the terminal
+	// failure is this Ensure call's exactly rather than by a margin.
+	supGate.arm()
+	defer supGate.open()
 	mu.Lock()
 	mismatch = true
 	mu.Unlock()
 	ch1.markLost()
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.Ensure(context.Background(), "alpha")
-		done <- err
-	}()
-	time.Sleep(10 * time.Millisecond)
-	lock.Unlock()
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrProtocolIncompatible) {
-			t.Fatalf("Ensure = %v, want the terminal ErrProtocolIncompatible", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Ensure never returned")
+	supGate.wait(t, "the dropped channel's supervisor")
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("Ensure = %v, want the terminal ErrProtocolIncompatible", err)
 	}
 
 	// The failure has to be announced by the call that found it: a consumer that
@@ -1453,8 +1574,10 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 
 	// The terminal failure releases the host too: whichever goroutine won the lock,
 	// the host must not be left holding a dropped channel and the terminal failure
-	// must not be retried.
-	time.Sleep(50 * time.Millisecond)
+	// must not be retried. Releasing the parked supervisor makes its stand-down an
+	// observed exit, so the count below is ordered without a sleep.
+	supGate.open()
+	exited.wait(t)
 	mu.Lock()
 	got := starts
 	mu.Unlock()
@@ -1591,6 +1714,7 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 	sleepEntered := make(chan struct{})
 	release := make(chan struct{})
 	var enterOnce, releaseOnce sync.Once
+	exited := newExitSignal(1)
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
 			events <- ev
@@ -1600,8 +1724,9 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 				mu.Unlock()
 			}
 		},
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
+		BackoffBase:     time.Millisecond,
+		BackoffMax:      time.Millisecond,
+		superviseExited: exited.hook,
 		sleep: func(context.Context, time.Duration) error {
 			enterOnce.Do(func() { close(sleepEntered) })
 			<-release
@@ -1634,7 +1759,9 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 	}
 	releaseOnce.Do(func() { close(release) })
 
-	time.Sleep(100 * time.Millisecond)
+	// The stopped supervisor's exit is the observation: waiting on it replaces the
+	// sleep that used to hope it had stopped by now.
+	exited.wait(t)
 	mu.Lock()
 	got := failures
 	mu.Unlock()
@@ -1678,6 +1805,10 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 	sleepEntered := make(chan struct{})
 	release := make(chan struct{})
 	var enterOnce, releaseOnce sync.Once
+	// Both loops end: the replacement's at its terminal failure, the parked older
+	// one when the release lets it observe the cancellation. Waiting for both makes
+	// "the older supervisor stood down" an observation rather than a sleep.
+	exited := newExitSignal(2)
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
 			events <- ev
@@ -1687,8 +1818,9 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 				mu.Unlock()
 			}
 		},
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
+		BackoffBase:     time.Millisecond,
+		BackoffMax:      time.Millisecond,
+		superviseExited: exited.hook,
 		sleep: func(context.Context, time.Duration) error {
 			mu.Lock()
 			sleeps++
@@ -1746,7 +1878,7 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 	// terminal failure, it stands down; with a leaked cancellation it re-attaches
 	// and announces a second EventFailed.
 	releaseOnce.Do(func() { close(release) })
-	time.Sleep(200 * time.Millisecond)
+	exited.wait(t)
 	mu.Lock()
 	got := failures
 	mu.Unlock()
@@ -2272,11 +2404,13 @@ func TestSecondCloseWaitsForTheFirst(t *testing.T) {
 	sleepEntered := make(chan struct{})
 	release := make(chan struct{})
 	var enterOnce, releaseOnce sync.Once
+	exited := newExitSignal(1)
 	var events atomic.Int32
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		OnEvent:     func(Event) { events.Add(1) },
-		BackoffBase: time.Millisecond,
-		BackoffMax:  time.Millisecond,
+		OnEvent:         func(Event) { events.Add(1) },
+		BackoffBase:     time.Millisecond,
+		BackoffMax:      time.Millisecond,
+		superviseExited: exited.hook,
 		// Deliberately ignores ctx: the supervisor is still running when the first
 		// Close is called, so Close has to wait for it rather than return ahead.
 		sleep: func(context.Context, time.Duration) error {
@@ -2325,9 +2459,13 @@ func TestSecondCloseWaitsForTheFirst(t *testing.T) {
 		}
 	}
 
-	// Every caller can treat its return as quiescent: no event may follow.
+	// Every caller can treat its return as quiescent: no event may follow. The
+	// supervisor's exit precedes Close's return (Close joins it); waiting on that
+	// exit bounds the window with a real event instead of a sleep, and a Close
+	// that returned ahead of its supervisor would let the late emission show up in
+	// this count.
 	before := events.Load()
-	time.Sleep(50 * time.Millisecond)
+	exited.wait(t)
 	if after := events.Load(); after != before {
 		t.Fatalf("lifecycle events (%d -> %d) were emitted after Close returned", before, after)
 	}
