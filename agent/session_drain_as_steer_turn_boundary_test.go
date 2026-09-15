@@ -957,3 +957,208 @@ func TestAnyRecordedSteerResetsTheCarrierRetryBudget(t *testing.T) {
 		t.Fatalf("carrier retry attempts = %d after the steer was recorded by the queued turn, want 0: the next carrier episode would inherit a spent budget", attempts)
 	}
 }
+
+// ---- review round 5: the undelivered-steer table ----
+
+// TestStopWithFailedAppendAndFailedReturnParksTheSteer is round 5's High: a
+// Stop crossing a carrier whose append fails AND whose claim return fails
+// found the steer claimed under the cancelled turn's id, and the retirement
+// path discarded it -- gone from the store, the queue and the transcript.
+func TestStopWithFailedAppendAndFailedReturnParksTheSteer(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	var s *Session
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	processDone := make(chan struct{})
+	interruptDone := make(chan error, 1)
+	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
+		// popSteeringHead's claimed-mark is the first store write after the
+		// claim; the claim's return after the refused append is the second.
+		writes := 0
+		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			writes++
+			if writes == 2 {
+				return errors.New("injected: claim return refused")
+			}
+			return nil
+		}
+	})))
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	fs := attachSteerRefusingFS(t, s, "second pass")
+	var stopOnce sync.Once
+	fs.onRefuse = func() {
+		stopOnce.Do(func() {
+			cancelled := make(chan struct{})
+			go func() {
+				_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "stop-over-double-failure",
+				}, func() {
+					cancel()
+					close(cancelled)
+					<-processDone
+				})
+				interruptDone <- err
+			}()
+			<-cancelled
+		})
+	}
+
+	_, done := drainMidHeldLeg(ctx, t, s, adapter)
+	close(adapter.release)
+	awaitInput(t, done)
+	close(processDone)
+	if err := <-interruptDone; err != nil {
+		t.Fatalf("InterruptClientMutation: %v", err)
+	}
+
+	snapshot := s.clientMutations.snapshot()
+	pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]
+	if !ok {
+		t.Fatalf("the steer was discarded by the Stop's finalization (journal=%+v); the user's Applied message is gone from store, queue and transcript", snapshot.Journal["cm-drain-mid-leg"].ExecutionState)
+	}
+	if pending.ExecutionState != "accepted" || !snapshot.SteeringHeld {
+		t.Fatalf("the steer reads %q held=%v, want accepted and parked", pending.ExecutionState, snapshot.SteeringHeld)
+	}
+	if !s.hasPendingUserSteering() {
+		t.Fatal("the parked steer has no in-memory copy")
+	}
+}
+
+// TestRetryLeavesAnInFlightAppendAlone is round 5's first Medium: the retry
+// timer firing while a turn has claimed a steer and is appending it returned
+// that steer to accepted and re-materialized it, so the turn's own finalize
+// then left a stale head in the in-memory queue that popSteeringHead could
+// never pop ("not pending"), blocking every steer behind it.
+func TestRetryLeavesAnInFlightAppendAlone(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	runningStartTurn(t, s, "running-turn", "do the thing")
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-in-flight",
+		Input:            []appwire.InputItem{{Type: "text", Text: "mid-append"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	// The turn is running and has popped the steer: claimed, append in flight.
+	s.mu.Lock()
+	s.state = SessionProcessing
+	s.mu.Unlock()
+	if _, ok := s.popSteeringHead(); !ok {
+		t.Fatal("popSteeringHead claimed nothing; this test is not in the window it means to be")
+	}
+
+	s.scheduleSteeringCarrierRetry()
+	// TRIPWIRE: the retry's first backoff is 250ms; a second is far past it and only bounds the wait.
+	time.Sleep(time.Second)
+
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-in-flight"].ExecutionState; state != "claimed" {
+		t.Fatalf("the retry returned an in-flight steer to %q; the turn appending it will finalize a record the queue no longer agrees with", state)
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("the retry re-materialized an in-flight steer into the queue: a stale head the turn's finalize leaves behind")
+	}
+}
+
+// TestFailedRecoveryReArmsTheRetry is round 5's second Medium: recovering a
+// claimed steer whose store write fails was warned about and forgotten; the
+// steer stayed claimed and invisible until a restart.
+func TestFailedRecoveryReArmsTheRetry(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-unrecoverable",
+		Input:            []appwire.InputItem{{Type: "text", Text: "recover me"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	// Claimed, never appended, no turn running: the recovery case.
+	if _, ok := s.popSteeringHead(); !ok {
+		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
+	}
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: store refuses every write")
+	}
+
+	s.scheduleSteeringCarrierRetry()
+	// TRIPWIRE: the retry's first backoff is 250ms; a second is far past it and only bounds the wait.
+	time.Sleep(time.Second)
+
+	s.steeringRetryMu.Lock()
+	attempts := s.steeringCarrierRetry.attempts
+	s.steeringRetryMu.Unlock()
+	if attempts < 2 {
+		t.Fatalf("carrier retry attempts = %d after a recovery whose write failed, want it re-armed (>= 2): the steer stays claimed and invisible otherwise", attempts)
+	}
+}
+
+// TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot is round 5's third
+// Medium: a claim refused by the store on a retry wake stood down like a
+// benign race, and the already-consumed wake left the steer stranded. A held
+// rail is the benign case and must stay a no-op.
+func TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot(t *testing.T) {
+	attemptsOf := func(s *Session) int {
+		s.steeringRetryMu.Lock()
+		defer s.steeringRetryMu.Unlock()
+		return s.steeringCarrierRetry.attempts
+	}
+	t.Run("store refuses the claim", func(t *testing.T) {
+		s := newQueuePersistTestSession(t, t.TempDir())
+		defer s.Close()
+		serveSession(t, s)
+		if err := s.ensureClientMutationStore(); err != nil {
+			t.Fatalf("ensureClientMutationStore: %v", err)
+		}
+		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "steer-claim-refused",
+			Input:            []appwire.InputItem{{Type: "text", Text: "claim me"}},
+		}); err != nil {
+			t.Fatalf("steer: %v", err)
+		}
+		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			return errors.New("injected: store refuses the claim")
+		}
+		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+			t.Fatalf("wake with a refused claim: ran=%v err=%v, want a stand-down", ran, err)
+		}
+		if got := attemptsOf(s); got != 1 {
+			t.Fatalf("carrier retry attempts = %d after the store refused the claim, want 1: the consumed wake leaves the steer stranded otherwise", got)
+		}
+	})
+	t.Run("held rail", func(t *testing.T) {
+		s := newQueuePersistTestSession(t, t.TempDir())
+		defer s.Close()
+		serveSession(t, s)
+		if err := s.ensureClientMutationStore(); err != nil {
+			t.Fatalf("ensureClientMutationStore: %v", err)
+		}
+		if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "steer-parked",
+			Input:            []appwire.InputItem{{Type: "text", Text: "parked"}},
+		}); err != nil {
+			t.Fatalf("steer: %v", err)
+		}
+		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+			snapshot.SteeringHeld = true
+			return nil
+		}); err != nil {
+			t.Fatalf("park: %v", err)
+		}
+		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+			t.Fatalf("wake against a held rail: ran=%v err=%v, want a stand-down", ran, err)
+		}
+		if got := attemptsOf(s); got != 0 {
+			t.Fatalf("carrier retry attempts = %d for a held rail, want 0: a parked steer waits for the user, not a timer", got)
+		}
+	})
+}

@@ -761,7 +761,18 @@ func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
 	if response.Receipt.TurnID != carrier {
 		t.Fatalf("the Stop cancelled turn %q, want the carrier turn %q; the exclusion this test names would not apply", response.Receipt.TurnID, carrier)
 	}
-	if sess.clientMutations.steeringHeld() {
-		t.Fatal("the Stop armed a hold for the very steer whose carrier turn it cancelled: that record vanishes when its append finalizes, leaving a hold naming nothing that swallows the user's next steer")
+	// No append ever landed here, so at finalization the claimed steer is one
+	// the cancelled carrier never recorded: the table returns it to the queue
+	// and parks it (reconcileClientSteering row 7). The hold names that
+	// returned steer -- it is not the hold naming nothing that #710 forbids.
+	snapshot := sess.clientMutations.snapshot()
+	if state := snapshot.PendingExecutions["steer-with-no-turn"].ExecutionState; state != "accepted" {
+		t.Fatalf("the carrier's steer reads %q after the Stop, want accepted (back in the queue)", state)
+	}
+	if !snapshot.SteeringHeld {
+		t.Fatal("the Stop finalized without parking the steer it returned to the queue: the next wake would deliver what the user just stopped")
+	}
+	if !snapshotHasPendingUserSteering(&snapshot, "") {
+		t.Fatal("the hold names nothing: exactly the hold #710 forbids")
 	}
 }

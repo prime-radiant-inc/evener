@@ -97,32 +97,25 @@ func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]st
 	return ids, nil
 }
 
-// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending user turn
+// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending execution
 // names. A running turn does not survive the process that ran it: an id left
 // behind by an ungraceful exit has nothing that can ever settle it, and
 // AcceptClientMutationStart's "turn is already active" precondition would
 // then reject every later turn/start for the life of the session. An id a
-// pending turn/start or turn/queue still names is a different thing — that
-// turn is reclaimed and re-run by restore, and it needs its compare-and-commit
-// target intact.
+// pending execution still names is a different thing — that turn/start is
+// reclaimed and re-run by restore, and it needs its compare-and-commit
+// target intact. NextTurnSequence is deliberately untouched: ids stay
+// monotonic across restarts.
 //
-// A steering mutation's reserved id in the slot is neither: it is a
-// steering-carrier claim (claimSteeringCarrierTurn publishes the id before
-// the carrier turn opens and takes the steer) that the process died under.
-// Nothing re-runs a carrier by its id -- the steer is still pending (restore
-// returns a claimed one to accepted), and the attach-time wake claims it
-// afresh -- so keeping the id would refuse that claim and every later
-// turn/start for the life of the session (#1342). NextTurnSequence is
-// deliberately untouched: ids stay monotonic across restarts.
+// An id a pending STEER names is not this sweep's to keep or drop: that is a
+// steering-carrier claim the process died under, and reconcileClientSteering
+// (run by restoreDurableClientMutationQueues) releases it (#1342).
 func forgetRunningTurnNoOneOwns(snapshot *clientMutationSnapshot) {
 	if snapshot.ActiveTurnID == "" {
 		return
 	}
 	for _, pending := range snapshot.PendingExecutions {
-		if pending.TurnID != snapshot.ActiveTurnID {
-			continue
-		}
-		if pending.Method == clientMutationMethodStart || pending.Method == clientMutationMethodQueue {
+		if pending.TurnID == snapshot.ActiveTurnID {
 			return
 		}
 	}

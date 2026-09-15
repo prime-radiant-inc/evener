@@ -1040,16 +1040,13 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
-			if returnErr := s.returnClaimedSteering(msg.ClientMutationID); returnErr != nil {
-				// The store refused the return too: the steer sits claimed,
-				// which no reflect materializes. It is not lost -- the
-				// carrier retry recovers a claimed steer the transcript does
-				// not hold (recoverClaimedClientSteering) -- but it must be
-				// said, since nothing else about this session shows it.
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("returning claimed steering failed: %v; the steering retry recovers it", returnErr)})
-			}
-			s.reflectDurableClientSteering()
+			// The steer this turn claimed did not land. The table decides what
+			// happens to it (reconcileClientSteering rows 7 and 8: back to the
+			// queue, parked if a Stop or hold owns the next run, else the
+			// carrier retry is re-armed); a refused store write re-arms the
+			// same retry. This turn is the caller, not a turn in flight.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
 			return false
 		}
 		// Recorded: whatever carried it, the steer is in the transcript, so a
@@ -1128,21 +1125,6 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	}); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
 	}
-}
-
-func (s *Session) returnClaimedSteering(clientMutationID string) error {
-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		pending, ok := snapshot.PendingExecutions[clientMutationID]
-		if !ok {
-			return nil
-		}
-		pending.ExecutionState = "accepted"
-		snapshot.PendingExecutions[clientMutationID] = pending
-		record := snapshot.Journal[clientMutationID]
-		record.ExecutionState = "accepted"
-		snapshot.Journal[clientMutationID] = record
-		return nil
-	})
 }
 
 // appendSteeringTurn records a daemon steering turn and announces it,

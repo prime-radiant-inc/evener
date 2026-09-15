@@ -327,7 +327,11 @@ func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
 		}
 		return nil
 	}); err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v", err)})
+		// Not a stand-down: the wake that asked is spent, and a refused write
+		// is the failure class the carrier retry exists for. A closed rail or
+		// an occupied slot returns nil above and arms nothing.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering retry claims again", err)})
+		s.scheduleSteeringCarrierRetry()
 		return "", false
 	}
 	return turnID, turnID != ""
@@ -359,27 +363,6 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 		return pending.TurnID
 	}
 	return ""
-}
-
-// steeringCarrierUndelivered reports whether the steer that reserved turnID is
-// back to accepted -- the carrier turn named turnID took it and could not
-// record it, so consumeSteeringMessage returned the claim (returnClaimedSteering).
-// A delivered steer is gone from the store (finalizeIncorporatedSteering); a
-// claimed one is decided by the transcript, which is the session-level
-// question the method below asks. This snapshot-level form serves the
-// interrupt's finalization, where the only steer it can meet under the
-// cancelled turn's id is an accepted one (a claimed one is either mid-append
-// or handled by the carrier that took it).
-func steeringCarrierUndelivered(snapshot *clientMutationSnapshot, turnID string) bool {
-	if turnID == "" {
-		return false
-	}
-	for _, id := range snapshot.SteeringOrder {
-		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
-			return pending.ExecutionState == "accepted"
-		}
-	}
-	return false
 }
 
 // steeringCarrierUndelivered is the carrier's own question after it drained
@@ -420,35 +403,6 @@ func (s *Session) steeringRecorded(clientMutationID string) bool {
 		}
 	}
 	return false
-}
-
-// recoverClaimedClientSteering settles every client steer left claimed with
-// no carrier running: the ones the transcript holds are incorporated (their
-// incorporation write failed at delivery), and the ones it does not are
-// returned to accepted (their append failed and so did the claim's return),
-// which is what puts them back where a wake can see them. Runs from the
-// carrier retry, before it wakes.
-func (s *Session) recoverClaimedClientSteering() {
-	if s.clientMutations == nil {
-		return
-	}
-	snapshot := s.clientMutations.snapshot()
-	for _, id := range snapshot.SteeringOrder {
-		pending, ok := snapshot.PendingExecutions[id]
-		if !ok || pending.ExecutionState != "claimed" {
-			continue
-		}
-		var err error
-		if s.steeringRecorded(id) {
-			err = s.finalizeIncorporatedSteering(id)
-		} else {
-			err = s.returnClaimedSteering(id)
-		}
-		if err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("recovering claimed steering %s failed: %v", id, err)})
-		}
-	}
-	s.reflectDurableClientSteering()
 }
 
 // steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
@@ -757,7 +711,10 @@ func (s *Session) scheduleSteeringCarrierRetry() {
 		if superseded {
 			return
 		}
-		s.recoverClaimedClientSteering()
+		// The table first (a claimed steer the transcript lacks comes back to
+		// the queue; one it holds is incorporated; a running turn's own steer
+		// is left alone), then the wake for whatever is runnable.
+		s.reconcileClientSteering(steeringReconcileInputs{inFlight: s.turnInFlight()})
 		s.wakeForPendingSteering()
 	})
 }
@@ -1333,21 +1290,17 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			if pending.ExecutionState == "failureRecording" {
 				continue
 			}
+			if pending.Method != clientMutationMethodQueue && pending.Method != clientMutationMethodStart {
+				// Client steering: the table below, not this loop.
+				continue
+			}
 			if stableTurnID, ok := incorporated[id]; ok && stableTurnID == pending.TurnID {
 				record.ExecutionState = "incorporated"
 				record.ProjectionState = appwire.MutationProjectionReflected
-				if pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart {
-					pending.ExecutionState = "incorporated"
-					pending.ProjectionState = appwire.MutationProjectionReflected
-					snapshot.PendingExecutions[id] = pending
-					snapshot.Journal[id] = record
-				} else {
-					record.OperationState = clientMutationOperationTerminal
-					record.Payload = nil
-					snapshot.Journal[id] = record
-					delete(snapshot.PendingExecutions, id)
-					removeClientMutationSteeringOrder(snapshot, id)
-				}
+				pending.ExecutionState = "incorporated"
+				pending.ProjectionState = appwire.MutationProjectionReflected
+				snapshot.PendingExecutions[id] = pending
+				snapshot.Journal[id] = record
 				continue
 			}
 			if pending.ExecutionState != "claimed" {
@@ -1360,19 +1313,26 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			} else {
 				pending.ExecutionState = "accepted"
 				snapshot.PendingExecutions[id] = pending
-				if pending.Method == clientMutationMethodStart {
-					if snapshot.AcceptedTurns > 0 {
-						snapshot.AcceptedTurns--
-					}
-					snapshot.BudgetReservations[id] = clientMutationBudgetReservation{
-						TurnID: pending.TurnID,
-						Slots:  1,
-					}
+				if snapshot.AcceptedTurns > 0 {
+					snapshot.AcceptedTurns--
+				}
+				snapshot.BudgetReservations[id] = clientMutationBudgetReservation{
+					TurnID: pending.TurnID,
+					Slots:  1,
 				}
 			}
 			record.ExecutionState = "accepted"
 			snapshot.Journal[id] = record
 		}
+		// Client steering, through the one table: a claimed steer the
+		// transcript holds is incorporated, one it does not is returned to
+		// the queue (parked only if it already was), and a carrier claim the
+		// process died under releases the active-turn slot. No turn is in
+		// flight at restore; the transcript question is the history loaded
+		// above.
+		reconcileClientSteering(snapshot, steeringReconcileInputs{
+			recorded: func(id string) bool { _, ok := incorporated[id]; return ok },
+		})
 		// Release a steering hold the loop above left naming nothing. A
 		// snapshot written before #710 could park steering unconditionally at
 		// Stop, so a restored hold can name no pending steer at all -- and a
@@ -1626,6 +1586,8 @@ func (s *Session) completeClientMutationInterruptedTurn(clientMutationID string)
 // the drain loop asks, the fence this call just finalized is already gone.
 func (s *Session) completeClientMutationTurnWithState(clientMutationID, executionState string) (stopFinalized bool, err error) {
 	returned := false
+	// For the fence this completion may finalize; sampled outside the mutate.
+	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
 	err = s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		pending, ok := snapshot.PendingExecutions[clientMutationID]
 		if !ok {
@@ -1680,12 +1642,17 @@ func (s *Session) completeClientMutationTurnWithState(clientMutationID, executio
 		}
 		if snapshot.InterruptFence != nil && snapshot.InterruptFence.ExpectedTurnID == pending.TurnID {
 			stopFinalized = true
-			return finalizeClientMutationInterrupt(snapshot, s.ID())
+			return finalizeClientMutationInterrupt(snapshot, s.ID(), steering)
 		}
 		return nil
 	})
 	if err != nil {
 		return false, err
+	}
+	if stopFinalized {
+		// The fence's finalization ran the steering table; the runtime queue
+		// mirrors what it returned.
+		s.reflectDurableClientSteering()
 	}
 	if returned {
 		// The durable queue grew a message back. QueueDepth, QueuePreview,
