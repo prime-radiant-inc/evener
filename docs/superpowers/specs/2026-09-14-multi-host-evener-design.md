@@ -41,14 +41,20 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   caller-identity guard that a later host-list RPC would make config-aware. The
   guard is a v1 requirement; the attach-time upstream-list detection
   (`AddWithUpstreams`/`SetUpstreams`) stays deferred. The guard's **origin
-  signal is an explicit, verifiable bridge marker on the connection** — the
+  signal is an explicit, cooperative bridge marker on the connection** — the
   `evener hub attach --stdio` bridge presents `X-Evener-Bridge: 1` (component
-  02, §Contract "Bridge marker"), the hub's edge validates it alongside the
+  02, §Contract "Bridge marker"), the hub's edge reads it alongside the
   bearer token and stamps a remote-originated role into the request context; a
   token-bearer without the marker is a local session. The token itself cannot
   carry the role, because the attach bridge, the local TUI, CLI scripts, and
   browser sessions all present the *same* host capability token. It is never
   `InitializeParams.ClientInfo`, which is caller-supplied and spoofable. The
+  marker is client-asserted and carries no secret, so it is **not** a security
+  boundary: it stops an honest A→B→A cycle under the explicit assumption that
+  peer hubs are cooperative, while a hostile peer can omit it to be classified
+  `local`. Binding the role to a server-verifiable signal (a distinct bridge
+  credential or the `ssh`-spawned transport's identity) is a tracked code
+  follow-up. The
   local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
   translation detail"), not by an advisory check in a handler.
 - **Remote side**: a full `evener hub` per host.
@@ -194,3 +200,97 @@ manager → remote hub source → fleet view → remote administration.
 
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
+
+## Tracked code follow-ups (rounds 7–13)
+
+This spec series is the design record; these are the code deltas its reviews
+surfaced and that still need implementing. Each line names the component and the
+exact scope. None is a present fact.
+
+- **[01] stream transport** — `appwire/stream_transport.go`: bound `Close`'s
+  admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
+  accepted-stream contract explicit (`Close` must interrupt a blocked read **and**
+  write); a non-conforming stream must not hang shutdown.
+- **[02/05] hub edge bridge marker** — `cmd/evener-hub/attach.go` (send
+  `X-Evener-Bridge: 1`), `cmd/evener-hub/web.go` +
+  `cmd/evener-hub/internal/hubedge/auth_token.go` (read it beside the bearer
+  token, classify the connection role, stamp `origin` into request context), and
+  bind the role to a **server-verifiable** signal (a distinct bridge credential,
+  or the `ssh`-spawned transport's channel identity) so the marker is not merely
+  cooperative.
+- **[03] host registry** — enforce the 64-source cap (`ErrTooManyHosts`) in
+  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`.
+- **[03] host config** — `validateHostConfigs` (and the pre-probe path) must
+  reject a non-loopback `addr` before any health check or restart; an explicit
+  `--config` that is missing/unparseable exits nonzero instead of falling back
+  to `DefaultConfig()`.
+- **[03] wiring** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
+  `RemoteHostFacts`, and `RemoteHostHandshake`, populated from the `sshconn`
+  manager and installed on each `RemoteHubSource`.
+- **[04] attached-only accessors** — `sshconn.Manager` gains
+  `ClientIfAttached`, `HandshakeIfAttached`, and `PreflightIfAttached`: read the
+  installed channel under the manager-wide mutex, never dial.
+- **[04] run-target resolution** — resolve one canonical **absolute** `run_path`
+  per host (`~/` expanded against `Preflight.Home`, a relative configured path
+  refused, never the literal word `evener`), threaded through the invocation
+  argv, deploy/install target, restart identification, and the health/identity
+  check.
+- **[04] deploy/restart** — `buildinfo` gains a stamped `ReleaseTag`;
+  the installer fallback passes `EVENER_INSTALL_VERSION` and
+  `BINDIR`/`EVENER_SHARE_BINDIR` derived from `evener_path` (else `ErrDeploy`),
+  and verifies `backend_git_sha` for `snapshot`; `ensureOnce` gains the
+  first-attach bootstrap branch (explicit ad hoc argv, `mkdir -p` for the log
+  dir, supervisor detection by unit definition); `hubArgvFromCommandLine`
+  canonicalizes `argv[0]`; darwin restart uses `gui/<numeric-uid>/<label>`.
+- **[04] health probe** — `sshconn/version.go` `waitHealthy` must invoke
+  `curl -fsS --noproxy '*' http://<loopback(addr)>/api/health` (explicit scheme
+  for bracketed IPv6 literals) on the host.
+- **[05] recursive ref translation** — `remote_hub_refs.go` must walk the real
+  `JobActivityTree` schema (`JobActivitySession.Ref`/`.Entries[]`; each
+  `JobActivityEntry`'s `Job.OwnerRef`/`.TranscriptRef` and
+  `Delegate.ChildRef`/`.Child` (recursive) / `.Turns[].OwnerRef`/`.TranscriptRef`),
+  plus `Thread.Evener.Diagnostics` and the `evener/job/*` /
+  `evener/delegate/updated` transcript refs.
+- **[05] loop guard** — `app_rpc.go` records the connection role and threads
+  `origin` into the request context; every fan-out path
+  (`hubThreadListWithSourceTimeout`, `app_threadlist.go`) refuses a
+  remote-originated request to any source other than `local` (depth 1).
+- **[05/06] attached-only list** — the non-explicit empty-`SourceIDs`
+  `thread/list` fan-out gates on `Manager.ClientIfAttached`/`Attached` and skips
+  an unattached source without calling the `Ensure`-backed resolver.
+- **[05] remote force-stop** — `forceStopThread` (`app_force_stop.go`) gains the
+  non-local branch that resolves the host, translates the ref, and forwards on
+  the owning host's client (not via `evener/host/request`).
+- **[06] thread/project identity** — `annotateThreadProjects`
+  (`app_threadlist.go`) must skip non-local rows and preserve the remote
+  `ProjectID`/`ProjectPath`; `identifier.Project` and the navigation projection
+  carry the owning source; `refreshRemoteThreadSnapshot`/`remoteThreadFetch`
+  resolve through the attached-only lookup.
+- **[06] archive/favorite/delete** — `ArchiveParams`/`FavoriteSetParams`/
+  `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` key by
+  `(source, id)`; a non-local/unknown source is rejected server-side; an
+  idempotent SQLite migration backfills `source = "local"`; the frontend hides
+  delete/archive for non-local rows.
+- **[06] connect + picker** — add the `evener/host/attach` protocol row and
+  handler (`registerMiscHandlers`) calling `sshManager.Ensure` with typed-error
+  pass-through; give every offline/never-attached host an enabled Connect/Attach
+  affordance.
+- **[06] harness targeting** — `hubThreadStart` (`app_threadlifecycle.go`)
+  refuses `InvalidParams` for a harness value naming a configured/registered
+  non-local source, while retaining the `launchSourceID` fallback for all other
+  harness values and consulting it only when `Source` is empty.
+- **[06b] frontend discovery routing** — the spawn form's host-dependent
+  discovery calls route through `evener/host/request` with the selected host.
+- **[07a] proxy allow-list** — extend the exact `evener/host/request` method set
+  with the host-dependent discovery methods (`evener/git/head` included) and
+  `evener/auth/apiKey/conditionalSet`, kept in sync with component 06 (or covered
+  by a scripted-host parity test).
+- **[07] notification catalog** — register `evener/host/notification` in
+  `appwire/protocol.go` and regenerate the Go/TS bindings.
+- **[07] credential push** — add the host-side `evener/auth/apiKey/conditionalSet`
+  (`ApiKeyConditionalSetParams{Provider, Value, ExpectedSource,
+  ExpectedRevision}` → `ApiKeyConditionalSetResponse{Action, Reason, Status}`),
+  which re-resolves `ActiveSource`/revision under `credentialWrite` and refuses a
+  no-longer-writable instance; the pusher calls it instead of the racy
+  status-then-`apiKey/set` pair, and classifies `ActiveSource == "none"` by auth
+  scheme, skipping `AuthNone`.

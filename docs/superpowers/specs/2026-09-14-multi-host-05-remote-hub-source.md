@@ -44,9 +44,12 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
     (`EvenerDiagnostics.Jobs[].TranscriptRef`,
     `EvenerDiagnostics.Delegates[].TranscriptRef` —
     `EvenerJobInfo`/`EvenerDelegateInfo`, `appwire/types.go`) and the whole
-    `ListJobs` result tree (`appwire.JobActivityTree`:
-    `JobActivitySession.Ref`/`.Child`, `JobActivityJob.OwnerRef`/
-    `.TranscriptRef`/`.Child`/`.Turns`, `JobActivityDelegate.ChildRef` —
+    `ListJobs` result tree (`appwire.JobActivityTree`: `JobActivitySession.Ref`
+    and its `Entries[]`; each `JobActivityEntry`'s `Job`/`Delegate` —
+    `JobActivityJob.OwnerRef`/`.TranscriptRef` and
+    `JobActivityDelegate.ChildRef`/`.Turns[].OwnerRef`/`.Turns[].TranscriptRef`,
+    plus the **recursive** `JobActivityDelegate.Child *JobActivitySession`
+    (walk `Tree.Root.Entries[]` → `Delegate.Child.Entries[]` → `Turns[]`) —
     `appwire/types.go`).
 - Subscription: `SubscribeThread` drives the remote hub's `thread/read`
   (`subscribe:true`) live feed over the single channel and fans notifications
@@ -711,41 +714,47 @@ Ref translation detail (`remote_hub_refs.go`):
     terminates an A→B→A chain even though the config alone cannot detect it
     (design §2 "Topology"; §Open questions item 3). It is a requirement of this
     component's routing seam, not a present fact.
-  - **The origin signal is an explicit, verifiable bridge marker on the
+  - **The origin signal is an explicit bridge marker on the
     connection, never `InitializeParams.ClientInfo`.** `ClientInfo` is
     caller-supplied and spoofable, and no origin/hop field exists today in the
     request context, `ThreadListParams`, or the `Source` interface, so the guard
     needs its own signal. The signal **cannot be the credential**: the attach
     bridge, the local TUI, CLI scripts, and browser sessions all present the
     **same host capability token** (`cmd/evener-hub/web.go`,
-    `internal/hubedge/auth_token.go`,
+    `cmd/evener-hub/internal/hubedge/auth_token.go`,
     `cmd/evener-tui/internal/hubstart/hub_start.go`,
     `cmd/evener-hub/attach.go`), so no role can be derived from it.
     Classifying every token-bearer *local* disables the guard entirely (the
     attach bridge is local too, allowing unbounded A→B→A recursion); classifying
     every token-bearer *remote-originated* blocks local clients from fanning out.
-    The hub's `/rpc` edge therefore requires a dedicated marker presented only
+    The hub's `/rpc` edge therefore reads a dedicated marker presented only
     by `evener hub attach --stdio`: the request header `X-Evener-Bridge: 1`
-    (component 02, §Contract "Bridge marker"), validated **alongside** the
+    (component 02, §Contract "Bridge marker"), read **alongside** the
     bearer token at accept/attach time. A connection presenting both a valid
     token and the marker is marked *remote-originated*; a token-bearer without
-    the marker is *local*. A separate bridge token distinct from the user-facing
-    capability token is an equivalent mechanism; v1 uses the header.
+    the marker is *local*. **The header is client-asserted and carries no
+    secret, so it is not verifiable:** any token-holder can set or omit it, and
+    the v1 trust assumption is that peer hubs are cooperative — the marker
+    terminates an honest A→B→A cycle but is not a boundary against a hostile
+    peer. Binding the role to a server-verifiable signal (a distinct bridge
+    credential, or the identity of the `ssh`-spawned transport instance) is a
+    tracked code follow-up; until then the marker is cooperative-only.
     At accept/attach time the hub therefore marks the connection with its
     **role** (bridge marker present ⇒ *remote-originated*; marker absent ⇒
     *local*), and the routing seam stamps that role into the request context, so
     every handler can read `origin` (empty for a local request, non-empty for a
     remote-originated one). **Implementation status:** neither the marker header,
     the edge's role classification, nor the request-context `origin` exists
-    today (`cmd/evener-hub/web.go`, `internal/hubedge/auth_token.go`); this is
+    today (`cmd/evener-hub/web.go`, `cmd/evener-hub/internal/hubedge/auth_token.go`); this is
     the design record, and the code delta is a tracked follow-up.
     The refusal is enforced at the **typed fan-out seam**, not by a check inside
     a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
     `app_threadlist.go`) — and any other path that routes a ref to more than one
     source — refuses to route a request whose `origin` is non-empty to any
-    source other than the origin, returning the typed refusal instead. A
-    remote-originated request is thus served from the origin's own local state
-    only and can never be fanned to another remote source, which caps fan-out at
+    source other than `local` (the recipient hub's own local daemons),
+    returning the typed refusal instead. A remote-originated request is thus
+    served from the **recipient hub's own local state** only and can never be
+    fanned to another remote source, which caps fan-out at
     depth 1 and terminates A→B→A. Coverage: a scenario test that injects a
     remote-originated `thread/list` (and each other fan-out path) and asserts it
     is never routed to a second remote source, with the typed refusal surfaced;
@@ -767,12 +776,19 @@ Ref translation detail (`remote_hub_refs.go`):
   both must be walked with no field left as a remote `local:<id>`:
   - the `ListJobs` result (`evener/jobs/list`, `JobsListResponse.Data` =
     `appwire.JobActivityTree`, `appwire/types.go`) embeds a recursive session
-    tree — `Root.Ref` (`JobActivitySession.Ref`), `Root.Child`, and
-    `JobActivityJob.Child` (each a nested `JobActivitySession` with its own
-    `Ref`/`Child`/`Entries`), and, under `Root.Entries[].Job` /
-    `Root.Entries[].Delegate`, `OwnerRef`, `TranscriptRef`, and `ChildRef`
-    (`JobActivityJob`/`JobActivityDelegate`, `appwire/types.go`). Every one of
-    these is a session reference exactly like a top-level `ref`.
+    tree. Match the actual schema: the recursion carriers are
+    `JobActivityDelegate.Child *JobActivitySession` (a delegate's child session)
+    and `JobActivityDelegate.Turns []JobActivityJob` (the delegate's turn-jobs).
+    `JobActivitySession` itself holds only `Ref` and `Entries []JobActivityEntry`
+    — it has **no** `Child` — and `JobActivityJob` holds only `OwnerRef` and
+    `TranscriptRef` — it has **no** `Child` and **no** `Turns`. Walk
+    `Tree.Root.Entries[]`; for each `JobActivityEntry` the `Job` carries
+    `OwnerRef`/`TranscriptRef`, and the `Delegate` carries `ChildRef`, the
+    recursive `Child` (recurse into `Child.Entries[]`), and
+    `Turns[].OwnerRef`/`Turns[].TranscriptRef` (`JobActivitySession`/
+    `JobActivityEntry`/`JobActivityJob`/`JobActivityDelegate`,
+    `appwire/types.go`). Every one of these is a session reference exactly like
+    a top-level `ref`.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
@@ -876,8 +892,8 @@ questions for the atomicity tradeoff.
   routing-seam `origin` is non-empty — it arrived over a peer hub's attach-bridge
   connection, identified by the `X-Evener-Bridge: 1` marker the bridge presents
   alongside the shared capability token (component 02) — is served from the
-  origin's local state and is refused with a typed error if any fan-out path
-  would route it to a second remote source. The refusal is deliberate and
+  **recipient hub's own local state** and is refused with a typed error if any
+  fan-out path would route it to a second remote source. The refusal is deliberate and
   surfaced, never a silent serve-from-another-host; a local-originated request
   (`origin` empty, i.e. no bridge marker on the connection) is unaffected.
 - **Version mismatch.** `client.Initialize` returns
@@ -989,22 +1005,28 @@ network.
     an attached source is queried; an explicit `SourceIDs` naming the host is
     the only list path that reaches the resolver.
 12. **Loop guard (origin signal).** A remote-originated `thread/list` — a
-    request whose routing-seam `origin` names a remote source — is served from
-    the origin's local state and is refused typed if any fan-out path tries to
+    request whose request context carries the remote-originated role stamped
+    from the bridge marker — is served from the **recipient hub's own local
+    state** and is refused typed if any fan-out path tries to
     route it to a second remote source; a local-originated request (empty
     `origin`) fans out normally. Assert the origin is derived from the explicit
-    bridge marker (`X-Evener-Bridge: 1`) validated alongside the bearer token,
+    bridge marker (`X-Evener-Bridge: 1`) read alongside the bearer token,
     **not** from `InitializeParams.ClientInfo` and **not** from the token — a
     token-only local connection (the TUI, a CLI script, a browser) must classify
     `local`, and only a connection presenting the marker is *remote-originated*.
 13. **Nested response refs.** A `ListJobs` response whose `JobActivityTree`
-    carries `local:` refs at every level — `Root.Ref`, `Root.Child`,
-    `JobActivityJob.OwnerRef`/`TranscriptRef`/`Child`/`Turns`, and
-    `JobActivityDelegate.ChildRef` — reaches the caller fully rewritten to
-    `host:`; a `ReadThread`/`ListThreads` response whose
+    carries `local:` refs at every level reaches the caller fully rewritten to
+    `host:`. Assert **per ref-typed field**, not by scanning the serialized tree
+    for a substring: `Root.Ref`; each `Root.Entries[]` entry's
+    `Job.OwnerRef`/`Job.TranscriptRef`; each `Delegate.ChildRef`; the recursive
+    `Delegate.Child.Ref` with its own `Child.Entries[]`; and each
+    `Turns[].OwnerRef`/`Turns[].TranscriptRef` — walking
+    `Tree.Root.Entries[]` → `Delegate.Child.Entries[]` → `Turns[]`. Each must
+    equal the expected `host:<id>`. A `ReadThread`/`ListThreads` response whose
     `Thread.Evener.Diagnostics` carries `Jobs[].TranscriptRef` and
-    `Delegates[].TranscriptRef` likewise. Assert no `local:` string survives in
-    the translated tree.
+    `Delegates[].TranscriptRef` is asserted the same way. Do **not** assert by
+    scanning for a `local:` substring: legitimate non-ref strings could contain
+    it, and a substring scan does not pin which typed ref fields were rewritten.
 
 ## Acceptance criteria
 
@@ -1035,15 +1057,19 @@ network.
   `evener/delegate/updated` — so no remote child reference reaches the
   controller as `local:<id>`.
 - Response ref translation rewrites every session-reference field **recursively**
-  through the `ListJobs` result (`appwire.JobActivityTree`: `Root.Ref`,
-  `Root.Child`, `JobActivityJob.OwnerRef`/`TranscriptRef`/`Child`/`Turns`, and
-  `JobActivityDelegate.ChildRef`) and through `Thread.Evener.Diagnostics`
+  through the `ListJobs` result (`appwire.JobActivityTree`: `Root.Ref`; each
+  `Entries[]` entry's `Job.OwnerRef`/`TranscriptRef`; `Delegate.ChildRef` and
+  the recursive `Delegate.Child.Ref` with its own `Entries[]`; and
+  `Delegate.Turns[].OwnerRef`/`Turns[].TranscriptRef` — the recursion carriers
+  are `JobActivityDelegate.Child *JobActivitySession` /
+  `JobActivityDelegate.Turns []JobActivityJob`) and through
+  `Thread.Evener.Diagnostics`
   (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), so no
   nested remote `local:<id>` reaches the controller unrewritten.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
-- The loop guard's origin signal comes from an explicit, verifiable bridge marker
-  (`X-Evener-Bridge: 1`) presented by `evener hub attach --stdio` and validated
+- The loop guard's origin signal comes from the explicit, cooperative bridge marker
+  (`X-Evener-Bridge: 1`) presented by `evener hub attach --stdio` and read
   alongside the bearer token — **not** from `InitializeParams.ClientInfo`, and
   **not** from the token (which every client shares, so it can carry no role) —
   and a remote-originated request is refused typed before any fan-out to another

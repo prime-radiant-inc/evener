@@ -83,21 +83,32 @@ capability token is never on the argv.
   `http.DefaultClient` (which honors `HTTP_PROXY`/`HTTPS_PROXY`), or a proxy in
   the environment would receive the hub's capability token aimed at the loopback
   join; it uses a client with `Proxy: nil`.
-- **Bridge marker.** The bridge presents a dedicated, verifiable marker on its
-  `/rpc` dial — the request header `X-Evener-Bridge: 1` — alongside the same
-  `Authorization: Bearer <token>` every other client uses. The hub's edge
-  validates the marker together with the token and marks the connection
-  *remote-originated*; a connection presenting the token **without** the marker
-  is an ordinary local session. The marker is required precisely because the
+- **Bridge marker (cooperative, not a security boundary).** The bridge presents
+  a marker on its `/rpc` dial — the request header `X-Evener-Bridge: 1` —
+  alongside the same `Authorization: Bearer <token>` every other client uses.
+  The hub's edge reads the marker together with the token and marks the
+  connection *remote-originated*; a connection presenting the token **without**
+  the marker is an ordinary local session. The marker is required because the
   credential cannot carry the role: the attach bridge, the local TUI, CLI
   scripts, and browser sessions all present the **same** host capability token
-  (`cmd/evener-hub/web.go`, `internal/hubedge/auth_token.go`,
+  (`cmd/evener-hub/web.go`, `cmd/evener-hub/internal/hubedge/auth_token.go`,
   `cmd/evener-tui/internal/hubstart/hub_start.go`), so the token alone cannot
-  distinguish a peer bridge from a local client. A separate bridge token
-  distinct from the user-facing capability token is an equivalent mechanism;
-  v1 uses the header. Component 05, §"Ref translation detail", defines how the
-  edge's role becomes the request-context `origin` and the loop-guard refusal
-  that reads it. **Implementation status:** neither the header nor the edge's
+  distinguish a peer bridge from a local client. **The header carries no secret
+  and is client-asserted, so it is *not* verifiable.** Any holder of the shared
+  capability token can set it or omit it; a malicious or modified peer bridge
+  can therefore omit the header to be classified `local`. The explicit trust
+  assumption for v1 is that peer hubs are **cooperative**: the marker makes an
+  honest controller↔host cycle (A→B→A) terminate, and is a correctness aid, not
+  a defense against a hostile peer. It is **not** a substitute for the token or
+  a boundary that survives a compromised host. Binding the *remote-originated*
+  role to a signal the receiving hub can **verify server-side** — a distinct
+  bridge credential not shared with local clients, or the identity of the
+  `ssh`-spawned transport instance — is the mechanism that would make the loop
+  guard a real boundary; that binding is a tracked code follow-up, and until it
+  lands the marker is documented as cooperative-only, never as "explicit and
+  verifiable". Component 05, §"Ref translation detail", defines how the edge's
+  role becomes the request-context `origin` and the loop-guard refusal that
+  reads it. **Implementation status:** neither the header nor the edge's
   role classification exists today; this is the design record and a tracked code
   follow-up.
 

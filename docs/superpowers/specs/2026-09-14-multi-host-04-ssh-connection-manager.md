@@ -241,12 +241,26 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   (`evenerCommand`), the deploy/install target, restart identification, the
   health/identity check's binary, and attach. The literal word `evener` is
   never the run target, and `PATH` is consulted exactly once, at resolution:
-  - `evener_path` set → `run_path` is that path verbatim.
+  - `evener_path` set → `run_path` is that path, normalized to a canonical
+    **absolute** path. A configured **relative** path is rejected
+    (`ErrDeploy`), never resolved against the controller's CWD; a literal
+    leading `~/` is expanded against the host's captured home directory
+    (`Preflight.Home`) to `<home>/…`. This is required because the configured
+    path reaches the remote verbatim — as an SSH argv word and as an installer
+    environment value — and a bare `~` is not reliably shell-expanded there
+    (the quoting rule below leaves `~` bare only for *unquoted* argv words,
+    which does not make an env value expand).
   - `evener_path` empty → `run_path` is the **absolute path the host's own
     `command -v evener` returns** when it resolves to an existing file (the
     `PATH`-selected executable); when `command -v evener` misses, `run_path` is
-    the installer's default `~/.local/bin/evener` (the installer fallback then
-    creates it, §"The installer install path must equal the run target").
+    `<home>/.local/bin/evener` — the installer's default resolved against the
+    host's captured home directory (`Preflight.Home`), **never** the literal
+    string `~/.local/bin/evener` (the installer fallback then creates it,
+    §"The installer install path must equal the run target").
+  `<home>` is the host's captured home directory (`Preflight.Home`). Every one
+  of these paths is **absolute and normalized before use** — nothing relative
+  and nothing containing an unexpanded `~` is passed to installation, launch,
+  the health/identity check, or restart.
   The *atomic push* writes to the symlink-resolved form of `run_path`
   (§"Push target resolution"), so a `make install` symlink layout is preserved;
   `run_path` itself stays the invocation path. Deploy, restart, health, and
@@ -730,7 +744,7 @@ Two paths, chosen per host (open question: which wins when both are viable):
   existing file to replace, so an empty `evener_path` whose `command -v evener`
   misses is a push-path refusal, not a silent literal-word write: the manager
   falls to the **installer fallback**, whose target is then the installer's own
-  default `run_path` `~/.local/bin/evener` (§"The installer install path must
+  default `run_path` `<home>/.local/bin/evener` (§"The installer install path must
   equal the run target").
 
 - **The installer install path must equal the run target.** `install.sh` writes
@@ -753,7 +767,7 @@ Two paths, chosen per host (open question: which wins when both are viable):
     `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
     resolves): when `command -v evener` resolved, that is its directory, and
     when it missed, `run_path` is the installer's own default
-    `~/.local/bin/evener`. The manager records that one path and checks,
+    `<home>/.local/bin/evener`. The manager records that one path and checks,
     restarts, and launches it, rather than assuming a separate
     `command -v evener` result that may name a different install.
 
@@ -863,7 +877,7 @@ deploy landed.
 
   A host whose `run_path` cannot be established — no configured `evener_path`,
   no `command -v evener`, and the installer fallback refused so the default
-  `~/.local/bin/evener` does not exist — and with no identified supervisor
+  `<home>/.local/bin/evener` does not exist — and with no identified supervisor
   unit, cannot be started: the bootstrap is refused with
   `ErrDeploy`/`ErrRestart`, the host stays offline, and the UI must show that
   refusal (component 06, §"Connecting a configured host").
@@ -915,13 +929,16 @@ deploy landed.
   does:
 
   ```
-  ssh <dest> curl -fsS --noproxy '*' <loopback(addr)>/api/health
+  ssh <dest> curl -fsS --noproxy '*' http://<loopback(addr)>/api/health
   ```
 
   where `<loopback(addr)>` is the configured host address (`Manager.hostAddr`:
   the per-host `addr`, else `Options.HubAddr`, else `127.0.0.1:9180`) with the
   same wildcard→loopback normalization the bridge applies (`loopbackAddr`:
-  `0.0.0.0`, empty, and `localhost` → `127.0.0.1`; `::` → `[::1]`).
+  `0.0.0.0`, empty, and `localhost` → `127.0.0.1`; `::` → `[::1]`). The scheme
+  is written explicitly: a normalized IPv6 wildcard yields a bracketed literal
+  (`[::1]:9180`), and `curl` without a scheme reads the leading `[` as a URL
+  globbing range and fails `curl: (3) [globbing] bad range` instead of probing.
   **The probe must bypass the host's proxy environment.** The `curl` runs in the
   host's shell, so a `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` set there would route
   the loopback health request through a proxy instead of reaching the host's own
@@ -1278,10 +1295,11 @@ with the remote hub and its daemons still running.
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
   `ErrRestart`, never an assumed success. Assert the probe argv is the on-host
-  `curl -fsS --noproxy '*' <loopback(addr)>/api/health` over `ssh`, not a controller-side HTTP
+  `curl -fsS --noproxy '*' http://<loopback(addr)>/api/health` over `ssh`, not a controller-side HTTP
   call, and that the address is the configured per-host `addr` normalized to
   loopback (a non-default port and a `0.0.0.0`/`::` bind both appear as the
-  loopback form). Assert the argv carries `--noproxy '*'`, so a
+  loopback form, with the explicit `http://` scheme so a bracketed IPv6 literal
+  is not read as a globbing range). Assert the argv carries `--noproxy '*'`, so a
   `HTTP_PROXY`/`HTTPS_PROXY` in the host's environment cannot route the loopback
   health request through a proxy. Assert an auto-match that decides to restart does so because
   the **running** `/api/health` version differed, not only the on-disk
@@ -1312,10 +1330,13 @@ with the remote hub and its daemons still running.
   deploy/install target, the health/identity check, and the restart
   identification all use that one resolved `run_path` (assert the same path in
   every argv); with `command -v evener` missing the resolution is the
-  installer default `~/.local/bin/evener` and the atomic push refuses with
+  installer default `<home>/.local/bin/evener` and the atomic push refuses with
   `ErrDeploy` while the installer fallback targets it. With `evener_path` set,
-  the invocation uses it verbatim and the push resolves its symlink. A test
-  that the literal word `evener` never appears as a run target.
+  the invocation uses it (normalized absolute) and the push resolves its
+  symlink. A configured relative `evener_path` is refused with `ErrDeploy`, and
+  a `~/…` value is expanded against the captured `Preflight.Home` before it
+  reaches any argv. A test that the literal word `evener` never appears as a
+  run target.
 - **Reconnect test.** Fake link drops (`io.EOF` / child exit) → assert backoff
   schedule, a fresh `Start`, and that no `hub` start was issued (re-attach, not
   a second hub).
@@ -1390,7 +1411,11 @@ with the remote hub and its daemons still running.
     `command -v evener` resolves uses that as the host's `run_path` and
     replaces the POSIX-sh `resolvePathScript` target (plain `readlink`, no
     `readlink -f`) atomically; a `command -v` miss is `ErrDeploy` on the push
-    path (the installer fallback is the one that can create the default).
+    path (the installer fallback is the one that can create the default). A
+    configured **relative** `evener_path` is refused with `ErrDeploy` and a
+    leading `~/` is expanded against the host's captured home
+    (`Preflight.Home`), so no relative or unexpanded-`~` path reaches install,
+    launch, health, or restart.
 15. A first attach to a host whose hub is not running starts the identified
     supervisor (or the detached ad hoc launch), waits for `/api/health`
     `version == expected`, and attaches only after it matches; an address a hub
@@ -1410,7 +1435,7 @@ with the remote hub and its daemons still running.
     a missing directory with `ErrDeploy`); with `evener_path` empty it passes
     `BINDIR=dirname(run_path)` for the host's one resolved `run_path` —
     `command -v evener` when it resolves, else the installer's default
-    `~/.local/bin/evener` — and that same `run_path` is the path the manager
+    `<home>/.local/bin/evener` — and that same `run_path` is the path the manager
     checks, restarts, and launches. No deployment, restart, health, or attach
     step may name a different binary than `run_path`.
 18. A restart identifies the hub by the canonical recovered executable
@@ -1501,7 +1526,7 @@ from the component-03 registry.
   the literal word `evener` via `PATH` at exec time". It is resolved **once**
   per host to one canonical absolute `run_path` (§"SSH channel argv"): the
   host's `command -v evener` result when it exists, else the installer's
-  default `~/.local/bin/evener`. Every remote invocation, deploy/install,
+  default `<home>/.local/bin/evener`. Every remote invocation, deploy/install,
   restart identification, health/identity check, and attach uses that same
   path. The push deploy additionally resolves the symlink target with the
   POSIX-sh `resolvePathScript` (plain `readlink`, no `readlink -f`;

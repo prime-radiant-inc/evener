@@ -18,9 +18,9 @@ while that configuration stays **host-owned** (design §2). Two actions:
 2. **Credential push** — an explicit, per-host "copy credentials to this host"
    action that reads the *local* hub's `credentials.toml` and replays each
    provider-instance key through the *remote* hub's own
-   `evener/auth/apiKey/set`, so the host writes its file atomically with the
-   correct mode. Merge, do not clobber; report added/updated/skipped per
-   instance.
+   host-side `evener/auth/apiKey/conditionalSet`, so the host classifies and
+   writes its file atomically with the correct mode. Merge, do not clobber;
+   report added/updated/skipped per instance.
 
 The controller adds **no canonical credential or config store**: it reads the
 existing local store and writes the remote one.
@@ -41,8 +41,8 @@ existing local store and writes the remote one.
   around `evener/instance/updated` would silently forward nothing after an
   instance edit.
 - A controller-side credential-push RPC that reads the local credentials file
-  and writes the remote one through the remote hub's `evener/auth/apiKey/set`,
-  returning a per-instance report.
+  and writes the remote one through the remote hub's host-side
+  `evener/auth/apiKey/conditionalSet`, returning a per-instance report.
 - Frontend host scoping for the existing settings panes that call these RPCs:
   providers/credentials, launch config, plugins/marketplaces/skills, agents-doc
   (see "Contract" for the exact method families).
@@ -90,7 +90,7 @@ Concretely the proxied method names are (all `ScopeHub` in
 - `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`
 - `evener/marketplace/{list,add,remove,refresh,edit,browse}` and
   `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`
-- `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`
+- `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/conditionalSet,apiKey/clear,credentialJson/set,device/start,device/poll}`
 - `evener/settings/agentsDoc/{get,set}`
 - **Host-dependent discovery** — the spawn form's remote-scoped calls
   (component 06, §"Frontend changes"): `evener/paths/complete`,
@@ -168,7 +168,7 @@ The handler:
    `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`,
    `evener/marketplace/{list,add,remove,refresh,edit,browse}`,
    `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`,
-   `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`,
+   `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/conditionalSet,apiKey/clear,credentialJson/set,device/start,device/poll}`,
    `evener/settings/agentsDoc/{get,set}`, plus the host-dependent discovery set:
    `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`,
    `evener/projects/recent`, `evener/harnesses/list`,
@@ -324,7 +324,8 @@ Concretely:
 
 - The unit of the push is the local credentials-store entry (`Store.Names()`);
   its key **is** the instance name and is sent verbatim as the wire `Provider`
-  value in both `evener/auth/status` and `evener/auth/apiKey/set`.
+  value in `evener/auth/status`, `evener/instance/list`, and
+  `evener/auth/apiKey/conditionalSet`.
 - The remote resolves `Provider` the way `hubAuthController.Status` does
   (`app_auth.go`): first `registry.Instance(name)` (an explicit instance), then
   the implicit-provider fallback `registry.Provider(name)` when that provider is
@@ -346,26 +347,30 @@ fact; the shipped wire types (`AuthStatusParams.Provider`,
 `appwire/types.go`) do not themselves disambiguate instance from provider.
 
 Write side (remote): for each local entry (whose key is the instance name), call
-the remote hub's `evener/auth/apiKey/set` with `{provider: <name>, value}` —
-`provider` is that same instance name and `value` is `Store.Get(name)`
-(`appwire/types.go`) via the same `evener/host/request` channel. The host's
-`hubAuthController.ApiKeySet` (`app_auth.go`) validates, calls
-`c.setCredential` (= `creds.Set`), reloads the registry, and returns
-`AuthStatusResponse`. The host therefore writes its own `credentials.toml`
-atomically with the correct mode; the controller never sees the file path or
-writes it. This paragraph names the **write half only**; the classification that
-decides whether that write may happen at all is host-side and atomic, and the
-two-call "read `evener/auth/status`, classify, then set" form is **not** the
-contract — see "The no-clobber guarantee is atomic" immediately below, which
-supersedes any check-then-write reading of this paragraph.
+the remote hub's **`evener/auth/apiKey/conditionalSet`** with
+`{provider: <name>, value, expectedSource, expectedRevision}` — `provider` is
+that same instance name and `value` is `Store.Get(name)` (`appwire/types.go`)
+via the same `evener/host/request` channel. The host's conditional-set handler
+(`app_auth.go`) validates under `credentialWrite`, re-resolves `ActiveSource`
+and the config revision, classifies, and — only when the write is permitted —
+calls `c.setCredential` (= `creds.Set`), reloads the registry, and returns
+`ApiKeyConditionalSetResponse`. The host therefore writes its own
+`credentials.toml` atomically with the correct mode; the controller never sees
+the file path or writes it. A bare `evener/auth/apiKey/set` is the old
+unconditional path and is **not** what the pusher calls; the classification and
+the write are one locked host-side operation (see "The no-clobber guarantee is
+atomic" immediately below), and the two-call "read `evener/auth/status`,
+classify, then set" form is **not** the contract.
 
-**Merge / no-clobber policy.** Before writing, the pusher asks the remote
-`evener/auth/status` for the instance (`app_auth.go`) and reads
-`ActiveSource` and `HasStoredFile` from `AuthStatusResponse`
-(`appwire/types.go`). Writes are permitted **only** when the
-remote resolves the instance's credential from the file layer or has none;
-every other source is skipped, because the pushed key either cannot be used or
-would silently change which credential is in force. Remote resolution order is
+**Merge / no-clobber policy.** The pusher may read the remote
+`evener/auth/status` for an instance (`app_auth.go`, `AuthStatusResponse`,
+`appwire/types.go`) **only to render the report**; it does **not** gate the
+write on that read. The permit/skip decision is made by the host inside the one
+locked conditional set (below), which re-resolves the source itself. A write is
+permitted **only** when the host resolves the instance's credential from the
+file layer or has none; every other source is skipped, because the pushed key
+either cannot be used or would silently change which credential is in force.
+Remote resolution order is
 `api_key` > `credential_headers` > `store` > `env:<VAR>` (`registry.credential`,
 `llm/registry/instances.go`):
 
@@ -374,14 +379,14 @@ conditional set, not read by the client before a separate write:
 
 | Condition on the host (re-resolved under the credential write lock, top to bottom) | Action |
 | --- | --- |
-| instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go`); classify locally so the report is a skip, not an error |
+| instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go`); classify host-side so the report is a skip, not an error |
 | instance not present in the remote `evener/instance/list` | **skipped** — no matching instance on the host |
 | `ActiveSource == "api_key"` or `"credential_headers"` | **skipped** — the instance resolves from `providers.toml`, which *outranks* the file layer, so a pushed key would be shadowed and change nothing |
 | `ActiveSource == "env:<VAR>"` | **skipped** — the host operator's environment supplies a working credential; a file-layer write outranks `env:` and would silently replace it |
 | `ActiveSource == "store"` (implies `HasStoredFile == true`) | **updated** — write; the host overwrites its own file-layer key |
 | `ActiveSource == "none"` **and the instance's auth scheme is key-capable** | **added** — write; the instance has no credential today and can consume an API key |
-| `ActiveSource == "none"` **and the instance uses `AuthNone`** | **skipped** — the host's `apiKey/set` refuses a key for an auth-none instance (`app_auth.go`: "authenticates without a credential"), so a pushed key would be one nothing reads; classify locally so the report is a skip, not an error |
-| remote `apiKey/set` returns an error | **failed**, with the wire error text |
+| `ActiveSource == "none"` **and the instance uses `AuthNone`** | **skipped** — the host's `apiKey/set` refuses a key for an auth-none instance (`app_auth.go`: "authenticates without a credential"), so a pushed key would be one nothing reads; classify host-side so the report is a skip, not an error |
+| the conditional set returns a wire error | **failed**, with the wire error text |
 
 `"none"` is therefore **not** writable unconditionally: it is writable only
 when the instance's scheme can actually consume an API key. `AuthNone`
@@ -391,7 +396,7 @@ either fail on the host or store a credential nothing sends. Codex-OAuth and
 gcp-adc instances are already skipped by the rows above for the same reason.
 
 "Merge" means the host's other file-layer entries are never deleted — only
-`apiKey/set` is used, never `apiKey/clear`, and no whole-file replace exists.
+`conditionalSet` is used, never `apiKey/clear`, and no whole-file replace exists.
 "Don't clobber" means no write at all unless the remote resolves from the file
 layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
 `adc`, or `env:<VAR>` credential is never shadowed by a pushed key. The policy
@@ -414,10 +419,25 @@ under the same credential write lock it writes with, and **refuses** the write
 when the source is no longer the file layer (or when an expected configuration
 revision the set validated has changed). Check and write happen inside that one
 locked operation, so no concurrent change can slip between them and "don't
-clobber" becomes a guarantee rather than best-effort at check time.
-**Implementation status:** the 07c surface above is the racy two-call form and
-the host-side conditional set does not exist; this is a tracked code follow-up
-(see the PR comment), not a present fact.
+clobber" becomes a guarantee rather than best-effort at check time. Concretely
+the controller must call a new host-side method
+`evener/auth/apiKey/conditionalSet` — not `evener/auth/apiKey/set` — with
+`ApiKeyConditionalSetParams{Provider, Value, ExpectedSource, ExpectedRevision}`
+(`appwire/types.go`). Under `credentialWrite` the host re-resolves
+`ActiveSource`/`HasStoredFile` and the instance's configuration revision; it
+writes only if the source is still the file layer (or the instance still has
+none) and any `ExpectedRevision` the controller observed is unchanged, and
+otherwise refuses without writing. Its response,
+`ApiKeyConditionalSetResponse{Action, Reason, Status}` (`Action` ∈
+`added`|`updated`|`skipped`; `Reason` a human-readable string; `Status` the
+post-write `AuthStatusResponse`), is the surface the push report reads: a
+`skipped` classification is delivered as a successful typed response, distinct
+from a wire error (`failed`). `evener/auth/status` is then read only to render
+the report, never to gate the write.
+**Implementation status:** neither `evener/auth/apiKey/conditionalSet` nor the
+response field exists, and the 07c surface above is still the racy two-call
+form; the host-side conditional set is a tracked code follow-up (see the PR
+comment), not a present fact.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
@@ -516,8 +536,14 @@ Decompose component 07 into four landable PRs.
 - Read the local store through `cfg.CredsStore` or
   `credentials.LoadStore(cmdutil.CredentialsPath())`; enumerate with `Names()`
   and `Get()` (`internal/credentials/store.go`).
-- Query the remote `evener/auth/status` and `evener/instance/list` through the
-  proxy channel; write through `evener/auth/apiKey/set`. Every local store key
+- Query the remote `evener/instance/list` through the proxy channel (and
+  `evener/auth/status` only to fill the report), and **write through the new
+  host-side `evener/auth/apiKey/conditionalSet`** with
+  `{provider, value, expectedSource, expectedRevision}` — never the
+  unconditional `evener/auth/apiKey/set`, which is not atomic with the
+  no-clobber check. The host performs the classification and the write inside
+  one `credentialWrite`-locked operation and returns
+  `ApiKeyConditionalSetResponse{Action, Reason, Status}`. Every local store key
   is used verbatim as the wire `Provider` (the instance→provider join rule
   above); a key with no remote `Name`/implicit-`ID` counterpart is skipped.
 - Add the push action to the remote-credentials pane in the frontend
@@ -560,14 +586,17 @@ local credentials.toml                           host hub (remote)
   credentials.LoadStore(CredentialsPath())          |
   Names()/Get()  (store.go)               |
         |                                           |
-        |  evener/auth/status (per instance) ------>| hubAuthController.Status (app_auth.go)
+        |  evener/auth/apiKey/conditionalSet ------>| conditional-set handler (app_auth.go)
+        |    {provider, value,                      |   under credentialWrite:
+        |     expectedSource, expectedRevision}     |   re-resolve ActiveSource/
+        |                                           |   revision -> classify ->
+        |                                           |   creds.Set (store.go) when allowed
+        |                                           |   atomic save 0600 (store.go)
+        |<-- ApiKeyConditionalSetResponse ----------|   Action/Reason/Status
+        |    {action, reason, status}               |   (skipped is a typed response, not an error)
+        |                                           |
+        |  evener/auth/status (report only) ------->| hubAuthController.Status (app_auth.go)
         |<-- ActiveSource, HasStoredFile -----------|
-        |                                           |
-        |  classify (added/updated/skipped)         |
-        |                                           |
-        |  evener/auth/apiKey/set ----------------->| ApiKeySet (app_auth.go)
-        |    {provider, value}                      |   creds.Set  (store.go)
-        |<-- AuthStatusResponse / wire error -------|   atomic save 0600 (store.go)
         |                                           |
   per-instance report -> browser
 ```
@@ -613,12 +642,13 @@ receives a key, and the controller writes nothing.
   shipped `forceStopThread` path; an unknown/unattached host is refused typed.
 - **Notification fan-out:** a scripted remote emits `evener/auth/updated`;
   assert one controller-side broadcast tagged with the host.
-- **Push table test:** a fake remote that records `apiKey/set` calls and reports
-  scripted `status`/`instance/list`; assert the added/updated/skipped/failed
-  matrix, that `apiKey/clear` is never called, that no `apiKey/set` is issued
-  for an `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance,
-  and that remote-only instances survive (fake host store compared
-  before/after).
+- **Push table test:** a fake remote that records `apiKey/conditionalSet` calls
+  and reports scripted `status`/`instance/list`; assert the
+  added/updated/skipped/failed matrix (a `skipped` arrives as a successful typed
+  response, not a wire error), that `apiKey/clear` is never called, that no
+  conditional set is issued for an
+  `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance, and
+  that remote-only instances survive (fake host store compared before/after).
 - **Secret hygiene:** assert no key value appears in the push response, in the
   controller log output, or in a rendered error, reusing the secret-marked
   registry (`envvars/envvars.go`, `Secret`) and `redactEnvSecrets`
@@ -652,13 +682,17 @@ receives a key, and the controller writes nothing.
 4. Remote config notifications refresh the browser's panes without a manual
    reload (tagged with the host).
 5. Credential push reads the local store and writes the host's store only via
-   `evener/auth/apiKey/set`; the host file is written atomically at mode `0600`
+   the atomic host-side `evener/auth/apiKey/conditionalSet` (never the
+   unconditional `evener/auth/apiKey/set`), so the no-clobber classification
+   and the write happen in one `credentialWrite`-locked operation; the host
+   file is written atomically at mode `0600`
    (host-side `store.go`). An instance whose remote credential resolves
    from `api_key`, `credential_headers`, `oauth`, `adc`, or `env:<VAR>` receives
    no write at all; only `store`, and `none` **for a key-capable scheme**, are
    writable. An `AuthNone` instance (`ActiveSource == "none"` with an auth-none
-   transport) is **skipped**, never written: its host-side `apiKey/set` refuses
-   the key.
+   transport) is **skipped**, never written: the host-side set refuses
+   the key, and the `skipped`/`failed` distinction is carried by
+   `ApiKeyConditionalSetResponse.Action`/`.Reason`.
 6. The push report lists every local entry with `added`/`updated`/`skipped`/
    `failed` and a reason for skips; remote-only entries are preserved.
 7. No key value appears in the push response, controller logs, or errors; the
@@ -707,8 +741,9 @@ only one with a new RPC surface and should land first.
   traffic.
 - **Value identity.** `AuthStatusResponse` never returns the key, so `updated`
   is reported even for an identical value. Is that acceptable, or should the
-  host's `apiKey/set` gain a compare-and-set / value-hash so the report can say
-  `unchanged`? The host is the only side that could hash.
+  host-side `apiKey/conditionalSet` return a value-hash (in
+  `ApiKeyConditionalSetResponse`) so the report can say `unchanged`? The host is
+  the only side that could hash.
 - **Instance reconciliation.** The host's `providers.toml` is host-owned and may
   not define the same instances as the controller. This spec skips a local entry
   with no remote instance; the alternative (push and let it fail, or create the
