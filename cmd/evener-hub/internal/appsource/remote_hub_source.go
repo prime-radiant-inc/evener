@@ -171,6 +171,14 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, sshconn.ErrSSHStart) {
 		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
 	}
+	// A failed hub restart is transient as well: sshconn stays disconnected and
+	// retries the restart on the next Ensure (ErrRestart is not terminal), so it
+	// names a host that is momentarily down, not one that can never attach. A
+	// recovery/auto-resume gate that saw the raw error could not attribute the
+	// outage, so it maps like the other transient attach failures.
+	if errors.Is(err, sshconn.ErrRestart) {
+		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
@@ -632,10 +640,19 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 		merged = append(merged, candidate)
 	}
 	if !overlap {
-		retainedNewest := retained[len(retained)-1].Position
-		observedOldest := observed[0].Position
-		if remotePositionCompare(retainedNewest, observedOldest) < 0 && !remotePositionsAdjacent(retainedNewest, observedOldest) {
-			return nil, false
+		retainedNewest := retained[len(retained)-1]
+		observedOldest := observed[0]
+		if remotePositionCompare(retainedNewest.Position, observedOldest.Position) < 0 {
+			// A forward page is contiguous only when it abuts the retained newest
+			// item AND the retained fragment is complete at that boundary. A
+			// candidate carrying HasLaterItems is a turn fragment whose later items
+			// were not returned; an observed page that resumes at the next entry is
+			// position-adjacent but skips those items, so unioning it would retain a
+			// holed window that a later complete page would mark complete, silently
+			// omitting the intervening items.
+			if !remotePositionsAdjacent(retainedNewest.Position, observedOldest.Position) || retainedNewest.HasLaterItems {
+				return nil, false
+			}
 		}
 	}
 	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
@@ -721,6 +738,7 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	if previous, ok := s.itemPaging.peek(key); ok && previous.identity == identity {
 		retained = previous.candidates
 	}
+	windowCandidates := candidates
 	merged, compatible := remoteMergeCandidates(retained, candidates)
 	if !compatible || remoteRetainedCandidatesExceedBounds(merged) {
 		// The fresh page contradicts the retained window, or the union would
@@ -733,8 +751,14 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		identity = s.mintRemoteItemIdentity(key)
 		merged = append([]appitempaging.TranscriptItemCandidate(nil), remoteTrimCandidatesToBound(candidates)...)
 		head, hasHead = remoteItemPageHead(merged)
+		// The retained state is the trimmed suffix, so the window handed back and
+		// the cursor minted from it must both name positions that suffix holds.
+		// Returning the untrimmed page with a cursor at its oldest item would mint
+		// a continuation the retained window cannot validate, so the first
+		// continuation would fail ValidateCursorBoundary as stale.
+		windowCandidates = merged
 	}
-	window := appitempaging.TranscriptItemWindow{Candidates: candidates}
+	window := appitempaging.TranscriptItemWindow{Candidates: windowCandidates}
 	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, complete: native == "", head: head, hasHead: hasHead}
 	if native == "" {
 		// The identity is returned even when the page is complete: packing can
@@ -745,10 +769,10 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		s.itemPaging.put(key, state)
 		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
 	}
-	if len(candidates) == 0 {
+	if len(windowCandidates) == 0 {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
-	cursor, err := appitempaging.EncodeCursor(identity, candidates[0].Position)
+	cursor, err := appitempaging.EncodeCursor(identity, windowCandidates[0].Position)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}

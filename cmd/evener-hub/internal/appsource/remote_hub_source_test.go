@@ -460,6 +460,26 @@ func TestRemoteHubSourceMapsSSHAttachFailureToSessionUnavailable(t *testing.T) {
 	}
 }
 
+// A failed hub restart is transient, not terminal: sshconn keeps retrying on the
+// next Ensure (ErrRestart is not in isTerminal). The attach step surfaces it
+// wrapped, so it must map like any other unreachable host and become
+// SessionUnavailable, or the recovery/auto-resume gate never sees the host go
+// down. Terminal configuration and authentication classes stay raw.
+func TestRemoteHubSourceMapsRestartFailureToSessionUnavailable(t *testing.T) {
+	restart := fmt.Errorf("%w: host %q relaunch: %w: %s", sshconn.ErrRestart, "host", errors.New("exit status 1"), "hub did not come up")
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, restart
+	})
+	_, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err == nil {
+		t.Fatal("ListThreads succeeded despite a restart failure")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || wireErrorInfo(wire) != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("restart failure = %T %v, want SessionUnavailable", err, err)
+	}
+}
+
 // wireErrorInfo extracts evenerErrorInfo whether the error was synthesized
 // locally (appwire.ErrorData) or decoded from the wire (map[string]any).
 func wireErrorInfo(wire appwire.WireError) string {

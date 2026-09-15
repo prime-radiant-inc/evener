@@ -717,6 +717,58 @@ func TestRemoteHubSourceRejectsForwardPageBeginningMidEntry(t *testing.T) {
 	}
 }
 
+// itemPageEndingMidTurn builds one item-mode page whose single turn fragment
+// carries HasLaterItems, i.e. the remote returned only the leading items of a
+// turn that continues after the page.
+func itemPageEndingMidTurn(cursor string, positions ...appwire.ThreadItemPosition) appwire.ThreadTurnsListResponse {
+	page := itemPageWithItemPositions(cursor, positions...)
+	page.Data[0].HasLaterItems = true
+	return page
+}
+
+// A page that ends mid-turn leaves later items of that turn unobserved. A fresh
+// page that resumes at the next entry is position-adjacent, but the retained
+// fragment's HasLaterItems records that items in between exist: unioning the two
+// would retain a holed window whose later completion silently omits those items.
+// The incarnation must rotate instead, so the pre-append boundary fails closed.
+func TestRemoteHubSourceRejectsForwardMergeAcrossMidTurnBoundary(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: itemPageEndingMidTurn(remoteItemCursor(t, 5),
+			appwire.ThreadItemPosition{Entry: 5, Item: 0},
+			appwire.ThreadItemPosition{Entry: 5, Item: 1},
+		)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	// The transcript grew: the fresh tail starts at the next entry (position
+	// (6,0)), position-adjacent to the retained newest (5,1) but skipping the
+	// remainder of entry 5 that the retained fragment's flag says exists.
+	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithItemPositions("", appwire.ThreadItemPosition{Entry: 6, Item: 0}).Data},
+		OlderCursor: remoteItemCursor(t, 6),
+	})
+	if err != nil {
+		t.Fatalf("grown read: %v", err)
+	}
+	if grown.Identity == first.Identity {
+		t.Fatalf("a mid-turn boundary was merged as contiguous: identity %+v reused", grown.Identity)
+	}
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	}); err == nil {
+		t.Fatal("a cursor minted before the rotation was still served")
+	} else {
+		requireInverseStale(t, err)
+	}
+}
+
 // A remote page that alone exceeds the retained window bound must not be kept
 // wholesale: the rotated window keeps only the newest candidates that fit, so
 // the documented bound holds even for one oversized page.
@@ -730,7 +782,8 @@ func TestRemoteItemPagingTrimsOversizedRotatedPage(t *testing.T) {
 		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, uint64(oversized)), entries...)}
 	})
 
-	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err != nil {
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
@@ -746,6 +799,28 @@ func TestRemoteItemPagingTrimsOversizedRotatedPage(t *testing.T) {
 	if remoteItemCandidatesBytes(state.candidates) > remoteItemPagingByteCapacity {
 		t.Fatalf("retained window bytes = %d, want <= %d", remoteItemCandidatesBytes(state.candidates), remoteItemPagingByteCapacity)
 	}
+	// The rotation trimmed the page, so the continuation it minted must name a
+	// position the retained window actually holds; otherwise the caller's first
+	// continuation fails ValidateCursorBoundary as stale.
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live continuation cursor", first)
+	}
+	before, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode first cursor: %v", err)
+	}
+	if len(first.Candidates.Candidates) == 0 || before != first.Candidates.Candidates[0].Position {
+		t.Fatalf("cursor boundary = %+v, want the returned window's oldest %+v", before, first.Candidates.Candidates)
+	}
+	continuation, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("continuation after trimming the rotated page = %v, want it to resume from a retained boundary", err)
+	}
+	if continuation.Candidates.OlderCursor == "" {
+		t.Fatalf("continuation = %+v, want a live cursor", continuation)
+	}
 }
 
 // The byte bound is enforced on a single page too: the newest candidates that
@@ -758,7 +833,8 @@ func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
 		return scriptedReply{result: page}
 	})
 
-	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err != nil {
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
@@ -773,6 +849,23 @@ func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
 	}
 	if got := state.candidates[len(state.candidates)-1].Position.Entry; got != 5 {
 		t.Fatalf("retained newest entry = %d, want 5", got)
+	}
+	// As above: the trimmed rotation must mint its continuation from the retained
+	// suffix, or the first continuation is served a never-retained boundary.
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live continuation cursor", first)
+	}
+	before, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode first cursor: %v", err)
+	}
+	if len(first.Candidates.Candidates) == 0 || before != first.Candidates.Candidates[0].Position {
+		t.Fatalf("cursor boundary = %+v, want the returned window's oldest %+v", before, first.Candidates.Candidates)
+	}
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	}); err != nil {
+		t.Fatalf("continuation after trimming the rotated page = %v, want it to resume from a retained boundary", err)
 	}
 }
 
