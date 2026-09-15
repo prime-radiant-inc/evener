@@ -334,6 +334,16 @@ type remoteItemPagingState struct {
 // bounded local-daemon item snapshot cache.
 const remoteItemPagingCapacity = 64
 
+// remoteItemPagingCandidateCapacity and remoteItemPagingByteCapacity bound one
+// continuation's retained candidate window. Every page is merged into the
+// retained window so a complete page's earlier boundaries stay answerable, so
+// an unbounded window would grow to the whole transcript and to every tool
+// output in it.
+const (
+	remoteItemPagingCandidateCapacity = 1024
+	remoteItemPagingByteCapacity      = 8 << 20
+)
+
 type remoteItemPagingCache struct {
 	mu      sync.Mutex
 	entries map[string]remoteItemPagingState
@@ -419,6 +429,13 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	}
 	before, err := appitempaging.DecodeCursor(params.Cursor, state.identity)
 	if err != nil {
+		return ItemCandidateResult{}, err
+	}
+	// The decoded boundary is a fence, not free-form input: it must still name an
+	// item the retained window observed before it is rebased and forwarded,
+	// otherwise a caller that keeps a valid identity but moves the boundary would
+	// page the remote from a position this incarnation never proved.
+	if err := appitempaging.ValidateCursorBoundary(state.candidates, before); err != nil {
 		return ItemCandidateResult{}, err
 	}
 	// Packing can drop the oldest selected item after the cursor is minted, so
@@ -582,6 +599,14 @@ func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appite
 // by position: an item-mode projection positions every item uniquely, and a
 // replacement at an observed position must be recognized rather than silently
 // appended at the same boundary.
+//
+// A forward page (one that shares no position with the retained window and lies
+// entirely newer than it) is only unioned when it abuts the retained newest
+// item. A forward page that leaves unobserved positions between the two windows
+// would retain a holed window, and a later page that reaches the beginning of
+// the transcript would mark that hole complete. A backward page is not gated
+// here: it is fetched through the retained remote cursor, which is the remote
+// hub's own authority for the next older page.
 func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, bool) {
 	if len(observed) == 0 {
 		return retained, true
@@ -594,20 +619,58 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 		byPosition[candidate.Position] = candidate
 	}
 	merged := append([]appitempaging.TranscriptItemCandidate(nil), retained...)
+	overlap := false
 	for _, candidate := range observed {
 		if previous, ok := byPosition[candidate.Position]; ok {
 			if transcriptItemFingerprint(previous) != transcriptItemFingerprint(candidate) {
 				return nil, false
 			}
+			overlap = true
 			continue
 		}
 		byPosition[candidate.Position] = candidate
 		merged = append(merged, candidate)
 	}
+	if !overlap {
+		retainedNewest := retained[len(retained)-1].Position
+		observedOldest := observed[0].Position
+		if remotePositionCompare(retainedNewest, observedOldest) < 0 && !remotePositionsAdjacent(retainedNewest, observedOldest) {
+			return nil, false
+		}
+	}
 	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
 		return remotePositionCompare(a.Position, b.Position)
 	})
 	return merged, true
+}
+
+// remotePositionsAdjacent reports whether newer is the position immediately
+// after older. Item-mode positions are (entry, item) pairs, so the successor of
+// an item is the next item of the same entry or the first item of the next
+// entry.
+func remotePositionsAdjacent(older, newer appwire.ThreadItemPosition) bool {
+	if older.Entry == newer.Entry {
+		return newer.Item == older.Item+1
+	}
+	return newer.Entry == older.Entry+1
+}
+
+// remoteRetainedCandidatesExceedBounds reports whether a merged retained window
+// exceeds either retention bound, so the caller rotates the incarnation instead
+// of accumulating an unbounded window.
+func remoteRetainedCandidatesExceedBounds(candidates []appitempaging.TranscriptItemCandidate) bool {
+	return len(candidates) > remoteItemPagingCandidateCapacity || remoteItemCandidatesBytes(candidates) > remoteItemPagingByteCapacity
+}
+
+// remoteItemCandidatesBytes approximates the retained window's transcript
+// payload so its memory can be bounded by bytes as well as by item count.
+func remoteItemCandidatesBytes(candidates []appitempaging.TranscriptItemCandidate) int {
+	total := 0
+	for _, candidate := range candidates {
+		item := candidate.Item
+		total += len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
+	}
+	return total
 }
 
 // recordRemoteItemPage builds the controller window for one remote page and
@@ -625,10 +688,12 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		retained = previous.candidates
 	}
 	merged, compatible := remoteMergeCandidates(retained, candidates)
-	if !compatible {
-		// The fresh page contradicts the retained window, so the transcript was
-		// rewritten under this incarnation: rotate it and discard the stale
-		// window rather than answering future cursors from it.
+	if !compatible || remoteRetainedCandidatesExceedBounds(merged) {
+		// The fresh page contradicts the retained window, or the union would
+		// exceed the retained bound, so the accumulated history cannot be served
+		// soundly: rotate the incarnation and retain only this page. The cursor
+		// minted below stays live; boundaries older than the bounded window fail
+		// closed as stale rather than being answered from a truncated history.
 		identity = s.mintRemoteItemIdentity(key)
 		merged = append([]appitempaging.TranscriptItemCandidate(nil), candidates...)
 		head, hasHead = remoteItemPageHead(merged)

@@ -499,3 +499,167 @@ func TestRemoteItemPagingCacheEvictsLeastRecentlyCommitted(t *testing.T) {
 		t.Fatal("the newly inserted continuation was evicted")
 	}
 }
+
+// A forward append that does not abut the retained newest leaves unobserved
+// positions between the two windows. Unioning them would retain a holed window,
+// and a later page that reaches the beginning of the transcript would mark that
+// hole complete, silently dropping the items inside it. The source must rotate
+// the incarnation instead, so the pre-append boundary fails closed as stale.
+func TestRemoteHubSourceRejectsGappedForwardAppend(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor != "" {
+			// The replay that used to close the hole and flip the window complete.
+			return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4)}
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if !first.Exhausted {
+		t.Fatalf("first page = %+v, want a complete page", first)
+	}
+	// The hub's size packer can mint a continuation at an interior boundary of a
+	// complete page.
+	replay, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[4].Position)
+	if err != nil {
+		t.Fatalf("encode replay cursor: %v", err)
+	}
+
+	// The transcript grows past the retained window: a fresh read returns a much
+	// newer tail that shares no position with the retained window and does not
+	// abut its newest item (entry 10).
+	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithKeyedEntries("", 40, 41, 42, 43, 44, 45, 46, 47, 48, 49).Data},
+		OlderCursor: remoteItemCursor(t, 40),
+	})
+	if err != nil {
+		t.Fatalf("grown read: %v", err)
+	}
+	if grown.Identity == first.Identity {
+		t.Fatalf("gapped append kept identity %+v, want a fresh incarnation", grown.Identity)
+	}
+
+	// Replaying the pre-append boundary must fail closed rather than serve a page
+	// whose completeness omits the unobserved middle.
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: replay,
+	}); err == nil {
+		t.Fatal("replayed boundary was served from a gapped retained window")
+	} else {
+		requireInverseStale(t, err)
+	}
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadTurnsList {
+			continue
+		}
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(call.params, &remote); err != nil {
+			t.Fatalf("decode turns params: %v", err)
+		}
+		if remote.Cursor != "" {
+			t.Fatalf("the replayed boundary reached the remote: %q", remote.Cursor)
+		}
+	}
+}
+
+// A decoded cursor boundary is a fence, not free-form input: it must still name
+// an item the retained window observed before it is rebased and forwarded. A
+// caller that preserves a valid identity but moves the boundary would otherwise
+// page the remote from a position this incarnation never proved.
+func TestRemoteHubSourceRejectsCursorBoundaryOutsideRetainedWindow(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor != "" {
+			t.Errorf("tampered boundary reached the remote: %q", remote.Cursor)
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 10), 10)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+	tampered, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 9999})
+	if err != nil {
+		t.Fatalf("encode tampered cursor: %v", err)
+	}
+
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: tampered,
+	}); err == nil {
+		t.Fatal("a cursor boundary outside the retained window was rebased and forwarded")
+	} else {
+		requireInverseStale(t, err)
+	}
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadTurnsList {
+			continue
+		}
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(call.params, &remote); err != nil {
+			t.Fatalf("decode turns params: %v", err)
+		}
+		if remote.Cursor != "" {
+			t.Fatalf("the tampered boundary reached the remote: %q", remote.Cursor)
+		}
+	}
+}
+
+// Traversing a long transcript merges one page per continuation into the
+// retained window. The bound must cap that window: past it the source rotates
+// the incarnation and keeps only the newest page, so the cursor just returned
+// stays live while older boundaries fail closed as stale instead of being
+// answered from a silently truncated history.
+func TestRemoteItemPagingBoundsRetainedCandidates(t *testing.T) {
+	const pageSize = 40
+	pages := remoteItemPagingCandidateCapacity/pageSize + 4
+	native := remoteItemCursor(t, 1)
+	var served atomic.Int64
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		page := int(served.Add(1))
+		base := uint64(2_000_000 - page*100)
+		entries := make([]uint64, pageSize)
+		for index := range entries {
+			entries[index] = base - pageSize + 1 + uint64(index)
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(native, entries...)}
+	})
+
+	cursor := ""
+	firstCursor := ""
+	for page := range pages {
+		result, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: "host:t1", ItemsView: "fragment", Cursor: cursor,
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if result.Candidates.OlderCursor == "" {
+			t.Fatalf("page %d = %+v, want a live cursor", page, result)
+		}
+		if page == 0 {
+			firstCursor = result.Candidates.OlderCursor
+		}
+		cursor = result.Candidates.OlderCursor
+	}
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: firstCursor,
+	}); err == nil {
+		t.Fatal("a cursor older than the bounded retained window was still served")
+	} else {
+		requireInverseStale(t, err)
+	}
+}
