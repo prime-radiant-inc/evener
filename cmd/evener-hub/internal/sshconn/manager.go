@@ -108,7 +108,13 @@ type Options struct {
 	// HubAddr is the host hub's loopback listen address, used as this host's
 	// --addr for the bridge and by the restart path to find the old pid and probe
 	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
-	// address different ports. Default 127.0.0.1:9180.
+	// address different ports. It must be a loopback or wildcard host:port. A
+	// host entry may override it with its own Addr. When neither is set, this
+	// Manager assumes the hub's documented default, 127.0.0.1:9180, and leaves
+	// --addr off the bridge so the host resolves its own hub.toml; a host that
+	// names its hub.toml via ConfigPath must therefore also carry an explicit
+	// address (ErrHostAddr), because the controller cannot read the file to learn
+	// the port the bridge will actually dial.
 	HubAddr string
 
 	// Test seams.
@@ -246,10 +252,10 @@ type Manager struct {
 	// dev build on, so the deploy happens at most once per process rather than on
 	// every reconnect.
 	devDeployed map[string]bool
-	// pendingRelaunch records, per host, the bare relaunch command a restart
-	// recorded before it ran. A restart that killed the old hub and left no
+	// pendingRestarts records, per host, the restart command (a bare relaunch, or
+	// a supervisor's restart) recorded before it ran. A restart that left no
 	// listener leaves this set, and the next Ensure retries it.
-	pendingRelaunches map[string]string
+	pendingRestarts map[string]string
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -257,15 +263,15 @@ type Manager struct {
 func New(reg *hostreg.Registry, opts Options) *Manager {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		reg:               reg,
-		opts:              opts,
-		runner:            opts.runner(),
-		baseCtx:           baseCtx,
-		cancel:            cancel,
-		locks:             map[string]*sync.Mutex{},
-		chans:             map[string]*Channel{},
-		devDeployed:       map[string]bool{},
-		pendingRelaunches: map[string]string{},
+		reg:             reg,
+		opts:            opts,
+		runner:          opts.runner(),
+		baseCtx:         baseCtx,
+		cancel:          cancel,
+		locks:           map[string]*sync.Mutex{},
+		chans:           map[string]*Channel{},
+		devDeployed:     map[string]bool{},
+		pendingRestarts: map[string]string{},
 	}
 }
 
@@ -403,6 +409,12 @@ func (m *Manager) Close() error {
 //   - a deploy or restart that leaves the host without a listener is retried by
 //     the next Ensure, matching ErrRestart's stated contract.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, error) {
+	// Refuse an unusable hub address before any ssh command runs: the probe and
+	// restart paths below would otherwise address (and possibly kill) whatever
+	// holds the default port, or poll a port the bridge never dials.
+	if err := m.checkHostAddr(host); err != nil {
+		return nil, err
+	}
 	m.stateEvent(host.Name, StatePreflighting)
 	// Bound only the preflight here: deploy/restart below get deployLimit, and
 	// attach bounds its own handshake (initTimeout).
@@ -423,7 +435,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 	if runningKnown && running == expected {
 		// A hub already serving exactly the expected build resolves whatever an
 		// earlier restart left outstanding; do not launch a second hub over it.
-		m.clearPendingRelaunch(host.Name)
+		m.clearPendingRestart(host.Name)
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown)
@@ -443,10 +455,10 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
 		var restartErr error
-		if relaunch := m.pendingRelaunch(host.Name); relaunch != "" && !runningKnown {
+		if pending := m.pendingRestart(host.Name); pending != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
-			// no hub to kill now, so complete the recorded relaunch instead.
-			restartErr = m.recoverRelaunch(restartCtx, host, relaunch)
+			// no hub to kill now, so complete the recorded restart instead.
+			restartErr = m.recoverRestart(restartCtx, host, pending)
 		} else {
 			restartErr = m.restartHub(restartCtx, host, facts)
 		}
@@ -454,7 +466,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 			cancelRestart()
 			return nil, restartErr
 		}
-		facts, err = m.refreshAfterRestart(restartCtx, host, facts, expected)
+		facts, err = m.refreshAfterRestart(restartCtx, host, facts)
 		cancelRestart()
 		if err != nil {
 			return nil, err
@@ -496,7 +508,7 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected, running
 	devUnverified := isDevVersion(expected) && m.canDeploy() && !m.isDevDeployed(name)
 
 	deploy = versionDiffers || !protocolOK || !flagsOK || devUnverified
-	restart = deploy || (runningKnown && running != expected) || m.pendingRelaunch(name) != ""
+	restart = deploy || (runningKnown && running != expected) || m.pendingRestart(name) != ""
 	return deploy, restart
 }
 
@@ -505,7 +517,7 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected, running
 // describe the build the restart replaced, so judging the launch contract on
 // them would let a host predating a required flag, or speaking an older
 // protocol, never be accepted even after a successful upgrade.
-func (m *Manager) refreshAfterRestart(ctx context.Context, host hostreg.Host, facts Preflight, expected string) (Preflight, error) {
+func (m *Manager) refreshAfterRestart(ctx context.Context, host hostreg.Host, facts Preflight) (Preflight, error) {
 	refreshed, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
 		return facts, err
@@ -516,9 +528,12 @@ func (m *Manager) refreshAfterRestart(ctx context.Context, host hostreg.Host, fa
 	facts.LaunchCheckKnown = true
 	facts.Protocol = refreshed.Protocol
 	facts.LaunchFlags = refreshed.LaunchFlags
-	// The restart verified the running hub against expected, so report the build
-	// actually serving rather than the pre-deploy on-disk version.
-	facts.Version = expected
+	// Report the version the re-probe actually read. The restart verified the
+	// *running* hub against expected, but this launch-check describes the on-disk
+	// binary, which can still differ (a replaced or partially installed file);
+	// overwriting it with expected would make the channel claim a match it did
+	// not observe. A difference here is what makes the next Ensure redeploy.
+	facts.Version = refreshed.Version
 	return facts, nil
 }
 
@@ -712,6 +727,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrLaunchContract),
 		errors.Is(err, ErrSSHAuth),
 		errors.Is(err, ErrHostNotFound),
+		errors.Is(err, ErrHostAddr),
 		errors.Is(err, ErrPreflightDecode):
 		return true
 	default:
@@ -802,23 +818,23 @@ func (m *Manager) markDevDeployed(name string) {
 	m.devDeployed[name] = true
 }
 
-// pendingRelaunch returns the bare relaunch a failed restart recorded, or "".
-func (m *Manager) pendingRelaunch(name string) string {
+// pendingRestart returns the restart command a failed restart recorded, or "".
+func (m *Manager) pendingRestart(name string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.pendingRelaunches[name]
+	return m.pendingRestarts[name]
 }
 
-func (m *Manager) setPendingRelaunch(name, relaunch string) {
+func (m *Manager) setPendingRestart(name, remote string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRelaunches[name] = relaunch
+	m.pendingRestarts[name] = remote
 }
 
-func (m *Manager) clearPendingRelaunch(name string) {
+func (m *Manager) clearPendingRestart(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.pendingRelaunches, name)
+	delete(m.pendingRestarts, name)
 }
 
 func (m *Manager) logf(format string, args ...any) {

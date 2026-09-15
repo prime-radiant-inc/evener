@@ -48,6 +48,13 @@ var (
 	// the next Ensure retries; a hub that fails to start leaves hub.lock free.
 	ErrRestart = errors.New("sshconn: hub restart failed")
 
+	// ErrHostAddr marks a host whose configured hub address the controller
+	// cannot use: malformed, not a loopback or wildcard bind, or a config_path
+	// with no address at all. Probing or killing through such an address could
+	// hit the wrong service, so it is refused before any ssh command runs.
+	// Terminal: no retry can make a configuration error go away.
+	ErrHostAddr = errors.New("sshconn: host hub address unusable")
+
 	// ErrManagerClosed marks an Ensure on a Manager whose Close has already run.
 	// Close is terminal for the Manager: the base context is canceled for good,
 	// so no channel created after it would ever be supervised.

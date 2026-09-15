@@ -69,10 +69,13 @@ const frontendDist = "cmd/evener-hub/frontend/dist"
 // in the dist directory (frontend/scripts/clean-dist.mjs, vite.config.ts).
 const distPlaceholder = "PLACEHOLDER"
 
-// ensureWebBuilt refuses to build when the embedded SPA is still only the
-// tracked placeholder: the deployed binary would serve the documented 503
-// instead of the web UI, and nothing downstream can detect that. A built dist
-// always carries at least one entry besides PLACEHOLDER.
+// ensureWebBuilt refuses to build when the embedded SPA has no real build
+// artifact: the deployed binary would serve the documented 503 instead of the
+// web UI, and nothing downstream can detect that. A real `vite build` always
+// writes dist/index.html (frontend/vite.config.ts sets outDir "dist" at the app
+// root), so requiring it distinguishes a built dist from a directory that merely
+// has some other entry in it — .DS_Store or any other stray file used to pass the
+// old "anything but PLACEHOLDER" check.
 func ensureWebBuilt(root string) error {
 	dist := filepath.Join(root, filepath.FromSlash(frontendDist))
 	entries, err := os.ReadDir(dist)
@@ -80,11 +83,14 @@ func ensureWebBuilt(root string) error {
 		return fmt.Errorf("web UI not built: %w (run `make build-web` in %s)", err, root)
 	}
 	for _, e := range entries {
-		if e.Name() != distPlaceholder {
+		if e.Name() == "index.html" && !e.IsDir() {
 			return nil
 		}
 	}
-	return fmt.Errorf("web UI not built: %s holds only the placeholder (run `make build-web` in %s)", dist, root)
+	if len(entries) == 1 && entries[0].Name() == distPlaceholder {
+		return fmt.Errorf("web UI not built: %s holds only the placeholder (run `make build-web` in %s)", dist, root)
+	}
+	return fmt.Errorf("web UI not built: %s has no index.html (run `make build-web` in %s)", dist, root)
 }
 
 // buildLdflags renders the -X flags that carry this process's buildinfo into
@@ -139,7 +145,47 @@ func verifyBuildSource(source string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("build source %q has a non-directory cmd/evener", abs)
 	}
+	if err := verifyBuildRevision(abs); err != nil {
+		return "", err
+	}
 	return abs, nil
+}
+
+// verifyBuildRevision makes the deployed binary's version stamp honest. The
+// builder stamps this process's own buildinfo into whatever the source checkout
+// compiles, so a checkout at a different revision would install code that reports
+// the controller's version while running something else — version auto-match
+// would then accept it. When this process carries a GitSHA, the source checkout's
+// HEAD must resolve to that same commit; otherwise the build is refused. An
+// unstamped (dev) controller has no revision to match and is skipped.
+func verifyBuildRevision(root string) error {
+	want := strings.TrimSpace(buildinfo.GitSHA)
+	if want == "" {
+		return nil
+	}
+	head, err := gitCommit(root, "HEAD")
+	if err != nil {
+		return fmt.Errorf("build source %q: cannot read HEAD to check it against this controller's build %q: %w", root, want, err)
+	}
+	got, err := gitCommit(root, want)
+	if err != nil {
+		return fmt.Errorf("build source %q does not contain this controller's build commit %q: %w", root, want, err)
+	}
+	if got != head {
+		return fmt.Errorf("build source %q is at commit %s, but this controller was built from %s; refusing to deploy code other than the controller's own", root, head, want)
+	}
+	return nil
+}
+
+// gitCommit resolves rev to a full commit id within the checkout at root. A rev
+// the checkout does not contain (or a missing git) is an error, so an unverifiable
+// source fails closed rather than being assumed to match.
+func gitCommit(root, rev string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "--quiet", rev+"^{commit}").Output() //nolint:noctx // local, fast; no request context to thread here
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // declaresEvenerModule reports whether dir holds a go.mod for this module.
@@ -210,7 +256,11 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q evener not found on PATH: %w: %s", ErrDeploy, host.Name, err, tail(out))
 	}
-	p := strings.TrimSpace(string(out))
+	// First line only: `command -v` prints one path, but taking all of TrimSpace
+	// would fold any trailing noise (a multi-line wrapper) into the path and then
+	// hand it to the resolver as one argument. resolveDeployTarget already reads
+	// its own output this way.
+	p := firstLine(string(out))
 	if p == "" {
 		return "", fmt.Errorf("%w: host %q evener not found on PATH", ErrDeploy, host.Name)
 	}
@@ -271,12 +321,16 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 
 // pushBinaryRemote builds the remote command that installs a pushed binary: it
 // creates a unique temp name with mktemp (atomic, and unique across manager
-// processes), streams the binary into it, marks it executable, and mv's it into
-// place. The temp-then-mv makes the install atomic: an interrupted push never
-// leaves a truncated evener at the final path.
+// processes), arms a trap to remove it, streams the binary into it, marks it
+// executable, and mv's it into place. The temp-then-mv makes the install atomic:
+// an interrupted push never leaves a truncated evener at the final path, and the
+// trap removes the temp file on any failure (a failed cat, chmod, or mv, or a
+// dropped connection) so repeated failures do not accumulate evener.tmp.* files
+// in the install directory.
 func pushBinaryRemote(target string) string {
 	tmp := "tmp=$(mktemp " + shellQuote(target+deployTempSuffix+"XXXXXX") + ") || exit 1"
-	return tmp + "; cat > \"$tmp\" && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
+	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
+	return tmp + "; " + cleanup + "; cat > \"$tmp\" && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
 }
 
 // pushBinary streams data to target over an ssh `cat`, then chmod +x and mv it

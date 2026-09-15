@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,9 +50,11 @@ func explicitHostAddr(o Options, host hostreg.Host) string {
 // hostAddrFor resolves the listen address of host's hub for the restart and
 // health probes: the configured address when there is one, else the hub default.
 // channelArgv passes the same configured address as the bridge's --addr, so the
-// bridge and the probes can never address different ports (a non-default
-// Options.HubAddr with no per-host Addr used to make the probes kill or poll a
-// port the bridge never dialed).
+// bridge and the probes address the same port whenever one is configured. A host
+// that points at its own hub.toml (ConfigPath) but gives no address is refused by
+// checkHostAddr rather than defaulted here: the bridge would resolve the file's
+// address on the host, and the controller cannot read that file, so probing the
+// default could address a different hub than the bridge attaches to.
 func hostAddrFor(o Options, host hostreg.Host) string {
 	if a := explicitHostAddr(o, host); a != "" {
 		return a
@@ -63,8 +66,54 @@ func (m *Manager) hostAddr(host hostreg.Host) string {
 	return hostAddrFor(m.opts, host)
 }
 
+// checkHostAddr validates the address the restart and health probes will use. A
+// non-loopback or malformed address is refused before any ssh command runs:
+// hubPort's parse-failure default would otherwise let a malformed address make
+// the bare-process path stop whatever happens to listen on :9180, and the health
+// probe would curl an arbitrary endpoint. A host that names its own hub.toml
+// (ConfigPath) without an address is also refused: the file may select any port,
+// the bridge resolves it on the host, and the controller has no way to read it,
+// so silently probing the default would diverge from the bridge.
+func (m *Manager) checkHostAddr(host hostreg.Host) error {
+	if a := explicitHostAddr(m.opts, host); a != "" {
+		return validateHubAddr(host.Name, a)
+	}
+	if p := strings.TrimSpace(host.ConfigPath); p != "" {
+		return fmt.Errorf("%w: host %q sets config_path %q but no address; set Addr (or Options.HubAddr) to the hub's listen address so the restart and health probes address the same hub the bridge attaches to",
+			ErrHostAddr, host.Name, p)
+	}
+	// Nothing configured: the host resolves the hub's documented default, which
+	// is what hostAddrFor returns and what the bridge (with no --addr) dials.
+	return nil
+}
+
+// validateHubAddr accepts the addresses a hub can actually listen on: a
+// loopback host, localhost, or a wildcard bind (which loopbackAddr normalizes to
+// loopback for probing). Anything else — including a missing port — is refused
+// rather than probed.
+func validateHubAddr(name, addr string) error {
+	hostPart, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%w: host %q address %q is not host:port: %w", ErrHostAddr, name, addr, err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%w: host %q address %q has no usable port", ErrHostAddr, name, addr)
+	}
+	switch hostPart {
+	case "", "localhost", "0.0.0.0", "::":
+		return nil
+	}
+	ip := net.ParseIP(hostPart)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%w: host %q address %q is not a loopback or wildcard bind", ErrHostAddr, name, addr)
+	}
+	return nil
+}
+
 // hubPort extracts the TCP port from a host:port hub address, defaulting to the
-// known hub port when addr is unparsable.
+// known hub port when addr is unparsable. Configured addresses reach it through
+// checkHostAddr, so the default only covers a recovered argv's --addr, where a
+// fallback makes a mismatch (and a refusal) rather than a wrong kill.
 func hubPort(addr string) string {
 	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
 		return p
@@ -199,19 +248,22 @@ func parseLaunchdHubs(out []byte) []string {
 // "evener-hub.service loaded active running". A leading status glyph (●) is
 // stripped. `--all` also lists loaded-but-inactive units, which must not be read
 // as a live hub: restarting one would start a second hub while an ad hoc one
-// still holds hub.lock.
+// still holds hub.lock. SUB must be `running` too: `loaded active exited` is a
+// unit that is loaded and enabled but has no process serving, so treating it as
+// a live supervised hub would restart a unit instead of the ad hoc hub holding
+// the port.
 func parseSystemdHubs(out []byte) []string {
 	var units []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "●"))
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
 		unit := fields[0]
 		if !strings.HasSuffix(unit, ".service") {
 			continue
 		}
-		if fields[1] != "loaded" || fields[2] != "active" {
+		if fields[1] != "loaded" || fields[2] != "active" || fields[3] != "running" {
 			continue
 		}
 		if isEvenerHubName(strings.TrimSuffix(unit, ".service")) {
@@ -263,6 +315,12 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	if sup.kind != supervisorNone {
 		remote := sup.restartRemote()
+		// Record the restart before running it, exactly as restartBare does: a
+		// restart that leaves no listener must be completed by the next Ensure.
+		// Without this a supervisor restart that failed with the on-disk version
+		// already matching left nothing for the decision ladder to retry, so the
+		// next Ensure attached (or failed to attach) against a host with no hub.
+		m.setPendingRestart(host.Name, remote)
 		out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 		if runErr != nil && !sup.restartStatusIsAdvisory() {
 			// Surface the restart command's own failure even when the hub would
@@ -283,7 +341,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 			}
 			return err
 		}
-		m.clearPendingRelaunch(host.Name)
+		m.clearPendingRestart(host.Name)
 		return nil
 	}
 
@@ -295,24 +353,25 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
 	// this host is settled.
-	m.clearPendingRelaunch(host.Name)
+	m.clearPendingRestart(host.Name)
 	return nil
 }
 
-// recoverRelaunch retries a bare relaunch a previous restart recorded before it
-// died. It is the recovery half of the ladder: a restart that killed the old hub
-// but left no listener must be completed by the next Ensure, which is what
-// ErrRestart promises. There is no hub to kill here, so it runs the recorded
-// command directly and waits for the expected build to answer.
-func (m *Manager) recoverRelaunch(ctx context.Context, host hostreg.Host, relaunch string) error {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
+// recoverRestart retries the restart command a previous attempt recorded before
+// it ran: a bare relaunch or a supervisor restart. It is the recovery half of the
+// ladder: a restart that killed the old hub but left no listener must be
+// completed by the next Ensure, which is what ErrRestart promises. There is no
+// hub to kill here, so it runs the recorded command directly and waits for the
+// expected build to answer.
+func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, remote string) error {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 	if err != nil {
-		return fmt.Errorf("%w: host %q relaunch recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
+		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
 	if err := m.waitHealthy(ctx, host, m.opts.controllerVersion()); err != nil {
 		return err
 	}
-	m.clearPendingRelaunch(host.Name)
+	m.clearPendingRestart(host.Name)
 	return nil
 }
 
@@ -359,7 +418,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	// Record the relaunch before running it: if it fails, or the hub never comes
 	// up, the next Ensure retries this exact command instead of giving up on a
 	// host that now has no hub. restartHub clears it once health is confirmed.
-	m.setPendingRelaunch(host.Name, relaunch)
+	m.setPendingRestart(host.Name, relaunch)
 	rout, rerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if rerr != nil {
 		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))

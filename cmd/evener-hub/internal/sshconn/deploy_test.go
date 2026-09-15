@@ -371,6 +371,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 // built. A different module (an installed hub pointed at another workspace) must
 // not be mistaken for the evener checkout.
 func TestVerifyBuildSourceRequiresAnEvenerCheckout(t *testing.T) {
+	clearBuildSHA(t)
 	if _, err := verifyBuildSource(""); err == nil || !strings.Contains(err.Error(), "no build source") {
 		t.Fatalf("verifyBuildSource(\"\") err = %v, want a missing-source error", err)
 	}
@@ -435,6 +436,7 @@ func TestLocalBuildWithoutBuildSourceFailsClearly(t *testing.T) {
 // honored: the production builder runs `go build` with the configured checkout
 // as its working directory, never the process working directory.
 func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
+	clearBuildSHA(t)
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -507,6 +509,7 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 // this check the host would serve the documented 503 "web app not built" and
 // version auto-match could not detect it (it compares only buildinfo.GitSHA).
 func TestLocalBuildRefusesPlaceholderSPA(t *testing.T) {
+	clearBuildSHA(t)
 	source := t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -596,4 +599,154 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	if !strings.Contains(err.Error(), "build source") {
 		t.Fatalf("error does not explain the missing build source: %v", err)
 	}
+}
+
+// TestPushBinaryRemoteCleansTempOnFailure pins the finding that a failed push
+// left its mktemp file beside the target: repeated failures accumulated partial
+// evener.tmp.* files in the install directory. The remote command now arms a trap
+// before streaming, so any failure path removes the temp name.
+func TestPushBinaryRemoteCleansTempOnFailure(t *testing.T) {
+	got := pushBinaryRemote("/opt/evener/bin/evener")
+	cleanup := `trap 'rm -f "$tmp"' EXIT`
+	idxCleanup := strings.Index(got, cleanup)
+	if idxCleanup < 0 {
+		t.Fatalf("pushBinaryRemote does not arm a temp cleanup trap: %q", got)
+	}
+	if idxCat := strings.Index(got, "cat >"); idxCat < 0 || idxCleanup > idxCat {
+		t.Fatalf("the cleanup trap must be armed before the push: %q", got)
+	}
+	if !strings.Contains(got, "mktemp /opt/evener/bin/evener.tmp.XXXXXX") {
+		t.Fatalf("pushBinaryRemote no longer creates a unique temp name: %q", got)
+	}
+}
+
+// TestEnsureWebBuiltRequiresIndexHTML pins the finding that any stray dist entry
+// counted as a built SPA, so a .DS_Store in an unbuilt dist passed and the
+// deployed binary still served the 503 placeholder. A real vite build writes
+// dist/index.html, so that is the artifact required.
+func TestEnsureWebBuiltRequiresIndexHTML(t *testing.T) {
+	root := t.TempDir()
+	dist := filepath.Join(root, filepath.FromSlash(frontendDist))
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, ".DS_Store"), []byte("junk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureWebBuilt(root)
+	if err == nil {
+		t.Fatal("ensureWebBuilt accepted a dist with no index.html")
+	}
+	if !strings.Contains(err.Error(), "index.html") {
+		t.Fatalf("error does not name the missing artifact: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWebBuilt(root); err != nil {
+		t.Fatalf("ensureWebBuilt rejected a built dist: %v", err)
+	}
+}
+
+// TestVerifyBuildSourceRevisionMustMatchController pins the finding that
+// localBuild stamps the controller's buildinfo into whatever BuildSource points
+// at: a stale checkout would report the controller's version while running
+// different code, and version auto-match would accept it. A stamped controller
+// now requires the source checkout's HEAD to be its own commit.
+func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+
+	orig := buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.GitSHA = orig })
+	buildinfo.GitSHA = short
+	if _, err := verifyBuildSource(root); err != nil {
+		t.Fatalf("verifyBuildSource(matching revision): %v", err)
+	}
+
+	// Advance the checkout: the controller's stamp now names different code.
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "second")
+	_, err := verifyBuildSource(root)
+	if err == nil {
+		t.Fatal("verifyBuildSource accepted a checkout at a revision other than the controller's build")
+	}
+	if !strings.Contains(err.Error(), short) || !strings.Contains(err.Error(), "refusing to deploy") {
+		t.Fatalf("error does not explain the revision mismatch: %v", err)
+	}
+
+	// A commit the checkout does not contain must also fail closed.
+	buildinfo.GitSHA = "deadbee"
+	if _, err := verifyBuildSource(root); err == nil || !strings.Contains(err.Error(), "does not contain") {
+		t.Fatalf("verifyBuildSource(unknown revision) = %v, want a fail-closed error", err)
+	}
+}
+
+// TestDeployTargetUsesFirstLineOfCommandV pins the finding that deployTarget ran
+// the whole `command -v evener` output through TrimSpace: trailing noise would be
+// folded into the path handed to the resolver, unlike resolveDeployTarget's own
+// first-line read.
+func TestDeployTargetUsesFirstLineOfCommandV(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var resolverJoined string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "command -v evener"):
+			return []byte("/usr/local/bin/evener\nnote: wrapper\n"), nil
+		case strings.HasSuffix(joined, "evener_resolve /usr/local/bin/evener"):
+			resolverJoined = joined
+			return []byte("/usr/local/bin/evener\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	got, err := m.deployTarget(context.Background(), host)
+	if err != nil {
+		t.Fatalf("deployTarget: %v (the first line of `command -v` output must be the path)", err)
+	}
+	if got != "/usr/local/bin/evener" {
+		t.Fatalf("deployTarget = %q, want the first line", got)
+	}
+	if resolverJoined == "" {
+		t.Fatal("the resolver was not invoked with the first line alone")
+	}
+}
+
+// gitIn runs a git command in dir for the build-source tests, failing on error.
+// The env overrides keep it independent of the developer's global git config.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// clearBuildSHA makes the build-source revision check a no-op for tests that
+// build from a throwaway checkout with no git history, independent of whether
+// the test binary itself carries buildinfo ldflags.
+func clearBuildSHA(t *testing.T) {
+	t.Helper()
+	orig := buildinfo.GitSHA
+	buildinfo.GitSHA = ""
+	t.Cleanup(func() { buildinfo.GitSHA = orig })
 }

@@ -187,6 +187,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 	var mu sync.Mutex
 	var events []string
 	var states []State
+	launchChecks := 0
 	record := func(s string) {
 		mu.Lock()
 		events = append(events, s)
@@ -204,7 +205,13 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 			case strings.Contains(joined, "XDG_STATE_HOME"):
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case strings.Contains(joined, "launch-check"):
-				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				// The preflight reads the stale on-disk binary; the re-probe after
+				// the deploy reads the controller's freshly installed build.
+				launchChecks++
+				if launchChecks == 1 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
 			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
@@ -1037,6 +1044,7 @@ func TestDetectSupervisorIgnoresStoppedUnits(t *testing.T) {
 		l, s, u []byte
 	}{
 		{"systemd inactive", "linux", nil, []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil},
+		{"systemd exited", "linux", nil, []byte("evener-hub.service loaded active exited Evener Hub\n"), nil},
 		{"systemd-user inactive", "linux", nil, []byte("sshd.service loaded active running\n"), []byte("evener-hub.service loaded inactive dead Evener Hub\n")},
 		{"launchd not running", "darwin", []byte("PID\tStatus\tLabel\n-\t0\tcom.example.evener-hub\n"), nil, nil},
 	}
@@ -1592,5 +1600,149 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure: %v (a build longer than attemptLimit must still fit the deploy budget)", err)
+	}
+}
+
+// TestEnsureSupervisorRestartRecoveryRetriesRestart pins the High finding that a
+// failed supervisor restart was not recorded as pending. A `systemctl restart`
+// that leaves no listener, with the new binary already on disk, used to make the
+// next Ensure see a matching on-disk version and an unknown running version, skip
+// the restart, and attach to a host with no hub. Every restart mode now records
+// its command before running it, so the next Ensure completes it.
+func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	restarts, launchCalls := 0, 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			restarts++
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			// The hub only answers once the recovery restart has run.
+			if restarts < 2 {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(`{"version":"newsha"}`), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
+		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the supervisor restart never brought the hub up)", err)
+	}
+	if restarts != 1 {
+		t.Fatalf("systemctl restarts after Ensure 1 = %d, want 1", restarts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 2: %v (the pending supervisor restart must be retried)", err)
+	}
+	if restarts != 2 {
+		t.Fatalf("systemctl restarts after recovery = %d, want 2 (the recorded supervisor restart was not retried)", restarts)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel version = %q, want newsha", got)
+	}
+}
+
+// TestEnsureRefusesUnusableHubAddr pins the address-validation finding: the
+// controller must not probe (or kill) through an address it cannot trust. A
+// malformed or non-loopback address, and a config_path with no address at all
+// (where the bridge resolves a port the controller cannot read), are refused
+// before any ssh command runs rather than silently probed at the default port.
+func TestEnsureRefusesUnusableHubAddr(t *testing.T) {
+	cases := []struct {
+		name string
+		host hostreg.Host
+	}{
+		{"no port", hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.1"}},
+		{"non-loopback", hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "10.0.0.1:9180"}},
+		{"bad port", hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.1:notaport"}},
+		{"config without addr", hostreg.Host{Name: "alpha", SSH: "alpha.example", ConfigPath: "/etc/evener/hub.toml"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{}
+			m := newTestManager(t, testRegistry(t, tc.host), fr, Options{})
+			if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrHostAddr) {
+				t.Fatalf("Ensure err = %v, want ErrHostAddr", err)
+			}
+			if runs := fr.recordedRuns(); len(runs) != 0 {
+				t.Fatalf("ssh ran despite an unusable address: %v", runs)
+			}
+			if starts := fr.recordedStarts(); len(starts) != 0 {
+				t.Fatalf("bridge started despite an unusable address: %v", starts)
+			}
+		})
+	}
+}
+
+// TestValidateHubAddr pins the accepted shapes: a loopback host, localhost, or a
+// wildcard bind, with a numeric port. Everything else is refused rather than
+// probed.
+func TestValidateHubAddr(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:9180", "127.0.0.2:1", "[::1]:9180", "localhost:9180", "0.0.0.0:9180", "[::]:9180", ":9180"} {
+		if err := validateHubAddr("alpha", addr); err != nil {
+			t.Errorf("validateHubAddr(%q) = %v, want nil", addr, err)
+		}
+	}
+	for _, addr := range []string{"", "127.0.0.1", "127.0.0.1:", "127.0.0.1:0", "127.0.0.1:70000", "10.0.0.1:9180", "hub.example:9180", "127.0.0.1:abc"} {
+		if err := validateHubAddr("alpha", addr); !errors.Is(err, ErrHostAddr) {
+			t.Errorf("validateHubAddr(%q) = %v, want ErrHostAddr", addr, err)
+		}
+	}
+}
+
+// TestRefreshAfterRestartReportsTheReprobedVersion pins the Low finding that
+// refreshAfterRestart overwrote facts.Version with the expected value. The
+// re-probe reads the on-disk binary, which can still differ from what the
+// running hub reported, so the channel must report what the probe actually saw.
+func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{
+		"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"probedsha","launch_flags":["api-log"]}`),
+	})}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "expectedsha"})
+
+	facts, err := m.refreshAfterRestart(context.Background(), host, Preflight{})
+	if err != nil {
+		t.Fatalf("refreshAfterRestart: %v", err)
+	}
+	if facts.Version != "probedsha" {
+		t.Fatalf("facts.Version = %q, want the re-probed version %q", facts.Version, "probedsha")
+	}
+	if facts.Protocol != appwire.ProtocolVersion || !facts.LaunchCheckKnown {
+		t.Fatalf("refreshAfterRestart did not record the refreshed contract: %+v", facts)
 	}
 }
