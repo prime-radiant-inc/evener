@@ -288,10 +288,10 @@ func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t
 	}
 
 	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := store.Set(trueKey.Kind, trueKey.ID, true, favoriteAuthorityTestTime); err != nil {
+	if err := store.Set("", trueKey.Kind, trueKey.ID, true, favoriteAuthorityTestTime); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Set(falseKey.Kind, falseKey.ID, false, favoriteAuthorityTestTime); err != nil {
+	if err := store.Set("", falseKey.Kind, falseKey.ID, false, favoriteAuthorityTestTime); err != nil {
 		t.Fatal(err)
 	}
 	storedBefore, err := store.Favorites()

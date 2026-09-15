@@ -20,11 +20,11 @@ func TestNavigationPreservesKnownFavoritesDuringOwnershipFailure(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: id, status: "idle"})
 	roster.Refresh()
 	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := favorites.Set("session", id, true, time.Now()); err != nil {
+	if err := favorites.Set("", "session", id, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	unresolved := hubtest.SessionID(t)
-	if err := favorites.Set("session", unresolved, true, time.Now()); err != nil {
+	if err := favorites.Set("", "session", unresolved, true, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Roster: roster, Favorite: favorites})

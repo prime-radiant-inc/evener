@@ -394,14 +394,14 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	aliases := hubcore.LocalSessionDecisionAliases(threadID, authority)
 	if s.cfg.Archive != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Archive.Delete("session", id); err != nil {
+			if err := s.cfg.Archive.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 	}
 	if s.cfg.Favorite != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Favorite.Delete("session", id); err != nil {
+			if err := s.cfg.Favorite.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}
@@ -440,12 +440,12 @@ func (s *WebServer) cleanupProjectDeletion(
 	}
 	if len(result.Skipped) == 0 && record.WholeProject {
 		if s.cfg.Archive != nil {
-			if err := s.cfg.Archive.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Archive.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 		if s.cfg.Favorite != nil {
-			if err := s.cfg.Favorite.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Favorite.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}

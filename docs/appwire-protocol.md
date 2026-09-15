@@ -284,6 +284,7 @@ An embedded type contributes its own fields inline.
 | `id` | `string` |  |  |
 | `workingDir` | `string` | yes |  |
 | `archived` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ArchiveResponse`
@@ -617,6 +618,7 @@ _(no fields)_
 | `kind` | `string` |  |  |
 | `id` | `string` |  |  |
 | `favorited` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `FavoriteSetResponse`
