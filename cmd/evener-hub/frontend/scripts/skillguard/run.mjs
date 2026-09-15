@@ -955,17 +955,22 @@ async function runInlineEditing(driver) {
   await driver.assertComposerDraft(ref, "surrounding edits preserve atoms", two);
 
 
-  // The browser owns the clipboard and fires real copy/paste events. Pasting
-  // over the entire selection must restore inline atoms, not just their labels.
+  // The browser owns the clipboard and fires real copy/paste events. Paste
+  // imports plain canonical text only, never activation metadata. Original
+  // atoms must survive while their pasted labels remain ordinary text.
   await driver.selectAll(ref);
   await driver.press(ref, "c", modifier);
-  await driver.typeText(ref, "CLIPBOARD_REPLACE");
-  await driver.selectAll(ref);
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, " ");
   await driver.press(ref, "v", modifier);
+  const pastedText = `${TWO_SKILLS} ${TWO_SKILLS}`;
   await driver.waitPage(`(() => { const state = ${driver.composerStateExpr(ref)};
-    return state && state.text === ${JSON.stringify(TWO_SKILLS)} && JSON.stringify(state.chips) === ${JSON.stringify(JSON.stringify(two.chips))} ? state : null; })()`,
-    { label: "native clipboard round-trip with both inline atoms" });
-  await driver.assertComposerDraft(ref, "native copy/paste", two);
+    return state && state.text === ${JSON.stringify(pastedText)} ? state : null; })()`,
+    { label: "native clipboard preserves canonical display text" });
+  await driver.assertComposerDraft(ref, "paste text without importing activation", { ...two, text: pastedText });
+  await driver.selectRange(ref, TWO_SKILLS.length, pastedText.length);
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "original atoms survive clipboard edits", two);
   driver.milestone("inline-editing", await driver.composerState(ref));
 
   // Wrapping and scrolling are real browser layout, not jsdom geometry. Long
@@ -993,7 +998,7 @@ async function runInlineEditing(driver) {
   check(layout.wrapped && layout.chipWrapped && layout.atoms.length === 2 && !layout.horizontalOverflow && layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) && layout.scrollTop > 0,
     `inline wrap/scroll layout failed: ${JSON.stringify(layout)}`);
   driver.milestone("inline-layout", layout);
-  // Remove only the wrapping prose, retaining both clipboard-restored atoms.
+  // Remove only the wrapping prose, retaining both original atoms.
   await driver.selectRange(ref, secondStart, secondStart + longText.length);
   await driver.press(ref, "Backspace");
   await driver.assertComposerDraft(ref, "remove wrapping prose", two);
