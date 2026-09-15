@@ -116,8 +116,10 @@ and no freshness value of its own.
 
 Initial discovery is an explicit opt-in at live-session chrome mounts.
 `SessionChrome.discoverActivity` defaults off and is forwarded to the hidden
-`ActivityPanel` as `discoverWhenHidden`; the live composer mount and the local
-notLoaded/send-disabled menu fallback opt in. `useActivityRefresh` shares the
+`ActivityPanel` as `discoverWhenHidden`; the live composer mount, the local
+notLoaded/send-disabled menu fallback, and `SessionChrome.discoveryOnly` - a
+chrome-less owner the composer mounts while its follow-up card rests (#1335) -
+opt in. `useActivityRefresh` shares the
 complete freshness effect between that background owner and `ActivityPanelBody`:
 while a body is mounted it owns freshness, and a hidden trigger without
 `refreshWhenHidden` remains suppressed. An opted-in chrome owner may establish
@@ -127,11 +129,13 @@ or read-only consumers retain the default-off behavior and do not initiate
 initial discovery.
 
 This ownership intentionally follows the chrome that is actually mounted. A
-freshly opened saved notLoaded/send-enabled session does not mount composer
-chrome until its follow-up composer is engaged, so job ids may remain unresolved
-until that engagement. The menu-only Session fallback covers the corresponding
-local notLoaded/send-disabled case; universal saved-session discovery is not the
-shipped scope.
+freshly opened saved notLoaded/send-enabled session mounts no composer chrome
+while its follow-up card rests, so the composer mounts a chrome-less discovery
+owner for exactly that interval: job ids resolve without waiting for the card to
+be engaged, and the card's own chrome takes discovery back the moment it is.
+The menu-only Session fallback covers the corresponding local
+notLoaded/send-disabled case, which renders no card at all; the two never
+coexist, so a session is never owned twice.
 
 Forced refreshes are skipped while the summary is loading. This keeps
 co-mounted owners from queuing a duplicate forced follow-up after the initial

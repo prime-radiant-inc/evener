@@ -40,7 +40,7 @@ test("shows only the working dir for a non-local session, without a git lookup",
   expect(client.calls).toHaveLength(0);
 });
 
-test("shows the cwd and links the branch to the GitHub repo page", async () => {
+test("names the repository as owner/repo#branch and links it to the forge page", async () => {
   const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
   renderLocation("/home/jesse/repo", client);
 
@@ -49,8 +49,15 @@ test("shows the cwd and links the branch to the GitHub repo page", async () => {
   expect(link.getAttribute("href")).toBe("https://github.com/owner/repo");
   expect(link.getAttribute("target")).toBe("_blank");
   expect(link.getAttribute("rel")).toBe("noopener noreferrer");
-  expect(screen.getByTestId("composer-repo-branch").textContent).toBe("feature/x");
+  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("owner/repo#feature/x");
   expect(screen.getByTestId("forge-mark").getAttribute("data-forge")).toBe("github");
+  // The bare branch is only for the no-forge case; here the repo carries it.
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  // The anchor, not the span inside it, owns the tooltip: a title on the span
+  // would shadow this one for any hover over the visible text, leaving only a
+  // restatement of what is already on screen.
+  expect(link.getAttribute("title")).toBe("Open owner/repo#feature/x on GitHub");
+  expect(screen.getByTestId("composer-repo-ref").getAttribute("title")).toBeNull();
 });
 
 test("recognizes GitLab and Bitbucket origins", async () => {
@@ -59,6 +66,8 @@ test("recognizes GitLab and Bitbucket origins", async () => {
   expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe(
     "https://gitlab.com/group/sub/repo",
   );
+  // A GitLab subgroup path is part of the owner, exactly as the URL says.
+  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("group/sub/repo#main");
   expect(screen.getByTestId("forge-mark").getAttribute("data-forge")).toBe("gitlab");
   unmount();
 
@@ -67,6 +76,7 @@ test("recognizes GitLab and Bitbucket origins", async () => {
   expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe(
     "https://bitbucket.org/team/repo",
   );
+  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("team/repo#main");
   expect(screen.getByTestId("forge-mark").getAttribute("data-forge")).toBe("bitbucket");
 });
 
@@ -144,14 +154,14 @@ test("ignores a late response for a cwd the composer has left", async () => {
 // screen while the new lookup is in flight (or if it never answers) - that
 // branch describes a different hub.
 test("drops the previous client's branch after the client is replaced", async () => {
-  const oldClient = clientReporting({ head: "old-branch", originUrl: "git@github.com/owner/repo.git" });
+  const oldClient = clientReporting({ head: "old-branch", originUrl: "git@github.com:owner/repo.git" });
   const newClient = new FakeClient();
   // Never answers: the point is what is displayed while the new lookup is
   // unresolved.
   newClient.on("evener/git/head", () => new Promise<never>(() => {}));
 
   const { rerender } = renderLocation("/repo", oldClient);
-  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("old-branch");
+  expect((await screen.findByTestId("composer-repo-ref")).textContent).toBe("owner/repo#old-branch");
 
   rerender(
     <ClientProvider client={newClient}>
@@ -159,6 +169,7 @@ test("drops the previous client's branch after the client is replaced", async ()
     </ClientProvider>,
   );
   expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-ref")).toBeNull();
   expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(screen.getByTestId("composer-repo-path").textContent).toBe("/repo");
 });

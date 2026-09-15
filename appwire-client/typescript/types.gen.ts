@@ -59,21 +59,28 @@ export interface AttentionSummary {
 
 export interface AuthApiKeyClearParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollParams {
   provider: string;
   flowId: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollResponse {
@@ -102,6 +109,7 @@ export interface AuthLoginCompleteParams {
   provider: string;
   flowId: string;
   redirectUrl: string;
+  originClientId?: string;
 }
 
 export interface AuthLoginCompleteResponse {
@@ -120,6 +128,8 @@ export interface AuthLoginStartResponse {
 
 export interface AuthLogoutParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthLogoutResponse {
@@ -152,6 +162,7 @@ export interface AuthStatusResponse {
 
 export interface AuthTestParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthTestResponse {
@@ -212,6 +223,7 @@ export interface EmptyResponse {
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  originClientId?: string;
 }
 
 export interface EvenerDelegateInfo {
@@ -603,6 +615,7 @@ export interface InstanceEntry {
   surface?: string;
   auth: string;
   baseUrl?: string;
+  endpointFingerprint?: string;
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
@@ -630,6 +643,7 @@ export interface InstanceListResponse {
 
 export interface InstanceRemoveParams {
   name: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceSetDefaultParams {
@@ -1488,6 +1502,8 @@ export interface ProviderDescriptor {
   vars?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
+  authModes?: string[];
+  setup?: InstanceEntry;
 }
 
 export interface QueueState {

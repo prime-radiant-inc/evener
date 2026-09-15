@@ -29,11 +29,8 @@ import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore"
 import { Composer as ComposerView } from "./Composer";
 import { readComposerDraft, readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
-import {
-  flushPendingTurnsProjectionForTests,
-  resetPendingTurnsStoreForTests,
-  subscribeComposerSubmissionCommitted,
-} from "./queue/pendingTurnsStore";
+import { resetPendingTurnsStoreForTests, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
   const client = connectionStore.getState().client;
@@ -1165,7 +1162,7 @@ test("shows the session's cwd and git branch under the composer card", async () 
   const line = await screen.findByTestId("composer-repo-location");
   expect(screen.getByTestId("composer-repo-path").textContent).toBe("/home/jesse/repo");
   expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
-  expect(screen.getByTestId("composer-repo-branch").textContent).toBe("composer-line");
+  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("owner/repo#composer-line");
 
   // "underneath the composer": the line follows the prompt card in the DOM.
   const card = screen.getByTestId("composer-input-card");
@@ -1209,7 +1206,7 @@ test("keeps the location line under a finished session with no composer card", a
   expect(screen.queryByTestId("composer-input-card")).toBeNull();
   expect((await screen.findByTestId("composer-repo-path")).textContent).toBe("/home/jesse/repo");
   expect((await screen.findByTestId("composer-repo-link")).getAttribute("href")).toBe("https://github.com/owner/repo");
-  expect(screen.getByTestId("composer-repo-branch").textContent).toBe("ended-branch");
+  expect(screen.getByTestId("composer-repo-ref").textContent).toBe("owner/repo#ended-branch");
 });
 
 // A source-backed session's cwd is another host's path. This hub must not be
