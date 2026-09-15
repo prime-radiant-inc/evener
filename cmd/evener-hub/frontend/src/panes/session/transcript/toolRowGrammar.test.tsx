@@ -427,6 +427,22 @@ test("the chevron rides inline at the end of the intent text, glued to its final
   expect(rowCss()).toMatch(/\.intentTail,\s*\.summaryTail\s*\{[^}]*display:\s*inline-flex/);
 });
 
+// The "Open beside" control's seating inside the tail unit (roborev's
+// review of the branch): the base .summaryTrailing centers itself - correct
+// on the collapsed single line, wrong inside the unit, where the final word
+// can wrap internally (overflow-wrap: anywhere) and a centered control
+// would sit between text lines instead of on the last one with the chevron.
+// The scoped override seats it like the chevron: one line box tall, bottom
+// aligned, hit slot centered in it (NotificationCard's .openTrailing is the
+// precedent). The geometry itself is pinned by the layoutguard case's
+// seating assertion.
+test("the tail unit seats the trailing control on its last line, centered in one line box", () => {
+  const css = rowCss();
+  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*align-self:\s*flex-end/);
+  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*height:\s*1lh/);
+  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*align-items:\s*center/);
+});
+
 test("the chevron rides inline at the end of the summary when there is no intent", () => {
   registerToolRenderer({ match: "trg_chev_trail", summary: () => "Ran ls", body: () => <div>more</div> });
   render(<ToolCallItem item={item({ toolName: "trg_chev_trail" })} turn={turn} live={false} />);

@@ -13,7 +13,11 @@
 //
 //   1. EVERY swept width must satisfy the invariant for EVERY production
 //      glyph - the non-binding widths are the no-regression half (glyphs
-//      stay inline when there IS room).
+//      stay inline when there IS room). Glyphs inside an atomic tail unit
+//      must additionally SEAT on the last line: a unit child that centers
+//      across the unit's full height (when the final word wrapped
+//      internally) still overlaps the line without sitting on it, which
+//      the strand check alone cannot see.
 //   2. EVERY swept fixture's probe must STRAND at least once across the
 //      sweep: the unglued markup failing at this font is what proves the
 //      sweep exercises the stranding geometry. A probe that never strands
@@ -43,6 +47,11 @@ export default function assert(measurement) {
         if (!g.sharesLastLine) {
           failures.push(
             `${fixture.id}@${m.width}px: ${g.glyph} [${g.glyphTop.toFixed(1)}, ${g.glyphBottom.toFixed(1)}] stranded below its reference text's last line [${g.lineTop.toFixed(1)}, ${g.lineBottom.toFixed(1)}]`,
+          );
+        }
+        if (g.inUnit && !g.centeredOnLastLine) {
+          failures.push(
+            `${fixture.id}@${m.width}px: ${g.glyph} [${g.glyphTop.toFixed(1)}, ${g.glyphBottom.toFixed(1)}] centers off its reference text's last line [${g.lineTop.toFixed(1)}, ${g.lineBottom.toFixed(1)}]: a tail unit's child must seat on the line, not straddle the unit's height`,
           );
         }
       }

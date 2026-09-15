@@ -519,6 +519,21 @@
   overflow-wrap: anywhere;
 }
 
+/* The "Open beside" control inside the tail unit must SEAT on the unit's
+ * last line like the chevron does: the base .summaryTrailing's
+ * align-self: center would center it across the unit's full height when the
+ * final word wraps internally (overflow-wrap: anywhere), seating it between
+ * text lines instead of on the last one. One line box tall and bottom
+ * aligned - the chevron's own seating, and NotificationCard's .openTrailing
+ * precedent - with the hit slot centered in it. The base rule's
+ * align-self: center keeps serving the collapsed .clamped line, which is
+ * single-line and centers correctly. */
+.summaryTail .summaryTrailing {
+  align-self: flex-end;
+  height: 1lh;
+  align-items: center;
+}
+
 /* One line box tall, glyph centered in it, so the chevron seats level with
  * the words of the line it shares (see widgets/disclosure's own .chevron for
  * the same 1lh pinning rationale). */

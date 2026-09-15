@@ -311,9 +311,18 @@ function measureRowRefs(rowEl, shape) {
       linesByEl.set(textEl, lines);
     }
     const lastLine = lines.at(-1);
+    // Glyphs inside an atomic tail unit must also SEAT on the last line: the
+    // unit's own cross alignment is what puts them there, and a misaligned
+    // child (e.g. one centering across the unit's full height when the final
+    // word wrapped internally) still overlaps the last line, so the strand
+    // check alone cannot see it. The midpoint test can: the hit target may
+    // paint symmetrically beyond the line box, but its center rides the line.
+    const mid = (glyph.top + glyph.bottom) / 2;
     out.push({
       glyph: ref.glyph,
+      inUnit: glyphEl.closest(".intentTail, .summaryTail") !== null,
       sharesLastLine: glyph.top < lastLine.bottom - 1 && glyph.bottom > lastLine.top + 1,
+      centeredOnLastLine: mid >= lastLine.top - 0.5 && mid <= lastLine.bottom + 0.5,
       glyphTop: glyph.top,
       glyphBottom: glyph.bottom,
       lineTop: lastLine.top,
