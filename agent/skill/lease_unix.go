@@ -18,7 +18,7 @@ type unixSkillsLease struct {
 // lockUnsupported reports that the filesystem does not support locking at all,
 // as opposed to another process holding the lock.
 func lockUnsupported(err error) bool {
-	return errors.Is(err, unix.ENOLCK) || errors.Is(err, unix.ENOSYS)
+	return errors.Is(err, unix.ENOLCK) || errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EOPNOTSUPP)
 }
 
 // platformAcquireSkillsLease takes a shared (reader) or exclusive (reaper) flock

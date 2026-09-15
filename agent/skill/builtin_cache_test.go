@@ -38,6 +38,7 @@ type embeddedSkillsCacheSnapshot struct {
 	verified, fallback                   bool
 	fallbackUntil                        time.Time
 	lease                                skillsLease
+	heldLeases                           []skillsLease
 }
 
 func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
@@ -53,6 +54,7 @@ func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 		verified:      embeddedSkillsCache.verified,
 		fallback:      embeddedSkillsCache.fallback,
 		lease:         embeddedSkillsCache.lease,
+		heldLeases:    append([]skillsLease(nil), embeddedSkillsCache.heldLeases...),
 	}
 }
 
@@ -77,6 +79,7 @@ func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
 	embeddedSkillsCache.fallbackUntil = s.fallbackUntil
 	embeddedSkillsCache.lease = s.lease
 	embeddedSkillsCache.leasedDir = s.leasedDir
+	embeddedSkillsCache.heldLeases = s.heldLeases
 }
 
 // pointEmbeddedSkillsAtBase sends the bundled-skills cache to base, clears the

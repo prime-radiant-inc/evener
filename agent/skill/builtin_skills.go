@@ -74,6 +74,11 @@ var embeddedSkillsCache struct {
 	fallback      bool
 	fallbackBase  string
 	fallbackUntil time.Time
+	// heldLeases keeps leases on fallback copies this process has moved on from.
+	// Sessions created while a fallback was current hold SkillFile paths inside
+	// it, so its lease is held for the process lifetime and the age reaper cannot
+	// collect the base while those paths are still needed.
+	heldLeases []skillsLease
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -236,7 +241,7 @@ func claimEmbeddedSkillsLocked(dir string) error {
 		// The lock file was replaced underneath the lease, so it guards nothing.
 		releaseSkillsLeaseLocked()
 	}
-	releaseSkillsLeaseLocked()
+	releasePreviousSkillsLeaseLocked()
 	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
 	if err != nil {
 		return err
@@ -251,6 +256,23 @@ func claimEmbeddedSkillsLocked(dir string) error {
 	embeddedSkillsCache.lease = lease
 	embeddedSkillsCache.leasedDir = dir
 	return nil
+}
+
+// releasePreviousSkillsLeaseLocked drops the lease held for a copy this process
+// is leaving behind. A fallback copy's lease is retained instead: sessions
+// created while it was current read its files on demand, so the base must stay
+// leased until the process ends. The caller holds the cache mutex.
+func releasePreviousSkillsLeaseLocked() {
+	if embeddedSkillsCache.lease == nil {
+		return
+	}
+	if embeddedSkillsCache.fallback && embeddedSkillsCache.lease.Valid() {
+		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, embeddedSkillsCache.lease)
+		embeddedSkillsCache.lease = nil
+		embeddedSkillsCache.leasedDir = ""
+		return
+	}
+	releaseSkillsLeaseLocked()
 }
 
 // releaseSkillsLeaseLocked drops the held lease, if any. The caller holds the
@@ -268,6 +290,7 @@ func releaseSkillsLeaseLocked() {
 // hold SkillFile paths inside it and read them on demand, so it stays until
 // reapStaleFallbackBases collects it by age. The caller holds the cache mutex.
 func forgetEmbeddedSkillsLocked() {
+	fallback := embeddedSkillsCache.fallback
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
@@ -275,6 +298,14 @@ func forgetEmbeddedSkillsLocked() {
 	embeddedSkillsCache.fallback = false
 	embeddedSkillsCache.fallbackBase = ""
 	embeddedSkillsCache.fallbackUntil = time.Time{}
+	if fallback && embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
+		// Sessions created while this fallback was current may still read its
+		// files, so its lease is retained for the process lifetime.
+		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, embeddedSkillsCache.lease)
+		embeddedSkillsCache.lease = nil
+		embeddedSkillsCache.leasedDir = ""
+		return
+	}
 	releaseSkillsLeaseLocked()
 }
 
