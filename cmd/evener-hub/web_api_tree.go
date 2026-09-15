@@ -317,9 +317,13 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
 		// An offline source keeps its last-known rows visible in metas, but
-		// they are not live: the frontend derives the offline affordance from
-		// the manifest. An empty Source is treated as online (server-owned
-		// local rows), so only source-identified remote rows can be excluded.
+		// they are not live. apiTreeSources below carries each source's Online
+		// flag for the fleet-view UI to derive the offline affordance; that
+		// consumer ships with Component 06b (fleet-view UI), so within this
+		// change an offline source's rows render as ordinary non-live rows
+		// rather than being projected live. An empty Source is treated as online
+		// (server-owned local rows), so only source-identified remote rows can
+		// be excluded.
 		if appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
 			live = append(live, entry)
 		}
