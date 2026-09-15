@@ -1,6 +1,11 @@
 import { expect, it } from "vitest";
 import { isEndpointConflict, WireError } from "../../appwire-client/typescript/errors";
-import { createProviderParams, editProviderParams } from "./providerForm";
+import {
+  createProviderParams,
+  editProviderParams,
+  ENDPOINT_CHANGED_MESSAGE,
+  endpointConflictFor,
+} from "./providerForm";
 
 const providers = [
   {
@@ -110,6 +115,18 @@ it("recognizes the hub's endpoint refusal, and only that", () => {
   expect(isEndpointConflict(conflict)).toBe(true);
   expect(isEndpointConflict(new WireError("boom", -32000))).toBe(false);
   expect(isEndpointConflict(new Error("boom"))).toBe(false);
+});
+
+it("claims a moved connection only for a rejected edit", () => {
+  const conflict = new WireError("moved", -32013, {
+    evenerErrorInfo: "conflict",
+  });
+  expect(endpointConflictFor(conflict, true)).toBe(ENDPOINT_CHANGED_MESSAGE);
+  // A create asserts no destination, so its conflict is a name collision and
+  // must fall through to the generic failure rather than blame the connection.
+  expect(endpointConflictFor(conflict, false)).toBeNull();
+  expect(endpointConflictFor(new WireError("boom", -32000), true)).toBeNull();
+  expect(endpointConflictFor(new Error("boom"), true)).toBeNull();
 });
 
 it("does not treat environment variable names as template keys", () => {

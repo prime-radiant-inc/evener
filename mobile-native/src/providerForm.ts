@@ -61,3 +61,12 @@ export function editProviderParams(
  * from, so the user has to review the destination now on screen. */
 export const ENDPOINT_CHANGED_MESSAGE =
   "This connection changed to a different endpoint. Review its destination and try again.";
+
+/** endpointConflictFor returns the message an editor shows for a rejected form
+ * submission, or null when the rejection is not this editor's own moved
+ * connection. Only an edit asserts a destination, so a create-time conflict -
+ * appwire.Conflict for a name another instance already holds - falls through to
+ * the generic save failure instead of claiming the connection moved. */
+export function endpointConflictFor(cause: unknown, editing: boolean): string | null {
+  return editing && isEndpointConflict(cause) ? ENDPOINT_CHANGED_MESSAGE : null;
+}

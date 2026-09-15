@@ -4,11 +4,10 @@ import type {
   InstanceEntry,
   ProviderDescriptor,
 } from "../../appwire-client/typescript/types.gen";
-import { isEndpointConflict } from "../../appwire-client/typescript/errors";
 import {
   createProviderParams,
   editProviderParams,
-  ENDPOINT_CHANGED_MESSAGE,
+  endpointConflictFor,
   type ProviderDraft,
 } from "./providerForm";
 import type { ProviderInstances } from "./providerInstances";
@@ -94,7 +93,8 @@ export function ProviderEditor({
       if (alive.current) onSaved(instance?.name ?? draft.name.trim());
     } catch (cause) {
       if (!alive.current) return;
-      if (isEndpointConflict(cause)) {
+      const conflictMessage = endpointConflictFor(cause, instance !== undefined);
+      if (conflictMessage !== null) {
         // The hub refused this edit's asserted destination: the name moved
         // since the listing this editor was opened from. Re-anchor to the row
         // now on screen rather than reporting a failed save for an endpoint the
@@ -103,7 +103,7 @@ export function ProviderEditor({
           .getSnapshot()
           .data?.instances.find((row) => row.name === instance?.name);
         setDraft((value) => ({ ...value, baseUrl: current?.baseUrl ?? "" }));
-        setError(ENDPOINT_CHANGED_MESSAGE);
+        setError(conflictMessage);
         return;
       }
       setError(

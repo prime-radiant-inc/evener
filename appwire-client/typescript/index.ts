@@ -90,6 +90,7 @@ export {
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
+  isEndpointConflict,
   isHubLaunchError,
   isStaleCursorError,
   mutationErrorData,

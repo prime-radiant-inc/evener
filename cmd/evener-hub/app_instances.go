@@ -990,7 +990,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// fail-closed rule the credential writes apply to an empty assertion: the
 	// field has to stay backward compatible.
 	if asserted {
-		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+		if err := c.auth.verifyAssertedDestination(name, params.ExpectedEndpointFingerprint, key, keyErr, "review its destination and save again"); err != nil {
 			return err
 		}
 	}

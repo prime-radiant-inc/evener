@@ -65,8 +65,12 @@ func TestInstances_EditRefusesAMovedEndpoint(t *testing.T) {
 	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("Edit with a stale assertion = %v, want an appwire Conflict", err)
 	}
-	if msg := err.Error(); !strings.Contains(msg, "endpoint") {
-		t.Fatalf("refusal %q does not name the endpoint", msg)
+	msg := err.Error()
+	if !strings.Contains(msg, "save again") {
+		t.Fatalf("refusal %q does not tell the user to save again", msg)
+	}
+	if strings.Contains(msg, "credential") {
+		t.Fatalf("refusal %q tells an instance edit to re-enter a credential, which its form does not offer", msg)
 	}
 	if got := authoredEntry(t, f.tomlPath, "work"); len(got.APIKeyEnv) != 0 {
 		t.Fatalf("the refused edit still wrote api_key_env = %v", got.APIKeyEnv)

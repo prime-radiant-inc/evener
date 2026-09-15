@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
@@ -783,6 +784,40 @@ describe("the form", () => {
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+  });
+
+  // The hub can refuse the endpoint this save asserted even though the sheet's
+  // own identity check passed: that check reads the store's listing, which a
+  // concurrent change may not have reached yet. The refusal has to re-read,
+  // re-anchor to the row now on screen, and say so, or every retry resubmits
+  // the obsolete fingerprint.
+  test("a hub endpoint-refusal re-anchors the sheet to the row now on screen", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const moved = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-after",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError("the endpoint moved", -32013, { evenerErrorInfo: "conflict" });
+    });
+    fake.on("evener/instance/list", () => ({ instances: [moved], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("replaced under the same name"));
+    // Re-anchored to the endpoint now on screen, and clean again.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v2");
+    expect(saveButton().disabled).toBe(true);
   });
 
   test("emptying Base URL shows the reset note and sends clearBaseUrl", async () => {

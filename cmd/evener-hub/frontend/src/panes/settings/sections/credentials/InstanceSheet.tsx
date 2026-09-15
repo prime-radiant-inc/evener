@@ -36,6 +36,7 @@ import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, useToasts } fro
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   credentialLayers,
+  isEndpointConflict,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -416,6 +417,7 @@ export function InstanceSheet({
       }
     } catch (err) {
       const message = errorText(err);
+      const conflict = isEndpointConflict(err);
       // The toast is owed wherever the user has gone - they asked for a write
       // that did not happen. The form's error line is not: it belongs to the
       // instance the save went out for, and written into a sheet since
@@ -423,9 +425,25 @@ export function InstanceSheet({
       // for releasing the rename guard, which only this sheet's save set.
       if (shownName.current === instance.name) {
         setRenamingFrom(undefined);
-        setFormError(message);
+        if (conflict) {
+          // The hub refused the destination this save asserted, so the name
+          // moved between the listing the sheet was seeded from and the RPC.
+          // Re-read and re-anchor to the row now on screen: leaving the draft
+          // alone would resubmit the obsolete fingerprint on every retry.
+          try {
+            await credentialsStore.getState().fetch();
+          } catch {
+            // Best-effort: the row on screen is re-anchored below when it is
+            // there, and the sheet closes itself when it is gone.
+          }
+          const current = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+          if (current !== undefined) seed(current);
+          setFormError(CHANGED_INSTANCE_ERROR);
+        } else {
+          setFormError(message);
+        }
       }
-      toast.push("error", `Save failed: ${message}`);
+      toast.push("error", `Save failed: ${conflict ? CHANGED_INSTANCE_ERROR : message}`);
     } finally {
       setBusy(false);
     }
