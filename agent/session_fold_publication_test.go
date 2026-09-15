@@ -3518,10 +3518,7 @@ func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testi
 			t.Fatalf("durable append %d: %v", i, err)
 		}
 	}
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	warnings, warningsMu, drained := collectEvents(s)
 
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -3554,6 +3551,28 @@ func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testi
 	}
 	if got := counts[fmt.Sprintf("recorded turn %d", recorded-1)]; got != 1 {
 		t.Fatalf("the last preserved turn appears %d times in the resumed history, want once", got)
+	}
+
+	// The failure is still reported — and says only what is true. The
+	// not-anchored clause describes a compaction a restart cannot see, which
+	// is exactly what this one is not.
+	s.Close()
+	<-drained
+	warningsMu.Lock()
+	defer warningsMu.Unlock()
+	reported := false
+	for _, event := range *warnings {
+		warning, ok := event.Data.(events.WarningData)
+		if event.Kind != events.EventWarning || !ok || !strings.Contains(warning.Message, "transcript write failed") {
+			continue
+		}
+		reported = true
+		if strings.Contains(warning.Message, "not anchored on disk") {
+			t.Fatalf("the retained copy's warning says the compaction was not anchored, and the marker is in the transcript: %q", warning.Message)
+		}
+	}
+	if !reported {
+		t.Fatal("the retained copy's write failure was never reported")
 	}
 }
 

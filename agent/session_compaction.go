@@ -369,7 +369,15 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	}
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v; this compaction was not anchored on disk, so a restart replays the transcript from before it", err)})
+		// The not-anchored clause describes the FOLD, not this copy: a write
+		// that kept its whole line is a record the anchor stands on, so
+		// reporting the failure must not also tell a reader the compaction is
+		// gone when it is on disk.
+		message := fmt.Sprintf("transcript write failed: %v", err)
+		if !tailComplete {
+			message += "; this compaction was not anchored on disk, so a restart replays the transcript from before it"
+		}
+		s.emit(events.EventWarning, events.WarningData{Message: message})
 	}
 	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
 		hook()

@@ -1078,7 +1078,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 	case events.EventContextCompaction:
 		p.clearSkillCandidate()
 		data := eventData[events.ContextCompactionData](event.Data)
-		return p.compactionAnnouncement(event, appwire.ThreadItemEventKindContextCompaction, "Context compaction", contextCompactionAnnouncement(data), contextCompactionRaw(data))
+		// The record's own renderer, not a second copy of it: a reload draws
+		// this item's text from schema.ContextCompaction.Announcement(), and
+		// the live path that formatted its own could drift from it silently.
+		compaction := data.Compaction()
+		return p.compactionAnnouncement(event, appwire.ThreadItemEventKindContextCompaction, "Context compaction", compaction.Announcement(), contextCompactionRaw(compaction))
 	case events.EventPluginLoaded:
 		p.clearSkillCandidate()
 		data := eventData[events.PluginLoadedData](event.Data)
@@ -1771,34 +1775,18 @@ func turnLimitAnnouncement(data events.TurnLimitData) string {
 // contextCompactionRaw marshals the structured compaction numbers under a
 // "compaction" key on the system item's Raw field. The web reads these to draw
 // an honest before→after expand (mockup #17 Alt A) from real numbers. Returns
-// nil when there is nothing to carry so the item stays clean.
-func contextCompactionRaw(data events.ContextCompactionData) json.RawMessage {
-	if data.Layer == "" && data.TurnsBefore == 0 && data.TurnsAfter == 0 &&
-		data.EstTokensBefore == 0 && data.EstTokensAfter == 0 {
+// nil when there is nothing to carry so the item stays clean. It takes the
+// same schema.ContextCompaction the transcript stores, so the live item and
+// the one a reload rebuilds from the record carry identical bytes.
+func contextCompactionRaw(compaction schema.ContextCompaction) json.RawMessage {
+	if compaction == (schema.ContextCompaction{}) {
 		return nil
 	}
-	raw, err := marshalContextCompaction(map[string]any{"compaction": data})
+	raw, err := marshalContextCompaction(map[string]any{"compaction": compaction})
 	if err != nil {
 		return nil
 	}
 	return raw
-}
-
-func contextCompactionAnnouncement(data events.ContextCompactionData) string {
-	var lines []string
-	if strings.TrimSpace(data.Layer) != "" {
-		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
-	}
-	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
-	}
-	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
-		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
-	}
-	if len(lines) == 0 {
-		return "Context compaction ran"
-	}
-	return strings.Join(lines, "\n")
 }
 
 func pluginLoadedRaw(data events.PluginLoadedData) json.RawMessage {

@@ -2148,3 +2148,63 @@ func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *tes
 		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reminder receipt back", pending)
 	}
 }
+
+// countRecordedReminders reports how many reminder turns the history holds for
+// one publication.
+func countRecordedReminders(s *Session, publicationID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, turn := range s.history {
+		state := turn.SkillState
+		if state != nil && state.ReloadReminder != nil && state.ReloadReminder.PublicationID == publicationID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn:
+// the reminder turn IS the admission, and keeping the receipt when its metadata
+// consumption fails is what makes the retry possible. What the retry must retry
+// is that consumption — appending a second turn saying the same thing delivers
+// the same inventory twice for one handoff.
+func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_reminder_retry", nil))
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	const publication = "pub-reminder-retry"
+	plantReminderReceipt(s, publication)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	repair := breakSessionMetaPath(t, s)
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	repair()
+	if got := countRecordedReminders(s, publication); got != 1 {
+		t.Fatalf("reminders after the failed save = %d, want exactly one", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
+		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
+	}
+
+	if _, _, staged, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	} else if staged != 0 {
+		t.Fatalf("the retry staged %d input tokens for a reminder it appended nothing for, want 0", staged)
+	}
+	if got := countRecordedReminders(s, publication); got != 1 {
+		t.Fatalf("reminders after the retry = %d, want 1: the transcript already holds the only reminder this handoff is owed", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("handoffs after the retry = %+v, want the receipt consumed", handoffs)
+	}
+}

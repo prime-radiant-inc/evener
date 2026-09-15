@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
 )
 
 // projectorCases pairs each SessionEvent kind with a constructor that decodes
@@ -276,7 +277,7 @@ func projectCoverageSweep(t *testing.T, p *AppEventProjector) {
 	oldMarshal := marshalContextCompaction
 	defer func() { marshalContextCompaction = oldMarshal }()
 	marshalContextCompaction = func(any) ([]byte, error) { return nil, errors.New("injected marshal failure") }
-	if raw := contextCompactionRaw(events.ContextCompactionData{Layer: "layer"}); raw != nil {
+	if raw := contextCompactionRaw(schema.ContextCompaction{Layer: "layer"}); raw != nil {
 		t.Fatalf("marshal failure returned raw payload: %s", raw)
 	}
 }

@@ -292,6 +292,19 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			// Absent or invalid: no reload is authorized. Reserve the complete
 			// typed metadata notification — every inventory entry — and never
 			// enqueue bodies here.
+			//
+			// The reminder turn IS the admission, so a publication whose
+			// reminder the history already holds was admitted by an earlier
+			// attempt whose metadata consumption then failed. That consumption
+			// is what retries; appending a second turn saying the same thing
+			// would deliver the same inventory twice for one handoff.
+			s.mu.Lock()
+			admitted := s.skillReloadReminderRecordedLocked(publicationID)
+			s.mu.Unlock()
+			if admitted {
+				reminderPublications[publicationID] = true
+				continue
+			}
 			summary, diagnostics := s.skillInventorySummary(ctx)
 			if len(summary) == 0 {
 				// No skill is loaded: the complete reminder is an empty list
@@ -356,6 +369,26 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 		return nil, nil, 0, err
 	}
 	return batch, outcomes, stagedTokens, nil
+}
+
+// skillReloadReminderRecordedLocked reports whether the history already holds
+// the reminder turn for publicationID — which, because the reminder is
+// appended through the durable pair, means the transcript holds it too.
+// Callers hold s.mu.
+func (s *Session) skillReloadReminderRecordedLocked(publicationID string) bool {
+	if publicationID == "" {
+		return false
+	}
+	for _, turn := range s.history {
+		state := turn.SkillState
+		if state == nil || state.ReloadReminder == nil {
+			continue
+		}
+		if state.ReloadReminder.PublicationID == publicationID {
+			return true
+		}
+	}
+	return false
 }
 
 // consumeSkillReloadReminders retires the handoffs whose reminders were already
