@@ -280,7 +280,8 @@ Probe calls and their types:
 |---|---|---|
 | protocol / hub version / features | the attach handshake component 04 already performed (`InitializeResponse`, captured by component 04 and exposed via `Channel.Handshake()`; `appwire.Client` has no `Features()` accessor) plus the preflight facts — **not** a second `initialize` | `InitializeResponse` (`appwire/types.go`) |
 | OS/arch | component-04 preflight (no RPC — see gap above) | — |
-| effective launch config | `evener/launch/resolve` per root, or `evener/launch/getLayer` `layer:"global"` | `LaunchConfigResolved` (`appwire/types.go`) |
+| effective launch config | `evener/launch/resolve` per root | `LaunchConfigResolved` (`appwire/types.go`) |
+| global launch layer | `evener/launch/getLayer` `layer:"global"` | `LaunchConfigLayer` (`appwire/types.go`) — this method returns `LaunchConfigLayer`, **not** `LaunchConfigResolved` (`appwire/protocol.go:179`), matching `HostCapabilities.LaunchGlobal` |
 | available models | `model/list` | `ModelListResponse` (`appwire/types.go`) |
 | plugin inventory | `evener/plugin/list` (+ `evener/marketplace/list` if needed) | `PluginListResponse` (`appwire/types.go`) |
 | credential/provider health | `evener/auth/list` (+ `evener/instance/list`) | `AuthListResponse` (`appwire/types.go`) |
@@ -341,7 +342,14 @@ The source's optional seams are installed once at registration, all from
   `RemoteHubSource` implements it. `Online() == false` is a *state*, never an
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
-  probe needs (`HostFacts`, `remote_hub_probe.go`).
+  probe needs (`HostFacts`, `remote_hub_probe.go`), backed by
+  `Manager.PreflightIfAttached` (component 04, §"Go surface"): the non-dialing,
+  attached-only preflight accessor mirroring `ClientIfAttached` and
+  `HandshakeIfAttached`. `Manager` stores live channels privately, so without
+  this accessor `cmd/evener-hub/main.go` cannot construct `cfg.RemoteHostFacts`
+  and `HostCapabilities.OS`/`Arch` stay permanently unpopulated (see §"Probe
+  reaches the handshake facts…" above for the same shape on the handshake
+  facts).
 - `SetHostHandshake(cfg.RemoteHostHandshake)` — the attach handshake facts the
   capability probe needs (`ProtocolVersion`, `ServerInfo`, `SourceID`,
   `Features`), backed by `Manager.HandshakeIfAttached` (component 04, §"Go
@@ -666,6 +674,15 @@ Ref translation detail (`remote_hub_refs.go`):
     or a future remote), the row is **dropped** with a logged warning rather than
     failing the whole call: one unrepresentable row must not blank the host's
     fleet view.
+  - **The controller-side loop guard is the v1 bound on fan-out depth.** The
+    `["local"]` remap keeps the list path from recursing, and the controller
+    additionally refuses to fan a request out to any remote source when the
+    request itself arrived over a remote source (a controller attached to this
+    hub as a host): such a request is served from local state only, and an
+    attempt to route it onward is refused typed. That caller-identity guard
+    terminates an A→B→A chain even though the config alone cannot detect it
+    (design §2 "Topology"; §Open questions item 3). It is a requirement of this
+    component's routing seam, not a present fact.
   - **Implementation status:** the shipped `remapRemoteSourceIDs`
     (`remote_hub_refs.go`, `multi-host-pr05a-remote-hub-source`) returns `nil`
     for an empty incoming filter — which `ListThreads` forwards as unfiltered —
@@ -917,6 +934,13 @@ splitting per the above keeps each PR reviewable.
    names; a self-edge is refused only through an explicit upstream list — see
    item 4), so a depth-2 chain is *not* prevented and no ref grammar exists for
    it.
+   **v1 bounds this at runtime rather than by config:** the controller refuses
+   to fan a remote-originated request out to another remote source (the
+   caller-identity guard; §"Ref translation detail"), and the `["local"]` list
+   remap keeps the list path from recursing, so a depth-2 chain cannot recurse
+   even though it cannot be detected. The ref-grammar question (how, if ever, to
+   represent a nested host's refs) stays open; the termination guarantee does
+   not depend on its answer.
 4. **Attach-time cross-hub cycle detection (deferred).** Component 03 exposes
    `AddWithUpstreams(entry, upstreamNames)` so a cycle can be refused at the
    moment an upstream host list is learned, but v1 has no way to learn one: no
@@ -927,7 +951,9 @@ splitting per the above keeps each PR reviewable.
    explicit upstream list) and does **not** perform A→B→A attach-time detection.
    Closing this needs a new `ScopeHub` host-list
    method plus a call from the attach path into `hostreg.AddWithUpstreams`;
-   component 03 records the same deferral.
+   component 03 records the same deferral. Until that RPC lands, the runtime
+   loop guard above is what keeps v1 terminating — this item is about
+   *config-aware detection*, not about the termination guarantee.
 5. **Controller-side past/recovery fencing.** Non-local refs bypass the
    controller's past index, deletion fence, and recovery admission
    (`app_sources.go`, `app_sources.go`). Remote sessions

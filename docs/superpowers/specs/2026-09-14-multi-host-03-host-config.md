@@ -29,10 +29,15 @@ not open connections, does not spawn SSH, and does not implement a source.
 - Reject a host list that would overflow the navigation manifest: at most **63**
   remote hosts, because component 06's manifest caps `sources` at 64 including
   the `local` entry (`cmd/evener-hub/navigation_projection.go`). One host over
-  the cap fails navigation for the entire hub, not just for the extra host, so
-  it is validated at load time. (Implementation status: the shipped
-  `validateHostConfigs` builds a throwaway `hostreg.Registry` and has no count
-  check yet; the limit is the implementing PR's requirement.)
+  the cap fails navigation for the entire hub, not just for the extra host.
+  **The cap is a registry invariant, enforced centrally in the registry add
+  paths (`New`/`Add`/`AddWithUpstreams`) as well as at config load**, so no
+  runtime mutation path can push the registry over it and break navigation for
+  every host; both surfaces return the same named `ErrTooManyHosts`. (Load-time
+  validation alone is not sufficient: it only guards the config-file path, not a
+  programmatic add.) (Implementation status: the shipped `validateHostConfigs`
+  builds a throwaway `hostreg.Registry` and neither it nor the registry has a
+  count check yet; the limit is the implementing PR's requirement.)
 - An in-memory `hostreg.Registry` built from the validated list, rejecting
   duplicates at add time (a self-edge is rejected only when an explicit upstream
   list is supplied; see §"Source registration hook" and "Open questions" for the
@@ -110,6 +115,17 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
   carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and `channelArgv`
   passes whichever is present; the paired validation is the implementing PR's
   requirement, not a present fact.
+  **`addr` must be a literal loopback or wildcard address.** The host hub's
+  listen address is consumed by component 04 as an SSH-side `curl` target
+  (health probe) and by the restart identity check, and the transport invariant
+  is loopback-only (design §2 "Transport"). `validateHostConfigs` must therefore reject an
+  `addr` whose host part is not `127.0.0.1`, `::1`, `localhost`, `0.0.0.0`, `::`,
+  or empty, with a named error, so a non-loopback value can never be passed to
+  the health check or restart (component 04, §"5. Version auto-match +
+  restart"). Only the
+  port varies between hosts. **Implementation status:** the shipped
+  `hostreg.Host.Addr` is stored unvalidated; this check is the implementing PR's
+  requirement.
 
 ### Go types
 
@@ -322,7 +338,9 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
-   `ch.Client()`), `RemoteHostFacts` (the channel's `Preflight()`), and
+   `ch.Client()`), `RemoteHostFacts` (`sshManager.PreflightIfAttached` — the
+   non-dialing, attached-only preflight accessor mirroring
+   `ClientIfAttached`/`HandshakeIfAttached`; component 04, §"Go surface"), and
    `RemoteHostOnline` (`sshManager.Attached`), `RemoteHostClientIfAttached`
    (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
    lookup component 05's notification rebind and component 06's snapshot use),
@@ -386,9 +404,12 @@ tree and last-known-good cache (`refreshRemoteThreadSnapshot`,
 - `user` set while `ssh` already contains `user@` → `ErrAmbiguousSSHUser`.
 - Empty `ssh` after trim → `ErrMissingSSH`.
 - `roots` entries empty after trim → `ErrEmptyRoot`.
-- More than 63 remote hosts → a named `ErrTooManyHosts`. The manifest's
-  64-source cap is a hard downstream limit; rejecting here turns "navigation
-  breaks for every host" into a config error naming the limit.
+- More than 63 remote hosts → a named `ErrTooManyHosts`, returned from both
+  `LoadConfig`/`validateHostConfigs` **and** the registry add paths
+  (`New`/`Add`/`AddWithUpstreams`) so no runtime mutation can exceed the cap.
+  The manifest's 64-source cap is a hard downstream limit; rejecting at both
+  surfaces turns "navigation breaks for every host" into an error naming the
+  limit.
 - Exactly one of `config_path`/`addr` set → a named error (the two are coupled;
   see §"`config_path` / `addr`").
 - A cycle refused at add time leaves the registry unchanged (candidate not
@@ -449,7 +470,8 @@ Unit tests, all without a hub or network:
    byte the same set of source IDs.
 9. A host list with more than 63 remote entries fails `LoadConfig` with
    `ErrTooManyHosts`; 63 entries load (the `local` entry is the 64th manifest
-   source).
+   source). A programmatic add that would take the registry past 63 entries also
+   fails `ErrTooManyHosts` (the cap is not config-load-only).
 
 ## PR size estimate (LOC)
 

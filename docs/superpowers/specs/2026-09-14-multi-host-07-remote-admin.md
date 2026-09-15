@@ -113,6 +113,9 @@ Concretely the proxied method names are (all `ScopeHub` in
   directory creation in remote panes. **Implementation status:** the 07a
   proxy's allow-list as written covers the five admin families only; adding the
   discovery set above is a tracked 07a follow-up, not a present fact.
+  This is the same discovery set component 06 enumerates; the two must be a
+  single shared source of truth or covered by a scripted-host parity test that
+  forwards each method through the envelope (component 06, §"Frontend changes").
 
 The instance family has exactly those five handlers — the catalog has no
 `evener/instance/setModelDisabled` and no `evener/instance/refreshModels`
@@ -274,6 +277,15 @@ type HostNotificationParams struct {
   host only. The host-scoped stores added in 07b subscribe to
   `evener/host/notification` and apply a payload only when `Host` equals the
   currently selected host.
+- **Catalog registration.** `evener/host/notification` must be added to the
+  AppWire notification catalog (`appwire/protocol.go`, `Notifications`) with
+  `HostNotificationParams` as its params type, and the generated Go and
+  TypeScript bindings regenerated (`make generate`), so typed clients can
+  subscribe to it. Without the catalog entry neither the Go client nor the
+  generated TS types can name or type this notification — it is the same
+  registration every other hub-originated notification carries.
+  **Implementation status:** neither the method nor its params type is in the
+  catalog today; this is the implementing PR's requirement.
 
 ### Credential push method
 
@@ -367,26 +379,30 @@ would silently change which credential is in force. Remote resolution order is
 `apiKey/set` is used, never `apiKey/clear`, and no whole-file replace exists.
 "Don't clobber" means no write at all unless the remote resolves from the file
 layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
-`adc`, or `env:<VAR>` credential is never shadowed by a pushed key **at check
-time** — the classification is made from the `evener/auth/status` response, so
-this is the policy the pusher applies, not a guarantee. The check is not atomic;
-see the stated limitation immediately below.
+`adc`, or `env:<VAR>` credential is never shadowed by a pushed key. The policy
+must be applied **atomically on the host** — not from a separate
+`evener/auth/status` read — so it is a guarantee rather than a check-time
+snapshot; see the atomic contract immediately below.
 
-**The no-clobber check is not atomic — a stated limitation.** As specified, the
-policy is check-then-act across two independent proxy RPCs: the pusher reads
-`evener/auth/status`, classifies, then writes `evener/auth/apiKey/set`. The
-host's `ApiKeySet` takes the credential write lock (`credentialWrite`,
-`app_auth.go:453` and `app_auth.go:396`) but does **not** re-resolve
-`ActiveSource` under it, so a credential whose source changes between the two
-calls — an operator exporting `env:<VAR>`, a `providers.toml` edit adding an
-`api_key`/`credential_headers` entry, a concurrent push to the same host — is
-never seen, and the file-layer write then shadows the credential that appeared
-after the check. "Don't clobber" is therefore best-effort **at check time**,
-not a guarantee. Making it a guarantee requires a host-side conditional set
-that re-resolves the instance's source under the same credential write lock and
-refuses when it is no longer the file layer (or an expected configuration
-revision the set validates); the 07c surface above, as specified, is the racy
-two-call form.
+**The no-clobber guarantee is atomic — the check moves host-side.** The
+two-call form (the pusher reads `evener/auth/status`, classifies, then writes
+`evener/auth/apiKey/set`) is check-then-act across two independent proxy RPCs
+and is **not** sufficient: the host's `ApiKeySet` takes the credential write
+lock (`credentialWrite`, `app_auth.go:453` and `app_auth.go:396`) but does
+**not** re-resolve `ActiveSource` under it, so a credential whose source changes
+between the two calls — an operator exporting `env:<VAR>`, a `providers.toml`
+edit adding an `api_key`/`credential_headers` entry, a concurrent push to the
+same host — is never seen, and the file-layer write then shadows the credential
+that appeared after the check. The required contract is therefore a **host-side
+conditional/CAS set**: the host re-resolves the instance's credential source
+under the same credential write lock it writes with, and **refuses** the write
+when the source is no longer the file layer (or when an expected configuration
+revision the set validated has changed). Check and write happen inside that one
+locked operation, so no concurrent change can slip between them and "don't
+clobber" becomes a guarantee rather than best-effort at check time.
+**Implementation status:** the 07c surface above is the racy two-call form and
+the host-side conditional set does not exist; this is a tracked code follow-up
+(see the PR comment), not a present fact.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore

@@ -67,8 +67,8 @@ shipped mechanism, so they are not interchangeable descriptions.
   `ErrStreamClosed` and drains in-flight writes, so after it returns no write can
   still reach the stream and every later `Send`/`Recv` reports `ErrStreamClosed`
   even when the reader held prefetched frames.
-- **`Close` ordering — close before wait, never wait-then-close.** `Close` (and
-  every poison path) latches the terminal cause first, then closes the underlying
+- **`Close` ordering — close before wait, never wait-then-close.** `Close`
+  latches the terminal cause first, then closes the underlying
   `io.ReadWriteCloser`, and only then waits for admitted writes. The order is
   what makes the drain terminate: closing the stream is what unblocks a `Write`
   that is blocked in the underlying stream, so a wait for in-flight writes can
@@ -83,7 +83,17 @@ shipped mechanism, so they are not interchangeable descriptions.
   Blocked-write shutdown: a write already admitted when `Close` (or its context)
   lands is interrupted by the close and reports the recorded terminal cause; a
   write not yet admitted returns `ErrStreamClosed` (or the cancellation) without
-  writing anything. **This is already the shipped implementation** —
+  writing anything.
+  **The admitted-write drain is `Close`-only; it is not a promise of every
+  poison path.** `poison()`/cancellation close the underlying stream to
+  interrupt a blocked `Write` but deliberately do **not** take the write lock or
+  drain admitted writes — that close is exactly what unblocks the write it
+  exists to interrupt, so a poison path guarantees only that later
+  `Send`/`Recv` calls report the terminal cause, not that an in-flight write
+  completes or is awaited. The earlier phrasing "`Close` (and every poison
+  path) … waits for admitted writes" was wrong and is superseded: the
+  wait-for-admitted-writes guarantee belongs to `Close` alone. **This is already
+  the shipped implementation** —
   `appwire/stream_transport.go`'s `Close` latches `ErrStreamClosed`, calls
   `doClose()` (the underlying `rw.Close()`), then `drainWrites()`; `poison`
   deliberately does **not** take the write lock, because that close is what

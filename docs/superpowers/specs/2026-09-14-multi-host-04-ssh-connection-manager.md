@@ -128,6 +128,17 @@ func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool)
 // Channel-level source is Channel.Handshake below).
 func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool)
 
+// PreflightIfAttached returns the preflight facts captured when host's current
+// channel attached, ONLY while a live, not-closed channel is installed (reports
+// false otherwise). Like ClientIfAttached and HandshakeIfAttached it takes the
+// manager-wide mutex, not the per-host gate, and never dials. This is the
+// attached-only accessor behind hubcore.WebConfig.RemoteHostFacts: without it
+// cmd/evener-hub/main.go cannot construct RemoteHostFacts from a privately-held
+// channel, and component 05's capability probe cannot populate
+// HostCapabilities.OS/Arch (see Channel.Preflight below; component 05,
+// §"Capability probe").
+func (m *Manager) PreflightIfAttached(name string) (Preflight, bool)
+
 // Channel is one owned SSH channel + the AppWire client over it.
 type Channel struct { /* host, facts, stdio, transport, client, drop/lifecycle channels */ }
 
@@ -809,8 +820,17 @@ deploy landed.
     argv, launched detached under `nohup` with stdin from `/dev/null` and
     stdout/stderr redirected to a **default log path under the host's state
     root** (e.g. `<stateRoot>/hub.log`, appending when it exists; the ops doc's
-    recovered-log path is a restart-only concept). Launching bare `evener hub`
-    with defaults would make the health probe and attach target
+    recovered-log path is a restart-only concept). **The log directory must
+    exist before the shell sets up redirection.** On a
+    cold host that has never run evener, `<stateRoot>` (e.g.
+    `~/.local/state/evener`) does not exist, and a POSIX shell fails the
+    redirection with `No such file or directory` *before* `<exe> hub` is
+    invoked — the hub never starts and `waitHealthy` exhausts its retry budget
+    with `ErrRestart`. The first-attach branch must therefore `mkdir -p` the log
+    directory (parent included) before backgrounding, or, if it cannot be
+    created, fall back to discarding the output (`>/dev/null 2>&1`) rather than
+    launching a command whose redirection is guaranteed to fail. Launching bare
+    `evener hub` with defaults would make the health probe and attach target
     `127.0.0.1:9180` while the entry's `addr` names a custom port, so every cold
     first attach on a non-default host would abort with `ErrRestart`;
     `command -v evener` with no `evener_path` makes the same explicit argv with
@@ -878,12 +898,21 @@ deploy landed.
   where `<loopback(addr)>` is the configured host address (`Manager.hostAddr`:
   the per-host `addr`, else `Options.HubAddr`, else `127.0.0.1:9180`) with the
   same wildcard→loopback normalization the bridge applies (`loopbackAddr`:
-  `0.0.0.0`, empty, and `localhost` → `127.0.0.1`; `::` → `[::1]`; anything else
-  passed through). Building the URL from the configured address rather than
-  always curling `localhost` is what reaches a hub on a non-default port or a
-  non-loopback bind. The response is decoded as `hubapi.HealthResponse` and its
-  `version` checked against the deployed identity. Consequences to state
-  plainly:
+  `0.0.0.0`, empty, and `localhost` → `127.0.0.1`; `::` → `[::1]`).
+  **The configured address must be a literal loopback or wildcard address.**
+  The design's transport invariant is loopback-only ("No HTTP port exposed
+  beyond the host's loopback", design §2 "Transport"), but a configured `addr` is
+  interpolated into an SSH-side `curl` target, so an unvalidated non-loopback
+  value (`10.0.0.5:9180`, or a hostname resolving off-box) would let this health
+  probe — and the restart path that shares the address — reach an arbitrary
+  reachable host. Both config validation (component 03, §"`config_path` /
+  `addr`") and this probe must therefore reject a configured address whose host
+  is not `127.0.0.1`/`::1`/`localhost`/`0.0.0.0`/`::`/empty with a named error,
+  before any health check or restart. Only the **port** may vary; the earlier
+  phrasing that the configured address "reaches a hub on a non-default port or a
+  non-loopback bind" is superseded — a non-loopback bind is not a supported
+  target. The response is decoded as `hubapi.HealthResponse` and its `version`
+  checked against the deployed identity. Consequences to state plainly:
 
   - the host must have a working HTTP client (`curl`) — a **hard
     prerequisite**, not a preference. The health probe runs *before* the attach
@@ -963,6 +992,22 @@ deploy landed.
   what it does not do is check that the named hub *owns the configured
   address*, and the bare path does not compare the effective user. The
   contract above is stricter.)
+  **A stopped host has no listening socket, so "owns the configured address"
+  cannot be the only supervisor-detection signal on the cold-bootstrap path.**
+  When the hub is stopped the address check always fails, which would force
+  every cold bootstrap to fall through to the ad hoc `nohup` launch even when a
+  supervisor unit exists — causing split supervision and `hub.lock` contention
+  once the supervisor later starts its own instance. Detection must therefore
+  match **unit definitions**, not only active units: on systemd, enumerate with
+  `systemctl [--user] list-unit-files` (or `list-units --all`) rather than
+  `list-units`, and accept a unit whose definition launches the resolved hub
+  executable (or names the configured `--addr`); on launchd, match the plist
+  whose `ProgramArguments` name the hub executable or `--addr`. The
+  exactly-one-candidate refusal still applies: an ambiguous match falls through
+  to the ad hoc path. The address-ownership check remains required whenever a
+  listener exists (the restart path); on a genuinely stopped host the
+  unit-definition match plus the "refuse to start when a hub already owns the
+  address" pre-check (`runningKnown`) is the substitute.
 
   **Limit: identification and signal are separate host commands, so there is a
   PID-reuse window.** Every check above is its own command over the ssh seam —

@@ -29,6 +29,18 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   AppWire method reports another hub's host list; that detection is deferred
   with the host-list RPC (component 03, §Open questions; component 05, §Open
   questions item 4).
+  **v1 nevertheless enforces a runtime loop guard, independent of topology
+  detection.** Because A→B→A cannot be refused from the config alone, the
+  fan-out path itself must be bounded: a request that arrives over a remote
+  source (a controller that is attached to this hub as a host) is served **only
+  from local state**, and any attempt to route or fan that request out to
+  another remote source is refused with a typed error. Together with the
+  `["local"]` remap that already strips a remote's own nested hosts on the list
+  path (component 05, §"Ref translation detail"), this caps fan-out at depth 1
+  and terminates any A→B→A chain regardless of what the config can see — the
+  caller-identity guard that a later host-list RPC would make config-aware. The
+  guard is a v1 requirement; the attach-time upstream-list detection
+  (`AddWithUpstreams`/`SetUpstreams`) stays deferred.
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -45,8 +57,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 - **Fleet view**: live fan-out — query each attached host's hub and merge. No
   replicated index.
 - **Session targeting**: explicit host picker, local by default.
-- **Offline hosts**: shown offline with last-known sessions dormant; actions
-  refused until reconnect.
+- **Offline hosts**: shown offline with last-known sessions marked
+  **stale/offline** (never `Dormant`, which Component 06 defines as a session
+  that has never run and renders as "Not started"; component 06, §"Go changes
+  item 3"); actions refused until reconnect.
 - **Tenancy**: connect as the configured SSH user; a host's sessions seen by the
   controller are exactly that account's.
 
@@ -61,11 +75,16 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 - The hub is a multi-client AppWire server; its web edge already serves browser
   and TUI. A controller attach is one more client.
 - `hostlock` allows one hub per machine (`cmd/evener-hub/internal/hostlock`).
-- New sessions already select a source: `hubThreadStart` calls
-  `launchSourceID(params.Harness)` (`cmd/evener-hub/app_threadlifecycle.go`),
-  where `"evener"` maps to `local` and any other value is treated as a source
-  ID. A remote host can therefore be targeted through this existing mechanism,
-  or via a new explicit field — component 06 decides which.
+- New sessions already select a source through `launchSourceID(params.Harness)`
+  (`cmd/evener-hub/app_threadlifecycle.go`), where `"evener"` maps to `local`
+  and any other value is treated as a source ID. **That legacy harness-as-source
+  path is not the mechanism for host targeting.** Component 06 has settled on
+  an explicit `ThreadStartParams.Source` field as the sole host selector and
+  requires that a harness value naming a configured host source be refused with
+  `InvalidParams` rather than routed or forwarded (the fallback is likewise
+  retired), because `launchSourceID` silently retargets a spawn (component 06,
+  §"Write contract"). Harness-as-host targeting is therefore refused, not
+  endorsed.
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.
@@ -92,7 +111,8 @@ Ordered by dependency; each is independently reviewable and landable.
    configured host, and performs the capability probe (launch config, models,
    plugins, credential health, host facts).
 6. **Fleet view** (`cmd/evener-hub`, frontend) — enumerate sources, live fan-out
-   and merge, offline/dormant state, and the host picker in the new-session form.
+   and merge, offline/**stale** state (distinct from `Dormant`; component 06,
+   §"Go changes item 3"), and the host picker in the new-session form.
 7. **Remote administration** — per-host settings pages that proxy the host's own
    RPCs (providers, launch config, plugins, credentials) and the credential-push
    action.
@@ -126,6 +146,11 @@ Ordered by dependency; each is independently reviewable and landable.
   `AddWithUpstreams`/`SetUpstreams` (see §2 "Topology"). Closing this needs a
   new hub-scoped host-list method; until then, treat configuration as acyclic
   *by convention* for multi-hop chains.
+  **Until then the runtime loop guard of §2 "Topology" is what keeps v1
+  terminating:** a remote-originated request is served from local state only,
+  and fan-out to a second remote source is refused, so an A→B→A chain cannot
+  recurse even though the config still cannot detect it (component 05,
+  §Open questions item 3).
 - **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
   sub-thread aliases.
 - **Version-match restart** drops live browser/controller connections; decide

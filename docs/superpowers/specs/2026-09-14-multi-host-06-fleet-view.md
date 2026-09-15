@@ -116,7 +116,10 @@ Rules this component must satisfy:
   With one source per configured host plus the local entry, that is at most
   **63 remote hosts**, so component 03's `validateHostConfigs` rejects a larger
   `[[hosts]]` list (`ErrTooManyHosts`) rather than letting one over-limit config
-  fail navigation for the entire hub (component 03, §"Host configuration").
+  fail navigation for the entire hub (component 03, §"Host configuration"). The
+  cap is also enforced in the registry add paths, not only at config load
+  (component 03, §"Host configuration"), so no runtime mutation can push the
+  source list over 64 either.
   The frontend mirror enforces the same element shape
   (`stores/navigation/codec.ts`, `stores/navigation/store.ts`). Do not add fields
   without changing both validators.
@@ -308,6 +311,16 @@ only `local`, so the fan-out currently degenerates to one source.
   unqualified shape today; the source field, store namespacing, and the
   non-local validation rule are the implementing PR's requirement, not a
   present fact.
+  **Migration of existing decisions.** The controller-side favorite and archive
+  stores are keyed by `(kind, id)` today, with no source column. On upgrade they
+  must be migrated by adding a `source` column and backfilling
+  `source = "local"` for every existing row, preserving the decision and its
+  kind/id, so no existing local favorite or archive is lost and a pre-migration
+  row keeps resolving to the local host; the migration is idempotent across
+  restarts (a re-run is a no-op and a half-applied migration completes on the
+  next start). New rows are written with their owning source. **Implementation
+  status:** neither the migration nor the source column exists today; this is
+  the implementing PR's requirement.
   **Project summaries must carry the owning source, and destructive
   local-project actions must be gated by it.** The project the rail renders has
   no host dimension today: the resolved model is `identifier.Project` =
@@ -328,10 +341,17 @@ only `local`, so the fan-out currently degenerates to one source.
     field beside `key`/`name`/`working_dir`), so the frontend reads it without
     re-deriving it from a member row, and the schema validators (Go and
     frontend) admit it;
-  - `evener/project/delete` is **local-only**: for a non-local project the menu
-    **hides** "Delete project…" (no remote deletion exists in v1), and a
-    direct call naming a non-local/unknown source is refused typed (never a
-    controller-local delete, never a deletion on the wrong machine);
+  - `evener/project/delete` is **local-only**, and its params must gain the
+    owning source. `ProjectDeleteParams` (`appwire/types.go`) today carries only
+    `Key`/`WorkingDir`, so a direct delete request cannot distinguish a
+    remote/unknown project from a local one before performing a destructive
+    delete. It must add a `Source` field (the row's `ref.SourceID` host,
+    defaulting to `"local"`); the frontend passes it from the row ref, and the
+    handler refuses any non-local/unknown source **server-side** with a typed
+    error before resolving `Key`/`WorkingDir` or deleting anything (never a
+    controller-local delete, never a deletion on the wrong machine). For a
+    non-local project the menu **hides** "Delete project…" (no remote deletion
+    exists in v1);
   - archive/favorite are the **route-by-source** actions (above), passing the
     project's source with each call, and "New session" carries the project's
     source into the spawn form (the `ThreadStartParams.Source` / picker path)
@@ -484,6 +504,16 @@ only `local`, so the fan-out currently degenerates to one source.
   form passes must be the same value it sends as `ThreadStartParams.Source`.
   Until the proxy and its allow-list land (component 07, §"Proxy method"), the
   picker must not present a remote host as fully usable.
+  **Parity of the discovery set is enforced, not assumed.** This set is listed
+  twice — here and in component 07's proxy allow-list (component 07,
+  §"Host-dependent discovery") — with no coverage today, so drift silently
+  validates a remote launch against the controller filesystem or fails closed
+  with `InvalidParams`. The two must be a **single shared source of truth** (one
+  exported list both this form's envelope routing and the 07 proxy allow-list
+  consume), or, failing that, a scripted-host test must forward each discovery
+  method through the `evener/host/request` envelope and assert the proxy accepts
+  every method the form issues. Either way a method added to one list is a test
+  failure until the other matches.
 - **Source list source**: the manifest already carries `sources` and the
   navigation store already holds it (`stores/navigation/store.ts`,
   validated at `store.ts` and `stores/navigation/codec.ts`), but
@@ -502,12 +532,16 @@ only `local`, so the fan-out currently degenerates to one source.
   attached has no user-facing way to become usable — `Online` is attachment
   state (above), the picker disables offline hosts, and host-scoped actions are
   refused until a channel exists — so a mere `[[hosts]]` entry is dead in the
-  UI. The first host action (selecting the host in the picker, or an explicit
-  "Connect"/"Attach" affordance on the host) must initiate attachment through
-  component 04's `Ensure` and surface its progress and failure: an attach flips
-  `Online` (via the attach event, §2b) and makes the host selectable, and a
-  failure shows the manager's error (the offline refusal below), not a silently
-  disabled control. Nothing else attaches a host on the user's behalf — in
+  UI. The picker must therefore provide a **concrete, enabled attachment
+  affordance** for every offline/never-attached host — an explicit
+  "Connect"/"Attach" action on the host row, or selection of that host
+  initiating attachment — never merely a disabled spawn row and never a control
+  that cannot fire. This first host action must initiate attachment through
+  component 04's `Ensure` and surface its progress ("attaching") and failure
+  states: an attach flips `Online` (via the attach event, §2b) and makes the
+  host selectable, and a failure shows the manager's error (the offline refusal
+  below), not a silently disabled control. Nothing else attaches a host on the
+  user's behalf — in
   particular the background snapshot stays attached-only
   (§"Background snapshot"). Because the host's hub may not be running yet, this
   action is also the trigger for component 04's **first-attach bootstrap**
@@ -520,7 +554,12 @@ only `local`, so the fan-out currently degenerates to one source.
   actions. The server-side `Rename` flag already excludes non-local rows
   (`web_api_tree.go`), so at minimum the read-only host rows
   are already non-renameable; confirm the composer/session actions honor the
-  refusal error (see Error handling) rather than silently failing.
+  refusal error (see Error handling) rather than silently failing. **Remote
+  session rows must not expose a Delete action that always fails:** the existing
+  session-delete handler rejects a non-local session reference, so a remote row
+  showing Delete presents an action that can never succeed. The rail must hide
+  or disable session deletion for non-local rows, while the server-side rejection
+  of a direct remote delete request is retained (defense in depth).
 
 ## Data flow
 
