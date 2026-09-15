@@ -504,12 +504,15 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
   preflight concern; leave them opaque here.
-- **`evener_path` empty vs set (resolved).** Empty means "resolve `evener` on the
-  remote `PATH`" for the invocation, and component 04's push deploy resolves the
-  absolute install target with the host's own `command -v evener` plus
-  component 04's POSIX-sh symlink resolver (plain `readlink`, never
-  `readlink -f`, which BSD/macOS rejects) before the atomic `mv`
-  (`sshconn/deploy.go`), so the deployed build lands at the path the host runs
-  rather than at a literal file named `evener`. A configured path means "the
-  binary lives here" (its directory must exist on the host). No default is baked
-  into the schema.
+- **`evener_path` empty vs set (resolved).** Empty is **not** "invoke the
+  literal word `evener` via `PATH`"; component 04 resolves it **once per host**
+  to one canonical absolute `run target` (`run_path`, component 04 §"SSH
+  channel argv") — the host's own `command -v evener` result when it exists,
+  else the installer's default `~/.local/bin/evener` — and uses that same path
+  for invocation, deploy/install, restart identification, health, and attach.
+  Component 04's push deploy additionally resolves the symlink target with its
+  POSIX-sh resolver (plain `readlink`, never `readlink -f`, which BSD/macOS
+  rejects) before the atomic `mv` (`sshconn/deploy.go`), so the deployed build
+  lands at the real file the host runs rather than at a literal file named
+  `evener`. A configured path means "the binary lives here" (its directory must
+  exist on the host). No default is baked into the schema.

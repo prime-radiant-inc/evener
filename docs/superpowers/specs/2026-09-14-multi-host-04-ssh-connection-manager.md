@@ -235,10 +235,23 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   this component (channel, preflight, deploy, restart) uses the same prefix.
 - `<dest>` is the component-03 `ssh` field (`user@host` or host); if component 03's
   `user` is set it is composed here (`user@host`).
-- `<evener_path>` is component 03's `evener_path`; when it is empty the literal
-  word `evener` is used for the remote invocation (`evenerCommand`), which the
-  remote shell resolves on `PATH`. The *deploy* target is not that literal word:
-  §4 resolves it to the absolute executable the host actually runs.
+- `<evener_path>` is component 03's `evener_path`. It is resolved **once per
+  host** to a single canonical absolute **run target** (`run_path`), and that
+  one path is used for every purpose — the remote invocation argv
+  (`evenerCommand`), the deploy/install target, restart identification, the
+  health/identity check's binary, and attach. The literal word `evener` is
+  never the run target, and `PATH` is consulted exactly once, at resolution:
+  - `evener_path` set → `run_path` is that path verbatim.
+  - `evener_path` empty → `run_path` is the **absolute path the host's own
+    `command -v evener` returns** when it resolves to an existing file (the
+    `PATH`-selected executable); when `command -v evener` misses, `run_path` is
+    the installer's default `~/.local/bin/evener` (the installer fallback then
+    creates it, §"The installer install path must equal the run target").
+  The *atomic push* writes to the symlink-resolved form of `run_path`
+  (§"Push target resolution"), so a `make install` symlink layout is preserved;
+  `run_path` itself stays the invocation path. Deploy, restart, health, and
+  attach must all name this same resolved binary — a `command -v evener` result
+  and the file an installer wrote must not be allowed to disagree.
 - **Quoting rule (shipped).** ssh joins its trailing arguments with spaces and
   hands the result to the remote **login shell**, so every remote word must be
   quoted for that shell or a space splits it and a metacharacter executes.
@@ -698,9 +711,9 @@ Two paths, chosen per host (open question: which wins when both are viable):
   1. when `evener_path` is set, requires its directory to exist on the host
      (`test -d`) and uses the path;
   2. when `evener_path` is empty, resolves the target with the host's own
-     `command -v evener` — never by writing a file literally named `evener` into
-     the remote working directory, which is neither the `PATH`-selected
-     executable nor a stable location;
+     `command -v evener` (§"SSH channel argv", the `run_path` rule) — never by
+     writing a file literally named `evener` into the remote working directory,
+     which is neither the `PATH`-selected executable nor a stable location;
   3. resolves a symlink target with a portable POSIX-sh resolver
      (`resolvePathScript` + `resolveDeployTarget`), so the atomic `mv` replaces
      the real file a `make install` symlink points at rather than clobbering the
@@ -713,7 +726,12 @@ Two paths, chosen per host (open question: which wins when both are viable):
      `darwin/arm64` deploy failed at resolution. A path that does not resolve to
      an existing file prints nothing and exits nonzero.
   A `command -v` miss or a path that does not resolve to a real file is
-  `ErrDeploy` with no write.
+  `ErrDeploy` with no write. This is the **atomic push** path, which needs an
+  existing file to replace, so an empty `evener_path` whose `command -v evener`
+  misses is a push-path refusal, not a silent literal-word write: the manager
+  falls to the **installer fallback**, whose target is then the installer's own
+  default `run_path` `~/.local/bin/evener` (§"The installer install path must
+  equal the run target").
 
 - **The installer install path must equal the run target.** `install.sh` writes
   the real binaries under `share_bindir` (`EVENER_SHARE_BINDIR`, default
@@ -731,8 +749,11 @@ Two paths, chosen per host (open question: which wins when both are viable):
     `install.sh:4`), and the directory must exist and be writable on the host —
     the same `test -d` precondition `deployTarget` already applies to
     `evener_path` (§"Push target resolution").
-  - When `evener_path` is empty, the installer's default `~/.local/bin/evener`
-    **is** the run target: the manager records that resolved path and checks,
+  - When `evener_path` is empty, the installer targets the host's resolved
+    `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
+    resolves): when `command -v evener` resolved, that is its directory, and
+    when it missed, `run_path` is the installer's own default
+    `~/.local/bin/evener`. The manager records that one path and checks,
     restarts, and launches it, rather than assuming a separate
     `command -v evener` result that may name a different install.
 
@@ -812,8 +833,8 @@ deploy landed.
     because there is no recovered `ps` line to tokenize.** The restart path's
     ad hoc launch reuses `relaunchCommand`, which tokenizes the recovered
     `ps -o command=` of the *running* process; a stopped host has no such line.
-    The first-attach branch must therefore resolve the executable
-    (`evener_path`, else the host's own `command -v evener`) and run it as
+    The first-attach branch must therefore resolve the executable (the host's
+    single `run_path`, §"SSH channel argv") and run it as
     `<exe> hub [--config <config_path>] [--addr <addr>]` — passing the entry's
     paired `config_path`/`addr` when set (component 03) and nothing when not —
     with every argument shell-quoted by the same `shellQuote` rule as the bridge
@@ -832,16 +853,18 @@ deploy landed.
     launching a command whose redirection is guaranteed to fail. Launching bare
     `evener hub` with defaults would make the health probe and attach target
     `127.0.0.1:9180` while the entry's `addr` names a custom port, so every cold
-    first attach on a non-default host would abort with `ErrRestart`;
-    `command -v evener` with no `evener_path` makes the same explicit argv with
-    the resolved absolute path;
+    first attach on a non-default host would abort with `ErrRestart`; an empty
+    `evener_path` makes the same explicit argv with the host's resolved
+    `run_path` as the absolute executable;
   - it then waits for the same `/api/health` `version == expected` probe
     (`waitHealthy`), with the same bound and `ErrRestart` failure, so a start
     that never becomes healthy attaches nothing and the first host action
     surfaces the failure.
 
-  A host with no configured `evener_path` and no `command -v evener`, and no
-  identified supervisor unit, cannot be started: the bootstrap is refused with
+  A host whose `run_path` cannot be established — no configured `evener_path`,
+  no `command -v evener`, and the installer fallback refused so the default
+  `~/.local/bin/evener` does not exist — and with no identified supervisor
+  unit, cannot be started: the bootstrap is refused with
   `ErrDeploy`/`ErrRestart`, the host stays offline, and the UI must show that
   refusal (component 06, §"Connecting a configured host").
   **Implementation status:** the shipped 04b `ensureOnce` has no bootstrap
@@ -1073,10 +1096,10 @@ deploy landed.
      recovered executable to be the **configured target**, not a hardcoded
      basename: resolve `argv[0]` with the same portable POSIX-sh resolver
      `deployTarget` uses (`resolvePathScript`, plain `readlink` + `cd -P … &&
-     pwd`, no `readlink -f`) and compare that canonical path to the canonical
-     `evener_path` when set, else to the canonical `command -v evener` result;
-     for a supervised hub the unit's `ExecStart` path is the expected value
-     instead. It also requires the `hub` subcommand at the actual subcommand
+     pwd`, no `readlink -f`) and compare that canonical path to the host's
+     canonical `run_path` (§"SSH channel argv"); for a supervised hub the
+     unit's `ExecStart` path is the expected value instead. It also requires
+     the `hub` subcommand at the actual subcommand
      position (`argv[1] == "hub"`), and no positional after it
      (`evener hub attach`, the client, is not the daemon); matching `hub`
      anywhere in argv would accept `evener serve --model hub`. Anything else is
@@ -1273,6 +1296,15 @@ with the remote hub and its daemons still running.
   `systemctl list-units`) are passed unquoted and verbatim, so the deliberate
   exception cannot be "fixed" away. Assert the relaunch command quotes each
   recovered word and contains **no** `sh -c`.
+- **Run-target resolution tests.** With `evener_path` empty and a fake runner
+  whose `command -v evener` answers an absolute path, the channel argv, the
+  deploy/install target, the health/identity check, and the restart
+  identification all use that one resolved `run_path` (assert the same path in
+  every argv); with `command -v evener` missing the resolution is the
+  installer default `~/.local/bin/evener` and the atomic push refuses with
+  `ErrDeploy` while the installer fallback targets it. With `evener_path` set,
+  the invocation uses it verbatim and the push resolves its symlink. A test
+  that the literal word `evener` never appears as a run target.
 - **Reconnect test.** Fake link drops (`io.EOF` / child exit) → assert backoff
   schedule, a fresh `Start`, and that no `hub` start was issued (re-attach, not
   a second hub).
@@ -1343,9 +1375,11 @@ with the remote hub and its daemons still running.
     identification normalizes the configured `addr` to loopback exactly as the
     bridge does, rather than requiring the literal wildcard.
 14. A `[[hosts]]` entry that sets exactly one of `config_path`/`addr` fails
-    validation; a push deploy with an empty `evener_path` resolves the target
-    with `command -v evener` + the POSIX-sh `resolvePathScript` (plain
-    `readlink`, no `readlink -f`) and replaces that file atomically.
+    validation; a push deploy with an empty `evener_path` whose
+    `command -v evener` resolves uses that as the host's `run_path` and
+    replaces the POSIX-sh `resolvePathScript` target (plain `readlink`, no
+    `readlink -f`) atomically; a `command -v` miss is `ErrDeploy` on the push
+    path (the installer fallback is the one that can create the default).
 15. A first attach to a host whose hub is not running starts the identified
     supervisor (or the detached ad hoc launch), waits for `/api/health`
     `version == expected`, and attaches only after it matches; an address a hub
@@ -1362,13 +1396,16 @@ with the remote hub and its daemons still running.
     passed as the tag.
 17. The installer fallback installs to the run target: with `evener_path` set
     it passes `BINDIR=<dirname(evener_path)>` (refusing an unshipped basename or
-    a missing directory with `ErrDeploy`); with `evener_path` empty the
-    installer's resolved `~/.local/bin/evener` is the path the manager checks,
-    restarts, and launches.
+    a missing directory with `ErrDeploy`); with `evener_path` empty it passes
+    `BINDIR=dirname(run_path)` for the host's one resolved `run_path` —
+    `command -v evener` when it resolves, else the installer's default
+    `~/.local/bin/evener` — and that same `run_path` is the path the manager
+    checks, restarts, and launches. No deployment, restart, health, or attach
+    step may name a different binary than `run_path`.
 18. A restart identifies the hub by the canonical recovered executable
-    (symlinks resolved with `resolvePathScript`) compared to the configured
-    `evener_path` / `command -v evener` / unit `ExecStart`, so a valid custom
-    `evener_path` basename restarts; a non-hub executable still refuses.
+    (symlinks resolved with `resolvePathScript`) compared to the host's single
+    resolved `run_path` / unit `ExecStart`, so a valid custom `evener_path`
+    basename restarts; a non-hub executable still refuses.
 19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
     bare-safe word (uid from preflight), and a label outside the bare-safe set
     falls through to the ad hoc path; no `$(id -u)` reaches the remote shell.
@@ -1449,9 +1486,15 @@ from the component-03 registry.
   alone must not be read as link-down. Link-down is the ssh child exiting, a
   `Recv` error/`EOF` (`linkMonitor`/`Channel.markLost`), or the ssh-level
   keepalive firing (§"Channel + reconnect").
-- **`evener_path` empty semantics (resolved).** Empty means "resolve `evener` on
-  the remote `PATH`" for the invocation; the push deploy resolves the absolute
-  install target with `command -v evener` + the POSIX-sh `resolvePathScript`
-  (plain `readlink`, no `readlink -f`; `sshconn/deploy.go`, §4) so it never
-  writes a literal `evener` file. A configured `evener_path` requires its
-  directory to exist on the host and fails `ErrDeploy` otherwise.
+- **`evener_path` empty semantics (resolved).** Empty does **not** mean "invoke
+  the literal word `evener` via `PATH` at exec time". It is resolved **once**
+  per host to one canonical absolute `run_path` (§"SSH channel argv"): the
+  host's `command -v evener` result when it exists, else the installer's
+  default `~/.local/bin/evener`. Every remote invocation, deploy/install,
+  restart identification, health/identity check, and attach uses that same
+  path. The push deploy additionally resolves the symlink target with the
+  POSIX-sh `resolvePathScript` (plain `readlink`, no `readlink -f`;
+  `sshconn/deploy.go`, §4) so it never writes a literal `evener` file and
+  overwrites the real file a `make install` symlink points at. A configured
+  `evener_path` requires its directory to exist on the host and fails
+  `ErrDeploy` otherwise.

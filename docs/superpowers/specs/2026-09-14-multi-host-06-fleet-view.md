@@ -457,6 +457,36 @@ only `local`, so the fan-out currently degenerates to one source.
      construct `ThreadStartParams` (`app_rpc.go` registration) must be updated
      together; regenerate the frontend `types.gen.ts` (this is the
      `make generate` path — see Non-scope note; the implementation PR runs it).
+5. **The Connect action needs a browser-reachable attach RPC — `Ensure` alone
+   is not one.** The attachment affordance below must initiate component 04's
+   `Ensure`, but `Ensure` is a Go method with no wire surface, the component-07
+   proxy refuses a non-attached host by design, and the snapshot stays
+   attached-only — so a configured-but-never-attached host would be dead UI
+   despite the affordance. Define exactly one new **hub-scoped** method,
+   `evener/host/attach` (one row in `appwire/protocol.go`, `ScopeHub`):
+   - Params: `HostAttachParams{Host string}` — a component-03 source ID.
+   - Handler: resolves `Host` through `hostreg.Registry.Get` (component 03);
+     unknown → `appwire.InvalidParams`; else calls component 04's
+     `sshManager.Ensure(ctx, host)` and returns the post-attach state
+     (`serverName`/`version` from the attach handshake, plus the host ID) so the
+     row can flip *attaching → online*.
+   - Error mapping: the manager's typed errors pass through unchanged —
+     unreachable/refused dial → `appwire.Unavailable`, deploy/version failures →
+     component 04's typed `ErrDeploy`/`ErrProtocolIncompatible` — never a silent
+     disabled row.
+   - Idempotent while attached (`Ensure` is), so a repeated Connect is safe.
+   - **Ownership:** component 04 owns `Ensure`; the handler lives with the other
+     hub-scoped host methods in `registerMiscHandlers` (`app_rpc.go`). It is a
+     plain hub-scoped method — **not** a forwarded `evener/host/request` admin
+     call (component 07, §"Proxy method") and not added to that allow-list,
+     because there is no host to forward to until the attach succeeds.
+   - The handler is a local browser request (empty loop-guard origin,
+     component 05 §"Ref translation detail"), so it is not itself a fan-out.
+   The Connect control issues this call on the host row and renders its
+   progress/error; it must not issue a proxy call, which refuses an unattached
+   host. `appwire_catalog_test.go` picks the method up automatically; add a Go
+   test asserting the handler dials exactly once through a stub manager and
+   surfaces the typed error on failure.
 
 ### Frontend changes (high level)
 
@@ -536,8 +566,9 @@ only `local`, so the fan-out currently degenerates to one source.
   affordance** for every offline/never-attached host — an explicit
   "Connect"/"Attach" action on the host row, or selection of that host
   initiating attachment — never merely a disabled spawn row and never a control
-  that cannot fire. This first host action must initiate attachment through
-  component 04's `Ensure` and surface its progress ("attaching") and failure
+  that cannot fire. This first host action must initiate attachment through the
+  browser-reachable `evener/host/attach` RPC (§"Go changes" item 5, which calls
+  component 04's `Ensure`) and surface its progress ("attaching") and failure
   states: an attach flips `Online` (via the attach event, §2b) and makes the
   host selectable, and a failure shows the manager's error (the offline refusal
   below), not a silently disabled control. Nothing else attaches a host on the
@@ -619,6 +650,11 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
   `hubThreadStart`'s source branch returns
   `Unavailable("spawn source is not available: <id>")`
   (`app_threadlifecycle.go`) — confirm and keep that contract.
+- **Connect action failure**: `evener/host/attach` returns the manager's typed
+  error unchanged — `Unavailable` for an unreachable/refused host, component
+  04's `ErrDeploy`/`ErrProtocolIncompatible` for a deploy/version failure — and
+  the row renders *attaching → failed* with that error, never a silent no-op or
+  a permanently disabled control.
 - **Source removed / unknown ref**: `Registry.SourceForRef` returns
   `source not found: <id>` (`registry.go`); `sourceForThread` maps a
   parse failure to InvalidParams (`app_sources.go`). Reconnect/removal is
@@ -658,6 +694,15 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     called by the background refresh (assert its `ListThreads` is never
     invoked), and a source that reports attached is; the check proves the walk
     never dials an unattached host.
+  - Fleet-wide list stays lazy: a non-explicit `thread/list` (empty
+    `SourceIDs`) never calls the `Ensure`-backed resolver for an unattached
+    source (assert no `Ensure` and no `ListThreads` on it), while an explicit
+    `SourceIDs` naming that host does attach it (extend the
+    `app_threadlist.go` tests).
+  - Connect RPC: `evener/host/attach` with a configured host calls a stub
+    manager's `Ensure` exactly once and returns the post-attach state; an
+    unknown host is `InvalidParams`; a failed attach surfaces the manager's
+    typed error rather than an empty success.
   - Host-qualified projects: two remote sources whose threads share a working
     directory (same path, different hosts) produce two distinct project entries
     with distinct identities, neither resolved from a local path; a remote
@@ -670,7 +715,9 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
   offline hosts disabled; picking a host sends the source field in the
   `thread/start` request (extend `panes/spawn` tests and
   `stores/navigation` codec/store tests). Assert `host_id` renders a badge for
-  non-local rows.
+  non-local rows. The Connect control on an offline host row issues
+  `evener/host/attach` (assert the outgoing request) and renders attaching and
+  the mapped error.
 - **Live**: the design's environment-gated SSH test
   (`EVENER_SSH_E2E=1`, design §7) covers the end-to-end fleet view against a
   disposable host; never in default `make test`.
@@ -712,10 +759,15 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    that was not already attached (assert no `Ensure`/`ListThreads` on an
    unattached source).
 9. A configured-but-never-attached host is not dead UI: its first host action
-   initiates attachment (component 04's `Ensure`) and surfaces progress and
-   failure; on success the host reports `Online:true` and is selectable for a
-   spawn, and no other path attaches a host implicitly. For a host whose hub is
-   stopped, the same action drives component 04's bootstrap (start + health
+   issues the browser-reachable `evener/host/attach` RPC (component 04's
+   `Ensure`) and surfaces progress and failure mapped from its typed errors; on
+   success the host reports `Online:true` and is selectable for a spawn. No
+   other path attaches a host implicitly: the non-explicit fleet-wide
+   `thread/list` (empty `SourceIDs`) runs only against already-attached sources
+   and never calls the `Ensure`-backed resolver for an unattached host, so
+   opening the app and listing the fleet attaches nothing (component 05, §"A
+   background/snapshot caller must not force attachment"). For a host whose hub
+   is stopped, the same action drives component 04's bootstrap (start + health
    wait) rather than failing at the first dial.
 10. Every host-dependent discovery/validation call the spawn form makes (model,
     harness, path completion/validation, launch resolution, recent projects,

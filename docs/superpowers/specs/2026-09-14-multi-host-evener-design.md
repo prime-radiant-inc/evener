@@ -40,7 +40,13 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   and terminates any A→B→A chain regardless of what the config can see — the
   caller-identity guard that a later host-list RPC would make config-aware. The
   guard is a v1 requirement; the attach-time upstream-list detection
-  (`AddWithUpstreams`/`SetUpstreams`) stays deferred.
+  (`AddWithUpstreams`/`SetUpstreams`) stays deferred. The guard's **origin
+  signal is the connection the request arrived on** — the hub marks a connection
+  opened by a peer hub's attach bridge with the host capability token as
+  remote-originated and stamps that role into the request context; it is never
+  `InitializeParams.ClientInfo`, which is caller-supplied and spoofable. The
+  local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
+  translation detail"), not by an advisory check in a handler.
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.

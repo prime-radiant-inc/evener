@@ -353,7 +353,11 @@ the remote hub's `evener/auth/apiKey/set` with `{provider: <name>, value}` —
 `c.setCredential` (= `creds.Set`), reloads the registry, and returns
 `AuthStatusResponse`. The host therefore writes its own `credentials.toml`
 atomically with the correct mode; the controller never sees the file path or
-writes it.
+writes it. This paragraph names the **write half only**; the classification that
+decides whether that write may happen at all is host-side and atomic, and the
+two-call "read `evener/auth/status`, classify, then set" form is **not** the
+contract — see "The no-clobber guarantee is atomic" immediately below, which
+supersedes any check-then-write reading of this paragraph.
 
 **Merge / no-clobber policy.** Before writing, the pusher asks the remote
 `evener/auth/status` for the instance (`app_auth.go`) and reads
@@ -365,7 +369,10 @@ would silently change which credential is in force. Remote resolution order is
 `api_key` > `credential_headers` > `store` > `env:<VAR>` (`registry.credential`,
 `llm/registry/instances.go`):
 
-| Condition on the remote (evaluated top to bottom) | Action |
+The classification the **host** applies — re-resolved inside the one locked
+conditional set, not read by the client before a separate write:
+
+| Condition on the host (re-resolved under the credential write lock, top to bottom) | Action |
 | --- | --- |
 | instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go`); classify locally so the report is a skip, not an error |
 | instance not present in the remote `evener/instance/list` | **skipped** — no matching instance on the host |

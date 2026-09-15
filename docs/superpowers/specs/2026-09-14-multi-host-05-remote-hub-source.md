@@ -624,6 +624,23 @@ and the attached-only lookup are the implementing PR's requirement; the shipped
 no attachment gate, and `RemoteHubClientFunc` is wired to `Ensure`, so neither
 exists yet.
 
+**The same gate applies to the primary `thread/list` fan-out, not only the
+snapshot.** A **non-explicit** fleet-wide `thread/list` (empty `SourceIDs`) must
+run only against sources that are **already attached**, using the attached-only
+lookup rather than the `Ensure`-backed resolver: an unattached host is skipped
+without a call, exactly as a non-explicit source error already degrades to a
+skip (`app_threadlist.go`). Otherwise simply opening the hub and listing the
+fleet would resolve every `RemoteHubSource` through `Ensure`, dialing and
+attaching every configured host — eager attachment that contradicts the lazy
+manager (component 04, §"Channel lifecycle states"), the attachment-based
+`Online` (component 06, §"Read contract"), and fleet-view acceptance criterion 9
+("no other path attaches a host implicitly"). A source **named explicitly** in
+`SourceIDs` is a deliberate, host-targeted request and may attach that host —
+that explicit list is one of the intended attach triggers (alongside component
+06's Connect action), the opposite of the implicit empty-filter fan-out. So the
+rule is: empty filter ⇒ attached-only, no dial; explicit host in `SourceIDs` ⇒
+may attach.
+
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
 hub's `thread/unsubscribe` (`appwire/types.go`, a `ScopeBoth` method,
@@ -683,6 +700,29 @@ Ref translation detail (`remote_hub_refs.go`):
     terminates an A→B→A chain even though the config alone cannot detect it
     (design §2 "Topology"; §Open questions item 3). It is a requirement of this
     component's routing seam, not a present fact.
+  - **The origin signal is the connection a request arrived on, never
+    `InitializeParams.ClientInfo`.** `ClientInfo` is caller-supplied and
+    spoofable, and no origin/hop field exists today in the request context,
+    `ThreadListParams`, or the `Source` interface, so the guard needs its own
+    signal. The hub's `/rpc` edge already distinguishes the **host-bridge
+    connection** — the one a peer hub's attach bridge opens with the host
+    capability token (component 02) — from an ordinary local browser/TUI
+    session. At accept/attach time the hub therefore marks the connection with
+    its **role** (the credential it authenticated with: host capability token ⇒
+    *remote-originated*; a local session ⇒ *local*), and the routing seam stamps
+    that role into the request context, so every handler can read
+    `origin` (empty for a local request, non-empty for a remote-originated one).
+    The refusal is enforced at the **typed fan-out seam**, not by a check inside
+    a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
+    `app_threadlist.go`) — and any other path that routes a ref to more than one
+    source — refuses to route a request whose `origin` is non-empty to any
+    source other than the origin, returning the typed refusal instead. A
+    remote-originated request is thus served from the origin's own local state
+    only and can never be fanned to another remote source, which caps fan-out at
+    depth 1 and terminates A→B→A. Coverage: a scenario test that injects a
+    remote-originated `thread/list` (and each other fan-out path) and asserts it
+    is never routed to a second remote source, with the typed refusal surfaced;
+    and a local-originated request still fanned normally.
   - **Implementation status:** the shipped `remapRemoteSourceIDs`
     (`remote_hub_refs.go`, `multi-host-pr05a-remote-hub-source`) returns `nil`
     for an empty incoming filter — which `ListThreads` forwards as unfiltered —
@@ -701,13 +741,28 @@ Ref translation detail (`remote_hub_refs.go`):
   refs is sufficient for the controller's list/read views; mutations against an
   alias are already refused on the remote side (aliases are excluded from
   mutation resolution, `local_daemon.go`).
-- Notifications: rewrite the `ref` field of every notification payload that
-  carries one (the hub's own relay reads `ref` first, then `threadId`;
-  `app_relay.go`). Bare `threadId` values are already unnamespaced and
-  need no change. Notifications that embed a `Thread` (e.g. `NotifyThreadStarted`,
-  wire string `"thread/started"`; see the notification catalog in
-  `appwire/protocol.go`) must get the same thread translation applied to the
-  nested snapshot.
+- Notifications: translate **every session-reference field in every
+  notification payload**, not only the top-level `ref`, and enumerate them
+  rather than translating "the ones we noticed". The set is:
+  - the top-level `ref` of every payload that carries one (the hub's own relay
+    reads `ref` first, then `threadId`; `app_relay.go`). Bare `threadId` values
+    are already unnamespaced and need no change.
+  - a nested `Thread` snapshot (`NotifyThreadStarted`, wire string
+    `"thread/started"`; see the notification catalog in `appwire/protocol.go`)
+    gets the full outbound thread translation above applied to it — `Source`,
+    `Evener.Ref`, and `Evener.ParentRef`.
+  - the nested job/delegate transcript refs carried by `evener/job/started` and
+    `evener/job/finished` (`EvenerJobParams.Job` =
+    `EvenerJobInfo.TranscriptRef`, `appwire/types.go`) and by
+    `evener/delegate/updated` (`EvenerDelegateParams.Delegate` =
+    `EvenerDelegateInfo.TranscriptRef`, `appwire/types.go`). These are
+    session references exactly like the others and must be rewritten from the
+    remote `local:<id>` to the controller `host:<id>`.
+  A nested `local:<id>` transcript ref left untranslated makes the
+  controller/TUI route the job or delegate to *its own* `local` — the wrong
+  machine, where the child session does not exist — so the job/delegate
+  notifications are not an optional extra: every nested session-reference field
+  is in scope, and a new payload that adds one inherits the rule.
 
 ## Data flow
 
@@ -767,6 +822,13 @@ questions for the atomicity tradeoff.
   `localDaemonDialError` (`local_daemon.go`), so the hub refuses actions
   and the fleet shows the host offline (parent design §2). Message names the
   host.
+- **Loop-guard refusal (remote-originated fan-out).** A request whose
+  routing-seam `origin` is non-empty — it arrived over a peer hub's
+  capability-token bridge connection — is served from the origin's local state
+  and is refused with a typed error if any fan-out path would route it to a
+  second remote source. The refusal is deliberate and surfaced, never a silent
+  serve-from-another-host; a local-originated request (`origin` empty) is
+  unaffected.
 - **Version mismatch.** `client.Initialize` returns
   `appwire.ProtocolVersionMismatchError` (`appwire/client.go`) when the remote
   speaks a different `appwire.ProtocolVersion` (`appwire/types.go`). Component
@@ -830,10 +892,15 @@ network.
 3. **Ref round-trip.** Property test: for refs `host:X`, `host:local:X`
    confusion, sub-thread alias refs, and `ParentRef`, `fromRemote(toRemote(r))
    == r`.
-4. **Notification translation.** Feed a remote `NotifyThreadStatusChanged`
-   (`"thread/status/changed"`) with `ref:"local:S"` and a `NotifyThreadStarted`
-   (`"thread/started"`) with a nested `Thread`; assert the subscriber sees
-   `host:S` and a translated nested ref.
+4. **Notification translation — every nested ref.** Feed a remote
+   `NotifyThreadStatusChanged` (`"thread/status/changed"`) with `ref:"local:S"`
+   and a `NotifyThreadStarted` (`"thread/started"`) with a nested `Thread`;
+   assert the subscriber sees `host:S` and a translated nested ref
+   (`Source`/`Evener.Ref`/`Evener.ParentRef`). Add job/delegate coverage:
+   `evener/job/started` and `evener/job/finished` (`EvenerJobParams.Job.
+   TranscriptRef:"local:<child>"`) and `evener/delegate/updated`
+   (`EvenerDelegateParams.Delegate.TranscriptRef:"local:<child>"`) must reach
+   the subscriber as `host:<child>`, not `local:<child>`.
 5. **Subscription teardown.** With two local subscribers on one remote thread,
    drop one: assert no `thread/unsubscribe` is sent and the survivor keeps
    receiving. Drop the last: assert exactly one
@@ -865,6 +932,17 @@ network.
     starts on registration, not only on `SubscribeThread`), and after a client
     replacement (reconnect) the registered consumer receives notifications from
     the fresh client's drain without re-registering.
+11. **Attachment-gated fan-out.** With an unattached `RemoteHubSource` whose
+    resolver is a spy wired to `Ensure`, a non-explicit `thread/list` (empty
+    `SourceIDs`) never calls `Ensure`/`ListThreads` on it (it is skipped) while
+    an attached source is queried; an explicit `SourceIDs` naming the host is
+    the only list path that reaches the resolver.
+12. **Loop guard (origin signal).** A remote-originated `thread/list` — a
+    request whose routing-seam `origin` names a remote source — is served from
+    the origin's local state and is refused typed if any fan-out path tries to
+    route it to a second remote source; a local-originated request (empty
+    `origin`) fans out normally. Assert the origin is derived from the
+    connection role, not from `InitializeParams.ClientInfo`.
 
 ## Acceptance criteria
 
@@ -889,6 +967,17 @@ network.
 - Exactly one goroutine reads each client's `Notifications()`; the fan-out
   broker delivers a copy to every registered consumer (thread subscriptions and
   the component-07 admin fan-out), and a slow consumer cannot stall another.
+- Notification translation rewrites **every** session-reference field — the
+  top-level `ref`, a nested `Thread`, and the nested `TranscriptRef` on
+  `EvenerJobInfo`/`EvenerDelegateInfo` in `evener/job/*` and
+  `evener/delegate/updated` — so no remote child reference reaches the
+  controller as `local:<id>`.
+- A non-explicit fleet-wide `thread/list` never attaches an unattached host
+  (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
+- The loop guard's origin signal comes from the connection role (host
+  capability-token bridge connection), not `InitializeParams.ClientInfo`, and a
+  remote-originated request is refused typed before any fan-out to another
+  remote source.
 
 ## PR size estimate (LOC)
 
