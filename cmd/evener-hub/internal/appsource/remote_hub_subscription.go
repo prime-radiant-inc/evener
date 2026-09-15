@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,6 +52,27 @@ type remoteHubSubscription struct {
 	// canonicalized to its stable ref — not necessarily under the caller's
 	// threadId. Ownership and teardown must compare that canonical identity.
 	remoteRef string
+	// provisionalRef is the caller-derived remote target this subscription was
+	// created with (remoteSubscriptionTarget), retained for the life of the
+	// subscription. remoteRef moves to the canonical identity at settlement, so
+	// the provisional value is the only way two subscriptions for the same remote
+	// thread can be recognized as such while one of them is still attaching: a
+	// replacement created with the same caller addressing shares this value, and
+	// an identity replacement that moves the live thread ID makes the canonical
+	// ref differ from it. See refClaimLocked.
+	provisionalRef string
+	// settled reports whether the subscribe request answered and remoteRef is the
+	// canonical identity the remote keyed. A subscription that has not settled is
+	// still attaching: it may adopt (or abandon) the remote ref a retiring
+	// predecessor held, so a predecessor defers its unsubscribe to it rather than
+	// dropping a feed it may yet come to own. Written under subMu.
+	settled bool
+	// deferred are remote refs a retired predecessor left for this subscription to
+	// release. It inherited them rather than unsubscribing them because it may
+	// adopt the same remote thread; settle (releaseDeferredLocked) and discard
+	// (releaseRefsLocked) resolve them once this subscription's own identity is
+	// known, unsubscribing any it did not adopt. Written under subMu.
+	deferred []string
 	// client is the shared per-host client this subscription attached to. When
 	// that client's notification stream closes, every subscription bound to it
 	// is a dead end and must be retired (see drainLoop): its pump would
@@ -93,15 +115,21 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
+	// The caller-derived provisional identity doubles as the initial remoteRef:
+	// until the subscribe answers it is the best identity available, and it is
+	// retained separately so a same-thread replacement can be recognized while
+	// this subscription is still attaching (see refClaimLocked).
+	target := remoteSubscriptionTarget(ref, params.ThreadID)
 	sub := &remoteHubSubscription{
-		threadID: ref.ThreadID,
+		threadID:       ref.ThreadID,
+		provisionalRef: target,
 		// The remote hub keys this connection's subscription by the thread it
 		// resolved, preferring a bare threadId over the ref (threadRelayTarget
 		// drives both thread/read's relay and thread/unsubscribe). Teardown must
 		// name that same identity or it unsubscribes a ref the remote never
 		// subscribed, so the effective target — the caller's threadId when it sent
 		// one — is what is recorded here.
-		remoteRef: remoteSubscriptionTarget(ref, params.ThreadID),
+		remoteRef: target,
 		client:    client,
 		in:        make(chan appwire.Notification, remoteHubSubBuffer),
 		out:       make(chan appwire.Notification, remoteHubSubBuffer),
@@ -219,8 +247,17 @@ func (s *RemoteHubSource) requestSubscribe(subCtx context.Context, client *appwi
 // created, and the remote hub handles the subscribe and the unsubscribe
 // concurrently, so an unsubscribe issued while the subscribe is still in flight
 // can land first and leave the later subscribe active with no local owner.
+//
+// A subscribe that completed successfully reveals the canonical ref the remote
+// keyed, and cleanup must unsubscribe that identity rather than the caller's
+// provisional target: the remote canonicalizes a current root thread ID to its
+// stable ref, so unsubscribing the caller's threadId names a subscription the
+// remote never held and leaks the one it did.
 func (s *RemoteHubSource) retireCanceledSubscribe(sub, previous *remoteHubSubscription, outcome <-chan subscribeOutcome) {
-	<-outcome
+	result := <-outcome
+	if result.err == nil {
+		s.canonicalizeRemoteRef(sub, result.snapshot.Thread.Evener.Ref)
+	}
 	s.discardSubscriber(sub, previous)
 }
 
@@ -270,20 +307,34 @@ func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
 // displaced reports false; a snapshot key that already matches sub's key still
 // checks that sub is the installed subscription, since a replacement for the
 // same thread under the same key leaves the snapshot key equal to sub.threadID.
+//
+// The re-key, the canonical remote identity, and the installed check all happen
+// under one remoteMu+subMu hold, so a replacement can never observe sub at its
+// new key with a stale provisional ref: that interleaving is what let a retiring
+// predecessor conclude the ref was unowned and unsubscribe the remote
+// subscription its live replacement had just adopted.
 func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) bool {
-	if snapshot.Thread.ID == "" && snapshot.Thread.Evener.Ref == "" {
-		return s.subscriberInstalled(sub)
+	degenerate := snapshot.Thread.ID == "" && snapshot.Thread.Evener.Ref == ""
+	canonical := strings.TrimSpace(snapshot.Thread.Evener.Ref)
+	key := ""
+	if !degenerate {
+		key = s.snapshotRoutingKey(snapshot)
 	}
-	if key := s.snapshotRoutingKey(snapshot); key != "" && key != sub.threadID {
-		displaced, installed := s.rekeySubscriber(sub, key)
-		if !installed {
-			return false
-		}
-		if displaced != nil && displaced != sub {
-			displaced.cancel()
-		}
-	} else if !s.subscriberInstalled(sub) {
+
+	s.remoteMu.Lock()
+	s.subMu.Lock()
+	if s.subs[sub.threadID] != sub {
+		s.subMu.Unlock()
+		s.remoteMu.Unlock()
 		return false
+	}
+	var displaced *remoteHubSubscription
+	if key != "" && key != sub.threadID {
+		delete(s.subs, sub.threadID)
+		displaced = s.subs[key]
+		sub.threadID = key
+		s.subs[key] = sub
+		s.ensureDrainLocked(sub.client)
 	}
 	// The snapshot's own ref is the identity the remote actually attached this
 	// connection's subscription to. The caller-derived target is only a
@@ -293,7 +344,31 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 	// appear to own a different remote ref. Ownership and teardown are decided on
 	// the canonical identity, so the predecessor can recognize the replacement
 	// and the unsubscribe names the remote's own ref rather than a stale one.
-	s.canonicalizeRemoteRef(sub, snapshot.Thread.Evener.Ref)
+	if canonical != "" {
+		sub.remoteRef = canonical
+	}
+	sub.settled = true
+	s.subMu.Unlock()
+	s.remoteMu.Unlock()
+
+	if displaced != nil && displaced != sub {
+		displaced.cancel()
+	}
+	// A concurrent replacement (or the cancel above) may have taken this thread's
+	// routing slot after the atomic settle. A subscription that is no longer
+	// installed must not hand the relay a channel nothing routes to.
+	if !s.subscriberInstalled(sub) {
+		return false
+	}
+	// Refs a retired predecessor deferred to this subscription are resolved now
+	// that its own canonical identity is known: the one it adopted is its own,
+	// and any it did not is handed to a still-attaching sibling or unsubscribed.
+	s.releaseDeferredLocked(sub)
+	if degenerate {
+		// No authoritative identity to key on and nothing to fold in: the
+		// caller-derived key stands and the controller's copy is left alone.
+		return true
+	}
 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: sub.threadID,
 		Ref:      appwire.Ref{SourceID: s.id, ThreadID: sub.threadID}.String(),
@@ -302,16 +377,18 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 	return true
 }
 
-// canonicalizeRemoteRef records the remote-namespace ref the successful
-// subscribe snapshot named as sub's remote identity. It is the identity the
-// remote hub keyed the subscription under, so it is what remoteRefOwnedLocked
-// must compare and what thread/unsubscribe must name. An empty snapshot ref
-// leaves the caller-derived provisional target in place, which is the best
-// identity available when the attach revealed none.
+// canonicalizeRemoteRef records the remote-namespace ref a completed subscribe
+// named as sub's remote identity. It is the identity the remote hub keyed the
+// subscription under, so it is what ownership and teardown must name. Unlike the
+// settlement path it does not require sub to still be the installed routing
+// target: cleanup has to unsubscribe the identity the remote actually created
+// even when a replacement has since taken sub's slot. An empty ref leaves the
+// caller-derived provisional target in place, the best identity available when
+// the attach revealed none.
 //
-// remoteMu serializes it against retireSubscription's check-then-unsubscribe, so
-// a predecessor retiring after its replacement settled observes the canonical
-// ref; subMu orders the write against remoteRefOwnedLocked's read.
+// remoteMu serializes it against retireSubscription's check-then-unsubscribe so a
+// predecessor observes the canonical ref; subMu orders the write against
+// refClaimLocked's read.
 func (s *RemoteHubSource) canonicalizeRemoteRef(sub *remoteHubSubscription, remoteRef string) {
 	remoteRef = strings.TrimSpace(remoteRef)
 	if remoteRef == "" {
@@ -321,9 +398,6 @@ func (s *RemoteHubSource) canonicalizeRemoteRef(sub *remoteHubSubscription, remo
 	defer s.remoteMu.Unlock()
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
-	if s.subs[sub.threadID] != sub {
-		return
-	}
 	sub.remoteRef = remoteRef
 }
 
@@ -357,28 +431,6 @@ func (s *RemoteHubSource) snapshotRoutingKey(snapshot appwire.ThreadReadResponse
 		return ""
 	}
 	return ref.ThreadID
-}
-
-// rekeySubscriber moves sub to the authoritative routing key a successful
-// subscribe revealed. It returns the subscription that key held (so the caller
-// can retire it) and whether sub is now installed under the key. installed is
-// false when sub is no longer the installed subscription for its provisional
-// key, because a concurrent replacement already won that slot and owns sub's
-// fate; the caller must not publish sub then.
-func (s *RemoteHubSource) rekeySubscriber(sub *remoteHubSubscription, key string) (*remoteHubSubscription, bool) {
-	s.remoteMu.Lock()
-	defer s.remoteMu.Unlock()
-	s.subMu.Lock()
-	defer s.subMu.Unlock()
-	if s.subs[sub.threadID] != sub {
-		return nil, false
-	}
-	delete(s.subs, sub.threadID)
-	displaced := s.subs[key]
-	sub.threadID = key
-	s.subs[key] = sub
-	s.ensureDrainLocked(sub.client)
-	return displaced, true
 }
 
 // installSubscriber publishes sub as the routing target for its remote thread
@@ -415,7 +467,17 @@ func (s *RemoteHubSource) installSubscriber(sub *remoteHubSubscription) *remoteH
 // can leave a remote-side subscription behind that nothing on this side will
 // ever retire, so the discard also sends a best-effort thread/unsubscribe —
 // unless a live sibling still owns that remote ref on the same client, where
-// the remote subscription is the sibling's to keep.
+// the remote subscription is the sibling's to keep. The same release covers any
+// ref a retired predecessor deferred to this subscription (releaseRefsLocked):
+// the failed attach will never adopt them, so they are dropped now unless a
+// sibling has taken them over.
+//
+// When a live previous subscription is restored, the notifications this failed
+// replacement buffered while it was the routing target are handed to it first.
+// The replacement displaced routing before its own subscribe succeeded, so the
+// shared drain delivered the thread's in-flight deltas to sub.in; restoring the
+// previous without forwarding them would lose those deltas with no resync to
+// cover the gap.
 func (s *RemoteHubSource) discardSubscriber(sub, previous *remoteHubSubscription) {
 	close(sub.pumpDone)
 	s.remoteMu.Lock()
@@ -428,8 +490,10 @@ func (s *RemoteHubSource) discardSubscriber(sub, previous *remoteHubSubscription
 			delete(s.subs, sub.threadID)
 		}
 	}
-	orphanRemote := !s.remoteRefOwnedLocked(sub)
 	s.subMu.Unlock()
+	if restore {
+		forwardBufferedNotifications(sub, previous)
+	}
 	if previous != nil && previous != sub && !restore {
 		// The displaced subscription is dead, so unlike installSubscriber's
 		// successful path nothing else will cancel it. Cancel it here so a
@@ -437,10 +501,28 @@ func (s *RemoteHubSource) discardSubscriber(sub, previous *remoteHubSubscription
 		// hanging on a pump that will never deliver again.
 		previous.cancel()
 	}
-	if orphanRemote {
-		s.unsubscribeRemoteLocked(sub)
-	}
+	s.releaseRefsLocked(sub)
 	s.remoteMu.Unlock()
+}
+
+// forwardBufferedNotifications moves the notifications sub buffered while it was
+// the routing target into the restored previous subscription. A non-blocking
+// hand-off keeps the discard from parking; if previous's own buffer is full its
+// consumer is far behind, so previous is retired and the relay resyncs — the
+// deltas are then recovered by the resync rather than dropped silently.
+func forwardBufferedNotifications(sub, previous *remoteHubSubscription) {
+	if previous == nil {
+		return
+	}
+	for len(sub.in) > 0 {
+		notification := <-sub.in
+		select {
+		case previous.in <- notification:
+		default:
+			previous.cancel()
+			return
+		}
+	}
 }
 
 // subscriberLiveLocked reports whether sub can still deliver. Called with subMu
@@ -463,17 +545,111 @@ func (s *RemoteHubSource) subscriberLiveLocked(sub *remoteHubSubscription) bool 
 	return true
 }
 
-// remoteRefOwnedLocked reports whether a subscription other than sub still
-// holds sub's remote ref on sub's client. Remote subscriptions live per
-// (connection, thread), so unsubscribing a ref a live sibling still needs would
-// drop that sibling's feed. Called with subMu held.
-func (s *RemoteHubSource) remoteRefOwnedLocked(sub *remoteHubSubscription) bool {
+// remoteRefsLocked returns every remote ref sub is responsible for releasing:
+// its own remote identity plus any ref a retired predecessor deferred to it.
+// Called with subMu held.
+func (sub *remoteHubSubscription) remoteRefsLocked() []string {
+	refs := make([]string, 0, 1+len(sub.deferred))
+	if sub.remoteRef != "" {
+		refs = append(refs, sub.remoteRef)
+	}
+	for _, ref := range sub.deferred {
+		if ref == "" || slices.Contains(refs, ref) {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// refClaimLocked reports whether some subscription other than sub on sub's
+// client is responsible for ref, and if not, a still-attaching sibling that may
+// become responsible for it. Remote subscriptions live per (connection, thread),
+// so unsubscribing a ref a live sibling still needs would drop that sibling's
+// feed.
+//
+// A sibling holds ref when it names ref as its remote identity or has already
+// inherited it. A sibling that is not settled may hold it: its remoteRef is only
+// the caller-derived provisional target (remoteSubscriptionTarget), while the
+// remote canonicalizes a current root thread ID to its stable ref, so the ref it
+// will actually adopt can differ from the one it recorded. Two subscriptions for
+// the same remote thread are recognized by their caller addressing — the shared
+// provisionalRef — which is what lets a retirement defer to a replacement
+// instead of unsubscribing the ref that replacement is about to adopt. A ref
+// that is not held but is claimed is returned so the caller can defer, not
+// unsubscribe. Called with subMu held.
+func (s *RemoteHubSource) refClaimLocked(sub *remoteHubSubscription, ref string) (bool, *remoteHubSubscription) {
+	var claimant *remoteHubSubscription
 	for _, other := range s.subs {
-		if other != sub && other.client == sub.client && other.remoteRef == sub.remoteRef {
-			return true
+		if other == sub || other.client != sub.client {
+			continue
+		}
+		if other.remoteRef == ref || slices.Contains(other.deferred, ref) {
+			return true, nil
+		}
+		if !other.settled && other.provisionalRef != "" &&
+			(other.provisionalRef == ref || other.provisionalRef == sub.provisionalRef) {
+			if claimant == nil {
+				claimant = other
+			}
 		}
 	}
-	return false
+	return false, claimant
+}
+
+// releaseRefsLocked tells the remote hub to drop every remote ref sub is
+// responsible for and no sibling has taken over. It is the retiring/failed
+// subscription's last act: sub must already be removed from (or never have been
+// the target of) the routing table. A ref a still-attaching sibling may yet
+// adopt is handed to that sibling (sub.deferred) instead of unsubscribed, so a
+// replacement's subscribe is never dropped out from under it. Called with
+// remoteMu held (so the wire unsubscribe cannot overtake a sibling's subscribe);
+// subMu is taken internally and released before the wire call.
+func (s *RemoteHubSource) releaseRefsLocked(sub *remoteHubSubscription) {
+	s.subMu.Lock()
+	refs := sub.remoteRefsLocked()
+	s.subMu.Unlock()
+	s.releaseLocked(sub, refs, "")
+}
+
+// releaseDeferredLocked resolves the refs a retired predecessor deferred to sub
+// now that sub's own canonical identity is known. It holds remoteMu across the
+// release so the unsubscribe cannot overtake a concurrent replacement's
+// subscribe for the same ref.
+func (s *RemoteHubSource) releaseDeferredLocked(sub *remoteHubSubscription) {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	s.subMu.Lock()
+	deferred := sub.deferred
+	sub.deferred = nil
+	s.subMu.Unlock()
+	s.releaseLocked(sub, deferred, sub.remoteRef)
+}
+
+// releaseLocked unsubscribes the refs among refs that sub did not adopt and no
+// sibling holds, deferring the ones a still-attaching sibling may yet adopt.
+// adopted names the ref sub itself now holds and must not release here. Called
+// with remoteMu held and subMu released; it takes subMu for the decision.
+func (s *RemoteHubSource) releaseLocked(sub *remoteHubSubscription, refs []string, adopted string) {
+	s.subMu.Lock()
+	var orphans []string
+	for _, ref := range refs {
+		if ref == "" || (adopted != "" && ref == adopted) {
+			continue
+		}
+		owned, claimant := s.refClaimLocked(sub, ref)
+		switch {
+		case owned:
+		case claimant != nil:
+			claimant.deferred = append(claimant.deferred, ref)
+		default:
+			orphans = append(orphans, ref)
+		}
+	}
+	s.subMu.Unlock()
+	for _, ref := range orphans {
+		s.unsubscribeRefLocked(ref, sub.client)
+	}
 }
 
 // pumpSubscription owns sub.out (and closes it on exit) and sub.pumpDone. It is
@@ -501,17 +677,20 @@ func (s *RemoteHubSource) pumpSubscription(ctx context.Context, sub *remoteHubSu
 
 // retireSubscription removes sub from the routing table if it is still the
 // installed subscription and tells the remote hub to drop the matching
-// remote-side subscription, unless a live replacement owns it. The remote
-// client is long-lived, so without the unsubscribe the remote hub would keep
-// forwarding the thread's notifications for the rest of the connection's life.
+// remote-side subscription, unless a live replacement owns it or a still-
+// attaching replacement may yet adopt it. The remote client is long-lived, so
+// without the unsubscribe the remote hub would keep forwarding the thread's
+// notifications for the rest of the connection's life.
 //
-// The unsubscribe is skipped only when another subscription still holds this
-// remote ref on this same client (remoteRefOwnedLocked): remote subscriptions
+// The unsubscribe is skipped when another subscription on this same client
+// already holds this remote ref, and deferred (releaseRefsLocked) when a
+// still-attaching same-client subscription may adopt it: remote subscriptions
 // live per (connection, thread), so only a replacement on the same connection
 // can own this one. A replacement on a *different* client — a reconnect that
 // installed its replacement before the old connection was closed — cannot, and
 // skipping there would leave the old connection forwarding a thread nothing
-// local watches.
+// local watches. A deferred ref is released by that replacement when it settles
+// or fails, so it is never leaked.
 //
 // remoteMu serializes this check-then-unsubscribe against installSubscriber, so
 // a replacement's subscribe request can never land before its predecessor's
@@ -522,26 +701,24 @@ func (s *RemoteHubSource) retireSubscription(sub *remoteHubSubscription) {
 	if s.subs[sub.threadID] == sub {
 		delete(s.subs, sub.threadID)
 	}
-	owned := s.remoteRefOwnedLocked(sub)
 	s.subMu.Unlock()
-	if !owned {
-		s.unsubscribeRemoteLocked(sub)
-	}
+	s.releaseRefsLocked(sub)
 	s.remoteMu.Unlock()
 }
 
-// unsubscribeRemoteLocked drops sub's remote-side subscription with a bounded,
-// best-effort thread/unsubscribe. The shared client is long-lived, so without
-// it the remote hub would keep forwarding the thread's notifications for the
-// rest of the connection's life. Called with remoteMu held, so it can never
-// overtake a replacement's subscribe request.
-func (s *RemoteHubSource) unsubscribeRemoteLocked(sub *remoteHubSubscription) {
-	if sub == nil || sub.remoteRef == "" || sub.client == nil {
+// unsubscribeRefLocked drops one remote-side subscription with a bounded,
+// best-effort thread/unsubscribe. The shared client is long-lived, so without it
+// the remote hub would keep forwarding the thread's notifications for the rest
+// of the connection's life. Called with remoteMu held, so it can never overtake a
+// replacement's subscribe request.
+func (s *RemoteHubSource) unsubscribeRefLocked(ref string, client *appwire.Client) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || client == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), remoteHubUnsubscribeTimeout)
 	defer cancel()
-	_, _ = sub.client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: sub.remoteRef})
+	_, _ = client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: ref})
 }
 
 // ensureDrainLocked starts the single notification-drain goroutine for client

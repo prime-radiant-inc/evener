@@ -699,6 +699,382 @@ func TestRemoteHubSubscribeThreadUnsubscribesOnTeardown(t *testing.T) {
 	}
 }
 
+// installedSubscriberIn reads the routing target for key under the source's
+// locks, so a test observing the table cannot race the drain or a retiring pump.
+func installedSubscriberIn(t *testing.T, source *RemoteHubSource, key string) *remoteHubSubscription {
+	t.Helper()
+	source.remoteMu.Lock()
+	defer source.remoteMu.Unlock()
+	source.subMu.Lock()
+	defer source.subMu.Unlock()
+	return source.subs[key]
+}
+
+// Test 33: a retiring predecessor must not unsubscribe a remote ref a
+// still-attaching same-thread replacement may yet adopt. The replacement is
+// installed under its caller-derived provisional key while its subscribe is in
+// flight, so the ref it will actually hold is the canonical one the remote
+// resolves — which is not the provisional target it recorded. Comparing raw
+// remoteRefs made the predecessor believe the ref was unowned and unsubscribe
+// the feed its live replacement was about to adopt, leaving that subscription
+// permanently silent.
+func TestRemoteHubRetireDefersToStillAttachingSameThreadReplacement(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	source := remote.source
+
+	// The predecessor already settled: it holds the canonical remote ref the
+	// remote keyed. The caller addressed the thread by its current root ID, which
+	// the remote canonicalized to its stable ref, so its provisional identity
+	// differs from the ref it holds.
+	predecessor := &remoteHubSubscription{
+		threadID:       "stable",
+		provisionalRef: "local:current",
+		remoteRef:      "local:stable",
+		settled:        true,
+		client:         remote.client,
+		cancel:         func() {},
+	}
+	source.subs["stable"] = predecessor
+
+	// A replacement for the same thread is installed under its caller-derived
+	// provisional key while its own subscribe is in flight.
+	replacement := &remoteHubSubscription{
+		threadID:       "current",
+		provisionalRef: "local:current",
+		remoteRef:      "local:current",
+		client:         remote.client,
+		in:             make(chan appwire.Notification, 1),
+		out:            make(chan appwire.Notification, 1),
+		pumpDone:       make(chan struct{}),
+		cancel:         func() {},
+	}
+	if previous := source.installSubscriber(replacement); previous != nil {
+		t.Fatalf("replacement displaced %+v, want the provisional key free", previous)
+	}
+
+	// The predecessor retires while the replacement is still attaching. It must
+	// defer local:stable to the replacement rather than unsubscribe the feed the
+	// replacement is about to adopt.
+	source.retireSubscription(predecessor)
+	if sawRemoteUnsubscribe(t, remote, "local:stable") {
+		t.Fatalf("predecessor unsubscribed the ref its still-attaching replacement will adopt; calls = %+v", remote.calls())
+	}
+	if _, ok := source.subs["stable"]; ok {
+		t.Fatal("the retiring predecessor stayed in the routing table")
+	}
+
+	// When the replacement settles it adopts local:stable, so the deferred ref is
+	// its own and must not be unsubscribed.
+	if !source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+		ID: "stable", Source: "local", Evener: appwire.EvenerThread{Ref: "local:stable"},
+	}}) {
+		t.Fatal("settleSubscriber rejected the installed replacement")
+	}
+	expectResync(t, replacement.out, "stable", "host:stable")
+	if sawRemoteUnsubscribe(t, remote, "local:stable") {
+		t.Fatalf("settlement unsubscribed the ref the replacement adopted; calls = %+v", remote.calls())
+	}
+	if installedSubscriberIn(t, source, "stable") != replacement {
+		t.Fatal("the settled replacement is not installed under the canonical key")
+	}
+}
+
+// Test 34: a re-key that displaces a predecessor must record the replacement's
+// canonical remote identity atomically with the re-key, before the displaced
+// subscription can retire. The displaced subscription's cancel retires it
+// synchronously here, forcing the interleaving in which its teardown ran before
+// settlement recorded the canonical ref; with the ref still provisional the
+// predecessor believed local:child unowned and unsubscribed the feed the
+// re-keyed replacement had just adopted.
+func TestRemoteHubReplacedSettleKeepsAdoptedRemoteRef(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	source := remote.source
+
+	var predecessor *remoteHubSubscription
+	predecessor = &remoteHubSubscription{
+		threadID:       "child",
+		provisionalRef: "local:root",
+		remoteRef:      "local:child",
+		settled:        true,
+		client:         remote.client,
+		cancel:         func() { source.retireSubscription(predecessor) },
+	}
+	source.subs["child"] = predecessor
+
+	replacement := &remoteHubSubscription{
+		threadID:       "root",
+		provisionalRef: "local:root",
+		remoteRef:      "local:root",
+		client:         remote.client,
+		in:             make(chan appwire.Notification, 1),
+		out:            make(chan appwire.Notification, 1),
+		pumpDone:       make(chan struct{}),
+		cancel:         func() {},
+	}
+	source.subs["root"] = replacement
+
+	if !source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+		ID: "child", Source: "local", Evener: appwire.EvenerThread{Ref: "local:child"},
+	}}) {
+		t.Fatal("settleSubscriber rejected the installed replacement")
+	}
+	expectResync(t, replacement.out, "child", "host:child")
+	if sawRemoteUnsubscribe(t, remote, "local:child") {
+		t.Fatalf("the displaced predecessor unsubscribed the ref the re-keyed replacement adopted; calls = %+v", remote.calls())
+	}
+	if installedSubscriberIn(t, source, "child") != replacement {
+		t.Fatal("the settled replacement is not installed under the canonical key")
+	}
+}
+
+// Test 35: settlement must not publish a subscription a concurrent replacement
+// displaced while it settled. Routing only knows the installed subscription, so
+// handing the relay a channel for a displaced one leaves it live-looking and
+// permanently silent.
+func TestRemoteHubSettleRejectsReplacementInstalledDuringSettlement(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	source := remote.source
+
+	newcomer := &remoteHubSubscription{
+		threadID:       "child",
+		provisionalRef: "local:root",
+		remoteRef:      "local:child",
+		settled:        true,
+		client:         remote.client,
+		in:             make(chan appwire.Notification, 1),
+		out:            make(chan appwire.Notification, 1),
+		pumpDone:       make(chan struct{}),
+		cancel:         func() {},
+	}
+	predecessor := &remoteHubSubscription{
+		threadID:       "child",
+		provisionalRef: "local:root",
+		remoteRef:      "local:child",
+		settled:        true,
+		client:         remote.client,
+		// Displaces the re-keyed replacement as it settles: an install landing in
+		// the window between settlement's committed re-key and its publication.
+		cancel: func() { source.installSubscriber(newcomer) },
+	}
+	source.subs["child"] = predecessor
+
+	replacement := &remoteHubSubscription{
+		threadID:       "root",
+		provisionalRef: "local:root",
+		remoteRef:      "local:root",
+		client:         remote.client,
+		in:             make(chan appwire.Notification, 1),
+		out:            make(chan appwire.Notification, 1),
+		pumpDone:       make(chan struct{}),
+		cancel:         func() {},
+	}
+	source.subs["root"] = replacement
+
+	if source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+		ID: "child", Source: "local", Evener: appwire.EvenerThread{Ref: "local:child"},
+	}}) {
+		t.Fatal("settleSubscriber published a subscription displaced during settlement")
+	}
+	if len(replacement.out) != 0 {
+		t.Fatalf("settleSubscriber wrote a resync (%d frames) for a displaced subscription", len(replacement.out))
+	}
+	if installedSubscriberIn(t, source, "child") != newcomer {
+		t.Fatal("the concurrent replacement is not the installed routing target")
+	}
+}
+
+// Test 36: a subscribe that completes after its caller cancelled must be cleaned
+// up under the canonical ref the remote keyed, not the caller's provisional
+// target. The remote canonicalizes a current root thread ID to its stable ref,
+// so unsubscribing the caller's threadId names a subscription the remote never
+// held and leaks the one it did.
+func TestRemoteHubCanceledSubscribeUnsubscribesCanonicalRef(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	subscribeSeen := make(chan struct{})
+	releaseSubscribe := make(chan struct{})
+	unsubscribed := make(chan string, 4)
+
+	go func() {
+		for {
+			msg, err := server.Recv(serverCtx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			switch msg.Request.Method {
+			case appwire.MethodInitialize:
+				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			case appwire.MethodThreadRead:
+				close(subscribeSeen)
+				select {
+				case <-releaseSubscribe:
+				case <-serverCtx.Done():
+					return
+				}
+				data, _ := json.Marshal(appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "current", Source: "local", Evener: appwire.EvenerThread{Ref: "local:stable"},
+				}})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			case appwire.MethodThreadUnsubscribe:
+				var params appwire.ThreadUnsubscribeParams
+				_ = json.Unmarshal(msg.Request.Params, &params)
+				unsubscribed <- params.Ref
+				data, _ := json.Marshal(appwire.EmptyResponse{})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(serverCtx)
+	if _, err := client.Initialize(serverCtx, appwire.InitializeParams{}); err != nil {
+		stopServer()
+		t.Fatalf("initialize: %v", err)
+	}
+	t.Cleanup(func() {
+		stopServer()
+		_ = client.Close()
+	})
+
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	// The caller addresses the thread by its stable ref and a current ID: the
+	// provisional target is the current ID, while the remote keys the stable ref.
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.SubscribeThread(subCtx, appwire.ThreadReadParams{Ref: "host:stable", ThreadID: "current"})
+		result <- err
+	}()
+
+	select {
+	case <-subscribeSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the subscribe request never reached the remote")
+	}
+	cancelSub()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SubscribeThread after the caller cancelled = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeThread did not return after the caller cancelled")
+	}
+
+	close(releaseSubscribe)
+	select {
+	case ref := <-unsubscribed:
+		if ref != "local:stable" {
+			t.Fatalf("unsubscribed ref = %q, want the canonical local:stable (the remote never held the caller's local:current)", ref)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no thread/unsubscribe followed the completed subscribe")
+	}
+	select {
+	case ref := <-unsubscribed:
+		t.Fatalf("a second thread/unsubscribe for %q was sent; cleanup must release exactly the canonical ref", ref)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Test 37: a failed replacement must hand the notifications it buffered while it
+// owned routing to the previous subscription it restores. Routing moved to the
+// replacement before its subscribe succeeded, so the shared drain delivered the
+// thread's in-flight deltas to the replacement's buffer; restoring the previous
+// without forwarding them loses those deltas with no resync to cover the gap.
+func TestRemoteHubFailedReplacementForwardsBufferedNotifications(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+
+	var mu sync.Mutex
+	reads := 0
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			return scriptedReply{result: appwire.EmptyResponse{}}
+		}
+		mu.Lock()
+		reads++
+		n := reads
+		mu.Unlock()
+		if n >= 2 {
+			<-release
+			wireErr := appwire.InvalidParams("subscribe refused")
+			return scriptedReply{wireErr: &wireErr}
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+		}}}
+	})
+	ctx := t.Context()
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("first SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "S", "host:S")
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+		done <- err
+	}()
+	waitForRemoteSubscribeCall(t, remote)
+
+	// A delta arrives while the replacement owns routing; it buffers in the
+	// replacement until its subscribe answers.
+	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if sub := installedSubscriberIn(t, remote.source, "S"); sub != nil && len(sub.in) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the delta never reached the in-flight replacement's buffer")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	unblock()
+	if err := <-done; err == nil {
+		t.Fatal("the replacement SubscribeThread succeeded despite the refused subscribe")
+	}
+
+	// The restored previous must receive the buffered delta.
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("the previous subscription's channel closed after a failed replacement")
+	}
+	status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, n)
+	if status.Ref != "host:S" {
+		t.Fatalf("status Ref = %q, want host:S (the buffered delta was dropped)", status.Ref)
+	}
+}
+
 // Test 14: a failed subscribe leaves the previous healthy subscription serving.
 // Replacing it before the request succeeds would drop a live subscription on a
 // transient failure.
