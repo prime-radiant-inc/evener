@@ -140,9 +140,6 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// ResumeHistory extracts the history needed for session resume from transcript entries.
-// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
 // retainedFrom is the index of the first entry ResumeHistory keeps: the last
 // compaction turn, or 0 when the transcript never compacted. Callers that need to
 // map a position in the full transcript onto the resumed history read it here, so
@@ -157,6 +154,9 @@ func retainedFrom(entries []transcript.Entry) int {
 	return 0
 }
 
+// ResumeHistory extracts the history needed for session resume from transcript entries.
+// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
+// Otherwise returns all turns.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	compactionIdx := retainedFrom(entries)
 
