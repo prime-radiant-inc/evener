@@ -326,3 +326,50 @@ func wireErrorInfo(wire appwire.WireError) string {
 		return ""
 	}
 }
+
+// TestRemoteHubSourceReadThreadTranslatesNestedDiagnostics pins the read-path
+// half of nested session-ref translation: a thread's Evener.Diagnostics carries
+// the transcript handles of the child sessions (and jobs) a remote hub hosts, so
+// they must move into the controller namespace with the rest of the thread.
+// Opaque handles are left alone.
+func TestRemoteHubSourceReadThreadTranslatesNestedDiagnostics(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t4",
+			Source: "local",
+			Evener: appwire.EvenerThread{
+				Ref: "local:t4",
+				Diagnostics: &appwire.EvenerDiagnostics{
+					Jobs: []appwire.EvenerJobInfo{
+						{JobID: "j1", TranscriptRef: "local:child"},
+						{JobID: "j2", TranscriptRef: "job:job_abc"},
+					},
+					Delegates: []appwire.EvenerDelegateInfo{
+						{DelegateID: "d1", TranscriptRef: "local:child"},
+					},
+				},
+			},
+		}}}
+	})
+
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "host:t4"})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	diagnostics := resp.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		t.Fatal("diagnostics were dropped")
+	}
+	if got := diagnostics.Jobs[0].TranscriptRef; got != "host:child" {
+		t.Fatalf("job transcriptRef = %q, want host:child", got)
+	}
+	if got := diagnostics.Jobs[1].TranscriptRef; got != "job:job_abc" {
+		t.Fatalf("opaque job transcriptRef = %q, want job:job_abc untouched", got)
+	}
+	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
+		t.Fatalf("delegate transcriptRef = %q, want host:child", got)
+	}
+}

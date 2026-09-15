@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -20,6 +21,13 @@ const remoteHubSubBuffer = 128
 // subscription path) open indefinitely.
 const remoteHubUnsubscribeTimeout = 2 * time.Second
 
+// remoteHubSubscribeTimeout bounds the detached subscribe request a cancelled
+// SubscribeThread leaves running. It is the longest this source waits for a
+// remote subscribe to complete before issuing its cleanup unsubscribe, so a
+// remote that never answers cannot leak the request goroutine forever. A live
+// hub answers far inside it; the bound exists only for a wedged one.
+const remoteHubSubscribeTimeout = 30 * time.Second
+
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
 //
@@ -35,7 +43,10 @@ type remoteHubSubscription struct {
 	// remoteRef is the ref this subscription issued to the remote hub
 	// ("local:<thread>"). thread/unsubscribe names it to drop the remote side;
 	// without that the long-lived shared client would keep forwarding this
-	// thread's notifications for the rest of the connection's life.
+	// thread's notifications for the rest of the connection's life. It is the
+	// identity the remote hub keyed the subscription under, which prefers a bare
+	// threadId over the ref (see remoteSubscriptionTarget), not necessarily the
+	// ref this source sent.
 	remoteRef string
 	// client is the shared per-host client this subscription attached to. When
 	// that client's notification stream closes, every subscription bound to it
@@ -61,9 +72,11 @@ type remoteHubSubscription struct {
 // SubscribeThread attaches the controller relay to a remote thread.
 //
 // It issues thread/read{Ref:"local:<thread>", Subscribe:true} on the shared
-// per-host client, deliberately discarding the returned snapshot: the controller
-// relay always read the thread first (the non-atomic prepareRelay branch), so
-// re-translating a second snapshot would be redundant. From then on every
+// per-host client. The returned snapshot is the remote's atomic attach point:
+// the controller relay read the thread before subscribing (its non-atomic
+// prepareRelay branch), so the snapshot is what proves a delta in between
+// belongs to this subscription, and settleSubscriber turns it into a leading
+// resync that folds it into the controller's copy. From then on every
 // ref-bearing notification the remote pushes is translated and routed to this
 // subscription by remote thread identity.
 func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
@@ -78,8 +91,14 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 
 	subCtx, cancel := context.WithCancel(ctx)
 	sub := &remoteHubSubscription{
-		threadID:  ref.ThreadID,
-		remoteRef: ref.String(),
+		threadID: ref.ThreadID,
+		// The remote hub keys this connection's subscription by the thread it
+		// resolved, preferring a bare threadId over the ref (threadRelayTarget
+		// drives both thread/read's relay and thread/unsubscribe). Teardown must
+		// name that same identity or it unsubscribes a ref the remote never
+		// subscribed, so the effective target — the caller's threadId when it sent
+		// one — is what is recorded here.
+		remoteRef: remoteSubscriptionTarget(ref, params.ThreadID),
 		client:    client,
 		in:        make(chan appwire.Notification, remoteHubSubBuffer),
 		out:       make(chan appwire.Notification, remoteHubSubBuffer),
@@ -95,8 +114,9 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// identity — which the remote rejects as an unknown bare ID the moment an
 	// identity replacement has moved the live thread ID (appRef survives, the
 	// thread ID does not). An empty ThreadID lets the remote resolve the ref,
-	// which is stable-aware. The ref's suffix is only this hub's local routing
-	// key (sub.threadID below).
+	// which is stable-aware. The ref's suffix is only this hub's provisional
+	// routing key: settleSubscriber re-keys it to the identity the subscription
+	// snapshot actually names.
 	remote.ThreadID = params.ThreadID
 	remote.Subscribe = true
 	// The remote client is shared by every controller relay for this host, so
@@ -112,27 +132,176 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// cancel a subscription it displaces: the replacement is only committed once
 	// its own subscribe succeeds.
 	previous := s.installSubscriber(sub)
-	var snapshot appwire.ThreadReadResponse
-	if err := client.Request(subCtx, appwire.MethodThreadRead, remote, &snapshot); err != nil {
-		s.discardSubscriber(sub, previous)
+	// The request is issued on a context detached from the caller's, so a
+	// cancellation cannot lose its outcome: the remote may have installed a
+	// subscription the cleanup path must not unsubscribe before the subscribe
+	// itself has finished. See requestSubscribe.
+	outcome := s.requestSubscribe(subCtx, client, remote)
+
+	select {
+	case result := <-outcome:
+		if result.err != nil {
+			s.discardSubscriber(sub, previous)
+			callerCanceled := ctx.Err() != nil
+			cancel()
+			// A cancellation that did not come from the caller is the owning
+			// client's notification stream closing mid-request (drainLoop retires
+			// subscriptions bound to a dead client). That is a transport loss, and
+			// mapping it as one keeps the auto-resume gate working; reporting
+			// context.Canceled would read as the caller giving up.
+			if !callerCanceled && errors.Is(result.err, context.Canceled) {
+				return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+			}
+			return nil, s.mapCallError(result.err)
+		}
+		s.settleSubscriber(sub, result.snapshot)
+		go s.pumpSubscription(subCtx, sub)
+		if previous != nil && previous != sub {
+			previous.cancel()
+		}
+		return sub.out, nil
+	case <-subCtx.Done():
+		// The caller (or the drain retiring this client's connection) cancelled
+		// after the request was sent. Return at once, but keep the request alive:
+		// the remote may still install a subscription for it, and the cleanup
+		// unsubscribe must not be issued until that request has finished.
 		callerCanceled := ctx.Err() != nil
 		cancel()
-		// A cancellation that did not come from the caller is the owning
-		// client's notification stream closing mid-request (drainLoop retires
-		// subscriptions bound to a dead client). That is a transport loss, and
-		// mapping it as one keeps the auto-resume gate working; reporting
-		// context.Canceled would read as the caller giving up.
-		if !callerCanceled && errors.Is(err, context.Canceled) {
+		go s.retireCanceledSubscribe(sub, previous, outcome)
+		if !callerCanceled {
 			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
 		}
-		return nil, s.mapCallError(err)
+		return nil, s.mapCallError(subCtx.Err())
 	}
+}
 
-	go s.pumpSubscription(subCtx, sub)
-	if previous != nil && previous != sub {
-		previous.cancel()
+// subscribeOutcome is one detached subscribe request's result.
+type subscribeOutcome struct {
+	snapshot appwire.ThreadReadResponse
+	err      error
+}
+
+// requestSubscribe issues the subscribed thread/read on a context detached from
+// the caller's (and the drain's). A request cancelled after it reaches the
+// remote may already have installed a remote subscription, and its outcome is
+// what tells cleanup whether there is something to unsubscribe — so it has to
+// survive the cancellation that ends the caller's wait. It still observes the
+// client closing, because appwire fails a pending request when its read loop
+// exits.
+func (s *RemoteHubSource) requestSubscribe(subCtx context.Context, client *appwire.Client, remote appwire.ThreadReadParams) <-chan subscribeOutcome {
+	outcome := make(chan subscribeOutcome, 1)
+	reqCtx, reqCancel := context.WithTimeout(context.WithoutCancel(subCtx), remoteHubSubscribeTimeout)
+	go func() {
+		defer reqCancel()
+		var snapshot appwire.ThreadReadResponse
+		err := client.Request(reqCtx, appwire.MethodThreadRead, remote, &snapshot)
+		outcome <- subscribeOutcome{snapshot: snapshot, err: err}
+	}()
+	return outcome
+}
+
+// retireCanceledSubscribe waits for a subscribe request that outlived its
+// caller, then releases the local and remote state it may have installed. The
+// wait is the point: thread/unsubscribe names the subscription the request
+// created, and the remote hub handles the subscribe and the unsubscribe
+// concurrently, so an unsubscribe issued while the subscribe is still in flight
+// can land first and leave the later subscribe active with no local owner.
+func (s *RemoteHubSource) retireCanceledSubscribe(sub, previous *remoteHubSubscription, outcome <-chan subscribeOutcome) {
+	<-outcome
+	s.discardSubscriber(sub, previous)
+}
+
+// remoteSubscriptionTarget is the identity the remote hub keys this
+// connection's subscription under. Both thread/read's relay and
+// thread/unsubscribe resolve through threadRelayTarget, which prefers a bare
+// non-empty threadId over the ref, so a caller that sent both must be
+// unsubscribed by the threadId it sent — not by the translated ref's suffix,
+// which would name a subscription the remote never created.
+func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
+	target := ref.ThreadID
+	if trimmed := strings.TrimSpace(threadID); trimmed != "" {
+		target = trimmed
 	}
-	return sub.out, nil
+	return appwire.Ref{SourceID: remoteHubNamespace, ThreadID: target}.String()
+}
+
+// settleSubscriber installs the authoritative routing identity a successful
+// subscribe revealed and hands the relay a leading resync.
+//
+// The remote hub resolves a bare threadId in preference to the ref, so a caller
+// that sent both can be subscribed to a thread the ref's suffix does not name.
+// The subscription snapshot's own ref is the only authority on which thread the
+// subscription is for, so routing is keyed from it; when it differs from the
+// provisional key the entry is re-keyed before the pump starts.
+//
+// The resync is the other half of the atomic handoff: the controller relay read
+// this thread before subscribing (its non-atomic prepareRelay branch), so any
+// delta the remote emitted between that read and this subscription is in the
+// snapshot but never in the controller's copy. The controller relay answers a
+// resync by re-reading the thread, which folds the snapshot in; the notification
+// stream then carries every delta after it. Writing it directly to out before
+// the pump starts makes it the consumer's first frame.
+//
+// Both halves are driven by the snapshot actually carrying the thread it
+// attached to. A real hub's subscribed read always returns it; a snapshot with
+// no thread at all is a degenerate attach with no authoritative identity to key
+// on and nothing to fold in, so the caller-derived key stands and the
+// controller's copy is left alone.
+func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) {
+	if snapshot.Thread.ID == "" && snapshot.Thread.Evener.Ref == "" {
+		return
+	}
+	if key := s.snapshotRoutingKey(snapshot); key != "" && key != sub.threadID {
+		if displaced := s.rekeySubscriber(sub, key); displaced != nil && displaced != sub {
+			displaced.cancel()
+		}
+	}
+	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+		ThreadID: sub.threadID,
+		Ref:      appwire.Ref{SourceID: s.id, ThreadID: sub.threadID}.String(),
+	}).Notification
+	sub.out <- resync
+}
+
+// snapshotRoutingKey returns the controller-namespace routing key named by the
+// atomic subscription snapshot's own ref. An empty, unparseable, or
+// unrepresentable snapshot ref yields "", so the caller keeps the
+// caller-derived key it already registered.
+func (s *RemoteHubSource) snapshotRoutingKey(snapshot appwire.ThreadReadResponse) string {
+	remoteRef := strings.TrimSpace(snapshot.Thread.Evener.Ref)
+	if remoteRef == "" {
+		return ""
+	}
+	translated, err := s.fromRemoteRefString(remoteRef)
+	if err != nil {
+		return ""
+	}
+	ref, err := appwire.ParseRef(translated)
+	if err != nil {
+		return ""
+	}
+	return ref.ThreadID
+}
+
+// rekeySubscriber moves sub to the authoritative routing key a successful
+// subscribe revealed and returns whatever subscription that key held, so the
+// caller can retire it. It is a no-op when sub is no longer the installed
+// subscription for its provisional key, because a concurrent replacement
+// already won that slot and owns sub's fate.
+func (s *RemoteHubSource) rekeySubscriber(sub *remoteHubSubscription, key string) *remoteHubSubscription {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	if s.subs[sub.threadID] != sub {
+		return nil
+	}
+	delete(s.subs, sub.threadID)
+	displaced := s.subs[key]
+	sub.threadID = key
+	s.subs[key] = sub
+	s.ensureDrainLocked(sub.client)
+	return displaced
 }
 
 // installSubscriber publishes sub as the routing target for its remote thread
@@ -406,6 +575,12 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 // A notification whose ref names a nested remote hub's source (anything but
 // "local") is DROPPED: it is not representable in the controller namespace and
 // a notification has no error channel to report it on.
+//
+// Nested session handles the payload carries — a job's or delegate's
+// transcriptRef, a job-activity ownerRef/childRef — are translated too, while
+// opaque handles ("job:<id>", "proj:<project>:<thread>") pass through untouched;
+// see translateNestedRefs. The routing "ref" stays strict so a frame that cannot
+// be addressed in the controller namespace is refused rather than mis-routed.
 func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire.Notification, string, bool) {
 	if len(n.Params) == 0 {
 		return n, "", false
@@ -459,6 +634,6 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 	if err != nil {
 		return n, "", false
 	}
-	n.Params = encoded
+	n.Params = s.translateNestedRefs(encoded)
 	return n, threadID, true
 }

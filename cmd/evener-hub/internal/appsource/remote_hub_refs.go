@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -76,11 +77,117 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
 }
 
+// nestedSessionRefFields are the JSON field names whose values carry a session
+// handle nested inside a larger payload: thread diagnostics
+// (jobs[].transcriptRef, delegates[].transcriptRef), the job and delegate
+// projections those arrays hold, and job-activity rows (ownerRef/childRef). A
+// value that is the remote hub's own "local:<thread>" handle is translated into
+// the controller namespace; every other value is left exactly as it arrived, so
+// the opaque "job:<id>" and "proj:<project>:<thread>" handles keep working and a
+// nested hub's ref is not silently rewritten. The top-level routing "ref" and
+// "parentRef" fields are deliberately NOT in this set: routing depends on them,
+// so an unrepresentable one must be refused rather than passed through (see
+// translateNotification and translateThreadRaw).
+var nestedSessionRefFields = map[string]struct{}{
+	"transcriptRef": {},
+	"childRef":      {},
+	"ownerRef":      {},
+	"sessionRef":    {},
+}
+
+// opaquePayloadFields are JSON fields whose values are arbitrary model or tool
+// JSON, not the hub's own structures: a turn's items ("turns", and the "raw"
+// item payload), a delegate's result packet ("message"/"structuredResult").
+// Their contents share this doc's field names by coincidence — a tool argument
+// named transcriptRef is a tool argument — so the nested-ref walk must not
+// descend into them. No session handle this source must translate ever lives
+// there.
+var opaquePayloadFields = map[string]struct{}{
+	"turns":            {},
+	"raw":              {},
+	"message":          {},
+	"structuredResult": {},
+}
+
+// translateNestedRef maps a nested session handle into the controller
+// namespace. A value that is not the remote hub's own "local:<thread>" handle is
+// returned unchanged: "job:<id>" and "proj:<project>:<thread>" are opaque to
+// this translation, and a nested hub's ref is not addressable here.
+func (s *RemoteHubSource) translateNestedRef(handle string) string {
+	if handle == "" {
+		return handle
+	}
+	translated, err := s.fromRemoteRefString(handle)
+	if err != nil {
+		return handle
+	}
+	return translated
+}
+
+// translateNestedRefs walks a raw JSON value and translates every nested session
+// handle it finds, preserving every leaf it does not recognize. It never fails:
+// a value it cannot decode is returned byte-for-byte, so a notification can
+// never be dropped by this pass. OpaquePayloadFields subtrees are skipped
+// entirely; see their comment.
+func (s *RemoteHubSource) translateNestedRefs(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw
+	}
+	switch trimmed[0] {
+	case '{':
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
+			return raw
+		}
+		for key, value := range fields {
+			if _, opaque := opaquePayloadFields[key]; opaque {
+				continue
+			}
+			if _, ok := nestedSessionRefFields[key]; ok {
+				var handle string
+				if err := json.Unmarshal(value, &handle); err != nil {
+					continue
+				}
+				encoded, err := json.Marshal(s.translateNestedRef(handle))
+				if err != nil {
+					continue
+				}
+				fields[key] = encoded
+				continue
+			}
+			fields[key] = s.translateNestedRefs(value)
+		}
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			return raw
+		}
+		return encoded
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return raw
+		}
+		for index := range items {
+			items[index] = s.translateNestedRefs(items[index])
+		}
+		encoded, err := json.Marshal(items)
+		if err != nil {
+			return raw
+		}
+		return encoded
+	default:
+		return raw
+	}
+}
+
 // fromRemoteThread rewrites every ref-bearing field of a thread the remote hub
 // returned. Thread.Source becomes this source's ID; Evener.Ref and
 // Evener.ParentRef (sub-thread aliases) move from "local:" to "<host>:".
 // Evener.InstanceID is deliberately left byte-for-byte untouched: it is an
 // opaque precondition token round-tripped into turn/start.expectedInstanceId.
+// Nested session handles inside Evener.Diagnostics (a job's or delegate's
+// transcriptRef) are translated too; see translateNestedRef.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
 	thread.Source = s.id
 	ref, err := s.fromRemoteRefString(thread.Evener.Ref)
@@ -95,6 +202,14 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		}
 		thread.Evener.ParentRef = parent
 	}
+	if diagnostics := thread.Evener.Diagnostics; diagnostics != nil {
+		for index := range diagnostics.Jobs {
+			diagnostics.Jobs[index].TranscriptRef = s.translateNestedRef(diagnostics.Jobs[index].TranscriptRef)
+		}
+		for index := range diagnostics.Delegates {
+			diagnostics.Delegates[index].TranscriptRef = s.translateNestedRef(diagnostics.Delegates[index].TranscriptRef)
+		}
+	}
 	return thread, nil
 }
 
@@ -103,7 +218,8 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 // through appwire.Thread would silently drop a field a newer remote hub sent —
 // the same reason the notification translator works in RawMessage throughout.
 // Only Source, Evener.Ref and Evener.ParentRef are rewritten; InstanceID and
-// everything else pass through byte-for-byte.
+// everything else pass through byte-for-byte. Nested session handles under
+// Evener (diagnostics job/delegate transcriptRefs) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -150,7 +266,7 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		fields["evener"] = encoded
+		fields["evener"] = s.translateNestedRefs(encoded)
 	}
 	return json.Marshal(fields)
 }

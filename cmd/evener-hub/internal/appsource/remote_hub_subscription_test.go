@@ -197,19 +197,31 @@ func TestRemoteHubSubscribeThreadWireContract(t *testing.T) {
 	}
 
 	// The snapshot response must never surface on the channel; only pushed
-	// notifications do.
+	// notifications do — and ahead of them the hub-originated resync that tells
+	// the relay its pre-subscribe read is superseded by the atomic snapshot.
 	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID: "S",
 		Ref:      "local:S",
 	}); err != nil {
 		t.Fatalf("push: %v", err)
 	}
+	first, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("subscription channel closed before the leading resync")
+	}
+	if first.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("first notification = %q, want the leading %q resync", first.Method, appwire.NotifyEvenerThreadResync)
+	}
+	resync := decodeNotificationParams[appwire.ThreadResyncParams](t, first)
+	if resync.ThreadID != "S" || resync.Ref != "host:S" {
+		t.Fatalf("resync = %+v, want threadId S ref host:S", resync)
+	}
 	n, ok := recvNotification(t, out)
 	if !ok {
 		t.Fatal("subscription channel closed before the pushed notification")
 	}
 	if n.Method != appwire.NotifyThreadStatusChanged {
-		t.Fatalf("first notification = %q, want the pushed %q (snapshot leaked)", n.Method, appwire.NotifyThreadStatusChanged)
+		t.Fatalf("notification after the resync = %q, want the pushed %q (snapshot leaked)", n.Method, appwire.NotifyThreadStatusChanged)
 	}
 }
 
@@ -1370,4 +1382,445 @@ func TestRemoteHubRetireSubscriptionKeepsRemoteRefForSameClientReplacement(t *te
 	if sawRemoteUnsubscribe(t, remote, "local:S") {
 		t.Fatalf("retiring predecessor unsubscribed the live same-connection replacement; calls = %+v", remote.calls())
 	}
+}
+
+// expectResync consumes the leading resync every authoritative subscribe hands
+// the relay, asserting the controller-namespace identity it names.
+func expectResync(t *testing.T, out <-chan appwire.Notification, threadID, ref string) {
+	t.Helper()
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("subscription channel closed before the leading resync")
+	}
+	if n.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("first frame = %q, want the leading %q resync", n.Method, appwire.NotifyEvenerThreadResync)
+	}
+	resync := decodeNotificationParams[appwire.ThreadResyncParams](t, n)
+	if resync.ThreadID != threadID || resync.Ref != ref {
+		t.Fatalf("resync = %+v, want threadId %q ref %q", resync, threadID, ref)
+	}
+}
+
+// waitForRemoteUnsubscribe waits until remote recorded a thread/unsubscribe
+// naming ref.
+func waitForRemoteUnsubscribe(t *testing.T, remote *pushableRemote, ref string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if sawRemoteUnsubscribe(t, remote, ref) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no thread/unsubscribe for %s; calls = %+v", ref, remote.calls())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Test 28: a successful subscribe hands the relay a leading resync carrying the
+// controller-namespace identity. The controller relay read the thread before
+// subscribing (its non-atomic prepareRelay branch), so the subscription's atomic
+// snapshot may be newer than the controller's copy. The resync makes the client
+// re-read and fold that snapshot in; without it a delta that landed between the
+// read and the attach is absent from both the controller snapshot and the
+// notification stream, and the relay stays stale.
+func TestRemoteHubSubscribeThreadResyncsFromSnapshot(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "S",
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:S"},
+		}}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "S", "host:S")
+
+	// The resync must not consume the pushed stream behind it.
+	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if _, ok := recvNotification(t, out); !ok {
+		t.Fatal("channel closed before the pushed notification")
+	}
+}
+
+// Test 29: the subscription snapshot's own ref is the routing authority. When a
+// caller sends a ref and a threadId that name different threads, the remote hub
+// resolves the bare threadId (threadRelayTarget prefers it), so the notification
+// stream carries the subscribed thread's ref. Routing keyed from the caller's
+// ref would drop every one of those notifications, and teardown would unsubscribe
+// a ref the remote never subscribed, stranding the subscription on the remote.
+func TestRemoteHubSubscribeThreadRoutesBySnapshotIdentity(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadRead {
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "child",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:child"},
+			}}}
+		}
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:root", ThreadID: "child"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	// The forwarded request still carries the caller's own ref and threadId; the
+	// snapshot, not the request, is what routing is keyed from.
+	forwarded := forwardedReadParams(t, remote)
+	if forwarded.Ref != "local:root" || forwarded.ThreadID != "child" {
+		t.Fatalf("forwarded params = ref %q threadId %q, want local:root / child", forwarded.Ref, forwarded.ThreadID)
+	}
+	expectResync(t, out, "child", "host:child")
+
+	// The remote delivers the subscribed thread's notifications: they must reach
+	// the subscription, which the caller's ref suffix ("root") would have missed.
+	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "child", Ref: "local:child"}); err != nil {
+		t.Fatalf("push child: %v", err)
+	}
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("channel closed before the child notification")
+	}
+	status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, n)
+	if status.Ref != "host:child" {
+		t.Fatalf("child notification ref = %q, want host:child (routed under the caller's ref?)", status.Ref)
+	}
+
+	// Teardown names the identity the remote subscribed under — the threadId it
+	// resolved — not the caller's ref suffix.
+	cancel()
+	waitForRemoteUnsubscribe(t, remote, "local:child")
+	if sawRemoteUnsubscribe(t, remote, "local:root") {
+		t.Fatalf("teardown unsubscribed the caller's ref suffix, which the remote never subscribed: %+v", remote.calls())
+	}
+}
+
+// Test 30: a caller that cancels after the subscribe request is sent must not
+// let cleanup unsubscribe before the remote has finished the subscribe. The
+// remote hub handles the two requests concurrently, so an unsubscribe issued
+// while the subscribe is still in flight can land first and leave the later
+// subscribe active with no local owner. The withheld reply is what makes the
+// ordering observable: nothing may be unsubscribed until the subscribe answers.
+func TestRemoteHubSubscribeCancelWaitsForSubscribeBeforeUnsubscribe(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	serverCtx, stopServer := context.WithCancel(context.Background())
+	subscribeSeen := make(chan struct{})
+	releaseSubscribe := make(chan struct{})
+	unsubscribed := make(chan string, 4)
+
+	go func() {
+		for {
+			msg, err := server.Recv(serverCtx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			switch msg.Request.Method {
+			case appwire.MethodInitialize:
+				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			case appwire.MethodThreadRead:
+				close(subscribeSeen)
+				select {
+				case <-releaseSubscribe:
+				case <-serverCtx.Done():
+					return
+				}
+				data, _ := json.Marshal(appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+				}})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			case appwire.MethodThreadUnsubscribe:
+				var params appwire.ThreadUnsubscribeParams
+				_ = json.Unmarshal(msg.Request.Params, &params)
+				unsubscribed <- params.Ref
+				data, _ := json.Marshal(appwire.EmptyResponse{})
+				if err := server.Send(serverCtx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(serverCtx)
+	if _, err := client.Initialize(serverCtx, appwire.InitializeParams{}); err != nil {
+		stopServer()
+		t.Fatalf("initialize: %v", err)
+	}
+	t.Cleanup(func() {
+		stopServer()
+		_ = client.Close()
+	})
+
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := source.SubscribeThread(subCtx, appwire.ThreadReadParams{Ref: "host:S"})
+		result <- err
+	}()
+
+	select {
+	case <-subscribeSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the subscribe request never reached the remote")
+	}
+	cancelSub()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SubscribeThread after the caller cancelled = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeThread did not return after the caller cancelled")
+	}
+
+	// The remote has not answered the subscribe, so nothing may be unsubscribed
+	// yet: an unsubscribe now can overtake the subscribe and strand it.
+	select {
+	case ref := <-unsubscribed:
+		t.Fatalf("thread/unsubscribe for %q was sent while the subscribe was still in flight", ref)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Only once the subscribe completes does cleanup release the remote side.
+	close(releaseSubscribe)
+	select {
+	case ref := <-unsubscribed:
+		if ref != "local:S" {
+			t.Fatalf("unsubscribed ref = %q, want local:S", ref)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no thread/unsubscribe followed the completed subscribe")
+	}
+}
+
+// Test 31: nested session handles are translated, not just the top-level routing
+// ref. A job's or delegate's transcriptRef names the child session a remote hub
+// hosts, so leaving it as "local:<thread>" would send the controller UI back to
+// its own local source for a session it does not have.
+func TestRemoteHubNestedSessionRefsTranslated(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	if err := remote.push(appwire.NotifyEvenerJobFinished, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"job":      map[string]any{"jobId": "j1", "transcriptRef": "local:child"},
+	}); err != nil {
+		t.Fatalf("push job: %v", err)
+	}
+	job := decodeNotificationParams[struct {
+		Job struct {
+			TranscriptRef string `json:"transcriptRef"`
+		} `json:"job"`
+	}](t, recvOrFatal(t, out))
+	if job.Job.TranscriptRef != "host:child" {
+		t.Fatalf("job transcriptRef = %q, want host:child", job.Job.TranscriptRef)
+	}
+
+	if err := remote.push(appwire.NotifyEvenerDelegateUpdated, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"delegate": map[string]any{"delegateId": "d1", "transcriptRef": "local:child"},
+	}); err != nil {
+		t.Fatalf("push delegate: %v", err)
+	}
+	delegate := decodeNotificationParams[struct {
+		Delegate struct {
+			TranscriptRef string `json:"transcriptRef"`
+		} `json:"delegate"`
+	}](t, recvOrFatal(t, out))
+	if delegate.Delegate.TranscriptRef != "host:child" {
+		t.Fatalf("delegate transcriptRef = %q, want host:child", delegate.Delegate.TranscriptRef)
+	}
+}
+
+// Test 32: opaque handles a notification nests must survive the nested-ref pass
+// untouched. "job:<id>" is a transcript handle this hub cannot resolve and
+// "proj:<project>:<thread>" names another project's storage; rewriting either
+// would corrupt a transcript lookup, and refusing to translate them must not
+// drop the notification either.
+func TestRemoteHubNestedOpaqueRefsPreserved(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	if err := remote.push(appwire.NotifyEvenerJobFinished, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"job":      map[string]any{"jobId": "j1", "transcriptRef": "job:job_abc"},
+	}); err != nil {
+		t.Fatalf("push job: %v", err)
+	}
+	n := recvOrFatal(t, out)
+	params := decodeNotificationParams[struct {
+		Job struct {
+			TranscriptRef string `json:"transcriptRef"`
+		} `json:"job"`
+	}](t, n)
+	if params.Job.TranscriptRef != "job:job_abc" {
+		t.Fatalf("job transcriptRef = %q, want the opaque job:job_abc untouched; notification = %s", params.Job.TranscriptRef, n.Params)
+	}
+
+	if err := remote.push(appwire.NotifyEvenerDelegateUpdated, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"delegate": map[string]any{"delegateId": "d1", "transcriptRef": "proj:p1:sess"},
+	}); err != nil {
+		t.Fatalf("push delegate: %v", err)
+	}
+	delegate := decodeNotificationParams[struct {
+		Delegate struct {
+			TranscriptRef string `json:"transcriptRef"`
+		} `json:"delegate"`
+	}](t, recvOrFatal(t, out))
+	if delegate.Delegate.TranscriptRef != "proj:p1:sess" {
+		t.Fatalf("delegate transcriptRef = %q, want the opaque proj:p1:sess untouched", delegate.Delegate.TranscriptRef)
+	}
+}
+
+// Test 33: a nested thread's diagnostics carry the same nested session handles,
+// and they are translated at the JSON level so a field this hub does not
+// understand survives. Turn contents are deliberately skipped: their items carry
+// arbitrary model/tool JSON, and a "transcriptRef" inside it is not a session
+// handle.
+func TestRemoteHubThreadDiagnosticsRefsTranslated(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	if err := remote.push(appwire.NotifyThreadStarted, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"thread": map[string]any{
+			"id":     "S",
+			"source": "local",
+			"evener": map[string]any{
+				"ref": "local:S",
+				"diagnostics": map[string]any{
+					"jobs": []any{
+						map[string]any{"jobId": "j1", "transcriptRef": "local:child"},
+						map[string]any{"jobId": "j2", "transcriptRef": "job:job_abc"},
+					},
+					"delegates": []any{
+						map[string]any{
+							"delegateId": "d1", "transcriptRef": "local:child", "childRef": "local:child",
+							"message": map[string]any{"transcriptRef": "local:notAHandle"},
+						},
+					},
+				},
+			},
+			"turns": []any{
+				map[string]any{"id": "turn-1", "items": []any{map[string]any{"raw": map[string]any{"transcriptRef": "local:notAHandle"}}}},
+			},
+			"futureField": map[string]any{"x": 1},
+		},
+	}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	n := recvOrFatal(t, out)
+
+	var decoded struct {
+		Thread struct {
+			Source string `json:"source"`
+			Evener struct {
+				Diagnostics struct {
+					Jobs []struct {
+						TranscriptRef string `json:"transcriptRef"`
+					} `json:"jobs"`
+					Delegates []struct {
+						TranscriptRef string `json:"transcriptRef"`
+						ChildRef      string `json:"childRef"`
+						Message       struct {
+							TranscriptRef string `json:"transcriptRef"`
+						} `json:"message"`
+					} `json:"delegates"`
+				} `json:"diagnostics"`
+			} `json:"evener"`
+			Turns []struct {
+				Items []struct {
+					Raw map[string]json.RawMessage `json:"raw"`
+				} `json:"items"`
+			} `json:"turns"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(n.Params, &decoded); err != nil {
+		t.Fatalf("decode notification params: %v", err)
+	}
+	if decoded.Thread.Source != "host" {
+		t.Fatalf("nested source = %q, want host", decoded.Thread.Source)
+	}
+	jobs := decoded.Thread.Evener.Diagnostics.Jobs
+	if len(jobs) != 2 {
+		t.Fatalf("jobs = %+v, want 2", jobs)
+	}
+	if jobs[0].TranscriptRef != "host:child" {
+		t.Fatalf("job transcriptRef = %q, want host:child", jobs[0].TranscriptRef)
+	}
+	if jobs[1].TranscriptRef != "job:job_abc" {
+		t.Fatalf("opaque job transcriptRef = %q, want job:job_abc untouched", jobs[1].TranscriptRef)
+	}
+	delegates := decoded.Thread.Evener.Diagnostics.Delegates
+	if len(delegates) != 1 || delegates[0].TranscriptRef != "host:child" || delegates[0].ChildRef != "host:child" {
+		t.Fatalf("delegates = %+v, want transcriptRef and childRef host:child", delegates)
+	}
+	if delegates[0].Message.TranscriptRef != "local:notAHandle" {
+		t.Fatalf("delegate message transcriptRef = %q, want the arbitrary result packet untouched", delegates[0].Message.TranscriptRef)
+	}
+	if len(decoded.Thread.Turns) != 1 || len(decoded.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns = %+v, want one item preserved", decoded.Thread.Turns)
+	}
+	var rawRef string
+	if err := json.Unmarshal(decoded.Thread.Turns[0].Items[0].Raw["transcriptRef"], &rawRef); err != nil {
+		t.Fatalf("decode turn item raw transcriptRef: %v", err)
+	}
+	if rawRef != "local:notAHandle" {
+		t.Fatalf("turn item raw transcriptRef = %q, want the arbitrary model/tool JSON untouched", rawRef)
+	}
+}
+
+// recvOrFatal is recvNotification with only the notification returned.
+func recvOrFatal(t *testing.T, out <-chan appwire.Notification) appwire.Notification {
+	t.Helper()
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("subscription channel closed before the expected notification")
+	}
+	return n
 }
