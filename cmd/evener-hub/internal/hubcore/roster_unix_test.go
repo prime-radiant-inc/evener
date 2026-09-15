@@ -55,8 +55,9 @@ func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
 
 // And the positive case through the real verifier: a live process at the
 // entry's PID that is not an `evener serve` is another process, so the entry
-// takes the crashed path and loses its route.
-func TestRosterDropsRetainedEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
+// is never published - not even while the socket still answers - and reads
+// as crashed.
+func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
 	other := exec.Command("sleep", "60")
 	if err := other.Start(); err != nil {
 		t.Fatalf("start stand-in process: %v", err)
@@ -67,16 +68,14 @@ func TestRosterDropsRetainedEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "01OTHER"}
 	roster := NewRoster(dir, prober)
-	roster.Refresh()
-	if !roster.HasConfirmedEntry(entry) {
-		t.Fatal("confirmed entry did not acquire its route")
-	}
-	prober.fail = true
-	roster.Refresh()
-	if roster.HasConfirmedEntry(entry) {
-		t.Fatal("a PID held by another process kept the daemon's route")
-	}
-	if live, ok := roster.Find("01OTHER"); !ok || !live.Crashed {
-		t.Fatalf("the daemon behind a PID held by another process should read as crashed: ok=%v entry=%+v", ok, live)
+	for _, probe := range []bool{true, false} {
+		prober.fail = !probe
+		roster.Refresh()
+		if roster.HasConfirmedEntry(entry) {
+			t.Fatalf("probe answering=%v: a PID held by another process acquired the daemon's route", probe)
+		}
+		if live, ok := roster.Find("01OTHER"); !ok || !live.Crashed {
+			t.Fatalf("probe answering=%v: the daemon behind a PID held by another process should read as crashed: ok=%v entry=%+v", probe, ok, live)
+		}
 	}
 }

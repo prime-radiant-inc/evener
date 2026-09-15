@@ -413,8 +413,19 @@ func (r *Roster) refresh() error {
 	}
 	for _, res := range results {
 		e := res.entry
+		// A probe that answers proves that a daemon of this hub listens at
+		// the entry's endpoint (the token it presents is the hub's own,
+		// shared by every daemon the hub spawns), not that entry.PID is that
+		// daemon: a crashed daemon's file whose port another daemon re-bound
+		// would otherwise be published under a PID anything may have reused.
+		// The process behind the PID is asked on success as well as on
+		// failure; verified not the owner, the entry takes the crashed path.
+		disowned := res.OK && r.procIdentity(e) == ProcessNotOwner
+		if disowned {
+			res.OK = false
+		}
 		if !res.OK {
-			alive := r.procAlive(e.PID)
+			alive := !disowned && r.procAlive(e.PID)
 			if alive {
 				for _, claim := range previousUnconfirmed {
 					if claim.PID == e.PID {

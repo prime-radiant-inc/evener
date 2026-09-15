@@ -1609,3 +1609,35 @@ func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
 		}
 	}
 }
+
+// A probe that answers proves only that a daemon of this hub listens at the
+// entry's endpoint: the token it presents is the hub's own, shared by every
+// daemon the hub spawns, and the roster keys the answer by the session the
+// daemon reports, never by the entry. A crashed daemon's file whose port
+// another daemon re-bound and whose PID anything reused would be published
+// under that PID. The process behind the PID is asked on a successful probe
+// too; verified not the owner, the entry takes the crashed path (review
+// round 8 on #1325).
+func TestRosterDoesNotPublishASuccessfulProbeForAPIDThatIsNotItsDaemon(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "01ANSWERS", ThreadID: "01ANSWERS", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
+	writeRendezvous(t, dir, entry)
+	roster := NewRoster(dir, &flakyProber{sessionID: "01ANSWERS"})
+	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessNotOwner })
+	roster.Refresh()
+	if roster.HasConfirmedEntry(entry) {
+		t.Fatal("a PID that is not the daemon was published on the strength of an answering socket")
+	}
+	live, ok := roster.Find("01ANSWERS")
+	if !ok || !live.Crashed {
+		t.Fatalf("the entry should read as crashed, got ok=%v entry=%+v", ok, live)
+	}
+	for _, identity := range []ProcessIdentity{ProcessOwnsEntry, ProcessIdentityUnknown} {
+		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
+		roster.Refresh()
+		if !roster.HasConfirmedEntry(entry) {
+			t.Fatalf("identity %d: an answering daemon that is (or may be) itself was not published", identity)
+		}
+	}
+}
