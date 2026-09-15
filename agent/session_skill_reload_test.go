@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2082,5 +2083,68 @@ func TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff(t *testing.T) 
 	handoffs := pendingHandoffsSnapshot(s)
 	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != publication {
 		t.Fatalf("handoffs after the failed save = %+v, want the reminder's receipt still pending", handoffs)
+	}
+}
+
+// failRenameDuringMetaSaveFS fails the metadata save's final rename, and runs
+// during runs just before it — the window in which the save holds no session
+// lock and another publication can record a handoff of its own.
+type failRenameDuringMetaSaveFS struct {
+	afero.Fs
+	during func()
+}
+
+func (fs *failRenameDuringMetaSaveFS) Rename(oldname, newname string) error {
+	if fs.during != nil {
+		fs.during()
+	}
+	return errors.New("injected meta save failure")
+}
+
+// TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff: the
+// save runs without s.mu, so a fold publishing in that window records a handoff
+// of its own. Restoring a pre-removal snapshot wholesale discards it — the
+// reload it authorizes is then owed to nobody. Only the receipts this
+// consumption removed come back.
+func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *testing.T) {
+	t.Parallel()
+	const consumed = "pub-consumed-reminder"
+	const arrived = "pub-arrived-mid-save"
+	metaFS := &failRenameDuringMetaSaveFS{Fs: afero.NewMemMapFs()}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	plantReminderReceipt(s, consumed)
+	metaFS.during = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+				PublicationID: arrived,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	if err := s.consumeSkillReloadReminders(map[string]bool{consumed: true}); err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	pending := map[string]bool{}
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		pending[handoff.Operation.PublicationID] = true
+	}
+	if !pending[arrived] {
+		t.Fatalf("handoffs after the failed save = %v, want the handoff recorded while the save ran kept", pending)
+	}
+	if !pending[consumed] {
+		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reminder receipt back", pending)
 	}
 }

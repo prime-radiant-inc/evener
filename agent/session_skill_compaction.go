@@ -311,22 +311,40 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 // retired separately by retireSkillCompactionCancellationsLocked, and the
 // cycle's operation slot (PendingCompaction) is never touched, so a concurrent
 // newer pending operation is undisturbed. Callers hold s.mu; the return reports
-// whether anything was removed.
-func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) bool {
+// the receipts it took out, so a caller whose durability step then fails can
+// put back exactly those and nothing else.
+func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) []schema.SkillCompactionReceipt {
 	if len(publications) == 0 || len(s.skillLifecycle.PendingHandoffs) == 0 {
-		return false
+		return nil
 	}
 	kept := s.skillLifecycle.PendingHandoffs[:0]
-	removed := false
+	var removed []schema.SkillCompactionReceipt
 	for _, handoff := range s.skillLifecycle.PendingHandoffs {
 		if publications[handoff.Operation.PublicationID] {
-			removed = true
+			removed = append(removed, handoff)
 			continue
 		}
 		kept = append(kept, handoff)
 	}
 	s.skillLifecycle.PendingHandoffs = kept
 	return removed
+}
+
+// restoreSkillCompactionHandoffsLocked puts back receipts a consumption
+// removed and whose durability step then failed. It disturbs nothing that
+// arrived while that step ran: a publication already represented keeps the
+// entry it has — a newer receipt for it supersedes the one coming back — and
+// every other receipt is appended. Callers hold s.mu.
+func (s *Session) restoreSkillCompactionHandoffsLocked(receipts []schema.SkillCompactionReceipt) {
+	for _, receipt := range receipts {
+		if id := receipt.Operation.PublicationID; id != "" && slices.ContainsFunc(
+			s.skillLifecycle.PendingHandoffs,
+			func(handoff schema.SkillCompactionReceipt) bool { return handoff.Operation.PublicationID == id },
+		) {
+			continue
+		}
+		s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
+	}
 }
 
 // retireSkillCompactionCancellationsLocked removes every terminal cancellation

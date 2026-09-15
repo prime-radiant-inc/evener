@@ -366,15 +366,12 @@ func (s *Session) consumeSkillReloadReminders(publications map[string]bool) erro
 		return nil
 	}
 	s.mu.Lock()
-	// removeSkillCompactionHandoffsLocked filters in place, so the restore copy
-	// has to be taken before it runs.
-	restore := slices.Clone(s.skillLifecycle.PendingHandoffs)
 	removed := s.removeSkillCompactionHandoffsLocked(publications)
-	if removed {
+	if len(removed) > 0 {
 		s.skillLifecycle.Revision++
 	}
 	s.mu.Unlock()
-	if !removed {
+	if len(removed) == 0 {
 		return nil
 	}
 	if err := s.saveMeta(); err != nil {
@@ -383,9 +380,12 @@ func (s *Session) consumeSkillReloadReminders(publications map[string]bool) erro
 		// next autosave, which would write a snapshot that has forgotten
 		// reminders no restart can then deliver; putting them back leaves the
 		// obligation pending, which a retry or a restart settles by delivering
-		// the reminder again.
+		// the reminder again. Exactly the removed receipts come back: the save
+		// ran without s.mu, so a fold publishing in that window can have
+		// appended a handoff of its own, and writing a pre-removal snapshot
+		// back wholesale would discard it.
 		s.mu.Lock()
-		s.skillLifecycle.PendingHandoffs = restore
+		s.restoreSkillCompactionHandoffsLocked(removed)
 		s.skillLifecycle.Revision++
 		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
@@ -525,7 +525,7 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	priorHandoffs := append([]schema.SkillCompactionReceipt(nil), s.skillLifecycle.PendingHandoffs...)
 	priorRevision := s.skillLifecycle.Revision
 	publications := s.consumedReloadPublicationsLocked(outcomes)
-	removed := s.removeSkillCompactionHandoffsLocked(publications)
+	removed := len(s.removeSkillCompactionHandoffsLocked(publications)) > 0
 	if len(obligations) > 0 {
 		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligations...)
 	}

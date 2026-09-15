@@ -3491,3 +3491,139 @@ func TestFoldPublication_InjectedSteeringSurvivesTheFoldAfterIt(t *testing.T) {
 		t.Fatalf("the resumed history differs from the one two folds published:\nresumed: %v\nlive:    %v", providerMessageOutline(got), providerMessageOutline(want))
 	}
 }
+
+// A replay copy whose write kept its whole line is a record every returning
+// reader finds, so it carries its turn past the marker exactly like a clean
+// one. Withholding the anchor over it loses the compaction for a tail the
+// transcript actually holds — the fold's work done, its summary real in
+// memory, and nothing on disk that says so.
+func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "retained-copy-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &retainMarkerWriteFS{Fs: afero.NewOsFs(), match: []byte(`"context_replay":true`)}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	const recorded = 12 // > PreserveRecentTurns(6): forces an actual fold
+	for i := range recorded {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was retained")
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	marker := false
+	for _, entry := range data.Entries {
+		if isSessionNameCompactionTurn(entry.Turn) {
+			marker = true
+		}
+	}
+	if !marker {
+		t.Fatal("the fold withheld its anchor over a replay copy the transcript holds: the compaction is lost to every reload")
+	}
+	resumed := ResumeHistory(data.Entries)
+	if indexOfTurnText(resumed, "recorded turn 0") >= 0 {
+		t.Fatal("the marker did not discard the turns it summarized away, so nothing anchored")
+	}
+	// The preserved suffix still comes back exactly once: the retained copy is
+	// the record that carries it past the marker.
+	counts := map[string]int{}
+	for _, turn := range resumed {
+		counts[turn.Message.Text()]++
+	}
+	if got := counts[fmt.Sprintf("recorded turn %d", recorded-1)]; got != 1 {
+		t.Fatalf("the last preserved turn appears %d times in the resumed history, want once", got)
+	}
+}
+
+// A fold that withholds its anchor writes none of its own steering, and that
+// steering nonetheless stands in the published history the model keeps talking
+// to. The NEXT fold's marker discards everything before it, so unless that
+// fold copies the steering too it is gone from every later resume — and the
+// pair log is the only thing that tells a fold which turns those are.
+func TestFoldPublication_UnanchoredFoldsSteeringSurvivesTheNextFold(t *testing.T) {
+	t.Parallel()
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "unanchored-steering-cheap", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failReplayCopyWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	seedNumberedSessionHistory(t, s, 12)
+	s.setPinnedNote("the API signature the un-anchored fold handed forward")
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+	// A recorded pair gives the fold a copy to write, which is what its
+	// withheld anchor turns on.
+	const recordedText = "turn recorded while the first fold was running"
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(recordedText))
+	s.recordTurn(turn, turn)
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact (unanchored): %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no replay copy write was attempted, so the first fold anchored")
+	}
+	if got := countSteering(currentHistory(t, s), noteHandoffPrefix); got != 1 {
+		t.Fatalf("test setup: the un-anchored fold injected %d note handoffs, want 1", got)
+	}
+
+	// The second fold can write its copies, and its marker anchors — which is
+	// what discards everything before it, the first fold's steering included.
+	faultFS.disarmed.Store(true)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact (anchored): %v", err)
+	}
+	if got := countSteering(currentHistory(t, s), noteHandoffPrefix); got != 1 {
+		t.Fatalf("test setup: the live history holds %d note handoffs after the second fold, want 1", got)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	if got := countSteering(ResumeHistory(data.Entries), noteHandoffPrefix); got != 1 {
+		t.Fatalf("the un-anchored fold's steering appears %d times in the resumed history, want once: the live conversation still holds it", got)
+	}
+}

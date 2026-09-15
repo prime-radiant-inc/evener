@@ -2136,12 +2136,14 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
-func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
+func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) (recorded bool, err error) {
 	s.attentionMu.Lock()
 	writeErr := s.writeTranscriptLocked(turn)
-	if writeErr != nil && s.attachedTranscript().Poisoned() {
+	recorded = entryIsRecorded(writeErr)
+	poisoned := writeErr != nil && s.attachedTranscript().Poisoned()
+	if poisoned && !recorded {
 		s.attentionMu.Unlock()
-		return errors.Join(writeErr, errTranscriptRefusesRecords())
+		return false, errors.Join(writeErr, errTranscriptRefusesRecords())
 	}
 	s.mu.Lock()
 	s.history = append(s.history, turn)
@@ -2151,7 +2153,17 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	if writeErr != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
 	}
-	return nil
+	if poisoned {
+		// A write can leave its whole line in the file and stop the writer in
+		// the same breath. The record is one every returning reader finds, so
+		// the input happened and nothing about it is taken back -- returning
+		// the accepted turn here is what makes a restart process the same
+		// input twice. The writer is still dead, so the turn this input would
+		// start must not run: the refusal is reported with the record intact,
+		// and the caller keeps its claim.
+		return true, errors.Join(writeErr, errTranscriptRefusesRecords())
+	}
+	return true, nil
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
@@ -2240,9 +2252,15 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			if skillInput != nil {
 				turn.SkillState = &schema.SkillTurnState{Input: skillInput}
 			}
-			if err := s.appendUserInputTurnRefusingPoison(turn); err != nil {
-				if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
-					return errors.Join(err, returnErr)
+			recorded, err := s.appendUserInputTurnRefusingPoison(turn)
+			if err != nil {
+				// An input the transcript holds keeps its claim: giving it
+				// back would deliver it again beside the record every reader
+				// already finds.
+				if !recorded {
+					if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
+						return errors.Join(err, returnErr)
+					}
 				}
 				return fmt.Errorf("append user input: %w", err)
 			}

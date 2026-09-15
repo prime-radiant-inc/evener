@@ -331,8 +331,16 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 				mergedTail[turn.PairID]--
 			}
 			turn.CompactionFoldID = commit.foldID
-			if err := s.writeTranscriptDurableLocked(turn); err != nil {
+			recorded, err := s.writeFoldRecordDurablyLocked(turn)
+			if err != nil {
 				mergedTailWriteErrs = append(mergedTailWriteErrs, err)
+			}
+			// A copy whose write kept its whole line is one every returning
+			// reader finds, so it carries its turn past the marker exactly
+			// like a clean one: withholding the anchor over it would lose the
+			// compaction for a tail the transcript actually holds. The failure
+			// is still reported.
+			if !recorded {
 				tailComplete = false
 			}
 		}
@@ -886,16 +894,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			adopted.CompactionFoldID = ""
 			adoptedAnchor = &adopted
 		}
-		// The fold's own steering goes with the anchor. A resume that finds no
-		// anchor drops the fold's copies and keeps everything else, so
-		// steering describing a compaction that resume cannot see is stale
+		// The fold's own steering is WRITTEN with the anchor. A resume that
+		// finds no anchor drops the fold's copies and keeps everything else,
+		// so steering describing a compaction that resume cannot see is stale
 		// guidance — and duplicate guidance the moment the retry injects it
-		// again. An un-anchored fold leaves nothing of itself durable except
-		// the tagged copies every reader already drops, whether the anchor was
-		// withheld or its write failed.
-		if foldAnchored {
-			steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
-		}
+		// again. It is LOGGED as a pair either way: the turns are in the
+		// published history whatever this fold wrote, and the next fold's
+		// marker must carry them past it rather than discard them.
+		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering, foldAnchored)
 	}
 	// Asked BEFORE anything is written, because the tail now goes down first:
 	// what matters is whether this fold HAS a replacement marker to write, not
@@ -1168,31 +1174,41 @@ func (s *Session) writeFoldRecordLocked(turn schema.Turn) (recorded bool, err er
 	return entryIsRecorded(err), err
 }
 
-// writeSteeringTurnRecordsLocked appends the records' turns to the
-// transcript. Callers hold attentionMu (the publication transaction's
-// transcript-commit phase). The returned errors align with records; they are
-// reported later by emitSteeringTurnRecords, outside the locks, where
-// emitting is safe.
-func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) []error {
+// writeFoldRecordDurablyLocked is writeFoldRecordLocked through the durable
+// door, for the replay copies the marker's anchor depends on: the fold writes
+// them before its own records, and only a copy that is NOT a record in the
+// file may withhold that anchor.
+func (s *Session) writeFoldRecordDurablyLocked(turn schema.Turn) (recorded bool, err error) {
+	err = s.writeTranscriptDurableLocked(turn)
+	return entryIsRecorded(err), err
+}
+
+// writeSteeringTurnRecordsLocked appends the records' turns to the transcript
+// when write says the fold has an anchor to hang them on, and enters every
+// record in the pair log either way. Callers hold attentionMu (the publication
+// transaction's transcript-commit phase). The returned errors align with
+// records; they are reported later by emitSteeringTurnRecords, outside the
+// locks, where emitting is safe.
+//
+// The pair log is the only reason the NEXT fold writes a copy that carries a
+// live turn past its marker. These turns are in the published history from the
+// moment the fold appended them, so leaving any of them out — the fold that
+// withheld its anchor and wrote nothing, or the single record whose own write
+// failed — hands that marker a turn to discard with nothing behind it, and
+// every later reload loses guidance the live conversation kept.
+func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord, write bool) []error {
 	if len(records) == 0 {
 		return nil
 	}
 	errs := make([]error, len(records))
 	for i, record := range records {
-		if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
-			errs[i] = appendTurn(record.turn)
-			continue
+		if write {
+			if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
+				errs[i] = appendTurn(record.turn)
+			} else {
+				_, errs[i] = s.writeFoldRecordLocked(record.turn)
+			}
 		}
-		var recorded bool
-		recorded, errs[i] = s.writeFoldRecordLocked(record.turn)
-		if !recorded {
-			continue
-		}
-		// The fold's steering is a turn of the published history like any
-		// other, so it is an append/write pair like any other: without its
-		// persisted form in the log, the NEXT fold's marker discards it with
-		// no copy to carry it past, and the resumed conversation loses the
-		// guidance the live one kept.
 		holdPairMinted(record.turn)
 		s.mu.Lock()
 		s.logPairPersistedLocked(record.turn)
@@ -1233,7 +1249,7 @@ func (s *Session) emitSteeringTurnRecords(records []steeringTurnRecord, errs []e
 // one-step convenience the package tests drive directly.
 func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 	s.attentionMu.Lock()
-	errs := s.writeSteeringTurnRecordsLocked(records)
+	errs := s.writeSteeringTurnRecordsLocked(records, true)
 	s.attentionMu.Unlock()
 	s.emitSteeringTurnRecords(records, errs)
 }

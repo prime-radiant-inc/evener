@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -315,4 +319,119 @@ func TestRetainedWrite_DelegatePreseedSucceeds(t *testing.T) {
 	if got := countTurnsWithText(t, child, input); got != 1 {
 		t.Fatalf("the seed turn appears %d times in history, want once", got)
 	}
+}
+
+// poisonAfterCompleteLineFS writes the whole line of the record matching text
+// and then reports failure, which is what stops the writer with its entry still
+// in the file: a record every returning reader finds, written by a writer that
+// will accept nothing more.
+type poisonAfterCompleteLineFS struct {
+	afero.Fs
+	match  []byte
+	failed atomic.Bool
+}
+
+func (fs *poisonAfterCompleteLineFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &poisonAfterCompleteLineFile{File: file, fs: fs}, nil
+}
+
+func (fs *poisonAfterCompleteLineFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &poisonAfterCompleteLineFile{File: file, fs: fs}, nil
+}
+
+type poisonAfterCompleteLineFile struct {
+	afero.File
+	fs *poisonAfterCompleteLineFS
+}
+
+func (file *poisonAfterCompleteLineFile) Write(p []byte) (int, error) {
+	if !bytes.Contains(p, file.fs.match) || file.fs.failed.Swap(true) {
+		return file.File.Write(p)
+	}
+	written, err := file.File.Write(p)
+	if err != nil {
+		return written, err
+	}
+	return written, errors.New("injected write failure after the whole line landed")
+}
+
+// poisonTranscriptAfterCompleteLine replaces the session's transcript with one
+// that lands the matching record's whole line and then stops accepting appends.
+func poisonTranscriptAfterCompleteLine(t *testing.T, s *Session, match string) *poisonAfterCompleteLineFS {
+	t.Helper()
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	fs := &poisonAfterCompleteLineFS{Fs: afero.NewOsFs(), match: []byte(match)}
+	writer, err := transcript.NewWriterWithFS(fs, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	return fs
+}
+
+// A user input whose write kept its whole line and poisoned the writer is a
+// record every returning reader finds. Treating it as a refused input and
+// giving the accepted turn back leaves the same input queued beside the record
+// that already holds it, so the restart processes it twice. The turn still must
+// not run: the writer is dead.
+func TestRetainedWrite_PoisonedUserInputKeepsItsClaim(t *testing.T) {
+	t.Parallel()
+	const input = "the user input a poisoned write kept"
+	s := newRetainedWriteSession(t)
+	fs := poisonTranscriptAfterCompleteLine(t, s, input)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	before := s.clientMutations.snapshot().AcceptedTurns
+
+	err := s.acceptUserInput(context.Background(), input, nil, nil, false)
+	if !fs.failed.Load() {
+		t.Fatal("test setup: no write was poisoned")
+	}
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("acceptUserInput error = %v, want the poisoned-transcript refusal", err)
+	}
+	if !s.attachedTranscript().Poisoned() {
+		t.Fatal("test setup: the writer still accepts appends")
+	}
+	if got := s.clientMutations.snapshot().AcceptedTurns; got != before+1 {
+		t.Fatalf("accepted turns = %d, want %d: the input is in the transcript, so its claim stands", got, before+1)
+	}
+	if got := countTurnsWithText(t, s, input); got != 1 {
+		t.Fatalf("the input turn appears %d times in history, want once", got)
+	}
+	if got := countTranscriptTurnsWithText(t, s, input); got != 1 {
+		t.Fatalf("the input turn appears %d times in the transcript, want once", got)
+	}
+}
+
+// countTranscriptTurnsWithText reads the session's transcript back off disk —
+// what a restart sees — and counts the turns carrying text.
+func countTranscriptTurnsWithText(t *testing.T, s *Session, text string) int {
+	t.Helper()
+	if err := s.closeAttachedTranscript(); err != nil && !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("close transcript: %v", err)
+	}
+	data, err := readStrictChildTranscript(transcriptPath(s.stateDir, s.id), s.id, s.strictTranscriptMaxLineBytes)
+	if err != nil {
+		t.Fatalf("read transcript back: %v", err)
+	}
+	n := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Message.Text() == text {
+			n++
+		}
+	}
+	return n
 }
