@@ -1040,6 +1040,7 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	var mu sync.Mutex
 	mismatch := false
 	starts := 0
+	failures := 0
 	canned := cannedRun(nil)
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -1060,7 +1061,14 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	}
 	events := make(chan Event, 128)
 	m := newTestManager(t, reg, fr, Options{
-		OnEvent:     func(ev Event) { events <- ev },
+		OnEvent: func(ev Event) {
+			events <- ev
+			if ev.Kind == EventFailed {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
+		},
 		BackoffBase: time.Millisecond,
 		BackoffMax:  time.Millisecond,
 		sleep:       func(context.Context, time.Duration) error { return nil },
@@ -1095,17 +1103,30 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 		t.Fatal("Ensure never returned")
 	}
 
-	waitForEvent(t, events, EventFailed)
-	if got := m.currentChannel("alpha"); got != nil {
-		t.Fatalf("a terminal failure left the dropped channel mapped: %v", got)
+	// The failure has to be announced by the call that found it: a consumer that
+	// only learns about it from the supervisor has already been told the host is
+	// merely reconnecting.
+	mu.Lock()
+	atReturn := failures
+	mu.Unlock()
+	if atReturn != 1 {
+		t.Fatalf("terminal failures announced by the time Ensure returned = %d, want 1", atReturn)
 	}
-	waitClosed(t, ch1)
+
+	// The terminal failure releases the host too: whichever goroutine won the lock,
+	// the host must not be left holding a dropped channel and the terminal failure
+	// must not be retried.
+	time.Sleep(50 * time.Millisecond)
 	mu.Lock()
 	got := starts
 	mu.Unlock()
 	if got != 1 {
 		t.Fatalf("Start calls = %d, want 1: a terminal failure must not be retried", got)
 	}
+	if ch := m.currentChannel("alpha"); ch != nil {
+		t.Fatalf("a terminal failure left the dropped channel mapped: %v", ch)
+	}
+	waitClosed(t, ch1)
 }
 
 // A caller may bring a long deadline; it must not hold the host's lock for that
