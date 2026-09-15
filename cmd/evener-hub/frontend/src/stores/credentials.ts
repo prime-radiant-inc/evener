@@ -277,11 +277,7 @@ interface MutationReconcile {
 // write's own answer installed, and this answer predates it). A row the
 // answer omits is a row the server no longer has, so nothing is staged back
 // in.
-function mergeNewerRows(
-  instances: InstanceEntry[],
-  generation: number,
-  writes: Map<string, number>,
-): InstanceEntry[] {
+function mergeNewerRows(instances: InstanceEntry[], generation: number, writes: Map<string, number>): InstanceEntry[] {
   const written = new Set(
     [...landedMutations].filter(([name, count]) => (writes.get(name) ?? 0) !== count).map(([name]) => name),
   );
@@ -393,7 +389,9 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
 
   async setDefault(name) {
     const client = requireClient();
-    const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }), { instance: name });
+    const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }), {
+      instance: name,
+    });
     // A superseded response lost the store's ordering race: the read that won it
     // may have started before the hub applied the new default, so the listing
     // would keep the old flag until something else refreshed. The store's own
@@ -603,8 +601,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       if (resp.state === "authorized") {
         completeLocalAuthMutation(provider, generation);
         if (generation === connectionGeneration) noteLandedMutation(provider);
-      }
-      else endUnconfirmedAuthMutation(provider, generation);
+      } else endUnconfirmedAuthMutation(provider, generation);
       return resp;
     } catch (err) {
       endUnconfirmedAuthMutation(provider, generation); // refused: no echo will follow
