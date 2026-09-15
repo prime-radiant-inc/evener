@@ -36,7 +36,8 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
   - request params: `host:<thread>` / bare thread ID → `local:<thread>`;
   - responses and notifications: remote `local:<thread>` → `host:<thread>`,
     including `Thread.Evener.Ref`, `Thread.Evener.ParentRef`, `Thread.Source`,
-    and nested `Thread` snapshots carried by `evener/thread/started`;
+    and nested `Thread` snapshots carried by `thread/started`
+    (`appwire.NotifyThreadStarted`, `appwire/types.go`);
   - sub-thread (read-only alias) refs and parent refs.
 - Subscription: `SubscribeThread` drives the remote hub's `thread/read`
   (`subscribe:true`) live feed over the single channel and fans notifications
@@ -353,6 +354,36 @@ it does so by construction:
   `Online()` (via `Manager.Attached`) as the only up/down signal — it flips
   without notifying the source, so `apiTreeSources` reads it per request.
 
+### One notification consumer per client — the broker (05/07 boundary)
+
+`appwire.Client.Notifications()` is a **single** channel (`appwire/client.go`),
+and the client tears the whole connection down on buffer overflow
+(`ErrNotificationOverflow`), so only one goroutine may read it. Component 05 is
+already that reader: `drainLoop` (`remote_hub_subscription.go`) consumes the
+stream and routes each notification by remote thread ID. Component 07 needs the
+same stream for its config-notification fan-out (`evener/auth/updated`,
+`evener/launch/updated`, …, component 07, §"PR 07a"). If each opened its own
+`<-client.Notifications()`, the two would race and silently drop each other's
+notifications — the failure is notification loss, not a compile error.
+
+Rule: there is exactly **one** drain goroutine per per-host client, and it is a
+**broker that fans the stream out to every consumer**, not a thread-only router.
+Component 05 owns the drain (it already keys it to the client:
+`ensureDrainLocked`/`drains`, `remote_hub_subscription.go`) and must expose a
+registration point — a method such as `registerNotificationConsumer(client, fn)`
+or a small per-client fan-out type — so component 07 subscribes instead of
+reading the channel. The broker is scoped to the client, so a reconnect's new
+client gets a fresh drain and every registered consumer is rebound (or told its
+client ended) exactly as `subs`/`drains` are today
+(§"Reconnect handoff"). A consumer callback must not be able to stall thread
+subscriptions: the broker hands each consumer its own buffered channel or
+dispatches on its own goroutine, because a slow admin consumer must not block a
+`turn/completed`.
+
+Shipped today, `drainLoop` is the only reader and there is no registration
+point, so the broker seam is the implementing PR's requirement. Component 07
+must **not** call `Client.Notifications()` directly; it consumes this broker.
+
 ## Implementation approach
 
 Files (all under `cmd/evener-hub/internal/appsource/` unless noted):
@@ -429,9 +460,27 @@ Ref translation detail (`remote_hub_refs.go`):
   silently retargeted.
 - `ListThreads` needs special handling: the remote `hubThreadList` filters by
   `params.SourceIDs` (`app_threadlist.go`) and compares against
-  `thread.Source` (`app_threadlist.go`). Remap `SourceIDs` entries equal
-  to `s.id` to `"local"`; if the list ends up empty it means "no filter", which
-  matches the controller's intent when only this host was requested.
+  `thread.Source` (`app_threadlist.go`). The remap rule is **identity-preserving
+  on this source, never "empty means unfiltered"**:
+  - an incoming `SourceIDs` that contains `s.id` is forwarded as `["local"]`
+    (any entry naming another controller host is dropped, because only `local`
+    is representable on the remote);
+  - an incoming `SourceIDs` that does **not** contain `s.id` must not reach the
+    remote at all. The controller's per-source fan-out gate — `sourceAllowedForList`
+    (`app_threadlist.go`), which returns false for a non-empty filter that omits
+    the source — is the mechanism; `ListThreads` must not be called in that case,
+    and if it is, it must error rather than forward an empty filter;
+  - an empty filter is forwarded as empty **only** when the incoming filter was
+    itself empty (an unfiltered fleet-wide list). A non-empty filter that remaps
+    to empty is *not* a licence to forward unfiltered: that would ask the remote
+    hub for *all* of its threads, including the ones its own nested remote
+    sources own, whose non-`local` refs the single-level translation cannot
+    represent (see §"Error handling", "Nested remote hosts", and the reject in
+    `fromRemoteRefString`, `remote_hub_refs.go`). The shipped
+    `remapRemoteSourceIDs` (`remote_hub_refs.go`) implements the mapping but
+    returns an empty slice for an omitting filter, which `ListThreads` then
+    forwards as unfiltered; the "must not reach the remote / must error" half is
+    the implementing PR's requirement, not a present fact.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same
   way (sub-thread aliases). Leave `Thread.Evener.InstanceID` untouched: it is an
@@ -589,6 +638,11 @@ network.
    method fails loudly.
 9. **Live (gated).** A real SSH test against a disposable host behind
    `EVENER_SSH_E2E=1`, never in default `make test`.
+10. **Notification broker.** With two consumers registered on one client (a
+    thread subscription and a recording admin consumer), one emitted
+    notification is delivered to both and neither loses it; the drain goroutine
+    stays the only reader of `Client.Notifications()`. A consumer that stops
+    reading does not block delivery to the other.
 
 ## Acceptance criteria
 
@@ -608,6 +662,9 @@ network.
 - Offline, version-mismatch, and lost-mutation conditions map to the existing
   typed errors.
 - With `EVENER_SSH_E2E` unset, no test opens a socket or spawns `ssh`.
+- Exactly one goroutine reads each client's `Notifications()`; the fan-out
+  broker delivers a copy to every registered consumer (thread subscriptions and
+  the component-07 admin fan-out), and a slow consumer cannot stall another.
 
 ## PR size estimate (LOC)
 

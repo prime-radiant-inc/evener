@@ -20,6 +20,11 @@ not open connections, does not spawn SSH, and does not implement a source.
   `name` is the source ID surfaced in refs (`name:<sessionID>`) and URLs.
 - Validation of `name` against the ref grammar, reserve `local`, reject `..`,
   reject duplicates.
+- Reject a host list that would overflow the navigation manifest: at most **63**
+  remote hosts, because component 06's manifest caps `sources` at 64 including
+  the `local` entry (`cmd/evener-hub/navigation_projection.go`). One host over
+  the cap fails navigation for the entire hub, not just for the extra host, so
+  it is validated at load time.
 - An in-memory `hostreg.Registry` built from the validated list, with add-time
   cycle rejection (duplicates/self-edges; see §"Source registration hook" and
   "Open questions" for the multi-hop deferral).
@@ -61,21 +66,25 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
   non-empty after trim; no path validation here).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address
-  and capability-token state root from the `hub.toml` it reads, and component
-  04's restart/health path needs the address too — but today nothing carries
-  either: the channel argv names no `--config`/`--addr`, and the manager has a
-  single `Options.HubAddr` default. A hub started with `--config <path>` or a
-  non-default port therefore attaches to whatever the host's default resolution
-  finds, and cannot be restarted or health-checked. These two fields fix that:
-  they are what component 04 passes to `hub attach --stdio [--config
-  <config_path>] [--addr <addr>]` and what it uses for the restart/health
-  probe. Both are optional: absent them, the host's documented defaults apply
+  and capability-token state root from the `hub.toml` it reads; component 04's
+  restart/health path needs the same address. These two fields are what
+  component 04 passes to `hub attach --stdio [--config <config_path>]
+  [--addr <addr>]` — `--config` **before** `--addr`, every value shell-quoted
+  (component 04, §"SSH channel argv") — and what it must use for the
+  restart/health probe in place of a manager-wide default.
+- **They are coupled: set both or neither.** A host's config file and its listen
+  address describe one layout, so `validateHostConfigs` rejects an entry that
+  sets exactly one of them with a named sentinel (component 04, §"Address,
+  config path, token"). Setting only one is a split-brain: the bridge attaches
+  to the custom config's address while the manager probes/restarts the default
+  address (or the reverse) after the binary has already been replaced. Absent
+  both, the host's documented defaults apply
   (`~/.config/evener/hub.toml`-class resolution and `127.0.0.1:9180`), and
   component 04 refuses a restart it cannot match to the configured address
-  rather than guessing. **Implementation status:** the shipped stack does not
-  carry these fields yet (`hostreg.Host` has `Name`, `SSH`, `User`,
-  `EvenerPath`, `Roots`), so this is the corrected contract for the
-  implementing PR, not a description of current code.
+  rather than guessing. **Implementation status:** the shipped `hostreg.Host`
+  carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and `channelArgv`
+  passes whichever is present; the paired validation is the implementing PR's
+  requirement, not a present fact.
 
 ### Go types
 
@@ -129,9 +138,15 @@ type Registry struct { /* mu sync.RWMutex; hosts map[string]Host; edges ... */ }
 func New(entries []Host) (*Registry, error) // validates + builds
 func (r *Registry) Add(entry Host) error    // = AddWithUpstreams(entry, nil)
 func (r *Registry) AddWithUpstreams(entry Host, upstreamHostNames []string) error
+func (r *Registry) SetUpstreams(name string, upstreamHostNames []string) error
 func (r *Registry) Get(name string) (Host, bool)
 func (r *Registry) All() []Host                    // sorted by name, like appsource.Registry.All
 ```
+
+`SetUpstreams` is the shipped seam for the one case `AddWithUpstreams` cannot
+cover: `New` registers every config-loaded host through `Add` (no edges), so an
+edge learned after startup must be attached to an already-registered host, and
+`AddWithUpstreams` would only report `ErrDuplicateHost`.
 
 **The constructor takes no self-identity.** `New(entries []Host)` is exactly
 that signature: there is no `self`/`host_id` parameter, no option, and no
@@ -147,8 +162,8 @@ import direction is therefore `hub → hostreg` and nothing else — no cycle an
 type mismatch. `LoadConfig` validates by converting `cfg.Hosts` into
 `[]hostreg.Host` and calling `hostreg.New` on that throwaway list
 (`validateHostConfigs`), and the hub converts the same way, field for field
-(`Name`, `SSH`, `User`, `EvenerPath`, `Roots`, plus `ConfigPath`/`Addr` once
-those land — see "`config_path` / `addr`"), when it builds the live registry at
+  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots` — see
+  "`config_path` / `addr`"), when it builds the live registry at
 startup. That conversion is the only place the two types meet.
 
 `All()` is the hook surface: component 05 iterates it to `appsource.Registry.Add`
@@ -257,6 +272,19 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      deferred host-list RPC (component 05, §Open questions item 4) that supplies
      `upstreamHostNames`; record it as deferred, not as enforced.
 
+     **v1 performs no cycle detection at all from the config alone, and that must
+     be stated plainly rather than implied.** `Add` is `AddWithUpstreams(entry,
+     nil)`, every config-loaded host enters through `New`→`Add`, and no caller
+     supplies upstream names today, so `checkCycleLocked` (hence `ErrHostCycle`)
+     is reachable only by a direct call to `AddWithUpstreams`/`SetUpstreams` with
+     an explicit upstream list. Tests must therefore assert `ErrHostCycle`
+     through those two methods, **not** through `Add`: a config-load or `Add`
+     test that expects `ErrHostCycle` cannot pass against the shipped code. The
+     `AddWithUpstreams`/`SetUpstreams` seam is live API exercised by tests, but
+     it is dead in production until the host-list RPC lands (component 05,
+     §Open questions item 4); until then a multi-hop cycle is not refused and
+     configuration is acyclic by convention only.
+
 4. **Wiring** — as shipped (settled): `cmd/evener-hub/main.go` converts
    `cfg.Hosts` into `[]hostreg.Host` and calls `hostreg.New` once at startup,
    then builds the component-04 manager over that registry
@@ -304,6 +332,11 @@ tree and last-known-good cache (`refreshRemoteThreadSnapshot`,
 - `user` set while `ssh` already contains `user@` → `ErrAmbiguousSSHUser`.
 - Empty `ssh` after trim → `ErrMissingSSH`.
 - `roots` entries empty after trim → `ErrEmptyRoot`.
+- More than 63 remote hosts → a named `ErrTooManyHosts`. The manifest's
+  64-source cap is a hard downstream limit; rejecting here turns "navigation
+  breaks for every host" into a config error naming the limit.
+- Exactly one of `config_path`/`addr` set → a named error (the two are coupled;
+  see §"`config_path` / `addr`").
 - A cycle refused at add time leaves the registry unchanged (candidate not
   inserted); `Add` is atomic under its mutex.
 
@@ -321,6 +354,8 @@ Unit tests, all without a hub or network:
   `b`, then adding `a` with upstream `b`) return `ErrHostCycle`; `All()` is
   name-sorted (mirroring `appsource.Registry.All`, `registry.go`);
   the registry is safe for concurrent `Get`/`All`.
+- A host-count boundary test: 63 remote entries load; 64 fail with
+  `ErrTooManyHosts` (the `local` entry is the 64th manifest source).
 - A ref-grammar parity test: for a corpus of names, assert
   `hostreg` accepts exactly the names `appwire.ParseRef(name+":x")` accepts,
   minus the `..` and `local` cases we deliberately exclude. This pins the
@@ -336,8 +371,12 @@ Unit tests, all without a hub or network:
    `LoadConfig`/`toml.Decode` path (`config.go`).
 3. An invalid `name` (fails `refPartPattern`, contains `..`, or equals `local`)
    makes `LoadConfig` fail with a wrapped sentinel naming the entry.
-4. Duplicate names fail; a cycle added through `hostreg.Add` fails with
-   `ErrHostCycle` and does not mutate the registry.
+4. Duplicate names fail. A cycle is refused with `ErrHostCycle` only through an
+   explicit upstream list — `hostreg.AddWithUpstreams` (or `SetUpstreams` for an
+   already-registered host) — and does not mutate the registry.
+   `hostreg.Add` passes no upstreams, so it cannot produce a cycle and must not
+   be tested as if it could; v1 performs no cycle detection from the config
+   alone.
 5. `Registry.All()` returns validated entries sorted by name, and component 05
    can register one `appsource.Source` per entry through
    `appsource.Registry.Add` (`registry.go`).
@@ -351,6 +390,9 @@ Unit tests, all without a hub or network:
 8. Registry membership is independent of connectivity: with a host configured
    and its channel attached or dropped, `appsource.Registry.All()` is byte-for-
    byte the same set of source IDs.
+9. A host list with more than 63 remote entries fails `LoadConfig` with
+   `ErrTooManyHosts`; 63 entries load (the `local` entry is the 64th manifest
+   source).
 
 ## PR size estimate (LOC)
 
@@ -382,5 +424,10 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
   preflight concern; leave them opaque here.
-- **`evener_path` empty vs set.** Empty means "resolve `evener` on the remote
-  PATH" (component 04). Confirm no default should be baked into the schema.
+- **`evener_path` empty vs set (resolved).** Empty means "resolve `evener` on the
+  remote `PATH`" for the invocation, and component 04's push deploy resolves the
+  absolute install target with the host's own `command -v evener` plus
+  `readlink -f` before the atomic `mv` (`sshconn/deploy.go`), so the deployed
+  build lands at the path the host runs rather than at a literal file named
+  `evener`. A configured path means "the binary lives here" (its directory must
+  exist on the host). No default is baked into the schema.

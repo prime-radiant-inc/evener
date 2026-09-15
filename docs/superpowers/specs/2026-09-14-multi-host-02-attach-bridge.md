@@ -67,14 +67,17 @@ capability token is never on the argv.
     to the process fds when nil) before wrapping them in
     `appwire.NewStreamTransport(newStdioStream(stdin, stdout))`. PR 02 added
     exactly this seam plus the `attach` dispatch.
-  - `cmd/evener/main.go`: the `hub` runner calls
-    `hubcmd.Run(args, nil, nil, stderr)`. Nil is not a bug: `hub.Run` treats nil
-    as "keep the process's own `os.Stdin`/`os.Stdout`", which is precisely what
-    an ssh-spawned bridge needs, since ssh connects the child's fds 0/1 to the
-    SSH channel. Forwarding the CLI's own `stdin`/`stdout` dependencies to
-    `hubcmd.Run` (instead of `nil, nil`) is the one remaining CLI-side
-    improvement, and it only matters for an in-process caller that injects
-    streams; it is not required for the SSH path.
+  - `cmd/evener/main.go`: the `hub` runner **forwards its own `stdin`/`stdout`
+    dependencies** — `hubcmd.Run(args, stdin, stdout, stderr)`, with the
+    dispatcher handing the CLI's streams straight through (PR 02 shipped this).
+    Dropping them as `nil, nil` would be the defect the injected-stream test
+    exists to catch: it silently discards a caller's streams, because `Run` can
+    only fall back to `os.Stdin`/`os.Stdout` when a parameter is nil, and the
+    bridge then carries frames over the process fds the test did not supply.
+    On the real SSH path the forwarded streams *are* the process fds (ssh
+    connects the child's fds 0/1 to the SSH channel), so forwarding is
+    behaviour-preserving there and is the only honest reading for an in-process
+    caller.
   - Nothing on the CLI may wrap, buffer, or redirect the hub command's stdout:
     the SSH child's stdout is the framed AppWire stream (component 04).
 - Reuse: `appwire.DialWebSocketWithHeaders`, `appwire.NewStreamTransport`,

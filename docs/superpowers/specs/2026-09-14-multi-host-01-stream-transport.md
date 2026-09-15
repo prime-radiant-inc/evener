@@ -32,14 +32,30 @@ instead of a WebSocket.
 type StreamTransport struct{ /* unexported */ }
 func NewStreamTransport(rw io.ReadWriteCloser) *StreamTransport
 // Send: marshal Message -> append '\n' -> write (mutex-guarded)
-// Recv: read through next '\n' -> unmarshal -> Message
+// Recv: bufio.Scanner.Scan (newline-split, buffer capped at streamFrameLimit)
+//       -> unmarshal Scanner.Bytes() -> Message
 // Close: close the underlying rw (unblocks a blocked Recv)
 ```
+
+The one framing mechanism is a `bufio.Scanner` over the `io.ReadWriteCloser`
+with a split function of `ScanLines` and a maximum token size of
+`streamFrameLimit` (`sc.Buffer(..., streamFrameLimit)`); `Recv` is
+`sc.Scan()`/`sc.Bytes()`. There is **no** `bufio.Reader.ReadBytes('\n')` and no
+depth-1 `ReadString` loop anywhere in the transport — a reader-based
+implementation would buffer an unbounded token before the length check and has
+different recoverability, so the two are not interchangeable.
 
 ## Implementation
 
 - `appwire/stream_transport.go` (spike exists; promote to a real file with
   package docs and the read-limit constant shared with the WebSocket transport).
+- `Recv` is `bufio.Scanner.Scan` with the buffer capped at `streamFrameLimit`;
+  `errStreamFrameTooLarge` is returned when the capped scan fails with
+  `bufio.ErrTooLong`, and `Send` returns the same sentinel when the marshaled
+  frame exceeds the limit. `bufio.ErrTooLong` is the exported `bufio` error the
+  scanner's `Err()` reports for an oversized token (it is part of the standard
+  library API in this module's Go toolchain; `go.mod` requires go 1.27.0), so
+  the read path maps it rather than re-deriving a cap.
 - Cancellation: `Send`/`Recv` check `ctx.Err()` on entry; a blocked `Recv`
   unblocks when `Close` runs, which is how the client stops it.
 
@@ -49,7 +65,7 @@ func NewStreamTransport(rw io.ReadWriteCloser) *StreamTransport
 appwire.Client.Send(ctx, msg)
   → StreamTransport.Send: json.Marshal(msg) + '\n'   (mutex-guarded write)
   → io.ReadWriteCloser (SSH channel / pipe)
-  → peer StreamTransport.Recv: ReadBytes('\n') → json.Unmarshal → Message
+  → peer StreamTransport.Recv: bufio.Scanner.Scan → json.Unmarshal(sc.Bytes()) → Message
   → peer appwire.Client.Recv dispatches the frame
 ```
 
@@ -59,10 +75,12 @@ Symmetric in the other direction; `Close` ends both.
 
 - **Oversize frame → `errStreamFrameTooLarge`.** Both directions produce it:
   `Send` refuses a marshaled frame larger than `streamFrameLimit`, and `Recv`
-  reports the capped scanner's `bufio.ErrTooLong` as the same sentinel. No
-  buffer grows unbounded. Once this fires the scanner is done, so **every later
-  `Recv` returns the same error** — the frame boundary is gone and the transport
-  is unusable.
+  maps the capped scanner's `bufio.ErrTooLong` to the same sentinel. No buffer
+  grows unbounded, because the `bufio.Scanner` never allocates past
+  `streamFrameLimit`. Once this fires the scanner is done — `Scan` keeps
+  returning false and `Err` keeps returning `bufio.ErrTooLong` — so **every
+  later `Recv` returns the same error** — the frame boundary is gone and the
+  transport is unusable.
 - **Invalid JSON on a line → the unmarshal error, and the transport does not
   poison itself.** The offending line has been consumed, so a later `Recv` would
   read the *following* line; nothing in the transport closes the stream. That

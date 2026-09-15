@@ -31,10 +31,15 @@ existing local store and writes the remote one.
   named host's hub over the component-02/04/05 channel, plus host validation and
   offline refusal.
 - Fan-out of the remote hub's config notifications
-  (`evener/auth/updated`, `evener/instance/updated`, `evener/launch/updated`,
+  (`evener/auth/updated`, `evener/launch/updated`,
   `evener/marketplace/updated`, `evener/plugin/updated`,
   `evener/settings/agentsDoc/changed`) to the controller's browser clients,
-  tagged with the host, so remote settings panes refresh.
+  tagged with the host, so remote settings panes refresh. Instance mutations
+  broadcast **`evener/auth/updated`**, not an `evener/instance/updated`: there is
+  no such AppWire method. `notifyInstanceUpdated` (`app_rpc.go`) emits
+  `appwire.NotifyEvenerAuthUpdated` with an empty payload, so building the proxy
+  around `evener/instance/updated` would silently forward nothing after an
+  instance edit.
 - A controller-side credential-push RPC that reads the local credentials file
   and writes the remote one through the remote hub's `evener/auth/apiKey/set`,
   returning a per-instance report.
@@ -129,9 +134,24 @@ The handler:
 2. refuses when the host is not attached (component 04/05 exposes attachment
    state) with `appwire.Unavailable`, matching the offline rule (design §2:
    "actions refused until reconnect");
-3. allow-lists `Method` to the five families in the table above — the proxy must not
-   become a generic hub-to-hub RPC tunnel (design §6 "secret handling"; the
-   remote hub is a trusted peer but the browser is not);
+3. allow-lists `Method` against an **exact set of method names**, not five family
+   *prefixes*. The set is the concrete enumeration above:
+   `evener/instance/{list,create,edit,remove,setDefault}`,
+   `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`,
+   `evener/marketplace/{list,add,remove,refresh,edit,browse}`,
+   `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`,
+   `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`,
+   `evener/settings/agentsDoc/{get,set}` — and nothing else.
+   A prefix match (`strings.HasPrefix(method, "evener/instance/")`) is **not**
+   acceptable: it would auto-allow a future sensitive `ScopeHub` method the
+   moment it is added to the catalog (a hypothetical
+   `evener/instance/setModelDisabled` or `evener/instance/deleteAll`), turning
+   the proxy into a generic tunnel by default. The allow-list must also **fail
+   closed**: an unlisted method — including every method added to the catalog
+   after this list was written — is `appwire.InvalidParams` and is never
+   forwarded. The proxy must not become a generic hub-to-hub RPC tunnel
+   (design §6 "secret handling"; the remote hub is a trusted peer but the
+   browser is not);
 4. calls the per-host `appwire.Client.Request(ctx, Method, Params, &out)`
    (`appwire/client.go`) and returns `out` as the browser response, passing
    wire errors through unchanged.
@@ -258,14 +278,21 @@ Decompose component 07 into four landable PRs.
   `newHubAppServerWithNavigationAndTrace` beside
   `registerAuthHandlers`/`registerInstanceHandlers`/… (`app_rpc.go`).
 - The controller takes the component-03 `hostreg.Registry` and the component-05
-  per-host client accessor. It allow-lists methods against the families in the
-  table above; the allow-list is the security boundary.
-- Notification fan-out: the per-host `appwire.Client` delivers the remote hub's
-  notifications on `Client.Notifications()` (`appwire/client.go`); re-emit
-  them to the controller's browser clients tagged with the host. The existing
-  broadcast helpers (`notifyAuthUpdated`, `notifyLaunchUpdated`,
-  `notifyMarketplaceUpdated`, `notifyPluginUpdated`, `notifyInstanceUpdated`)
-  are the model for the controller-side notification shape.
+  per-host client accessor. It allow-lists methods against the **exact method
+  set** enumerated under "Proxy method" (fail closed; no prefix matching); the
+  allow-list is the security boundary.
+- Notification fan-out: **subscribe to component 05's per-client notification
+  broker**, never to `Client.Notifications()` directly (component 05, §"One
+  notification consumer per client — the broker"). `Notifications()` is a single
+  channel that component 05's `drainLoop` already reads; a second reader would
+  race it and each would silently drop notifications the other needs. The broker
+  hands this component each notification (or a copy on its own buffered
+  channel), and the admin fan-out re-emits the config notifications it owns to
+  the controller's browser clients tagged with the host. The existing broadcast
+  helpers (`notifyAuthUpdated`, `notifyLaunchUpdated`,
+  `notifyMarketplaceUpdated`, `notifyPluginUpdated`) are the model for the
+  controller-side notification shape; `notifyInstanceUpdated` is *not* a
+  distinct wire method — it broadcasts `evener/auth/updated` (see §Scope).
 
 ### PR 07b — frontend host scoping for the settings panes
 
@@ -372,6 +399,13 @@ receives a key, and the controller writes nothing.
   scripted remote hub over an in-memory stream pair (the component-05 harness):
   method allow-list, unknown host, offline host, error passthrough, and that the
   returned result is the remote's.
+- **Allow-list boundary test (fail closed).** Every method in the exact set is
+  allowed; a `ScopeHub` method the list does not name — including one added to
+  the catalog after the list was written — is denied with `appwire.InvalidParams`
+  and never reaches the remote (assert no request is forwarded). Enumerate the
+  allow-list against `appwire.CatalogMethodNames(appwire.ScopeHub)` so a catalog
+  addition forces a deliberate allow/deny decision rather than a silent
+  auto-allow.
 - **Notification fan-out:** a scripted remote emits `evener/auth/updated`;
   assert one controller-side broadcast tagged with the host.
 - **Push table test:** a fake remote that records `apiKey/set` calls and reports
@@ -399,7 +433,9 @@ receives a key, and the controller writes nothing.
    host's hub and returns the remote result; local execution never happens for a
    remote host request.
 2. An unknown or unattached host is refused with a typed wire error; the
-   allow-list rejects any method outside the five families; every method the
+   allow-list matches method names exactly, rejects any method outside the
+   enumerated set, and fails closed on a method added to the catalog after the
+   list was written; every method the
    settings panes call — including `evener/plugin/disable`,
    `evener/plugin/setAutoUpgrade`, and `evener/settings/agentsDoc/{get,set}` —
    is inside it, and no instance method outside the five listed exists to call.

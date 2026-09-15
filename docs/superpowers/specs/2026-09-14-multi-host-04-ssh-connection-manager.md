@@ -123,7 +123,7 @@ type Options struct {
     ClientVersion       string        // default buildinfo.Version()
     BackoffBase         time.Duration // default 500ms
     BackoffMax          time.Duration // default 30s
-    OnEvent             func(Event)   // lifecycle sink (connection state, not registry mutation)
+    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock (non-reentrant: never call Ensure; connection state only)
     BuildBinary         func(ctx context.Context, goos, goarch, out string) error // nil = localBuild
     HubAddr             string        // fallback host hub loopback address when the entry sets no addr; default 127.0.0.1:9180
 }
@@ -142,8 +142,18 @@ type Event struct {
 type Runner interface {
     // Start spawns a long-lived child; stderr is the caller's diagnostic sink.
     Start(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
-    // Run executes a one-shot command and returns combined stdout.
+    // Run executes a one-shot command. Success returns stdout alone (ssh's own
+    // stderr chatter must not corrupt a parse); failure returns both streams
+    // and a *RunError keeping them apart.
     Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
+}
+
+// RunError reports a failed one-shot command with ssh's diagnostics (stderr) and
+// the remote program's output (stdout) kept separate.
+type RunError struct {
+    Stdout []byte
+    Stderr []byte
+    Err    error
 }
 
 type Stdio interface {
@@ -161,31 +171,75 @@ the single place that turns `(dest, remote argv)` into local `ssh` argv.
 ### SSH channel argv
 
 ```
-ssh -o BatchMode=yes -o ConnectTimeout=<n> <dest> <evener_path> hub attach --stdio
+ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
+    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio \
+    [--config <config_path>] [--addr <addr>]
 ```
 
+- **`--` ends ssh's own option parsing.** The destination is emitted as
+  `-- <dest>` (shipped: `sshDest` in `sshconn/runner.go`). A registry `ssh`
+  value that begins with `-` must be read as a hostname and never as an ssh
+  option: `-oProxyCommand=...` as a destination would otherwise run a command on
+  the controller. `ssh(1)` stops option parsing at `--`. Every ssh invocation in
+  this component (channel, preflight, deploy, restart) uses the same prefix.
 - `<dest>` is the component-03 `ssh` field (`user@host` or host); if component 03's
   `user` is set it is composed here (`user@host`).
-- `<evener_path>` is component 03's `evener_path`, defaulting to `evener` on the
-  remote `PATH`.
-- **Address, token, config path (corrected contract).** The argv carries none of
-  the three today: the bridge resolves the address and the token from the host's
-  own `hub.toml` and state root (component 02, §Scope). That is only correct for
-  a host hub started from the *default* configuration. A hub started with
-  `--config <path>` or a non-default `addr` attaches only by luck — the bridge
-  reads whatever the host's default resolution finds, not what the hub read —
-  and cannot be restarted or health-checked at all, because this component knows
-  only `Options.HubAddr` (default `127.0.0.1:9180`), a manager-wide value rather
-  than a per-host one. Corrected contract: the component-03 entry carries the
-  host's connection parameters (`config_path`, `addr`); this component passes
-  them through on the channel argv (`hub attach --stdio [--config
-  <config_path>] [--addr <addr>]`) and uses the same `addr` for the
-  restart/health path in place of the default. When the entry omits them, both
-  sides use the documented host defaults — and the manager must then refuse to
-  restart a hub whose listener it cannot match to the configured address (§5)
-  instead of restarting whatever happens to hold the default port. The
-  capability token is never on the argv; the bridge reads it from the resolved
-  state root.
+- `<evener_path>` is component 03's `evener_path`; when it is empty the literal
+  word `evener` is used for the remote invocation (`evenerCommand`), which the
+  remote shell resolves on `PATH`. The *deploy* target is not that literal word:
+  §4 resolves it to the absolute executable the host actually runs.
+- **Quoting rule (shipped).** ssh joins its trailing arguments with spaces and
+  hands the result to the remote **login shell**, so every remote word must be
+  quoted for that shell or a space splits it and a metacharacter executes.
+  `shellQuote` (`sshconn/quote.go`) is the one helper:
+  - a word consisting only of alphanumerics and ``_ - . / : , @ % + = ~`` is
+    passed **bare**;
+  - everything else is wrapped in single quotes, with an embedded `'` closed
+    and escaped (``'\''``); the empty string becomes `''`.
+  `~` is deliberately left bare so the spelling `~/bin/evener` still expands at
+  the start of a word; quoting it away would break an unquoted argv's historic
+  behaviour for no safety gain.
+- **The quoting rule applies to every remote argument, not just `evener_path`:**
+  the `hub attach --stdio` words and the `--config`/`--addr` values
+  (`evenerCommandArgv` in `runner.go`), the `lsof`/`ps`/`kill` pids and ports,
+  the recovered log path, supervisor labels, and the recovered `ps -o command=`
+  argv (which is re-parsed by the remote shell as one quoted word,
+  `relaunchCommand`). `evener_path`, `config_path`, `addr`, and `HOME`-derived
+  paths are all registry- or host-derived and must be quoted wherever they reach
+  the remote shell; the recovered argv is exactly the case that proves bare
+  interpolation is unsafe.
+- **The deliberate exception is the raw probe snippet.** `uname -s`/`uname -m`,
+  `sw_vers`, `printenv`/parameter-expansion, and the `systemctl`/`launchctl`
+  listing for supervisor detection are passed **unquoted and verbatim**
+  (`rawCommandArgv` in `runner.go`): they are expressions the remote shell is
+  asked to evaluate, not data. Stating the distinction matters — a future editor
+  who "fixes" the probe by quoting the snippet breaks it, and one who "fixes"
+  argv construction by not quoting injects into the remote shell.
+- **Address, config path, token (corrected contract).** The shipped argv carries
+  the connection parameters: `hub attach --stdio [--config <config_path>]
+  [--addr <addr>]`, with `--config` **before** `--addr` and every value
+  shell-quoted (§"Quoting rule" above). The capability token is never on the
+  argv; the bridge reads it from the state root the resolved config names
+  (component 02, §Scope).
+- **`config_path` and `addr` are coupled, not independently optional.** An entry
+  that sets either must set both; `validateHostConfigs` (component 03) rejects a
+  half-specified pair with a named sentinel. The two describe one thing — the
+  host hub's own configuration — and the two halves consume them from opposite
+  ends: the bridge resolves the token's state root and the listen address from
+  `config_path`, while this component's restart/health path needs the matching
+  `addr`. Allowing them independently lets a half-specified entry attach to the
+  custom layout through the bridge while the manager probes and restarts the
+  *default* address — a silent split-brain, not a clean failure — which is
+  exactly the finding this rule closes. An entry that sets neither uses the
+  documented host defaults on both sides
+  (`~/.config/evener/hub.toml`-class resolution and `127.0.0.1:9180`), and the
+  manager then refuses a restart it cannot match to the configured address (§5)
+  rather than restarting whatever holds the default port. **Implementation
+  status:** the shipped `hostreg` stores `ConfigPath` and `Addr` as independent
+  optional fields and `channelArgv` passes whichever is present; the paired
+  validation, and having the restart/health path consume the per-host `addr`
+  (today's `Options.HubAddr` is manager-wide), are requirements for the
+  implementing PR rather than present facts.
 - `BatchMode=yes` and a connect timeout make the channel strictly
   non-interactive, so a credential prompt fails fast instead of hanging; mirrors
   the spike invocation `spike/client/main.go`
@@ -230,11 +284,30 @@ remote hub or its daemons (design §2 lifecycle; docs/evener-hub.md:499-502); th
 manager transitions to `reconnecting` and re-runs `Ensure` on the same `dest`,
 which re-attaches as a client.
 
+`Close` is terminal in the strong sense: once it runs, a later or in-flight
+`Ensure` returns **`ErrManagerClosed`** rather than attaching a channel nothing
+would supervise (`Manager.Close` in `sshconn/manager.go`; the base context stays
+canceled and `publishChannel` refuses after close). Every attach attempt is
+**bounded**: a reconnect attempt and a deadline-less initial `Ensure` run under
+`attemptLimit()` (`4 × ConnectTimeout + initializeTimeout`, `manager.go`), so one
+remote command that never returns cannot hold a host's lock for good and stall
+every later reconnect and `Ensure` for that host. `Ensure` is serialized per host
+by a per-host mutex, and the mutex is non-reentrant — a caller inside `OnEvent`
+must not call it (see the locked-callback bullet below).
+
 The manager is **lazy and event-publishing, not a registry owner**:
 
 - `Ensure` is called on first use (the controller's per-host client accessor
   calls it), so a configured host with no traffic has no SSH channel and its
   source reports `Online() == false` (component 05's `SetHostOnline(Manager.Attached)`).
+- **Lifecycle events are emitted under the per-host lock, in order.** `OnEvent`
+  is called **synchronously with that host's lock held**, which is what orders a
+  `Detached` before any `Attached` that follows it for the same host (and keeps a
+  concurrent `Ensure`/supervisor from interleaving transitions). The callback is
+  therefore **non-reentrant**: it must record state, or hand the work to another
+  goroutine and call `Ensure` from there; calling `Ensure` from inside the
+  callback takes the same lock and deadlocks. Component 06's navigation poke
+  runs inside this callback and must stay non-blocking for the same reason.
 - Lifecycle events (`EventState`, `EventAttached`, `EventDetached`,
   `EventFailed`, delivered through `Options.OnEvent`) report *connection state*
   only. They drive `Online()` and navigation invalidation. **No consumer adds or
@@ -277,12 +350,22 @@ The manager is **lazy and event-publishing, not a registry owner**:
      while the on-disk binary preflighted clean: restart the hub once and
      re-attach (§5). Only a mismatch that survives that restart is terminal
      `ErrProtocolIncompatible`.
-- Keepalive: `StreamTransport` does not implement `Pinger`
-  (`appwire/stream_transport.go`), so the client keepalive loop skips it.
-  Liveness therefore comes from (a) the ssh child/NIC failing, (b) `Recv`
-  returning `io.EOF`/error, and (c) an `ssh`-level keepalive. The manager sets
-  `ServerAliveInterval`/`ServerAliveCountMax` on the ssh argv and treats child
-  exit or a stalled `Recv` as link-down.
+- Keepalive **and a receive-inactivity deadline**: `StreamTransport` does not
+  implement `Pinger` (`appwire/stream_transport.go`), so the client keepalive
+  loop skips it, and the ssh `ServerAliveInterval`/`ServerAliveCountMax` on the
+  argv prove only that the *ssh server* is alive — not that the remote hub is
+  still answering AppWire. A `Recv` blocked on a half-open channel is therefore
+  indistinguishable from a healthy idle connection, and without a bound the
+  supervisor never observes link-down. Rule: the manager must bound receive
+  inactivity, either by making `StreamTransport` implement `appwire.Pinger` (so
+  the client's existing keepalive sends an application-level ping and a missed
+  pong is decisive) or with a watchdog that closes the transport and reports
+  link-down after a defined receive-inactivity deadline measured from the last
+  frame. Today's `linkMonitor`/`Channel.markLost` (`sshconn/manager.go`) fires
+  only on a read error, so this deadline is a requirement for the implementing
+  PR, not a present fact. Liveness otherwise comes from (a) the ssh child/NIC
+  failing, (b) `Recv` returning `io.EOF`/error, (c) the ssh-level keepalive, and
+  (d) that deadline; child exit or a stalled `Recv` is link-down.
 - Reconnect: on link-down, transition to `reconnecting`, close the old stream,
   and retry `Ensure` with bounded exponential backoff and jitter. Re-attach is a
   fresh bridge/client against the still-running hub; it never starts a second hub
@@ -351,17 +434,18 @@ Run over non-interactive SSH (no login shell, no TTY):
   `~/.config/evener` and `~/.local/state/evener` (`envProbeScript`).
 - **Address / config path (not probed — corrected contract).** The bridge reads
   the host hub's `addr` and the token's state root from the config path it is
-  given (component 02). So the two sides must agree on that path and on the
-  address, and today nothing carries them: `Options.HubAddr` (default
-  `127.0.0.1:9180`) is manager-wide, and the channel argv names no `--config`.
-  Consequently a host hub started with `--config /etc/evener/hub.toml` or a
-  non-default `addr` attaches to whatever the default resolution finds, and a
-  restart/health probe targets the wrong port. The corrected contract is
-  component 03's per-host `config_path`/`addr` (component 03, §"`config_path` /
-  `addr`"), passed to the bridge as `--config`/`--addr` and used for the
-  restart/health path; absent those fields, both sides use the defaults and a
-  restart the manager cannot match to the configured address is refused
-  (§5) rather than guessed.
+  given (component 02), so the two sides must agree on both. The shipped argv
+  carries them (`hub attach --stdio [--config <config_path>] [--addr <addr>]`,
+  `--config` first), but the restart/health path still falls back to the
+  manager-wide `Options.HubAddr` (default `127.0.0.1:9180`) rather than the
+  per-host `addr`. Component 03's `config_path`/`addr` are **coupled** (set both
+  or neither; component 03, §"`config_path` / `addr`"); this component passes
+  them to the bridge and must use the per-host `addr` for the restart/health
+  probe in place of the manager-wide default. Absent the pair, both sides use
+  the documented defaults and a restart the manager cannot match to the
+  configured address is refused (§5) rather than guessed. **Implementation
+  status:** the per-host `addr` on the restart/health path is a requirement for
+  the implementing PR, not a present fact.
   `hub.lock` lives at `<hub_state_root>/hub.lock` (`cmd/evener-hub/main.go`)
   and names no address or PID — it cannot be used to find the listener.
 - **Target support.** Only `linux/amd64` and `darwin/arm64` ship
@@ -421,10 +505,27 @@ Two paths, chosen per host (open question: which wins when both are viable):
   `checksums.txt` (`install.sh:88-130`) and refuses an unverified archive; it
   requires host network access, which the push path does not.
 
+- **Push target resolution (shipped).** A push must install to the absolute path
+  of the executable the host will *run*, or version auto-match deploys the new
+  build next to the old one and then attaches to the old one. `deployTarget`
+  (`deploy.go`) therefore:
+  1. when `evener_path` is set, requires its directory to exist on the host
+     (`test -d`) and uses the path;
+  2. when `evener_path` is empty, resolves the target with the host's own
+     `command -v evener` — never by writing a file literally named `evener` into
+     the remote working directory, which is neither the `PATH`-selected
+     executable nor a stable location;
+  3. resolves a symlink target with `readlink -f` (`resolveDeployTarget`), so the
+     atomic `mv` replaces the real file a `make install` symlink points at
+     rather than clobbering the link and breaking the installed layout.
+  A `command -v` miss or a path that does not resolve to a real file is
+  `ErrDeploy` with no write.
+
 Both paths must preserve the original file (`install` replaces atomically;
-`scp` to a temp name + `mv` into place) so an interrupted deploy never leaves a
-truncated `evener` on the host. Record the binary's source (`git SHA`) so the
-version-match can verify the deploy landed.
+the push writes a temp name and `mv`s it into place — `pushBinary` in
+`deploy.go`) so an interrupted deploy never leaves a truncated `evener` on the
+host. Record the binary's source (`git SHA`) so the version-match can verify the
+deploy landed.
 
 ### 5. Version auto-match + restart — `version.go`
 
@@ -447,11 +548,23 @@ version-match can verify the deploy landed.
   plus `started_at` (`cmd/evener-hub/web_api.go`; `hubapi.HealthResponse` in
   `hubapi/types.go`, fields `Version`, `StartedAt`, `BackendGitSha`).
   Post-restart verification therefore requires **all three**: an answer, a
-  `started_at` later than the restart, and `version`/`backend_git_sha` matching
-  the deployed build (`buildinfo.Version()` / `buildinfo.GitSHA` in the
-  controller process). A bare 200 — or any non-empty body — is not sufficient;
-  that is the same check the hub's own self-update path relies on
-  (`cmd/evener-hub/web_api.go`).
+  `started_at` **later than a host-side timestamp captured before the restart**,
+  and `version`/`backend_git_sha` matching the deployed build
+  (`buildinfo.Version()` / `buildinfo.GitSHA` in the controller process). A bare
+  200 — or any non-empty body — is not sufficient; that is the same check the
+  hub's own self-update path relies on (`cmd/evener-hub/web_api.go`).
+
+  **Compare against the host's clock, not the controller's.** `started_at` is
+  stamped by the *host* process, so comparing it to the controller's
+  `time.Now()` makes the check depend on host↔controller clock skew: a host
+  whose clock runs behind rejects a good restart (`started_at` looks earlier than
+  a controller-side "restart timestamp") and one running ahead accepts the stale
+  old process. The restart path must therefore capture a host-side timestamp
+  **after the deploy and immediately before the stop** — one more `Runner.Run` on
+  the host, e.g. `date +%s`, or a host-side marker such as the boot time — and
+  require `started_at` to be strictly later than that host-side value. Both
+  operands then come from the same clock, so no tolerance or skew allowance is
+  needed, and none should be invented.
 
   **The probe must run on the host.** A request to `127.0.0.1:<port>/api/health`
   from the controller's Go process reaches the *controller's* hub, not the
@@ -465,7 +578,8 @@ version-match can verify the deploy landed.
   ```
 
   and the response is decoded as `hubapi.HealthResponse` and checked against the
-  restart timestamp and the deployed identity. Consequences to state plainly:
+  host-side pre-restart timestamp and the deployed identity. Consequences to
+  state plainly:
 
   - the host must have a working HTTP client (`curl`); record it as a
     precondition. With no `curl`, the fallback is the AppWire identity read over
@@ -493,7 +607,14 @@ version-match can verify the deploy landed.
      `evener_path`/`evener` (or the unit's `ExecStart`) running the hub, not
      merely "something bound to that port";
   3. the process runs as the configured ssh `user`;
-  4. the listening socket matches the configured `addr` (host and port).
+  4. the listening socket matches the configured `addr` (host and port)
+     **after the same wildcard→loopback normalization the bridge applies**
+     (component 02, `loopbackAddr`): `0.0.0.0:<port>` and `:<port>` are compared
+     as `127.0.0.1:<port>`, and `::` as `::1:<port>`. Requiring the literal
+     wildcard spelling would refuse every wildcard-bound hub — the common case,
+     and the spike's m4 bound `*:9180` — stranding a host whose binary was
+     already replaced. The same normalization applies to the supervisor "owns the
+     configured address" check below.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
@@ -521,6 +642,13 @@ version-match can verify the deploy landed.
      clear**, then relaunch detached with the recovered argv, appending to the
      recovered log (`nohup <argv> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
+     Every host-derived word in these commands is shell-quoted (the pid, the
+     port, the log path), and the recovered argv is handed to `sh -c` as a single
+     quoted word because the remote shell must re-parse it as one command
+     (`relaunchCommand`, `sshconn/version.go`) — §"Quoting rule" above. `ps`
+     runs with `-o command=` so the `COMMAND` header can never become part of the
+     relaunched argv, with a header-stripping guard as the defensive half
+     (`stripPSHeader`).
   3. Either path then verifies on the host through `/api/health` (above) before
      re-attaching.
   A relaunch that lands in the stop/start gap loses the lock race (the ops
@@ -571,6 +699,15 @@ with the remote hub and its daemons still running.
 - **Non-interactive auth failure** (`BatchMode` refuses a password prompt) →
   terminal, named error telling the operator to install a key/agent on the host;
   never retried in a loop that would spam ssh.
+- **Failure diagnosis keeps ssh's stderr separate from the remote program's
+  output.** A failed one-shot `Runner.Run` reports a `*RunError` whose `Stdout`
+  and `Stderr` are distinct (`sshconn/runner.go`), and authentication is
+  classified **only** from ssh's own stderr (`isAuthFailure` on the started
+  child's diagnostic sink; `*RunError.Stderr` on a one-shot call). A remote
+  program that prints "Permission denied" on stdout or stderr for its own
+  reasons must not be read as an auth refusal, because `ErrSSHAuth` is terminal
+  and would stop the reconnect loop for a host that is merely returning an
+  application error.
 - **Protocol mismatch** (`launch-check --protocol` refusal at `spawn.go`, or
   `appwire.ProtocolVersionMismatchError` at `client.go`) → **the auto-match
   trigger, not a terminal state**. A `launch-check` refusal means the on-disk
@@ -659,16 +796,34 @@ with the remote hub and its daemons still running.
   accepted; no answer within the bound, or a missing HTTP client → `ErrRestart`,
   never an assumed success. Assert the probe argv is the on-host
   `curl -fsS localhost:<port>/api/health` over `ssh`, not a controller-side HTTP
-  call.
+  call. The comparison is against the **host-side** pre-restart timestamp the
+  restart path captured, not the controller's clock: a body whose `started_at`
+  precedes that host-side value is rejected even when the reading controller's
+  clock would have accepted it, and a body whose `started_at` follows it is
+  accepted even when the controller's clock is skewed backwards.
 - **Channel argv tests.** Assert `ssh -o BatchMode=yes -o ConnectTimeout=…,
-  ServerAliveInterval=…, ServerAliveCountMax=… <dest> <evener_path> hub attach
+  ServerAliveInterval=…, ServerAliveCountMax=… -- <dest> <evener_path> hub attach
   --stdio`; assert stderr is wired to the diagnostic sink and stdout is not
   touched outside `StreamTransport`. With a per-host `config_path`/`addr` set,
-  assert `--config`/`--addr` appear in that order and that the restart/health
-  path uses the same address.
+  assert `--config`/`--addr` appear in that order (each value shell-quoted) and
+  that the restart/health path uses the same address. Assert `--` precedes the
+  destination so a `dest` beginning with `-` is never read as an ssh option.
+- **Quoting tests (`quote_test.go` + argv tables).** `shellQuote` leaves an
+  all-safe word bare and single-quotes anything else, closing and escaping an
+  embedded `'`; `~` stays bare so `~/bin/evener` still expands. Round-trip the
+  argv through a shell check that an `evener_path`, `config_path`, and `addr`
+  containing a **space** and one containing `;` (and a host-derived log path
+  containing a quote) each arrive as exactly one word rather than splitting or
+  executing. Assert the probe commands (`uname`, `printenv`, `launchctl list`,
+  `systemctl list-units`) are passed unquoted and verbatim, so the deliberate
+  exception cannot be "fixed" away.
 - **Reconnect test.** Fake link drops (`io.EOF` / child exit) → assert backoff
   schedule, a fresh `Start`, and that no `hub` start was issued (re-attach, not
   a second hub).
+- **Receive-inactivity test.** A fake stream that stays open but emits no frame
+  for the deadline → the manager closes the transport, reports link-down, and
+  enters `reconnecting`, rather than sitting in `attached`; a stream that keeps
+  sending frames (or answers an application-level ping) stays attached.
 - **Live, environment-gated.** One test guarded by `EVENER_SSH_E2E=1` *and* an
   explicit host (e.g. `EVENER_SSH_E2E_HOST`) against a disposable host: preflight,
   deploy-if-needed, attach, `initialize`, `thread/list` — the spike's proven
@@ -695,7 +850,10 @@ with the remote hub and its daemons still running.
    `version`/`backend_git_sha` matching the deployed build — and a health answer
    from the *old* process, or no answer at all, is not accepted.
 4. The SSH channel argv is exactly the non-interactive form in "Contract",
-   stdin/stdout are the `StreamTransport` and stderr is diagnostics only.
+   with `--` before the destination and every remote word shell-quoted;
+   stdin/stdout are the `StreamTransport` and stderr is diagnostics only. A
+   `evener_path`/`config_path`/`addr` containing a space or `;` reaches the
+   remote shell as one word and executes nothing.
 5. A link drop leaves the remote hub and its daemons running and re-attaches as
    a client; `Start` is re-issued but no hub-start command is issued.
 6. A host on an unsupported os/arch fails with a named error and no deploy.
@@ -711,6 +869,18 @@ with the remote hub and its daemons still running.
 10. Lifecycle events never change registry membership: with `OnEvent` wired to a
     counter, attach/detach transitions change `Attached` and emit events, and
     `appsource.Registry.All()` is untouched.
+11. A blocked `Recv` on a half-open channel is bounded: after the
+    receive-inactivity deadline the manager closes the transport and enters
+    `reconnecting` instead of reporting a healthy idle attachment.
+12. The restart verification compares `started_at` against the host-side
+    timestamp captured before the restart, not the controller's clock, so a
+    skewed host clock neither accepts a stale process nor rejects a fresh one.
+13. A wildcard-bound hub (`0.0.0.0:<port>` / `::`) is restart-eligible:
+    identification normalizes the configured `addr` to loopback exactly as the
+    bridge does, rather than requiring the literal wildcard.
+14. A `[[hosts]]` entry that sets exactly one of `config_path`/`addr` fails
+    validation; a push deploy with an empty `evener_path` resolves the target
+    with `command -v evener` + `readlink -f` and replaces that file atomically.
 
 ## PR size estimate (LOC)
 
@@ -746,15 +916,16 @@ from the component-03 registry.
   the host, so a host without those tools (or a hub the controller cannot match
   to the configured address) is restart-refused rather than restarted wrong —
   which is the intended trade.
-- **Per-host config path and address (corrected contract, new component-03
-  fields).** `hostreg.Host` today has `Name`, `SSH`, `User`, `EvenerPath`,
-  `Roots` only, and `Options.HubAddr` is manager-wide; that cannot express a hub
-  started with `--config <path>` or a non-default port. Component 03 adds
-  `config_path` and `addr` to the entry; this component passes them to the
-  bridge and uses `addr` for restart/health. Remaining choice for review: the
-  field names and whether an omitted `addr` means "use the config's own `addr`
-  by having the bridge report it" (an extra round trip) or "assume the
-  documented default and refuse restart otherwise" (today's safer choice).
+- **Per-host config path and address (corrected contract, coupled fields).**
+  `hostreg.Host` carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and
+  `channelArgv` passes whichever is present, but `Options.HubAddr` is still
+  manager-wide and the restart/health path does not yet read the per-host
+  `addr`. The contract (component 03, §"`config_path` / `addr`") is that the two
+  fields are set together and that the restart/health path uses the per-host
+  `addr`; the remaining implementation choice is how an omitted pair resolves —
+  "use the config's own `addr` by having the bridge report it" (an extra round
+  trip) or "assume the documented default and refuse restart otherwise"
+  (today's safer choice, kept for v1).
 - **Restart deferral policy** (design §6). Version auto-match restart drops live
   browser/controller connections. Decide whether to defer while clients are
   attached, refuse, or restart immediately and let the manager reconnect. The
@@ -772,10 +943,16 @@ from the component-03 registry.
   ad hoc hub relaunches with `nohup <argv> >> <log> 2>&1 </dev/null &`,
   preserving the recovered log (ops doc §"Restarting an ad hoc Hub").
   A first-class systemd/launchd unit for hosts that have none is still open.
-- **Keepalive ownership.** Whether to rely on `ssh -o ServerAliveInterval`
-  alone or add an AppWire-level ping (which would require `StreamTransport` to
-  implement `Pinger`, explicitly deferred in
-  `appwire/stream_transport.go`).
-- **`evener_path` empty semantics.** Component 03 leaves it opaque; here it must
-  mean "resolve `evener` on the remote `PATH`", and a deploy to a non-empty
-  `evener_path` may need the directory to exist (or fail with a clear error).
+- **Keepalive ownership (settled as a requirement).** `ssh -o
+  ServerAliveInterval` alone is insufficient: it proves only the ssh server is
+  alive, so a blocked `Recv` on a half-open channel looks healthy. The manager
+  must bound receive inactivity, either with an AppWire-level ping
+  (`StreamTransport` implementing `Pinger`, currently deferred in
+  `appwire/stream_transport.go`) or a receive-inactivity watchdog (§"Channel +
+  reconnect"). Which of the two is an implementation choice; that one lands is
+  the contract.
+- **`evener_path` empty semantics (resolved).** Empty means "resolve `evener` on
+  the remote `PATH`" for the invocation; the push deploy resolves the absolute
+  install target with `command -v evener` + `readlink -f` (`sshconn/deploy.go`,
+  §4) so it never writes a literal `evener` file. A configured `evener_path`
+  requires its directory to exist on the host and fails `ErrDeploy` otherwise.

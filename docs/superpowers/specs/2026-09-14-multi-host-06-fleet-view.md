@@ -93,11 +93,16 @@ Rules this component must satisfy:
   down host's rows are not presented as live.
 - `Label` is bounded by `maxNavigationLabelRunes` (`navigation_schema.go`);
   host labels are short, so truncation is a safety net, not a design point.
-- The manifest `sources` array is capped at 64 and each element must have
-  exactly `{id,label,kind,online}` (`navigation_schema.go`); the
-  frontend mirror enforces the same (`stores/navigation/codec.ts`,
-  `stores/navigation/store.ts`). Do not add fields without changing
-  both validators.
+- The manifest `sources` array is capped at **64 entries including `local`**
+  (`navigation_projection.go`: `len(inputs.Sources) > 64` is an error), and each
+  element must have exactly `{id,label,kind,online}` (`navigation_schema.go`).
+  With one source per configured host plus the local entry, that is at most
+  **63 remote hosts**, so component 03's `validateHostConfigs` rejects a larger
+  `[[hosts]]` list (`ErrTooManyHosts`) rather than letting one over-limit config
+  fail navigation for the entire hub (component 03, §"Host configuration").
+  The frontend mirror enforces the same element shape
+  (`stores/navigation/codec.ts`, `stores/navigation/store.ts`). Do not add fields
+  without changing both validators.
 
 ### Row contract
 
@@ -183,6 +188,22 @@ only `local`, so the fan-out currently degenerates to one source.
    (the `"local"` entry and the `"appwire"` entry) with the source's online
    state (local always true; remote from the new interface). This is the one
    hardcoded/local-only source list the design calls out.
+2b. **Invalidate navigation on attach/detach.** `apiTreeSources` reads `Online`
+    from the source per request, so the *value* is truthful on the next read —
+    but `NavigationManifest.Sources` is served from the navigation snapshot, so
+    without an invalidation the flipped flag is invisible until the 30s
+    background refresh, and the fleet view reports a down host as online (or
+    vice versa) for up to half a minute. Wire
+    `sshconn.Options.OnEvent` in `cmd/evener-hub/main.go` so `EventAttached` and
+    `EventDetached` invalidate navigation through the same
+    `pokeAttention`/`navigation.Invalidate` path the roster/past changes use.
+    The callback runs **synchronously under component 04's per-host lock and is
+    non-reentrant** (component 04, §"Channel lifecycle states"): it must only record
+    state or poke, and must never call `sshManager.Ensure` — that takes the same
+    lock and deadlocks. **Implementation status:** 06a wires no `OnEvent`, so
+    today the flag flips only on the next tick; this poke is the implementing
+    PR's requirement. The poke must be non-blocking (the existing buffered
+    channel send), because the lock is held.
 3. **Dormant marking for offline-host rows**: `NavigationSessionSummary.Dormant`
    is projected from `node.Dormant` (`navigation_projection.go`), and
    `Dormant` is set for local past sessions in `hubcore/tree.go`.
@@ -328,6 +349,13 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     `resolveTurnStartSource` (`app_rpc_test.go`).
   - Manifest schema: sources array still validates under
     `navigationManifestValuesValid` (`navigation_schema.go`).
+  - Navigation invalidation on connectivity: a stub source whose `Online()`
+    flips, driven by an `EventAttached`/`EventDetached` through the wired
+    `OnEvent`, makes the next manifest read reflect the new flag **before** any
+    background refresh tick. The callback does not re-enter `Ensure`.
+  - Source cap: a manifest built from 63 hosts + `local` validates; 64 hosts +
+    `local` (65 entries) is the over-limit case component 03's
+    `ErrTooManyHosts` prevents from being configured.
 - **Frontend unit**: spawn form shows a host picker with local preselected and
   offline hosts disabled; picking a host sends the source field in the
   `thread/start` request (extend `panes/spawn` tests and
@@ -356,6 +384,13 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    carries the host as its source.
 5. `Source`/`NavigationSessionSummary` schema validation (Go and frontend)
    passes unchanged in shape, and `make test` is green.
+6. Attaching or dropping a host flips that host's manifest `Online` flag on the
+   next manifest read, without waiting for the 30s background refresh; the
+   invalidation is driven by the `EventAttached`/`EventDetached` poke and the
+   callback never calls `Ensure`.
+7. At most 63 remote hosts can be configured: a 64th is refused at config load
+   (`ErrTooManyHosts`), so the manifest's 64-source cap (including `local`) can
+   never be exceeded by configuration.
 
 ## PR size estimate (LOC)
 
@@ -401,8 +436,10 @@ This is larger than a single tight PR if done at once. A natural split:
   `hubcore.WebConfig.RemoteHostOnline`), not the capability probe: a host whose
   probe is stale but whose channel is live is online. This spec only requires
   that `apiTreeSources` can read a boolean and that a transition invalidates
-  navigation (`main.go` already does this on cache changes; a
-  connection-state change must also poke).
+  navigation: `main.go` already does this on cache changes, and the required
+  `EventAttached`/`EventDetached` poke (§Go changes item 2b) does it on a
+  connection-state change, so the manifest flips without waiting for the 30s
+  refresh.
 - **Dormant vs `Live` for offline rows**: confirm no path sets `Live:true` for
   an offline host's stale rows (`navigation_projection.go`
   compute `Live` from the live input set). If stale remote rows are pushed into
