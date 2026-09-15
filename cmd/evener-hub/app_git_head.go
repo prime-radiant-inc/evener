@@ -63,9 +63,11 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 //
 // A scheme-less, scp-like remote (git@host:owner/repo.git) is returned
 // unchanged: its leading `user@` is part of the address rather than a
-// credential, and the frontend's parser needs it. Anything with a scheme that
-// fails to parse yields "" - a URL this function cannot inspect is one it
-// cannot promise is credential-free.
+// credential, and the frontend's parser needs it. Anything else yields "" - a
+// URL this function cannot inspect is one it cannot promise is credential-free,
+// and a local path is a remote the frontend cannot turn into a link anyway.
+// The net contract is an allowlist: only an authority-bearing URL (sanitized)
+// or an scp-like remote leaves here.
 func sanitizeGitRemote(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
@@ -79,9 +81,16 @@ func sanitizeGitRemote(raw string) string {
 		}
 		// A query or fragment is not part of a git remote address, and a
 		// `?token=...` there would otherwise cross AppWire untouched: the
-		// scheme-less branch cannot rely on url.Parse to drop it.
+		// scheme-less branch cannot rely on url.Parse to drop it. Cutting first
+		// also keeps the shape check below honest: `git@host:?token=...` must be
+		// judged on the pathless remainder it actually is.
 		if cut := strings.IndexAny(trimmed, "?#"); cut >= 0 {
 			trimmed = trimmed[:cut]
+		}
+		// Local paths and bare hostnames are not remotes the frontend can link;
+		// putting them on the wire buys nothing.
+		if !looksLikeScpRemote(trimmed) {
+			return ""
 		}
 		return trimmed
 	}
@@ -102,6 +111,32 @@ func sanitizeGitRemote(raw string) string {
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
 	return parsed.String()
+}
+
+// looksLikeScpRemote reports whether value is git's scheme-less scp-like remote
+// syntax, `user@host:owner/repo.git`. It mirrors the frontend parser's own
+// SCP_LIKE pattern and its owner/repository requirement - a user with no path
+// separator or whitespace, a host with no separator, and at least two path
+// segments - so the hub never emits a shape the browser cannot turn into a
+// link, and never mistakes a local path for a remote.
+func looksLikeScpRemote(value string) bool {
+	const separatorOrSpace = "/ \t\n\v\f\r"
+	user, rest, found := strings.Cut(value, "@")
+	if !found || user == "" || strings.ContainsAny(user, separatorOrSpace) {
+		return false
+	}
+	host, path, found := strings.Cut(rest, ":")
+	if !found || host == "" || strings.ContainsAny(host, separatorOrSpace) {
+		return false
+	}
+	// A repo page needs an owner and a repository; `host:repo.git` is not one.
+	segments := 0
+	for segment := range strings.SplitSeq(path, "/") {
+		if segment != "" {
+			segments++
+		}
+	}
+	return segments >= 2
 }
 
 // hasOpaqueScheme reports whether value starts with a URL scheme (RFC 3986:
