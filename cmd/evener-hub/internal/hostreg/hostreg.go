@@ -47,10 +47,16 @@ var (
 // Host is one validated remote-host entry. It mirrors the hub's HostConfig
 // fields; Name is the source ID surfaced in refs and URLs.
 type Host struct {
-	Name       string
-	SSH        string
-	User       string
+	Name string
+	SSH  string
+	User string
+	// EvenerPath, ConfigPath, and Addr carry the host's non-default locations:
+	// the binary, its hub.toml, and the hub's listen address. Consumers need
+	// them to attach with the host's own configuration rather than a default
+	// that would address the wrong process.
 	EvenerPath string
+	ConfigPath string
+	Addr       string
 	Roots      []string
 }
 
@@ -90,6 +96,8 @@ func Normalize(entry Host) Host {
 	entry.SSH = strings.TrimSpace(entry.SSH)
 	entry.User = strings.TrimSpace(entry.User)
 	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
+	entry.ConfigPath = strings.TrimSpace(entry.ConfigPath)
+	entry.Addr = strings.TrimSpace(entry.Addr)
 	entry.Roots = slices.Clone(entry.Roots)
 	for i, root := range entry.Roots {
 		entry.Roots[i] = strings.TrimSpace(root)

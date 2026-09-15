@@ -29,14 +29,16 @@ func TestLoadConfig_Hosts(t *testing.T) {
 		},
 		{
 			name: "one valid host decodes every field",
-			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nuser = \"jesse\"\nevener_path = \"/usr/local/bin/evener\"\nroots = [\"/Users/jesse/src\"]\n",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nuser = \"jesse\"\nevener_path = \"/usr/local/bin/evener\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9280\"\nroots = [\"/Users/jesse/src\"]\n",
 			check: func(t *testing.T, cfg Config) {
 				if len(cfg.Hosts) != 1 {
 					t.Fatalf("Hosts = %+v, want 1", cfg.Hosts)
 				}
 				got := cfg.Hosts[0]
 				if got.Name != "m4" || got.SSH != "m4.local" || got.User != "jesse" ||
-					got.EvenerPath != "/usr/local/bin/evener" || len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
+					got.EvenerPath != "/usr/local/bin/evener" ||
+					got.ConfigPath != "/etc/evener/hub.toml" || got.Addr != "127.0.0.1:9280" ||
+					len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
 					t.Fatalf("host mismatch: %+v", got)
 				}
 			},
@@ -46,14 +48,16 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			// trimmed ones: otherwise a padded ssh passes validation and then
 			// reaches consumers in a form they cannot resolve.
 			name: "padded values come back normalized",
-			toml: "[[hosts]]\nname = \"m4\"\nssh = \"  m4.local  \"\nuser = \"  jesse  \"\nevener_path = \"  /usr/local/bin/evener  \"\nroots = [\"  /Users/jesse/src  \"]\n",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"  m4.local  \"\nuser = \"  jesse  \"\nevener_path = \"  /usr/local/bin/evener  \"\nconfig_path = \"  /etc/evener/hub.toml  \"\naddr = \"  127.0.0.1:9280  \"\nroots = [\"  /Users/jesse/src  \"]\n",
 			check: func(t *testing.T, cfg Config) {
 				if len(cfg.Hosts) != 1 {
 					t.Fatalf("Hosts = %+v, want 1", cfg.Hosts)
 				}
 				got := cfg.Hosts[0]
 				if got.SSH != "m4.local" || got.User != "jesse" ||
-					got.EvenerPath != "/usr/local/bin/evener" || len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
+					got.EvenerPath != "/usr/local/bin/evener" ||
+					got.ConfigPath != "/etc/evener/hub.toml" || got.Addr != "127.0.0.1:9280" ||
+					len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
 					t.Fatalf("LoadConfig returned an unnormalized host: %+v", got)
 				}
 			},

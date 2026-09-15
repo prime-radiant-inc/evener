@@ -30,11 +30,19 @@ type ProviderConfig struct {
 // destination passed to ssh (component 04), and User overrides its user.
 // EvenerPath and Roots are advisory inputs to components 04/05.
 type HostConfig struct {
-	Name       string   `toml:"name"`
-	SSH        string   `toml:"ssh"`
-	User       string   `toml:"user"`
-	EvenerPath string   `toml:"evener_path"`
-	Roots      []string `toml:"roots"`
+	Name string `toml:"name"`
+	SSH  string `toml:"ssh"`
+	User string `toml:"user"`
+	// EvenerPath is the host binary's absolute path, when it is not on PATH.
+	EvenerPath string `toml:"evener_path"`
+	// ConfigPath is the host hub's hub.toml, when it is not at the default
+	// location, so the bridge attaches with the host's own configuration.
+	ConfigPath string `toml:"config_path"`
+	// Addr is the host hub's listen address, when it is not the default. The
+	// manager needs it to restart the hub and to health-check it after a deploy,
+	// where a wrong default would probe or kill the wrong listener.
+	Addr  string   `toml:"addr"`
+	Roots []string `toml:"roots"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -174,11 +182,15 @@ func validateHostConfigs(hosts []HostConfig) error {
 			SSH:        h.SSH,
 			User:       h.User,
 			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
 			Roots:      h.Roots,
 		})
 		hosts[i].SSH = entry.SSH
 		hosts[i].User = entry.User
 		hosts[i].EvenerPath = entry.EvenerPath
+		hosts[i].ConfigPath = entry.ConfigPath
+		hosts[i].Addr = entry.Addr
 		hosts[i].Roots = entry.Roots
 		entries = append(entries, entry)
 	}
