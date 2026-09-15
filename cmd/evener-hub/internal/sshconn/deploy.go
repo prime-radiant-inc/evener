@@ -35,11 +35,15 @@ func localBuild(ctx context.Context, goos, goarch, out string) error {
 		"GOOS="+goos,
 		"GOARCH="+goarch,
 	)
-	// Build the controller's own tree even when the hub was not started from
-	// its module root.
-	if root := moduleRoot(); root != "" {
-		cmd.Dir = root
+	// Build the controller's own tree even when the hub was not started from its
+	// module root. Without a resolvable evener module there is nothing correct to
+	// build: `go build ./cmd/evener/` from an unrelated directory builds the
+	// wrong tree or fails obscurely, so report the missing source instead.
+	root := moduleRoot()
+	if root == "" {
+		return fmt.Errorf("go build %s/%s: cannot locate the evener module root (no go.mod declaring %q at or above the working directory); run the hub from its checkout", goos, goarch, modulePath)
 	}
+	cmd.Dir = root
 	outBytes, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("go build %s/%s: %w: %s", goos, goarch, err, tail(outBytes))
@@ -63,16 +67,28 @@ func buildLdflags() string {
 	}, " ")
 }
 
-// moduleRoot walks up from the working directory looking for go.mod so
-// `go build ./cmd/evener/` resolves the controller's own tree regardless of the
-// launch directory.
+// modulePath is this module's path, used to tell the evener checkout apart from
+// any other workspace module the hub might be launched inside.
+const modulePath = "primeradiant.com/evener"
+
+// moduleRoot walks up from the working directory looking for the evener module
+// so `go build ./cmd/evener/` resolves the controller's own tree regardless of
+// the launch directory.
 func moduleRoot() string {
-	dir, err := os.Getwd()
+	wd, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
+	return moduleRootFrom(wd)
+}
+
+// moduleRootFrom walks up from dir looking for a go.mod that declares this
+// module. A go.mod for a different module is not this tree: an installed hub
+// launched inside another workspace module must not build that module's
+// ./cmd/evener/.
+func moduleRootFrom(dir string) string {
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		if declaresEvenerModule(dir) {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -81,6 +97,21 @@ func moduleRoot() string {
 		}
 		dir = parent
 	}
+}
+
+// declaresEvenerModule reports whether dir holds a go.mod for this module.
+func declaresEvenerModule(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "module" && fields[1] == modulePath {
+			return true
+		}
+	}
+	return false
 }
 
 // deploy cross-compiles this tree for the host target and atomically installs
@@ -126,7 +157,7 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 		if err != nil {
 			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
-		return p, nil
+		return m.resolveDeployTarget(ctx, host, p)
 	}
 
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
@@ -137,7 +168,26 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 	if p == "" {
 		return "", fmt.Errorf("%w: host %q evener not found on PATH", ErrDeploy, host.Name)
 	}
-	return p, nil
+	return m.resolveDeployTarget(ctx, host, p)
+}
+
+// resolveDeployTarget resolves p to the real file it names, so the atomic mv
+// replaces the installed executable rather than clobbering a symlink. `make
+// install` commonly installs evener as a symlink and `command -v evener` returns
+// that symlink; mv-ing onto it would replace the link and break the installed
+// layout (and later upgrades). readlink -f prints nothing for a path that does
+// not exist, which is a clear error rather than a silent fallback to the
+// symlink.
+func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p string) (string, error) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "readlink -f "+shellQuote(p)), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve install path %q: %w: %s", ErrDeploy, host.Name, p, err, tail(out))
+	}
+	real := firstLine(string(out))
+	if real == "" {
+		return "", fmt.Errorf("%w: host %q install path %q does not resolve to a real file", ErrDeploy, host.Name, p)
+	}
+	return real, nil
 }
 
 // pushBinary streams data to target over an ssh `cat`, then chmod +x and mv it

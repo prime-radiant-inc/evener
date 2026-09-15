@@ -81,44 +81,60 @@ func (s supervisor) restartRemote() string {
 // detectSupervisorFrom classifies a host from raw supervisor listings. It is
 // pure so the table test needs no ssh: launchd for darwin, systemd (system,
 // then --user) for linux, otherwise a bare process.
-func detectSupervisorFrom(goos string, launchctlOut, systemdOut, systemdUserOut []byte) supervisor {
+//
+// More than one matching label or unit is an error rather than a silent pick of
+// the first: restarting the wrong evener service would leave the hub the
+// controller meant to replace untouched while reporting success.
+func detectSupervisorFrom(goos string, launchctlOut, systemdOut, systemdUserOut []byte) (supervisor, error) {
 	switch goos {
 	case "darwin":
-		if label, ok := parseLaunchdHub(launchctlOut); ok {
-			return supervisor{kind: supervisorLaunchd, label: label}
-		}
+		return pickSupervisor(supervisorLaunchd, "launchd", parseLaunchdHubs(launchctlOut))
 	case "linux":
-		if unit, ok := parseSystemdHub(systemdOut); ok {
-			return supervisor{kind: supervisorSystemd, label: unit}
+		if sup, err := pickSupervisor(supervisorSystemd, "systemd", parseSystemdHubs(systemdOut)); err != nil || sup.kind != supervisorNone {
+			return sup, err
 		}
-		if unit, ok := parseSystemdHub(systemdUserOut); ok {
-			return supervisor{kind: supervisorSystemdUser, label: unit}
-		}
+		return pickSupervisor(supervisorSystemdUser, "systemd --user", parseSystemdHubs(systemdUserOut))
+	default:
+		return supervisor{}, nil
 	}
-	return supervisor{}
 }
 
-// parseLaunchdHub finds a launchd job whose label names an evener hub.
+// pickSupervisor turns the matches from one listing into a supervisor: none is
+// the bare-process path, exactly one is the target, and several are an error.
+func pickSupervisor(kind supervisorKind, what string, matches []string) (supervisor, error) {
+	switch len(matches) {
+	case 0:
+		return supervisor{}, nil
+	case 1:
+		return supervisor{kind: kind, label: matches[0]}, nil
+	default:
+		return supervisor{}, fmt.Errorf("%w: %d %s evener hub units match (%s); configure the intended one instead of relying on an ambiguous match",
+			ErrRestart, len(matches), what, strings.Join(matches, ", "))
+	}
+}
+
+// parseLaunchdHubs finds launchd jobs whose labels name an evener hub.
 // `launchctl list` prints "PID Status Label" per line; a job with no running
 // pid shows "-". The doc's precedent is `launchctl list | grep evener-hub`.
-func parseLaunchdHub(out []byte) (string, bool) {
+func parseLaunchdHubs(out []byte) []string {
+	var labels []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 || fields[0] == "PID" {
 			continue
 		}
-		label := fields[len(fields)-1]
-		if isEvenerHubName(label) {
-			return label, true
+		if label := fields[len(fields)-1]; isEvenerHubName(label) {
+			labels = append(labels, label)
 		}
 	}
-	return "", false
+	return labels
 }
 
-// parseSystemdHub finds an evener hub unit in `systemctl list-units` output.
+// parseSystemdHubs finds evener hub units in `systemctl list-units` output.
 // Each line starts with the unit name, e.g. "evener-hub.service loaded active".
 // A leading status glyph (●) is stripped.
-func parseSystemdHub(out []byte) (string, bool) {
+func parseSystemdHubs(out []byte) []string {
+	var units []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "●"))
 		if len(fields) == 0 {
@@ -129,10 +145,10 @@ func parseSystemdHub(out []byte) (string, bool) {
 			continue
 		}
 		if isEvenerHubName(strings.TrimSuffix(unit, ".service")) {
-			return unit, true
+			units = append(units, unit)
 		}
 	}
-	return "", false
+	return units
 }
 
 // isEvenerHubName reports whether a label or unit base name names an evener hub.
@@ -143,8 +159,8 @@ func isEvenerHubName(name string) bool {
 
 // detectSupervisor runs the host's supervisor listings. A listing failure is
 // not fatal: it only means the listing tool is absent, so the hub falls through
-// to the bare-process path.
-func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) supervisor {
+// to the bare-process path. An ambiguous listing is fatal, not a fallback.
+func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisor, error) {
 	switch facts.OS {
 	case "darwin":
 		out, _ := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "launchctl list"), nil)
@@ -160,7 +176,7 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 		}
 		return detectSupervisorFrom("linux", nil, sysOut, userOut)
 	default:
-		return supervisor{}
+		return supervisor{}, nil
 	}
 }
 
@@ -171,7 +187,10 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 // relaunching.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight) error {
 	expected := m.opts.controllerVersion()
-	sup := m.detectSupervisor(ctx, host, facts)
+	sup, err := m.detectSupervisor(ctx, host, facts)
+	if err != nil {
+		return err
+	}
 	if sup.kind != supervisorNone {
 		remote := sup.restartRemote()
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
@@ -239,26 +258,70 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	return nil
 }
 
-// findHubPID returns the pid listening on the hub's port, using lsof because
-// pgrep -x evener also matches `evener serve` daemons.
-func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string) (string, error) {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -ti :"+port+" -sTCP:LISTEN"), nil)
+// noListenerMarker is printed by the port probe when lsof runs and finds no
+// listener. The raw exit status cannot carry that meaning over ssh: a missing
+// lsof, a transport failure, and lsof's own "no match" all reach the controller
+// as empty stdout plus a nonzero exit. The probe translates only lsof's no-match
+// exit into this marker with a zero exit, leaving every other failure to
+// surface as a Run error.
+const noListenerMarker = "__sshconn_no_listener__"
+
+// listenerProbeRemote builds the remote command that lists the PIDs listening on
+// port, printing noListenerMarker and exiting 0 when lsof finds none. lsof exits
+// 1 for "no matching files"; any other exit (lsof absent, a signal, ssh itself
+// failing) is propagated so the caller cannot read it as a free port.
+func listenerProbeRemote(port string) string {
+	q := shellQuote(":" + port)
+	return "lsof -ti " + q + " -sTCP:LISTEN; s=$?; if [ $s -eq 1 ]; then echo " + noListenerMarker + "; exit 0; fi; exit $s"
+}
+
+// hubListenerPIDs returns every PID listening on port. A probe that could not
+// run (a transport failure, a missing lsof) is an error, so the caller never
+// mistakes it for a free or held port.
+func (m *Manager) hubListenerPIDs(ctx context.Context, host hostreg.Host, port string) ([]string, error) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerProbeRemote(port)), nil)
 	if err != nil {
-		return "", fmt.Errorf("%w: host %q no hub listening on :%s to restart: %w: %s", ErrRestart, host.Name, port, err, tail(out))
+		return nil, fmt.Errorf("%w: host %q could not probe listeners on :%s: %w: %s", ErrRestart, host.Name, port, err, tail(out))
 	}
-	pid := firstLine(string(out))
-	if pid == "" {
+	var pids []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" && line != noListenerMarker {
+			pids = append(pids, line)
+		}
+	}
+	return pids, nil
+}
+
+// findHubPID returns the single pid listening on the hub's port, using lsof
+// because pgrep -x evener also matches `evener serve` daemons. hub.lock already
+// enforces one hub per host, so more than one listener is a real finding:
+// guessing would risk killing or restarting the wrong process.
+func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string) (string, error) {
+	pids, err := m.hubListenerPIDs(ctx, host, port)
+	if err != nil {
+		return "", err
+	}
+	switch len(pids) {
+	case 0:
 		return "", fmt.Errorf("%w: host %q no hub listening on :%s to restart", ErrRestart, host.Name, port)
+	case 1:
+		return pids[0], nil
+	default:
+		return "", fmt.Errorf("%w: host %q %d processes listen on :%s (%s); refusing to guess which one is the hub",
+			ErrRestart, host.Name, len(pids), port, strings.Join(pids, ", "))
 	}
-	return pid, nil
 }
 
 // waitPortClear blocks until nothing is listening on the hub port or the bound
-// is exhausted. lsof exits nonzero when it finds no listener, which is the
-// success condition here.
+// is exhausted. A probe that cannot run is surfaced immediately: treating it as
+// a cleared port would relaunch while the old hub still holds hub.lock.
 func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port string) error {
 	for range restartStopAttempts {
-		if m.portCleared(ctx, host, port) {
+		clear, err := m.portCleared(ctx, host, port)
+		if err != nil {
+			return err
+		}
+		if clear {
 			return nil
 		}
 		if err := m.opts.waitSleep(ctx, restartStopInterval); err != nil {
@@ -268,14 +331,15 @@ func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port str
 	return fmt.Errorf("%w: host %q hub port :%s still held after kill", ErrRestart, host.Name, port)
 }
 
-// portCleared reports whether the host has no listener on the hub port. lsof
-// exits nonzero when it finds none, so its error is this wait's success signal
-// rather than a failure to report; a held port is an empty listing with a nil
-// error. Keeping that judgement here (a boolean) rather than in a bare
-// `if err != nil { return nil }` is what keeps the intent legible.
-func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port string) bool {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -ti :"+port+" -sTCP:LISTEN"), nil)
-	return err != nil || strings.TrimSpace(string(out)) == ""
+// portCleared reports whether the host has no listener on the hub port. The
+// probe's result distinguishes a genuinely free port from a probe that could
+// not run, which the caller must not treat as cleared.
+func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port string) (bool, error) {
+	pids, err := m.hubListenerPIDs(ctx, host, port)
+	if err != nil {
+		return false, err
+	}
+	return len(pids) == 0, nil
 }
 
 // waitHealthy polls the host hub's /api/health until the response reports

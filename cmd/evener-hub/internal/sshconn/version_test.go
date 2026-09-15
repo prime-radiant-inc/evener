@@ -28,17 +28,25 @@ func TestDetectSupervisorTable(t *testing.T) {
 		goos    string
 		l, s, u []byte
 		want    supervisor
+		wantErr bool
 	}{
-		{"launchd present", "darwin", launchdYes, nil, nil, supervisor{supervisorLaunchd, "com.example.evener-hub"}},
-		{"launchd absent", "darwin", launchdNo, nil, nil, supervisor{}},
-		{"systemd present", "linux", nil, sysYes, nil, supervisor{supervisorSystemd, "evener-hub.service"}},
-		{"systemd-user present", "linux", nil, sysNo, userYes, supervisor{supervisorSystemdUser, "evener-hub.service"}},
-		{"bare", "linux", nil, sysNo, sysNo, supervisor{}},
-		{"unknown os", "windows", nil, sysYes, userYes, supervisor{}},
+		{"launchd present", "darwin", launchdYes, nil, nil, supervisor{supervisorLaunchd, "com.example.evener-hub"}, false},
+		{"launchd absent", "darwin", launchdNo, nil, nil, supervisor{}, false},
+		{"systemd present", "linux", nil, sysYes, nil, supervisor{supervisorSystemd, "evener-hub.service"}, false},
+		{"systemd-user present", "linux", nil, sysNo, userYes, supervisor{supervisorSystemdUser, "evener-hub.service"}, false},
+		{"bare", "linux", nil, sysNo, sysNo, supervisor{}, false},
+		{"unknown os", "windows", nil, sysYes, userYes, supervisor{}, false},
+		{"launchd ambiguous", "darwin", []byte("PID\tStatus\tLabel\n1\t0\tcom.example.evener-hub\n2\t0\tcom.other.evener-hub\n"), nil, nil, supervisor{}, true},
+		{"systemd ambiguous", "linux", nil, []byte("evener-hub.service loaded active running\nother-evener-hub.service loaded active running\n"), nil, supervisor{}, true},
+		{"systemd-user ambiguous", "linux", nil, sysNo, []byte("evener-hub.service loaded active running\nother-evener-hub.service loaded active running\n"), supervisor{}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := detectSupervisorFrom(tc.goos, tc.l, tc.s, tc.u); got != tc.want {
+			got, err := detectSupervisorFrom(tc.goos, tc.l, tc.s, tc.u)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("detectSupervisorFrom error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
 				t.Fatalf("detectSupervisorFrom = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -165,6 +173,8 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
+			case strings.Contains(joined, "readlink -f /opt/evener/bin/evener"):
+				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(joined, "list-units"):
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 			case strings.Contains(joined, "systemctl restart"):
@@ -272,7 +282,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 			if !killed {
 				return []byte("4242\n"), nil
 			}
-			return nil, errors.New("exit status 1") // no listener: port clear
+			return []byte(noListenerMarker + "\n"), nil // lsof found no listener
 		case strings.Contains(joined, "ps -p 4242 -ww -o command"):
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener\n"), nil
 		case strings.Contains(joined, "lsof -p 4242 -a -d 1,2"):
@@ -308,7 +318,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: func(_ context.Context, _ []string, _ io.Reader) ([]byte, error) {
-		return nil, errors.New("exit status 1")
+		return []byte(noListenerMarker + "\n"), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	if err := m.restartBare(context.Background(), host); !errors.Is(err, ErrRestart) {
@@ -334,7 +344,7 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 			if !killed {
 				return []byte("4242\n"), nil
 			}
-			return nil, errors.New("exit status 1")
+			return []byte(noListenerMarker + "\n"), nil
 		case strings.Contains(joined, "-ww -o "):
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
@@ -384,7 +394,7 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 			if !killed {
 				return []byte("4242\n"), nil
 			}
-			return nil, errors.New("exit status 1")
+			return []byte(noListenerMarker + "\n"), nil
 		case strings.Contains(joined, "-ww -o "):
 			return []byte("COMMAND\n" + clean + "\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
@@ -428,7 +438,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 			if !killed {
 				return []byte("4242\n"), nil
 			}
-			return nil, errors.New("exit status 1")
+			return []byte(noListenerMarker + "\n"), nil
 		case strings.Contains(joined, "-ww -o "):
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
@@ -465,6 +475,89 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 	}
 	if !strings.Contains(remote, ">>"+shellQuote(logPath)) {
 		t.Fatalf("relaunch does not quote the recovered log path: %q", remote)
+	}
+}
+
+// TestFindHubPIDRejectsMultipleListeners proves more than one listener on the
+// hub port is a loud failure, not a silent pick of the first pid: hub.lock
+// guarantees one hub, so an ambiguous listing means something is wrong.
+func TestFindHubPIDRejectsMultipleListeners(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		if strings.Contains(strings.Join(argv, " "), "lsof -ti") {
+			return []byte("4242\n4343\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	pid, err := m.findHubPID(context.Background(), host, port)
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for multiple listeners", err)
+	}
+	if pid != "" {
+		t.Fatalf("pid = %q, want empty on ambiguity", pid)
+	}
+	if !strings.Contains(err.Error(), "4242") || !strings.Contains(err.Error(), "4343") {
+		t.Fatalf("error does not name both PIDs: %v", err)
+	}
+}
+
+// TestWaitPortClearSurfacesProbeFailure proves a probe that could not run is
+// not read as "port cleared": a transport failure must fail the wait instead of
+// letting a relaunch race the old hub's lock.
+func TestWaitPortClearSurfacesProbeFailure(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		if strings.Contains(strings.Join(argv, " "), "lsof -ti") {
+			return []byte("ssh: connect to host alpha.example port 22: Connection refused\n"), errors.New("exit status 255")
+		}
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.waitPortClear(context.Background(), host, port); !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart (a transport failure is not a clear port)", err)
+	}
+	if got := len(fr.recordedRuns()); got != 1 {
+		t.Fatalf("Run calls = %d, want 1 (fail fast, no retry loop)", got)
+	}
+}
+
+// TestRestartHubRejectsAmbiguousSupervisor proves an ambiguous service listing
+// stops the restart before any service is touched, rather than restarting
+// whichever unit happened to be listed first.
+func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running\nother-evener-hub.service loaded active running\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for an ambiguous supervisor", err)
+	}
+	if !strings.Contains(err.Error(), "match") {
+		t.Fatalf("error does not explain the ambiguity: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+			t.Fatalf("ambiguous supervisor still issued a restart: %v", argv)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,6 +56,8 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 			switch {
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
+			case strings.Contains(joined, "readlink -f /opt/evener/bin/evener"):
+				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(joined, "cat >"):
 				pushArgv = append([]string(nil), argv...)
 				if stdin != nil {
@@ -133,6 +136,8 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/home/dev/.local/bin/evener\n"), nil
+		case strings.Contains(joined, "readlink -f"):
+			return []byte("/home/dev/.local/bin/evener\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushJoined = joined
 			if stdin != nil {
@@ -171,6 +176,8 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		case strings.Contains(joined, "test -d"):
 			testDirRemote = joined
 			return nil, nil
+		case strings.Contains(joined, "readlink -f"):
+			return []byte(target + "\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushRemote = joined
 			if stdin != nil {
@@ -197,5 +204,88 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	wantPush := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", tmp, tmp, tmp, shellQuote(target))
 	if !strings.Contains(pushRemote, wantPush) {
 		t.Fatalf("push does not quote the paths:\n got %q\nwant it to contain %q", pushRemote, wantPush)
+	}
+}
+
+// TestDeployResolvesSymlinkTarget proves the push replaces the executable a
+// symlink points at, not the symlink itself: `make install` installs evener as
+// a symlink and `command -v evener` returns that link, so mv-ing onto the link
+// would clobber the installed layout.
+func TestDeployResolvesSymlinkTarget(t *testing.T) {
+	const link = "/usr/local/bin/evener"
+	const real = "/opt/evener/1.2.3/evener"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: link}
+	var pushRemote string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /usr/local/bin"):
+			return nil, nil
+		case strings.Contains(joined, "readlink -f "+link):
+			return []byte(real + "\n"), nil
+		case strings.Contains(joined, "cat >"):
+			pushRemote = joined
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			return os.WriteFile(out, []byte("x"), 0o755)
+		},
+	})
+
+	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if !strings.Contains(pushRemote, "cat > "+real+".tmp") || !strings.Contains(pushRemote, "mv "+real+".tmp "+real) {
+		t.Fatalf("push does not install onto the symlink's real file %q: %q", real, pushRemote)
+	}
+	if strings.Contains(pushRemote, "mv "+real+".tmp "+link) {
+		t.Fatalf("push replaces the symlink %q instead of its target: %q", link, pushRemote)
+	}
+}
+
+// TestModuleRootFromRequiresEvenerModule proves the source-tree lookup only
+// accepts this module: an unrelated go.mod (an installed hub launched inside
+// another workspace module) must not be mistaken for the evener checkout.
+func TestModuleRootFromRequiresEvenerModule(t *testing.T) {
+	root := t.TempDir()
+	deep := filepath.Join(root, "sub", "deep")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := moduleRootFrom(deep); got != "" {
+		t.Fatalf("moduleRootFrom found %q with no go.mod", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/other\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := moduleRootFrom(deep); got != "" {
+		t.Fatalf("moduleRootFrom matched a different module at %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := moduleRootFrom(deep); got != root {
+		t.Fatalf("moduleRootFrom = %q, want %q", got, root)
+	}
+}
+
+// TestLocalBuildWithoutModuleRootFailsClearly proves an installed hub launched
+// outside the checkout reports a clear unavailable-source error instead of
+// running `go build ./cmd/evener/` against the wrong directory.
+func TestLocalBuildWithoutModuleRootFailsClearly(t *testing.T) {
+	t.Chdir(t.TempDir())
+	err := localBuild(context.Background(), "linux", "amd64", filepath.Join(t.TempDir(), "evener"))
+	if err == nil {
+		t.Fatal("localBuild succeeded with no evener module root")
+	}
+	if !strings.Contains(err.Error(), "evener module root") {
+		t.Fatalf("error does not explain the missing source tree: %v", err)
 	}
 }
