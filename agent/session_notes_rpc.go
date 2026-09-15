@@ -897,25 +897,54 @@ type steeringOrigin struct {
 	method string
 }
 
+// legacyNotesSteerAttemptPrefix is what a retried note delivery appended after
+// the derived inner id ("/attempt-2" for the second attempt; the first attempt
+// used the bare id).
+const legacyNotesSteerAttemptPrefix = "/attempt-"
+
+// legacyNotesSteerOuter returns the outer note mutation id a steering id was
+// derived from, when the id matches the grammar the pre-atomic note delivery
+// minted: outer + notesSteerIDSuffix, plus the retry's attempt suffix. Anything
+// else -- including a bare outer id, or the suffix with no attempt number after
+// it -- is not a derived id.
+func legacyNotesSteerOuter(id string) (string, bool) {
+	trimmed := id
+	if idx := strings.LastIndex(trimmed, legacyNotesSteerAttemptPrefix); idx >= 0 {
+		attempt, err := strconv.Atoi(trimmed[idx+len(legacyNotesSteerAttemptPrefix):])
+		if err == nil && attempt > 1 {
+			trimmed = trimmed[:idx]
+		}
+	}
+	outer, matched := strings.CutSuffix(trimmed, notesSteerIDSuffix)
+	if !matched || outer == "" {
+		return "", false
+	}
+	return outer, true
+}
+
 // steeringOriginFromJournal returns the durable provenance of one journal
 // record. A recorded kind or method decides as it always has. A record that kept
-// only the steer method is still note-origin when it is a legacy inner note steer
-// -- the note delivery's own id derivation (outer + notesSteerIDSuffix) plus the
-// outer notes/human/set record that wrote it -- so its text is normalized like
-// every other note-origin load path, and the entry carries the note kind. A steer
-// whose id merely ends that way, with no outer note record behind it, keeps the
-// method's decision: the suffix proves nothing on its own.
+// only the steer method is still note-origin when it is a legacy inner note steer:
+// its id matches the derivation the note delivery minted (see
+// legacyNotesSteerOuter) and the outer record proves the era -- a notes/human/set
+// write that kept no steering kind of its own. That second condition is what keeps
+// the correlation honest: a note record written since kinds were stamped carries
+// the note kind, and the current writer mints no inner steer at all, so a steer
+// beside one only imitates the retired grammar and keeps every byte the user
+// typed. Neither the shape nor the method alone decides anything.
 func steeringOriginFromJournal(journal map[string]clientMutationRecord, id string) steeringOrigin {
 	record := journal[id]
 	origin := steeringOrigin{kind: record.SteeringKind, method: record.Method}
 	if origin.kind != "" || origin.method != clientMutationMethodSteer {
 		return origin
 	}
-	outer, matched := strings.CutSuffix(id, notesSteerIDSuffix)
+	outer, matched := legacyNotesSteerOuter(id)
 	if !matched {
 		return origin
 	}
-	if outerRecord, exists := journal[outer]; exists && outerRecord.Method == clientMutationMethodNotesHumanSet {
+	if outerRecord, exists := journal[outer]; exists &&
+		outerRecord.Method == clientMutationMethodNotesHumanSet &&
+		outerRecord.SteeringKind == "" {
 		return steeringOrigin{kind: events.SteeringKindHumanNote}
 	}
 	return origin
@@ -957,6 +986,30 @@ func rebuiltSteeringText(origin steeringOrigin, text string) string {
 	return stripTextControls(text)
 }
 
+// steeringOriginForTurn merges a history turn's own provenance with the
+// provenance its journal record persisted. They normally agree -- the turn's kind
+// is a copy of the record's -- and when they do not, note-origin evidence decides:
+// the strip exists to keep note text out of the model copy, so a turn the write
+// path already marked note-origin is not demoted by a record that kept no kind,
+// and a record that proves note origin is not overruled by an unrelated kind.
+func steeringOriginForTurn(turn schema.Turn, origins map[string]steeringOrigin) steeringOrigin {
+	origin := steeringOrigin{kind: turn.SteeringKind}
+	if origin.kind == events.SteeringKindHumanNote || turn.ClientMutationID == "" {
+		return origin
+	}
+	recorded, ok := origins[turn.ClientMutationID]
+	if !ok {
+		return origin
+	}
+	if recorded.kind == events.SteeringKindHumanNote {
+		return recorded
+	}
+	if origin.kind != "" {
+		return origin
+	}
+	return recorded
+}
+
 func escapeNotesHistoryTurns(history []schema.Turn, origins map[string]steeringOrigin) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
@@ -972,19 +1025,14 @@ func escapeNotesHistoryTurns(history []schema.Turn, origins map[string]steeringO
 			// strip the other controls as well before the model copy is built.
 			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
 		case schema.TurnSteering:
-			// The turn's own kind decides, unless the mutation that wrote it kept
-			// provenance on its journal record: a turn written before kinds were
+			// The turn's own kind and the record that wrote it decide together
+			// (see steeringOriginForTurn): a turn written before kinds were
 			// stamped otherwise leaves the text shape to guess from, and a normal
 			// steer whose text imitates the note prefix would lose its bytes on
 			// every restart. Daemon steering carries no mutation id, and an
 			// inherited prefix belongs to another session's journal, so both keep
 			// the kind-then-shape decision.
-			origin := steeringOrigin{kind: out[i].SteeringKind}
-			if id := out[i].ClientMutationID; id != "" {
-				if recorded, ok := origins[id]; ok {
-					origin = recorded
-				}
-			}
+			origin := steeringOriginForTurn(out[i], origins)
 			if !origin.isHumanNoteSteer(text) {
 				// Ordinary steering is delivered exactly as the user typed it, live
 				// and restored alike; only notes-derived text is normalized, so this
