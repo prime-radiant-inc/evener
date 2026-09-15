@@ -1645,6 +1645,30 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		}
 	})
 
+	// Reasoning is the estimator's predicate, not the raw capability: a row that
+	// never stated it bills exactly as one that states it permits, so the
+	// measurement stands for that refresh -- and is cleared when the row disables
+	// reasoning, because then the adapter drops the thinking text the count
+	// included.
+	t.Run("reasoning metadata refresh", func(t *testing.T) {
+		silent := registry.Resolved{Instance: "openai", ModelID: "test", Protocol: registry.ProtocolOpenAIChat}
+		permits := silent
+		permits.Caps.Reasoning = new(true)
+		disabled := silent
+		disabled.Caps.Reasoning = new(false)
+
+		cm := NewManager(provider.FromResolved(silent, nil), nil, cheapmodel.New(nil))
+		cm.RecordInputTokens(321, 7)
+		cm.SetProfile(provider.FromResolved(permits, nil))
+		if got := cm.LastInputTokens(); got != 321 {
+			t.Fatalf("silent -> explicit true: LastInputTokens = %d, want retained measurement 321", got)
+		}
+		cm.SetProfile(provider.FromResolved(disabled, nil))
+		if got := cm.LastInputTokens(); got != 0 {
+			t.Fatalf("silent -> explicit false: LastInputTokens = %d, want the measurement cleared", got)
+		}
+	})
+
 	for _, tc := range []struct {
 		name   string
 		mutate func(*registry.Resolved)

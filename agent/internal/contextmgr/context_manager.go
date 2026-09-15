@@ -357,14 +357,11 @@ func sameEstimatorTarget(a, b registry.Resolved) bool {
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
 		return false
 	}
-	aReasoning, bReasoning := false, false
-	if a.Caps.Reasoning != nil {
-		aReasoning = *a.Caps.Reasoning
-	}
-	if b.Caps.Reasoning != nil {
-		bReasoning = *b.Caps.Reasoning
-	}
-	return aReasoning == bReasoning
+	// Reasoning is compared as the estimator's own predicate, not as the raw bool:
+	// a nil capability means the row never said, which bills unsigned thinking
+	// text, while an explicit false disables reasoning and drops it -- and an
+	// explicit true bills exactly as nil does (see unsignedThinkingReplayed).
+	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race
