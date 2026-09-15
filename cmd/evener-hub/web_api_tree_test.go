@@ -42,6 +42,26 @@ func TestProjectFavoritePresentationIsSourceQualified(t *testing.T) {
 	}
 }
 
+// The rail sends no source on a project favorite, so the decision is stored
+// under the controller key. When the project is owned by one remote host the
+// classifier resolves that bare decision to the host's authority; the
+// presentation must then register under the host-qualified key the project row
+// reads, or the favorite returns OK:true but no star ever appears.
+func TestProjectFavoriteBareDecisionResolvesRemoteProject(t *testing.T) {
+	const projectID = "remote-project"
+	bare := hubcore.ArchiveKey{Kind: "project", ID: projectID}
+	authority := hubcore.FavoriteAuthority{Projects: []hubcore.FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: hubcore.FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+	}}
+	classified := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{bare: true}, authority)
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil,
+		projectFavoritePresentation(classified.Presentation), nil, nil)
+
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: projectID, Sources: []string{"host-a"}}) {
+		t.Fatalf("bare remote favorite did not present on the project: %v", inputs.ProjectFavorite)
+	}
+}
+
 func testProjectID(t *testing.T, path string) string {
 	t.Helper()
 	project, err := identifier.ResolveProject(path)

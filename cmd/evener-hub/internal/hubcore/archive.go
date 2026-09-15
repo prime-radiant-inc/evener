@@ -1,10 +1,12 @@
 package hubcore
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/afero"
@@ -189,22 +191,67 @@ func (s *ArchiveStore) Delete(source, kind, id string) error {
 // lack it; ensureDecisionSourceColumn rebuilds those tables.
 const decisionSourceColumn = "source"
 
+var (
+	// decisionMigrationMu serializes the legacy-table rebuild within this
+	// process so two opens cannot both decide to migrate before either has
+	// taken SQLite's write lock.
+	decisionMigrationMu sync.Mutex
+	// decisionMigrationInterleave runs between the schema pre-check and the
+	// serialized rebuild. It is a deterministic test seam for a competing
+	// migrator; nil in production.
+	decisionMigrationInterleave func()
+)
+
 // ensureDecisionSourceColumn upgrades a legacy (kind, id) table to the
 // (source, kind, id) key. A freshly created table already carries the column,
-// so this is a one-time no-op for new databases. The rebuild runs in one
-// transaction: every legacy row is a controller-local decision, so it migrates
-// under the empty source key.
+// so this is a one-time no-op for new databases.
+//
+// The rebuild is serialized two ways. decisionMigrationMu keeps two in-process
+// opens from both deciding to migrate before either takes the write lock, and
+// the immediate transaction that follows takes SQLite's write lock before the
+// schema is rechecked, so a migrator in another connection or process that won
+// the race is observed and its already-upgraded table is left alone. Rebuilding
+// an upgraded table would insert its source-qualified rows under the controller
+// source, collapsing two hosts' same-ID decisions into one. Every legacy row is
+// a controller-local decision, so it migrates under the empty source key.
 func ensureDecisionSourceColumn(db *sql.DB, table, createTable, valueColumn string) error {
 	has, err := tableHasColumn(db, table, decisionSourceColumn)
 	if err != nil || has {
 		return err
 	}
-	legacy := table + "_legacy"
-	tx, err := db.Begin() //nolint:noctx // local file DB
+	if decisionMigrationInterleave != nil {
+		decisionMigrationInterleave()
+	}
+	decisionMigrationMu.Lock()
+	defer decisionMigrationMu.Unlock()
+
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() { _ = conn.Close() }()
+	// BEGIN IMMEDIATE, not database/sql's deferred Begin: the recheck below must
+	// run while this connection already holds the write lock.
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	if has, err := tableHasColumnContext(ctx, conn, table, decisionSourceColumn); err != nil {
+		return err
+	} else if has {
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	}
+	legacy := table + "_legacy"
 	statements := []string{
 		"DROP TABLE IF EXISTS " + legacy,
 		"ALTER TABLE " + table + " RENAME TO " + legacy,
@@ -213,16 +260,30 @@ func ensureDecisionSourceColumn(db *sql.DB, table, createTable, valueColumn stri
 		"DROP TABLE " + legacy,
 	}
 	for _, statement := range statements {
-		if _, err := tx.Exec(statement); err != nil { //nolint:noctx // local file DB
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
 			return err
 		}
 	}
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // tableHasColumn reports whether table already carries the named column.
 func tableHasColumn(db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.Query("PRAGMA table_info(" + table + ")") //nolint:noctx // local file DB
+	return tableHasColumnContext(context.Background(), db, table, column)
+}
+
+// rowQuerier is the query surface shared by *sql.DB and the dedicated *sql.Conn
+// the migration recheck runs on.
+type rowQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func tableHasColumnContext(ctx context.Context, q rowQuerier, table, column string) (bool, error) {
+	rows, err := q.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
 		return false, err
 	}

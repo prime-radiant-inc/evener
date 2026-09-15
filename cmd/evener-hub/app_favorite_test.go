@@ -139,8 +139,9 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
 	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
-		Favorite:    favorites,
-		RemoteHosts: []hostreg.Host{{Name: "host-a"}},
+		Favorite:         favorites,
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient: unusedRemoteHostClient,
 	}, nil, nil, nil)
 
 	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
@@ -172,8 +173,9 @@ func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
 	}
 	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
 	server := newHubAppServerWithNavigation(hubcore.WebConfig{
-		Favorite:    favorites,
-		RemoteHosts: []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+		Favorite:         favorites,
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+		RemoteHostClient: unusedRemoteHostClient,
 	}, nil, navigation, nil)
 
 	for _, host := range []string{"host-a", "host-b"} {

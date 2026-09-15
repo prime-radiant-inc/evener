@@ -81,6 +81,14 @@ func cloneTreeProjectsContext(ctx context.Context, projects []TreeProject) ([]Tr
 		}
 		out[index] = project
 		var err error
+		// Sources is a slice, so the shallow struct copy above would share
+		// its backing array with the retained tree. Clone it, keeping a nil
+		// source list nil and an empty one empty.
+		if project.Sources != nil {
+			sources := make([]string, len(project.Sources))
+			copy(sources, project.Sources)
+			out[index].Sources = sources
+		}
 		if out[index].Current, err = cloneTreeNodesContext(ctx, project.Current); err != nil {
 			return nil, err
 		}
@@ -1375,17 +1383,6 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	sort.SliceStable(activeProjects, byLastActivityDesc(activeProjects))
 	sort.SliceStable(archivedProjects, byLastActivityDesc(archivedProjects))
 
-	// A live session's project may be archived by any of the sources that own
-	// the project (which can include hosts the session itself does not belong
-	// to). Index the already-built projects' source sets so the Live-tier filter
-	// below agrees with the Projects-tier placement rule.
-	projectSourcesByID := make(map[string][]string, len(treeProjects))
-	for _, p := range treeProjects {
-		if p.Key != "" {
-			projectSourcesByID[p.Key] = p.Sources
-		}
-	}
-
 	// Build the Live slice: every live, top-level session, with its subagent
 	// children nested the same way the Projects tier builds them (buildNode),
 	// sorted by attention rank desc, then the Hub session ordering contract.
@@ -1469,11 +1466,11 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	for _, node := range liveNodes {
 		entry := liveMap[node.ID]
 		if entry.Project.ID != "" {
-			sources, ok := projectSourcesByID[entry.Project.ID]
-			if !ok {
-				sources = []string{liveEntrySource(entry)}
-			}
-			if projectArchivedDecision(decisions, entry.Project.ID, sources) {
+			// A project can merge the same ID/path across hosts, but an archive
+			// decision is source-qualified: consult only the source that owns
+			// this entry, so a different host archiving the shared project ID
+			// does not hide this host's still-live session.
+			if projectArchivedDecision(decisions, entry.Project.ID, []string{liveEntrySource(entry)}) {
 				continue
 			}
 		}

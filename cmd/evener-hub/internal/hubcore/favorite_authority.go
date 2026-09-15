@@ -336,14 +336,61 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 
 func classifyFavoriteProject(key ArchiveKey, projects favoriteProjectIndex) FavoriteDecisionClassification {
 	decisionKey := projectDecisionKey{source: NormalizeDecisionSource(key.Source), id: key.ID}
-	authorities := projects.byKey[decisionKey]
-	if len(authorities) != 1 || projects.ambiguousKeys[decisionKey] {
+	authority, exact, ok := resolveProjectAuthority(projects, decisionKey)
+	if !ok {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
-	if authorities[0].Quality != FavoriteAuthorityComplete {
-		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: key}
+	// An exact (source, ID) match canonicalizes to the decision's own key, the
+	// pre-existing shape. A bare decision matched across sources takes the
+	// authority's source-qualified key so presentation lands on that host.
+	canonicalKey := key
+	if !exact {
+		canonicalKey = ArchiveKey{Kind: "project", ID: authority.ID, Source: NormalizeDecisionSource(authority.Source)}
 	}
-	return FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: key}
+	if authority.Quality != FavoriteAuthorityComplete {
+		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: canonicalKey}
+	}
+	return FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: canonicalKey}
+}
+
+// resolveProjectAuthority finds the single project authority a decision
+// addresses. An exact (source, ID) authority always wins, so an empty-source
+// decision keeps addressing the controller's own project when one exists.
+//
+// When a decision carries no source and has no exact authority, it resolves
+// against the authorities for that ID across every source. The rail's project
+// favorite sends no source, so without this fallback a favorite on a
+// remote-owned project would be stored under the controller key and never match
+// the host-keyed authority. Exactly one candidate is accepted; two sources
+// claiming the ID, or any ambiguous candidate, stays unresolved so the decision
+// cannot silently borrow another host's authority.
+func resolveProjectAuthority(projects favoriteProjectIndex, key projectDecisionKey) (FavoriteProjectAuthority, bool, bool) {
+	if authorities := projects.byKey[key]; len(authorities) == 1 && !projects.ambiguousKeys[key] {
+		return authorities[0], true, true
+	}
+	if key.source != "" {
+		return FavoriteProjectAuthority{}, false, false
+	}
+	var (
+		found     FavoriteProjectAuthority
+		matches   int
+		ambiguous bool
+	)
+	for candidate, authorities := range projects.byKey {
+		if candidate.id != key.id {
+			continue
+		}
+		if len(authorities) != 1 || projects.ambiguousKeys[candidate] {
+			ambiguous = true
+			continue
+		}
+		found = authorities[0]
+		matches++
+	}
+	if ambiguous || matches != 1 {
+		return FavoriteProjectAuthority{}, false, false
+	}
+	return found, false, true
 }
 
 func appendUniqueString(values []string, value string) []string {

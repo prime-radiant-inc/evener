@@ -177,6 +177,56 @@ func TestBuildTreeReadsBackSourceQualifiedProjectArchive(t *testing.T) {
 	}
 }
 
+// A project whose sessions come from two hosts merges into one row carrying both
+// sources, but an archive decision stays source-qualified. Host-a's decision must
+// clear only host-a's live session; consulting the merged source set would drop
+// host-b's still-live session from the rail.
+func TestBuildTreeLiveFilterUsesEntrySourceForMergedProject(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	const path = "/srv/shared/alpha"
+	projects := map[string]identifier.Project{path: {ID: "proj-alpha", CanonicalPath: path}}
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true}
+
+	metas := []schema.SessionMeta{
+		{ID: "host-a:t1", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: path}},
+		{ID: "host-b:t1", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: path}},
+	}
+	live := []LiveEntry{
+		{SourceID: "host-a", SessionID: "host-a:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
+		{SourceID: "host-b", SessionID: "host-b:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
+	}
+	tree := BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+
+	if len(tree.Live) != 1 || tree.Live[0].ID != "host-b:t1" {
+		t.Fatalf("live = %#v, want only host-b's session: host-a archived its own project and must not hide host-b's", tree.Live)
+	}
+}
+
+// Snapshot promises a deep immutable copy, so the private Sources slice must be
+// cloned too: mutating the snapshot must not reach the retained tree, a nil
+// source list stays nil, and an empty one stays non-nil.
+func TestTreeSnapshotClonesProjectSources(t *testing.T) {
+	tree := Tree{
+		Projects: []TreeProject{
+			{Key: "p", Sources: []string{"host-a", "host-b"}},
+			{Key: "q"},
+		},
+		ArchivedProjects: []TreeProject{{Key: "r", Sources: []string{}}},
+	}
+	snapshot := tree.Snapshot()
+
+	snapshot.Projects[0].Sources[0] = "mutated"
+	if tree.Projects[0].Sources[0] != "host-a" {
+		t.Fatalf("mutating the snapshot changed the retained tree: %q", tree.Projects[0].Sources[0])
+	}
+	if snapshot.Projects[1].Sources != nil {
+		t.Fatalf("nil Sources became non-nil: %#v", snapshot.Projects[1].Sources)
+	}
+	if snapshot.ArchivedProjects[0].Sources == nil {
+		t.Fatalf("empty Sources became nil: %#v", snapshot.ArchivedProjects[0].Sources)
+	}
+}
+
 func initHubTestRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
