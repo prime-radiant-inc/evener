@@ -91,9 +91,15 @@ Concretely the proxied method names are (all `ScopeHub` in
 - **Host-dependent discovery** — the spawn form's remote-scoped calls
   (component 06, §"Frontend changes"): `evener/paths/complete`,
   `evener/path/validate`, `evener/dirs/create`, `evener/projects/recent`,
-  `evener/harnesses/list`, `evener/spawn/slashCatalog`, and `model/list`
-  (`ScopeBoth`, `appwire/protocol.go`; forwarded to the host hub, which serves
-  it against its own local environment). The remote settings panes call the
+  `evener/harnesses/list`, `evener/spawn/slashCatalog`, `evener/git/head`,
+  `evener/plugin/preview`, `evener/instance/list`, and `model/list`
+  (`model/list` is `ScopeBoth`, `appwire/protocol.go`; the rest are `ScopeHub`;
+  all forwarded to the host hub, which serves them against its own local
+  environment). `evener/git/head` is the branch/location chip's read
+  (`frontend/src/shell/gitLocation.ts`), `evener/plugin/preview` the
+  plugin-preview panel (`panes/spawn/usePluginPreview.ts`), and
+  `evener/instance/list` the provider-instance list (`stores/credentials.ts`).
+  The remote settings panes call the
   filesystem helpers directly — `evener/path/validate`
   (`frontend/src/stores/launchConfig.ts:93`,
   `src/stores/extensions.ts:384`), `evener/dirs/create`
@@ -159,7 +165,16 @@ The handler:
    `evener/settings/agentsDoc/{get,set}`, plus the host-dependent discovery set:
    `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`,
    `evener/projects/recent`, `evener/harnesses/list`,
-   `evener/spawn/slashCatalog`, and `model/list` — and nothing else.
+   `evener/spawn/slashCatalog`, `evener/git/head`, and `model/list` — and
+   nothing else. (`evener/plugin/preview` and `evener/instance/list` are also
+   host-dependent discovery calls — the spawn pane's plugin-preview panel and
+   its provider-instance list — and are already in the exact set through the
+   plugin and instance families above; they are named here so component 06's
+   discovery set and this allow-list enumerate the same names.) `evener/git/head`
+   is the one addition to the shipped 07a allow-list that the discovery set
+   requires and that no admin family already covers; without it a wrapped
+   `evener/git/head` fails closed with `appwire.InvalidParams`, and an
+   unwrapped one reads the controller's git repository for a remote path.
    A prefix match (`strings.HasPrefix(method, "evener/instance/")`) is **not**
    acceptable: it would auto-allow a future sensitive `ScopeHub` method the
    moment it is added to the catalog (a hypothetical
@@ -544,7 +559,9 @@ receives a key, and the controller writes nothing.
    list was written; every method the
    settings panes call — including `evener/plugin/disable`,
    `evener/plugin/setAutoUpgrade`, and `evener/settings/agentsDoc/{get,set}` —
-   is inside it, and no instance method outside the five listed exists to call.
+   is inside it, the host-dependent discovery set (component 06) — including
+   `evener/git/head`, `evener/plugin/preview`, and `evener/instance/list` — is
+   inside it, and no instance method outside the five listed exists to call.
 3. Remote config mutations reach the host's own store: an `evener/instance/create`
    proxied to `m4` lands in `m4`'s `providers.toml`, not the controller's
    (`app_instances.go`).

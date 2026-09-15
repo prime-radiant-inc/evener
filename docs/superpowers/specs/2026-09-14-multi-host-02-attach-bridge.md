@@ -33,7 +33,11 @@ over an SSH channel with no additionally exposed port.
      `StreamTransport` over stdin/stdout;
   5. exits when either side closes.
 - This command is a **client** of the running hub. It must not start a hub, take
-  `hostlock`, or bind any port.
+  `hostlock`, or bind any port. Starting a stopped host hub for a first attach
+  is component 04's **bootstrap** path (component 04 §5), run as its own remote
+  command before the bridge is dialed — never something the bridge does; the
+  bridge's "no hub at `<addr>`" failure is the signal that a bootstrap is
+  needed, not a reason for the bridge to become a server.
 
 The SSH channel argv carries **no token** and, by default, no address: component
 04 runs `ssh <opts> <dest> <evener_path> hub attach --stdio`, and the bridge

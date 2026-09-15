@@ -157,23 +157,66 @@ inline inside a registration function, the registration function is named.
 | `SubscribeThread` | `MethodThreadRead` with `Subscribe:true` + notifications | `ScopeBoth` | inline in `registerThreadHandlers` + relay | **compose** over the channel |
 
 Methods the hub also serves that are *not* on `Source` but that component 06/07
-will want: `MethodThreadUnsubscribe` (`ScopeBoth`),
-`MethodEvenerThreadForceStop` — the wire string is `evener/thread/forceStop`,
-**not** `evener/thread/force-stop` (`ScopeHub`, registered in
-`registerThreadHandlers` as `forceStopThread`) — `MethodEvenerThreadTranscriptsList`
-(`ScopeHub`, `evener/thread/transcripts/list`, inline in `registerMiscHandlers`),
-`MethodEvenerSubagentPreview` — the wire string is `evener/subagentPreview`,
-**not** `evener/subagent/preview` (`ScopeHub`, inline in `registerThreadHandlers`)
-— and the path/dir/project/git helpers registered by `registerMiscHandlers`
+will want split into two groups by how they are routed once a host is selected.
+The `Method*` constants live in `appwire/types.go`; the catalog rows live in
+`appwire/protocol.go`.
+
+**Host-selection calls — forwarded through `evener/host/request`.** The
+path/dir/project/git helpers registered by `registerMiscHandlers`
 (`MethodEvenerPathsComplete`, `MethodEvenerDirsCreate`,
 `MethodEvenerProjectsRecent`, `MethodEvenerPathValidate`,
-`MethodEvenerGitHead`). The `Method*` constants live in `appwire/types.go`; the
-catalog rows live in `appwire/protocol.go`. Once a host is selected these are
-forwarded as normal hub-scoped methods — through the host-scoped request
-envelope `evener/host/request` (component 07, §"Proxy method"), which carries
-the selected host and method name — **not** through `RemoteHubSource` (none is
-on the `Source` interface). This is the routing component 06's spawn-form
-discovery calls use.
+`MethodEvenerGitHead`) plus the admin reads that resolve against the machine
+running the handler — the plugin preview (`MethodEvenerPluginPreview`, wire
+`evener/plugin/preview`, `app_plugins.go`), the provider-instance list
+(`MethodEvenerInstanceList`, wire `evener/instance/list`, `app_instances.go`) —
+and the remaining spawn-form discovery reads
+(`MethodEvenerHarnessesList`, `evener/harnesses/list`;
+`MethodEvenerSpawnSlashCatalog`, `evener/spawn/slashCatalog`; `MethodModelList`,
+`model/list`, `ScopeBoth`) take no ref, so naming the host is the **only** way
+to scope them. They are forwarded as normal hub-scoped methods through the
+host-scoped request envelope `evener/host/request` (component 07, §"Proxy
+method"), which carries the selected host and method name — **not** through
+`RemoteHubSource` (none is on the `Source` interface). This is the routing
+component 06's spawn-form discovery calls use, and the exact set the
+component-07 allow-list must carry (component 06, §"Frontend changes";
+component 07, §"Proxy method"). The launch resolution the spawn form also needs
+(`MethodEvenerLaunchResolve`, `evener/launch/resolve`, `ScopeHub`) is already
+in the launch admin family (component 07, §"Proxy method"), so it is not
+repeated here.
+
+**Ref-dispatched calls — served by the controller, never forwarded.** These
+already reach the right host through the *ref*, so they must not be sent
+through `evener/host/request`:
+
+- `MethodEvenerThreadTranscriptsList` (`evener/thread/transcripts/list`) is
+  `hubThreadTranscriptList` (`app_transcripts.go`), which resolves the owning
+  source through the registry (`hubTranscriptRootForList`) and reads the remote
+  thread through it.
+- `MethodEvenerSubagentPreview` — the wire string is `evener/subagentPreview`,
+  **not** `evener/subagent/preview` (`ScopeHub`, inline in
+  `registerThreadHandlers`) — resolves `sourceForThreadWithDeletionFence` and
+  calls `source.ReadThread`, the same ref dispatch.
+- `MethodThreadUnsubscribe` (`ScopeBoth`) is likewise ref-carried.
+
+A raw pass-through proxy would re-address an already-reachable call — and, with
+a `host:`-prefixed ref, hit the same refusal the local dispatch avoids — so
+these stay on the plain controller connection with their translated ref.
+
+**`MethodEvenerThreadForceStop` is neither — it needs dedicated dispatch.** The
+wire string is `evener/thread/forceStop`, **not** `evener/thread/force-stop`
+(`ScopeHub`, registered in `registerThreadHandlers` as `forceStopThread`).
+`forceStopThread` (`app_force_stop.go`) refuses any ref whose `SourceID` is not
+`"local"` (`appwire.InvalidParams("force stop requires a local session ref")`),
+because it verifies and signals a **local daemon process** through the hub's own
+`DaemonProcesses`/`ResumeLocks` ownership. A raw forward of a `host:<thread>`
+ref therefore fails on the host hub too, and a forward of a bare
+`local:<thread>` ref would target the wrong machine's daemon. Remote force-stop
+needs dedicated ref-translating dispatch: the controller resolves the ref to
+the owning host, translates it into that host's `local:` namespace, and issues
+the force-stop **on that host's hub** (the hub that owns the daemon process),
+mapping the response back to the controller ref. That is a separate requirement
+(component 07, §"Proxy method"), not a member of the `evener/host/request`
+allow-list.
 
 `MethodThreadTurnItemsList` (wire string `thread/turns/items/list`) is
 `ScopeUnimplemented` — served by no evener router — and is not on the `Source`

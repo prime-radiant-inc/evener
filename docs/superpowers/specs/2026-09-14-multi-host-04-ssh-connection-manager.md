@@ -244,6 +244,12 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   asked to evaluate, not data. Stating the distinction matters — a future editor
   who "fixes" the probe by quoting the snippet breaks it, and one who "fixes"
   argv construction by not quoting injects into the remote shell.
+  **The supervisor *restart* command is not in this exception.** Its darwin
+  domain argument is `gui/<uid>/<label>` with the numeric uid resolved in
+  preflight and the label host-derived data (§"Stop/restart mechanics",
+  supervised step): `$(id -u)` is a shell substitution that the quoting rule
+  would (correctly) single-quote into a literal, so it is interpolated on the
+  controller, never handed to the remote shell.
 - **Address, config path, token (corrected contract).** The shipped argv carries
   the connection parameters: `hub attach --stdio [--config <config_path>]
   [--addr <addr>]`, with `--config` **before** `--addr` and every value
@@ -310,6 +316,12 @@ reuses the local gate's rules:
 - `version` is `buildinfo.Version()` (`launchcheck.go`), i.e. the git SHA of
   the `evener` binary on the host (or `"dev"`). The controller's side of the
   comparison is `buildinfo.Version()` in-process (`buildinfo/buildinfo.go`).
+- The preflight also records the host's **numeric effective uid** (`id -u`),
+  alongside the effective user name check 3 needs (`entry.User`, else the SSH
+  `user@host` form, else `id -un`/`whoami`). The uid is what the supervised
+  darwin restart interpolates into `gui/<uid>/<label>`
+  (§"Stop/restart mechanics"), so no `$(id -u)` substitution is ever passed to
+  the remote shell.
 
 ### Channel lifecycle states
 
@@ -574,16 +586,45 @@ Two paths, chosen per host (open question: which wins when both are viable):
   The installer downloads a release archive and verifies it against
   `checksums.txt` (`install.sh:88-130`) and refuses an unverified archive; it
   requires host network access, which the push path does not.
-  **The fallback must be pinned to the controller's exact expected version.**
-  The controller is the version authority (§5), so it must invoke the installer
-  with `EVENER_INSTALL_VERSION=<controller buildinfo.Version()>` — never the
-  script's own `latest` default (`install.sh:19`, `version=${EVENER_INSTALL_VERSION:-latest}`),
-  which may resolve to a build that fails the protocol/version check the moment
-  it is attached. After the installer runs, the same on-host `/api/health` probe
-  and identity check below must confirm the *pinned* version before attachment; a
-  host where the installer cannot be pinned (an unstamped `"dev"` controller has
-  no version to pin, §"Dev builds must not auto-match") or resolves the wrong
-  version is a **failed verification** (`ErrDeploy`), never an attach.
+  **The fallback must be pinned to the controller's exact expected build — and
+  a Git SHA is not a release tag.** `install.sh` treats `EVENER_INSTALL_VERSION`
+  as a GitHub **release tag** (`install.sh:41-44` builds
+  `$repo/releases/download/$version`), while `buildinfo.Version()` is the *short
+  Git SHA* (plus `-dirty`) — so passing it verbatim (an earlier rule here) points
+  every normal build at a release that does not exist. There is no
+  commit-pinned installer mode; the only artifact references install.sh knows
+  are a real release tag, its default `latest`, and the mutable `snapshot` tag
+  (`.github/workflows/binaries.yml:77-112` force-moves `snapshot` to the newest
+  green `main`). The artifact-reference-to-binary-identity mapping is therefore
+  driven by the controller's own build channel, `buildinfo.BuildChannel()`
+  (`buildinfo/buildinfo.go`):
+
+  - **release** (`Channel == "release"`): pass the release tag. `buildinfo` does
+    not carry it today, so the controller build must stamp it
+    (`-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}` in
+    `.goreleaser.yml`, a new `ReleaseTag` var), and the installer is invoked
+    with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`.
+  - **snapshot** (`Channel == "snapshot"`): pass
+    `EVENER_INSTALL_VERSION=snapshot`, but the tag is mutable and tracks `main`,
+    so the tag alone does **not** pin the controller's commit. The pin is the
+    commit check: after install, the running hub's `/api/health`
+    `backend_git_sha` must equal `buildinfo.GitSHA`, and a snapshot that has
+    moved past (or not yet reached) the controller's commit is `ErrDeploy`. The
+    installer fallback therefore only converges a snapshot controller whose
+    commit **is** the published snapshot; a controller ahead of or behind `main`
+    must use the atomic push path.
+  - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
+    no publishable identity to pin, so the installer fallback is **refused**
+    (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the
+    operator must use the atomic push path (§"Push target resolution") or an
+    explicit `Options.BuildBinary`.
+
+  `latest` is never passed. After the installer runs, the same on-host
+  `/api/health` probe and identity check below must confirm the *pinned* build —
+  `version` equal to `buildinfo.Version()` and, for a snapshot pin,
+  `backend_git_sha` equal to `buildinfo.GitSHA` — before attachment; a host that
+  cannot be pinned or resolves the wrong build is a **failed verification**
+  (`ErrDeploy`), never an attach.
 
 - **Push target resolution (shipped).** A push must install to the absolute path
   of the executable the host will *run*, or version auto-match deploys the new
@@ -608,6 +649,34 @@ Two paths, chosen per host (open question: which wins when both are viable):
      an existing file prints nothing and exits nonzero.
   A `command -v` miss or a path that does not resolve to a real file is
   `ErrDeploy` with no write.
+
+- **The installer install path must equal the run target.** `install.sh` writes
+  the real binaries under `share_bindir` (`EVENER_SHARE_BINDIR`, default
+  `$PREFIX/share/evener/bin`) and symlinks `evener`/`evener-dev` into `bindir`
+  (`BINDIR`, default `$PREFIX/bin`, with `PREFIX` defaulting to `$HOME/.local`
+  — `install.sh:4,7-16,20,146-152`). Deployment and restart, however, run and
+  identity-check the configured `evener_path` (§5). A host with a custom
+  `evener_path` therefore **installs cleanly into `~/.local/bin` and then keeps
+  probing and relaunching the old binary** at the configured path. Rule: the
+  installer fallback must install to the target the manager will run.
+  - When `evener_path` is set, pass the installer an explicit
+    `BINDIR=<dirname(evener_path)>` (with `EVENER_SHARE_BINDIR` under the same
+    prefix) so the symlink lands at `evener_path`. The basename must be one of
+    the installer's shipped binary names (`evener` or `evener-dev`,
+    `install.sh:4`), and the directory must exist and be writable on the host —
+    the same `test -d` precondition `deployTarget` already applies to
+    `evener_path` (§"Push target resolution").
+  - When `evener_path` is empty, the installer's default `~/.local/bin/evener`
+    **is** the run target: the manager records that resolved path and checks,
+    restarts, and launches it, rather than assuming a separate
+    `command -v evener` result that may name a different install.
+
+  If the custom `evener_path` cannot be reproduced by the installer (a basename
+  it does not ship, a missing or unwritable directory), the installer fallback
+  is **refused** with `ErrDeploy` and the atomic push path (§"Push target
+  resolution") is required. The post-install identity check reads the binary at
+  the same resolved target, so a successful install that left a different file
+  running is a **failed verification**, never an attach.
 
 Both paths must preserve the original file (`install` replaces atomically;
 the push writes a temp name and `mv`s it into place — `pushBinary` in
@@ -647,8 +716,45 @@ deploy landed.
     earlier failed attempt already installed the build, so re-cross-compiling on
     every reconnect would be a needless build;
   - when nothing answers the probe (`runningKnown == false`) there is no running
-    hub to judge, so it invents **no** restart: an on-disk mismatch still drives
-    its own deploy/restart, and otherwise `ensureOnce` attaches as before.
+    hub to judge. An on-disk mismatch still drives its own deploy/restart. Half
+    of the remaining case — a host that is merely **not started** — is closed by
+    the first-attach bootstrap below; a reconnect never silently restarts a
+    process it cannot identify (the rule unchanged by this round).
+
+  **First attach to a stopped host must be able to start the hub.** The probe
+  above only *restarts* a hub that is already answering; the bridge is a client
+  that must not start one (component 02, §Scope) and `ensureOnce` invents no
+  start, so a configured host whose hub is not running can never become usable —
+  contradicting component 06's first-host-action guarantee (selecting the host
+  attaches it and flips `Online`). The bootstrap branch closes that gap:
+
+  - it runs **only** from an explicit attach request (the component-06 first
+    host action — a picker selection or a "Connect" affordance), never from the
+    background snapshot walk, which stays attached-only (component 06,
+    §"Background snapshot");
+  - it first re-probes the listener and refuses to start anything when a hub
+    already owns the configured address (`runningKnown == true`), so it cannot
+    create a duplicate; the start is the same single-owner contract the restart
+    checks enforce (§"Stop/restart mechanics" checks 1–4);
+  - it starts the host hub the **same way the restart path does** — the
+    identified supervisor's start (`launchctl kickstart -k gui/<uid>/<label>` /
+    `systemctl [--user] start <unit>`) when a unit is unambiguously identified,
+    otherwise the ops doc's detached ad hoc launch of the resolved
+    `evener_path`/`command -v evener` with the recovered-or-default log
+    (`relaunchCommand`) — and `hub.lock` makes a losing second process exit
+    rather than bind;
+  - it then waits for the same `/api/health` `version == expected` probe
+    (`waitHealthy`), with the same bound and `ErrRestart` failure, so a start
+    that never becomes healthy attaches nothing and the first host action
+    surfaces the failure.
+
+  A host with no configured `evener_path` and no `command -v evener`, and no
+  identified supervisor unit, cannot be started: the bootstrap is refused with
+  `ErrDeploy`/`ErrRestart`, the host stays offline, and the UI must show that
+  refusal (component 06, §"Connecting a configured host").
+  **Implementation status:** the shipped 04b `ensureOnce` has no bootstrap
+  branch (it attaches as before when nothing answers); this is the implementing
+  PR's requirement, not a present fact.
 
   Post-restart verification is the same probe run under `waitHealthy`
   (`version.go`): it polls the host's `/api/health` until the response's
@@ -808,8 +914,20 @@ deploy landed.
 
   The restart path is then:
   1. **Supervised hub** — restart it the way its supervisor expects:
-     `launchctl kickstart -k gui/$(id -u)/<label>` on darwin, or
-     `systemctl [--user] restart <unit>` on linux. Detection is from the host's
+     `launchctl kickstart -k gui/<uid>/<label>` on darwin, or
+     `systemctl [--user] restart <unit>` on linux. **`<uid>` is the numeric
+     effective uid resolved in preflight** (`id -u`, §"Preflight + version
+     contract"), **never a `$(id -u)` shell substitution**: the quoting rule
+     above wraps anything outside the bare-safe set in single quotes, so
+     `gui/$(id -u)/<label>` would reach `launchctl` as the literal string
+     `gui/$(id -u)/<label>` with no expansion and never restart the unit. With
+     the numeric uid and a `<label>` validated against the bare-safe set
+     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it refuses the supervised
+     path and falls through to the ad hoc path rather than injecting into the
+     remote shell), the whole `gui/<uid>/<label>` argument is one bare-safe word
+     passed verbatim. Adding `gui/$(id -u)/<label>` to the raw exception list is
+     rejected: the label is host-derived data, so passing it raw is exactly the
+     injection the quoted path avoids. Detection is from the host's
      own listings (`launchctl list`, `systemctl list-units`) under the
      identification rules above. The supervisor command's exit status is not the
      check; the on-host `/api/health` probe is (`scripts/ops/deploy-hub.sh`
@@ -834,12 +952,26 @@ deploy landed.
      port, the log path), and the recovered command line is **never re-parsed as
      shell code**. `hubArgvFromCommandLine` (`sshconn/version.go`) tokenizes it
      (`tokenizeCommandLine`, honoring single/double quotes and backslash escapes
-     and refusing any *unquoted* shell metacharacter), then requires
-     `path.Base(argv[0]) == "evener"`, the `hub` subcommand at the actual
-     subcommand position (`argv[1] == "hub"`), and no positional after it
+     and refusing any *unquoted* shell metacharacter), then requires the
+     recovered executable to be the **configured target**, not a hardcoded
+     basename: resolve `argv[0]` with the same portable POSIX-sh resolver
+     `deployTarget` uses (`resolvePathScript`, plain `readlink` + `cd -P … &&
+     pwd`, no `readlink -f`) and compare that canonical path to the canonical
+     `evener_path` when set, else to the canonical `command -v evener` result;
+     for a supervised hub the unit's `ExecStart` path is the expected value
+     instead. It also requires the `hub` subcommand at the actual subcommand
+     position (`argv[1] == "hub"`), and no positional after it
      (`evener hub attach`, the client, is not the daemon); matching `hub`
      anywhere in argv would accept `evener serve --model hub`. Anything else is
-     refused with `ErrRestart` and **no `kill`**. When the
+     refused with `ErrRestart` and **no `kill`**. `path.Base(argv[0]) ==
+     "evener"` is **not** the check: `evener_path` is documented as an arbitrary
+     executable path (§"Push target resolution"), so a valid custom target (say
+     `/opt/evener/current/evener-hub`, or a symlink resolved through several
+     hops) is deployed and launched by the manager but can never pass a basename
+     comparison — the host passes configuration and deploy, then refuses every
+     restart with `ErrRestart`. Canonicalizing both sides and comparing them is
+     the identity the rule needs; a basename is neither necessary nor
+     sufficient. When the
      recovered argv carries an `--addr`/`-addr`, its port must agree with the
      probed port (`hubAddrFlag`/`hubPort`) or the restart is refused: a process
      that merely holds the port is never killed and relaunched. `relaunchCommand`
@@ -1054,7 +1186,9 @@ with the remote hub and its daemons still running.
    the expected `version` — and a health answer from the *old* process (a
    different `version`), or no answer at all, is not accepted. A running-hub
    version that differs drives the restart even when the on-disk binary already
-   matches, and a probe that answers nothing invents no restart.
+   matches, and a probe that answers nothing invents no silent restart on a
+   reconnect (a first-attach bootstrap start, criterion 15, is the only
+   nothing-answering start and runs only from an explicit attach request).
 4. The SSH channel argv is exactly the non-interactive form in "Contract",
    with `-T`, `--` before the destination, and every remote word shell-quoted;
    stdin/stdout are the `StreamTransport` and stderr is diagnostics only. A
@@ -1092,6 +1226,29 @@ with the remote hub and its daemons still running.
     validation; a push deploy with an empty `evener_path` resolves the target
     with `command -v evener` + the POSIX-sh `resolvePathScript` (plain
     `readlink`, no `readlink -f`) and replaces that file atomically.
+15. A first attach to a host whose hub is not running starts the identified
+    supervisor (or the detached ad hoc launch), waits for `/api/health`
+    `version == expected`, and attaches only after it matches; an address a hub
+    already owns starts nothing, and a hub that never becomes healthy attaches
+    nothing and fails with `ErrRestart`.
+16. The installer fallback passes an artifact reference derived from
+    `buildinfo.BuildChannel()` — the stamped release tag for `release`,
+    `snapshot` (with the mandatory `backend_git_sha == buildinfo.GitSHA`
+    verification) for `snapshot` — and is `ErrDeploy` for a `dev`/`dirty`
+    controller; `buildinfo.Version()` (a short SHA, possibly `-dirty`) is never
+    passed as the tag.
+17. The installer fallback installs to the run target: with `evener_path` set
+    it passes `BINDIR=<dirname(evener_path)>` (refusing an unshipped basename or
+    a missing directory with `ErrDeploy`); with `evener_path` empty the
+    installer's resolved `~/.local/bin/evener` is the path the manager checks,
+    restarts, and launches.
+18. A restart identifies the hub by the canonical recovered executable
+    (symlinks resolved with `resolvePathScript`) compared to the configured
+    `evener_path` / `command -v evener` / unit `ExecStart`, so a valid custom
+    `evener_path` basename restarts; a non-hub executable still refuses.
+19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
+    bare-safe word (uid from preflight), and a label outside the bare-safe set
+    falls through to the ad hoc path; no `$(id -u)` reaches the remote shell.
 
 ## PR size estimate (LOC)
 

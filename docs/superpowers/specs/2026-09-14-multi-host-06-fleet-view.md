@@ -256,6 +256,47 @@ only `local`, so the fan-out currently degenerates to one source.
   remote row — thread listing, the background snapshot, tree ingestion, and
   metadata/archive/favorite handling — and none of them may pass a remote row
   through the controller-side `ResolveProject`.
+  **Favorite and archive mutations must carry the owning host.** The host
+  qualification above changes every project key, but the two mutation APIs are
+  still host-unqualified, so a remote project action is rejected or hits the
+  wrong project:
+
+  - `evener/archive/set` (`MethodEvenerArchiveSet`, `ArchiveParams`) validates
+    a project with `identifier.ResolveProject(params.WorkingDir)` on the
+    **controller's** filesystem and requires an exact `project.ID` match
+    (`app_archive.go`, `archiveSet`), then writes the controller's own
+    `cfg.Archive` store. A remote project's `WorkingDir` does not exist on the
+    controller (or resolves to the controller's own project at that path), so
+    the call fails with `appwire.InvalidParams` ("project ID does not match
+    workingDir") — or archives the controller's project, not the remote one.
+  - `evener/favorite/set` (`MethodEvenerFavoriteSet`, `FavoriteSetParams`)
+    writes `cfg.Favorite` keyed by the bare `params.ID` with no host dimension
+    (`app_favorite.go`), so two hosts' projects whose IDs collide share one
+    favorite.
+
+  **Requirement.** `ArchiveParams` and `FavoriteSetParams` gain an owning
+  `Source` field (the row's `ref.SourceID` host, defaulting to `"local"`). The
+  controller keys both controller-side stores by `(source, id)`, so identical
+  project IDs (or paths) on separate hosts are distinct entries — the same
+  host qualification the navigation group key carries, so a favorite/archive
+  flag projected onto a remote row is that row's own. For a **non-local**
+  source, `archiveSet` must not resolve `WorkingDir` against the controller's
+  filesystem at all: the project kind validates the ID against the identity the
+  remote hub already reported for that row (`Thread.ProjectID` /
+  `Thread.ProjectPath`, above) and the `WorkingDir` field is **optional**, used
+  only as an optional cross-check against that reported identity (never against
+  `identifier.ResolveProject`). The navigation receipt
+  (`navigationChangeHint.Projects`) is keyed by `(source, id)` for the same
+  reason, so a poke for one host's project does not refresh another's. Routing
+  the mutation to the host instead would put the flag on the host hub's store,
+  which the controller's folded navigation does not read; v1 keeps the stores
+  controller-side and namespaces them, and does not pass a remote row through
+  `ResolveProject`.
+  **Implementation status:** both handlers (`app_archive.go`,
+  `app_favorite.go`) and both param structs (`appwire/types.go`) are the
+  unqualified shape today; the source field, store namespacing, and the
+  non-local validation rule are the implementing PR's requirement, not a
+  present fact.
   **`annotateThreadProjects` must not overwrite a validated non-local
   identity.** The merged thread-list path (and the thread-read and
   lifecycle/start responses) runs `annotateThreadProjects`
@@ -357,11 +398,19 @@ only `local`, so the fan-out currently degenerates to one source.
   path completion (`evener/paths/complete`), path validation
   (`evener/path/validate`), directory creation (`evener/dirs/create`), launch
   resolution/schema (`evener/launch/resolve`), recent projects
-  (`evener/projects/recent`), and the spawn slash catalog
-  (`evener/spawn/slashCatalog`) — are host-dependent and must be issued against
+  (`evener/projects/recent`), the spawn slash catalog
+  (`evener/spawn/slashCatalog`), the branch/location chip's git HEAD read
+  (`evener/git/head`, `frontend/src/shell/gitLocation.ts`), the plugin-preview
+  panel (`evener/plugin/preview`, `panes/spawn/usePluginPreview.ts`), and the
+  provider-instance list the provider setup reads (`evener/instance/list`,
+  `stores/credentials.ts`) — are host-dependent and must be issued against
   the selected host, not left controller-scoped, or a remote launch is
   validated against the wrong machine (a controller-local path accepted for a
-  remote spawn, the controller's model/harness list).
+  remote spawn, the controller's model/harness list, its git repository's
+  branch, its plugin diagnostics and provider instances). A remote working
+  directory's `evener/git/head` read against the controller's filesystem shows
+  the wrong branch (or none), and the plugin/instance reads describe the wrong
+  machine's configuration.
   **The routing mechanism is the host-scoped request envelope
   `evener/host/request`** (component 07, §"Proxy method"): each call is wrapped
   as `{host: <selected source ID>, method: "<method>", params: <the call's
@@ -399,7 +448,15 @@ only `local`, so the fan-out currently degenerates to one source.
   component 04's `Ensure` and surface its progress and failure: an attach flips
   `Online` (via the attach event, §2b) and makes the host selectable, and a
   failure shows the manager's error (the offline refusal below), not a silently
-  disabled control. Nothing else attaches a host on the user's behalf.
+  disabled control. Nothing else attaches a host on the user's behalf — in
+  particular the background snapshot stays attached-only
+  (§"Background snapshot"). Because the host's hub may not be running yet, this
+  action is also the trigger for component 04's **first-attach bootstrap**
+  (component 04 §5): `Ensure` starts the stopped hub, waits for its
+  `/api/health` `version` to match the expected build, and only then attaches,
+  so a clean or stopped host can reach `Online:true` from the one promised host
+  action. A start that never becomes healthy is the failure the action
+  surfaces.
 - **Action gating**: a session row on an offline host must not offer host
   actions. The server-side `Rename` flag already excludes non-local rows
   (`web_api_tree.go`), so at minimum the read-only host rows
@@ -555,12 +612,19 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
 9. A configured-but-never-attached host is not dead UI: its first host action
    initiates attachment (component 04's `Ensure`) and surfaces progress and
    failure; on success the host reports `Online:true` and is selectable for a
-   spawn, and no other path attaches a host implicitly.
+   spawn, and no other path attaches a host implicitly. For a host whose hub is
+   stopped, the same action drives component 04's bootstrap (start + health
+   wait) rather than failing at the first dial.
 10. Every host-dependent discovery/validation call the spawn form makes (model,
     harness, path completion/validation, launch resolution, recent projects,
-    slash catalog) is issued against the selected host, so a remote launch is
-    validated against the remote's filesystem and capabilities, not the
-    controller's.
+    slash catalog, git HEAD, plugin preview, provider-instance list) is issued
+    against the selected host, so a remote launch is validated against the
+    remote's filesystem and capabilities, not the controller's; the component-07
+    allow-list enumerates exactly this set (plus its admin families).
+11. Favorite and archive actions carry the owning source: two hosts' projects
+    with the same ID (or path) hold separate favorite/archive keys, and a
+    project archive on a non-local host succeeds without resolving
+    `params.WorkingDir` against the controller's filesystem.
 
 ## PR size estimate (LOC)
 
