@@ -2,12 +2,14 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/hubapi"
 )
 
 // defaultHubAddr is the host hub's default loopback listen address
@@ -168,26 +170,26 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 // one holds hub.lock: the bare path waits for the port to clear before
 // relaunching.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight) error {
+	expected := m.opts.controllerVersion()
 	sup := m.detectSupervisor(ctx, host, facts)
 	if sup.kind != supervisorNone {
 		remote := sup.restartRemote()
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-		// launchd's `kickstart -k` can report failure even when the restart
-		// took (scripts/ops/deploy-hub.sh); the health probe is the real check,
-		// so a nonzero restart exit is only an error if the hub stays unhealthy.
-		if herr := m.waitHealthy(ctx, host); herr != nil {
-			if err != nil {
-				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, err, tail(out))
-			}
-			return herr
+		if err != nil {
+			// Surface the restart command's own failure even when the hub would
+			// answer a health probe: a healthy response alone cannot prove the
+			// restart took (the old process stays healthy through a failed
+			// `systemctl restart` when the user lacks sudo/polkit), so swallowing
+			// this cause is what let a failed restart look like success.
+			return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, err, tail(out))
 		}
-		return nil
+		return m.waitHealthy(ctx, host, expected)
 	}
 
 	if err := m.restartBare(ctx, host); err != nil {
 		return err
 	}
-	return m.waitHealthy(ctx, host)
+	return m.waitHealthy(ctx, host, expected)
 }
 
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
@@ -272,21 +274,45 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 	return err != nil || strings.TrimSpace(string(out)) == ""
 }
 
-// waitHealthy polls the host hub's /api/health until it answers or the bound is
-// exhausted. This is the authoritative restart check: supervisor commands can
-// misreport, but a healthy endpoint proves a fresh hub is serving.
-func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host) error {
+// waitHealthy polls the host hub's /api/health until the response reports
+// expectedVersion or the bound is exhausted. The expected version is what makes
+// this the authoritative restart check: any hub answer proves a hub is serving,
+// but only the expected version proves the *deployed* build is the one running.
+// Accepting a bare healthy response would mask a failed restart (the old hub
+// still answering) and could attach to the dying old process during its
+// shutdown drain, tearing down the fresh channel.
+func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
 	port := hubPort(m.opts.hubAddr())
 	remote := "curl -fsS localhost:" + port + "/api/health"
+	var lastVersion string
 	for range restartHealthAttempts {
-		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil && strings.TrimSpace(string(out)) != "" {
-			return nil
+		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
+			if got, ok := parseHealthVersion(out); ok {
+				if got == expectedVersion {
+					return nil
+				}
+				lastVersion = got
+			}
 		}
 		if err := m.opts.waitSleep(ctx, restartHealthInterval); err != nil {
 			return err
 		}
 	}
+	if lastVersion != "" {
+		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, lastVersion, expectedVersion)
+	}
 	return fmt.Errorf("%w: host %q hub not healthy on :%s after restart", ErrRestart, host.Name, port)
+}
+
+// parseHealthVersion reads the running version from a /api/health body. A body
+// that is not the hub's HealthResponse JSON is not usable evidence, so it is
+// reported as absent rather than as whatever the version field decoded to.
+func parseHealthVersion(out []byte) (string, bool) {
+	var resp hubapi.HealthResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", false
+	}
+	return resp.Version, true
 }
 
 // relaunchCommand builds the detached remote relaunch. It appends to the

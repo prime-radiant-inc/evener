@@ -171,7 +171,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 				record("restart")
 				return nil, nil
 			case strings.Contains(joined, "api/health"):
-				return []byte(`{"ok":true}`), nil
+				return []byte(`{"version":"newsha"}`), nil
 			case strings.Contains(joined, "cat >"):
 				record("push")
 				if stdin != nil {
@@ -316,5 +316,100 @@ func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 	}
 	if got := len(fr.recordedRuns()); got != 1 {
 		t.Fatalf("Run calls = %d, want 1 (pid discovery only)", got)
+	}
+}
+
+// supervisorRestartRunner answers a linux systemd supervisor detection plus the
+// restart command, and scripts the /api/health responses. health is consulted
+// once per probe (0-based) so a test can model a stale hub that keeps answering
+// before handing the port over to the deployed version.
+func supervisorRestartRunner(restartErr error, health func(probe int) ([]byte, error)) (*fakeRunner, *int) {
+	probe := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			return nil, restartErr
+		case strings.Contains(joined, "api/health"):
+			out, err := health(probe)
+			probe++
+			return out, err
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	return fr, &probe
+}
+
+// TestRestartHubRejectsStaleVersion proves the masked-restart failure mode: every
+// health response is a valid hub body but reports the pre-deploy version, so
+// restart verification must not accept it. Before the fix, waitHealthy returned
+// on any non-empty body and restartHub reported success against the stale hub.
+func TestRestartHubRejectsStaleVersion(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) {
+		return []byte(`{"version":"oldsha"}`), nil
+	})
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart (stale version must fail the restart)", err)
+	}
+	if !strings.Contains(err.Error(), "oldsha") || !strings.Contains(err.Error(), "newsha") {
+		t.Fatalf("error does not name the stale and expected versions: %v", err)
+	}
+}
+
+// TestRestartHubSurfacesFailedRestartCommand proves a failed restart command is
+// surfaced even when the health endpoint reports the expected version: a
+// healthy-looking hub must not mask the command that failed to restart it.
+func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	restartErr := errors.New("exit status 1")
+	fr, _ := supervisorRestartRunner(restartErr, func(int) ([]byte, error) {
+		return []byte(`{"version":"newsha"}`), nil
+	})
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart (failed restart command must surface)", err)
+	}
+	if !strings.Contains(err.Error(), "systemctl restart") || !errors.Is(err, restartErr) {
+		t.Fatalf("error does not name the failed restart command: %v", err)
+	}
+}
+
+// TestRestartHubWaitsForOldHubToHandOver proves the graceful-shutdown race is
+// closed: the first health responses come from the old, still-draining hub and
+// only a later probe reports the deployed version. Verification must ignore the
+// stale responses and keep polling, not attach on the first answer.
+func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr, probes := supervisorRestartRunner(nil, func(probe int) ([]byte, error) {
+		if probe < 2 {
+			return []byte(`{"version":"oldsha"}`), nil
+		}
+		return []byte(`{"version":"newsha"}`), nil
+	})
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}); err != nil {
+		t.Fatalf("restartHub: %v", err)
+	}
+	if *probes < 2 {
+		t.Fatalf("health probes = %d, want >= 2 (the stale response must not satisfy verification)", *probes)
 	}
 }
