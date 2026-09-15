@@ -18,7 +18,8 @@ over an SSH channel with no additionally exposed port.
      otherwise the host's own `hub.toml addr`, otherwise `127.0.0.1:9180`. A
      wildcard bind address is rewritten to loopback — an empty host, `0.0.0.0`,
      and `localhost` become `127.0.0.1:<port>`, and the IPv6 wildcard `::`
-     becomes `::1:<port>` (a hub bound IPv6-only is not listening on IPv4, so
+     becomes `[::1]:<port>` (`net.JoinHostPort("::1", port)`, so the literal is
+     bracketed for the dial; a hub bound IPv6-only is not listening on IPv4, so
      forcing the family would fail the dial). A client running on the hub host
      always reaches the hub over loopback even when the hub advertises a
      wildcard; `localhost` is rewritten to the literal `127.0.0.1` so a poisoned

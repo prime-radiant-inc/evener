@@ -167,6 +167,37 @@ struct, or open a per-host browser WebSocket (`/rpc?host=…`). A wrapper method
 one protocol row and one handler and leaves the ~40 param structs untouched; a
 per-host socket would multiply the browser handshake. See "Open questions".
 
+### Notification envelope
+
+The controller re-emits each config notification it owns to its browser clients
+tagged with the source host, through a wrapper method symmetric with
+`evener/host/request`:
+
+```go
+// evener/host/notification — re-emits one host-owned config notification.
+type HostNotificationParams struct {
+    Host   string          `json:"host"`   // component-03 source ID
+    Method string          `json:"method"` // the original notification method
+    Params json.RawMessage `json:"params,omitempty"`
+}
+```
+
+- `Method` is one of the config notifications named in §Scope
+  (`evener/auth/updated`, `evener/launch/updated`,
+  `evener/marketplace/updated`, `evener/plugin/updated`,
+  `evener/settings/agentsDoc/changed`); the fan-out must not wrap any other
+  notification. `notifyInstanceUpdated`'s reuse of `evener/auth/updated` carries
+  through unchanged as the wrapped `Method` (§Scope).
+- `Host` is always present and is the only way a store tells two hosts apart.
+- **Compatibility.** Local notifications keep their existing method and params
+  (the `notifyAuthUpdated`/`notifyLaunchUpdated`/… `BroadcastAll` path is
+  unchanged); the wrapper is used **only** for remote hosts. A store that is not
+  host-scoped therefore never sees remote traffic and cannot misapply it, and an
+  existing handler for a bare `evener/auth/updated` keeps firing for the local
+  host only. The host-scoped stores added in 07b subscribe to
+  `evener/host/notification` and apply a payload only when `Host` equals the
+  currently selected host.
+
 ### Credential push method
 
 New hub-scoped method on the controller:
@@ -288,7 +319,8 @@ Decompose component 07 into four landable PRs.
   race it and each would silently drop notifications the other needs. The broker
   hands this component each notification (or a copy on its own buffered
   channel), and the admin fan-out re-emits the config notifications it owns to
-  the controller's browser clients tagged with the host. The existing broadcast
+  the controller's browser clients through the `evener/host/notification`
+  envelope (§"Notification envelope"). The existing broadcast
   helpers (`notifyAuthUpdated`, `notifyLaunchUpdated`,
   `notifyMarketplaceUpdated`, `notifyPluginUpdated`) are the model for the
   controller-side notification shape; `notifyInstanceUpdated` is *not* a
@@ -309,7 +341,9 @@ Decompose component 07 into four landable PRs.
   otherwise.
 - The browser client is `src/protocol/client.ts`; a wrapped request still uses
   the existing `request(method, params)` surface, so the change is at the store
-  boundary, not the transport.
+  boundary, not the transport. The same stores subscribe to
+  `evener/host/notification` (§"Notification envelope") and refresh only when
+  the notification's `Host` matches the selected host.
 
 ### PR 07c — credential push
 
@@ -484,9 +518,12 @@ only one with a new RPC surface and should land first.
   client per host? A shared client is cheaper but couples the two components'
   lifecycles; a second client doubles the SSH channels. This spec assumes a
   shared, exposed client.
-- **Notification tagging.** The exact wire shape for a host-tagged
-  `evener/auth/updated` (new field vs a distinct method name) is not fixed here;
-  the frontend stores must be able to ignore or apply it per selected host.
+- **Notification tagging (resolved).** Host-tagged notifications use the
+  `evener/host/notification` wrapper `{host, method, params}`
+  (§"Notification envelope"), not a new field on each config notification's
+  params. Local notifications are unchanged; only remote re-emissions are
+  wrapped, so a store that does not subscribe to the wrapper sees only local
+  traffic.
 - **Value identity.** `AuthStatusResponse` never returns the key, so `updated`
   is reported even for an identical value. Is that acceptable, or should the
   host's `apiKey/set` gain a compare-and-set / value-hash so the report can say

@@ -95,6 +95,8 @@ func New(reg *hostreg.Registry, opts Options) *Manager
 
 // Ensure returns a connected, initialized channel for host, spawning ssh,
 // preflighting/deploying/version-matching as needed. Idempotent while attached.
+// ctx bounds this attempt (preflight + handshake), not the channel's lifetime;
+// the receive loop runs on a manager-owned context (see §2).
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error)
 
 // Attached reports whether host currently has a live, not-closed channel.
@@ -203,8 +205,8 @@ ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   the `hub attach --stdio` words and the `--config`/`--addr` values
   (`evenerCommandArgv` in `runner.go`), the `lsof`/`ps`/`kill` pids and ports,
   the recovered log path, supervisor labels, and the recovered `ps -o command=`
-  argv (which is re-parsed by the remote shell as one quoted word,
-  `relaunchCommand`). `evener_path`, `config_path`, `addr`, and `HOME`-derived
+  argv (each word quoted individually by `relaunchCommand`, never handed to
+  `sh -c`). `evener_path`, `config_path`, `addr`, and `HOME`-derived
   paths are all registry- or host-derived and must be quoted wherever they reach
   the remote shell; the recovered argv is exactly the case that proves bare
   interpolation is unsafe.
@@ -350,22 +352,34 @@ The manager is **lazy and event-publishing, not a registry owner**:
      while the on-disk binary preflighted clean: restart the hub once and
      re-attach (§5). Only a mismatch that survives that restart is terminal
      `ErrProtocolIncompatible`.
-- Keepalive **and a receive-inactivity deadline**: `StreamTransport` does not
-  implement `Pinger` (`appwire/stream_transport.go`), so the client keepalive
-  loop skips it, and the ssh `ServerAliveInterval`/`ServerAliveCountMax` on the
-  argv prove only that the *ssh server* is alive — not that the remote hub is
-  still answering AppWire. A `Recv` blocked on a half-open channel is therefore
-  indistinguishable from a healthy idle connection, and without a bound the
-  supervisor never observes link-down. Rule: the manager must bound receive
-  inactivity, either by making `StreamTransport` implement `appwire.Pinger` (so
-  the client's existing keepalive sends an application-level ping and a missed
-  pong is decisive) or with a watchdog that closes the transport and reports
-  link-down after a defined receive-inactivity deadline measured from the last
-  frame. Today's `linkMonitor`/`Channel.markLost` (`sshconn/manager.go`) fires
-  only on a read error, so this deadline is a requirement for the implementing
-  PR, not a present fact. Liveness otherwise comes from (a) the ssh child/NIC
-  failing, (b) `Recv` returning `io.EOF`/error, (c) the ssh-level keepalive, and
-  (d) that deadline; child exit or a stalled `Recv` is link-down.
+- **Context ownership is split, and that split is normative.** `Ensure(ctx, …)`
+  uses the caller's `ctx` only for *this attempt* — preflight, the `Initialize`
+  handshake, and any deploy/restart — bounded by `attemptLimit()` and, for the
+  initial attach, tied to the manager's lifetime (`context.AfterFunc(m.baseCtx,
+  cancel)`), so a canceled or timed-out request aborts the attempt rather than
+  being ignored. The channel's *lifetime* is manager-owned: `attach` starts the
+  client receive loop on the manager's own context (`client.Start(m.baseCtx)`,
+  `manager.go`), which outlives every request and is canceled only by
+  `Manager.Close` (or by the transport closing when the link dies). Passing the
+  caller's request-scoped context to `Client.Start` is the defect this contract
+  forbids: it would kill an otherwise reusable connection the moment the request
+  that opened it returns.
+- Keepalive is **ssh's own, and silence is not failure**. `StreamTransport`
+  deliberately does not implement `Pinger` (`appwire/stream_transport.go`), so
+  the client keepalive loop skips it; the `ServerAliveInterval`/
+  `ServerAliveCountMax` on the argv are the only keepalive and they prove the
+  *ssh server* is alive. Liveness is therefore observed through (a) the ssh
+  child exiting — the bridge exits when its WebSocket to the remote hub closes,
+  and the child's `Wait` runs `Channel.markLost` (`manager.go`), (b) `Recv`
+  returning `io.EOF`/error, which `linkMonitor` turns into `markLost`, or (c)
+  the ssh-level keepalive declaring the peer dead. **A silent idle hub is not a
+  dead link**: a healthy remote hub may send no frame for long stretches, so the
+  manager must never treat receive silence on its own as link-down — there is
+  **no receive-inactivity deadline**. An application-level liveness probe is
+  deliberately not part of this component; if one is ever added it must be an
+  active request/response (making `StreamTransport` implement `appwire.Pinger`,
+  so a missed pong is decisive), never a passive watchdog that disconnects an
+  idle channel.
 - Reconnect: on link-down, transition to `reconnecting`, close the old stream,
   and retry `Ensure` with bounded exponential backoff and jitter. Re-attach is a
   fresh bridge/client against the still-running hub; it never starts a second hub
@@ -610,7 +624,8 @@ deploy landed.
   4. the listening socket matches the configured `addr` (host and port)
      **after the same wildcard→loopback normalization the bridge applies**
      (component 02, `loopbackAddr`): `0.0.0.0:<port>` and `:<port>` are compared
-     as `127.0.0.1:<port>`, and `::` as `::1:<port>`. Requiring the literal
+     as `127.0.0.1:<port>`, and `::` as `[::1]:<port>` (`net.JoinHostPort`, so
+     the IPv6 literal is bracketed). Requiring the literal
      wildcard spelling would refuse every wildcard-bound hub — the common case,
      and the spike's m4 bound `*:9180` — stranding a host whose binary was
      already replaced. The same normalization applies to the supervisor "owns the
@@ -636,19 +651,26 @@ deploy landed.
   2. **Ad hoc hub** — the documented recipe
      (`docs/evener-hub-remote-operations.md` §"Restarting an ad hoc Hub"):
      find the PID listening on the hub port
-     (`lsof -ti :<port> -sTCP:LISTEN`), recover its exact argv
-     (`ps -p <pid> -ww -o command`) and log (`lsof -p <pid> -a -d 1,2`), `kill`
+     (`lsof -ti :<port> -sTCP:LISTEN`), recover its command line
+     (`ps -p <pid> -ww -o command=`) and log (`lsof -p <pid> -a -d 1,2`), `kill`
      it (SIGTERM; the graceful drain is capped at ~5s), **wait for the port to
-     clear**, then relaunch detached with the recovered argv, appending to the
-     recovered log (`nohup <argv> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
+     clear**, then relaunch detached, appending to the recovered log
+     (`nohup <quoted argv…> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
      Every host-derived word in these commands is shell-quoted (the pid, the
-     port, the log path), and the recovered argv is handed to `sh -c` as a single
-     quoted word because the remote shell must re-parse it as one command
-     (`relaunchCommand`, `sshconn/version.go`) — §"Quoting rule" above. `ps`
-     runs with `-o command=` so the `COMMAND` header can never become part of the
-     relaunched argv, with a header-stripping guard as the defensive half
-     (`stripPSHeader`).
+     port, the log path), and the recovered command line is **never re-parsed as
+     shell code**. `hubArgvFromCommandLine` (`sshconn/version.go`) tokenizes it
+     (`tokenizeCommandLine`, honoring single/double quotes and backslash escapes
+     and refusing any *unquoted* shell metacharacter), then requires
+     `path.Base(argv[0]) == "evener"` and a `hub` word in the remaining argv;
+     anything else is refused with `ErrRestart` and **no `kill`**. When the
+     recovered argv carries an `--addr`/`-addr`, its port must agree with the
+     probed port (`hubAddrFlag`/`hubPort`) or the restart is refused: a process
+     that merely holds the port is never killed and relaunched. `relaunchCommand`
+     then quotes **each** recovered word individually — the `nohup`, the
+     redirection, and the backgrounding are ours, not the host's. `ps` runs with
+     `-o command=` so the `COMMAND` header can never become part of the relaunched
+     argv, with a header-stripping guard as the defensive half (`stripPSHeader`).
   3. Either path then verifies on the host through `/api/health` (above) before
      re-attaching.
   A relaunch that lands in the stop/start gap loses the lock race (the ops
@@ -736,11 +758,12 @@ with the remote hub and its daemons still running.
   the installer path `install.sh:124-130`) → `ErrDeploy`; the existing binary on
   the host is left untouched (temp-name + atomic `mv`).
 - **Unverifiable restart target** → `ErrRestart` and **no restart**: the listener
-  is not provably this host's hub (more than one listener, argv that is not an
-  evener hub, a different user, or a socket that does not match the configured
-  `addr`), or the address/config path is not known well enough to match. A
-  collision or a stale process must never be killed or relaunched; the operator
-  fixes the entry (`config_path`/`addr`) or the host.
+  is not provably this host's hub (more than one listener, a command line that is
+  not a tokenizable `evener hub` invocation, an `--addr` port that disagrees with
+  the probed port, a different user, or a socket that does not match the
+  configured `addr`), or the address/config path is not known well enough to
+  match. A collision or a stale process must never be killed or relaunched; the
+  operator fixes the entry (`config_path`/`addr`) or the host.
 - **Restart failure** → `ErrRestart`; the manager stays `disconnected` and the
   next `Ensure` retries. A hub that fails to start leaves `hub.lock` free, so a
   retry is safe; if the old hub could not be stopped, surface that explicitly
@@ -786,8 +809,11 @@ with the remote hub and its daemons still running.
 - **Restart-target tests.** Fake runner answers `lsof`/`ps` with (a) one listener
   whose argv is an evener hub as the configured user → restart proceeds;
   (b) two listeners on the port; (c) an argv that is not an evener hub;
-  (d) a different user; (e) a socket on another address → all four of (b)–(e)
-  return `ErrRestart` with **no** `kill` and no relaunch argv in the runner log.
+  (d) a different user; (e) a socket on another address; (f) a command line with
+  an unquoted shell metacharacter or an unterminated quote; (g) an evener hub
+  whose `--addr` port disagrees with the probed port → every case (b)–(g)
+  returns `ErrRestart` with **no** `kill` and no relaunch argv in the runner log.
+  Tokenizer unit tests cover quotes/escapes and each refusal.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
   ad hoc path, never "first match".
 - **Health-verification tests.** Fake runner returns a body from the old build
@@ -816,14 +842,15 @@ with the remote hub and its daemons still running.
   containing a quote) each arrive as exactly one word rather than splitting or
   executing. Assert the probe commands (`uname`, `printenv`, `launchctl list`,
   `systemctl list-units`) are passed unquoted and verbatim, so the deliberate
-  exception cannot be "fixed" away.
+  exception cannot be "fixed" away. Assert the relaunch command quotes each
+  recovered word and contains **no** `sh -c`.
 - **Reconnect test.** Fake link drops (`io.EOF` / child exit) → assert backoff
   schedule, a fresh `Start`, and that no `hub` start was issued (re-attach, not
   a second hub).
-- **Receive-inactivity test.** A fake stream that stays open but emits no frame
-  for the deadline → the manager closes the transport, reports link-down, and
-  enters `reconnecting`, rather than sitting in `attached`; a stream that keeps
-  sending frames (or answers an application-level ping) stays attached.
+- **Idle-channel test.** A fake stream that stays open and emits no frame while
+  its ssh child is alive → the manager stays `attached` (receive silence alone
+  is not link-down, and there is no inactivity deadline). A stream whose child
+  exits, or whose `Recv` returns `io.EOF`/error, drops to `reconnecting`.
 - **Live, environment-gated.** One test guarded by `EVENER_SSH_E2E=1` *and* an
   explicit host (e.g. `EVENER_SSH_E2E_HOST`) against a disposable host: preflight,
   deploy-if-needed, attach, `initialize`, `thread/list` — the spike's proven
@@ -865,13 +892,15 @@ with the remote hub and its daemons still running.
    `2026-09-14-multi-host-spikes-findings.md:27-33`).
 9. A restart refuses (`ErrRestart`, no kill, no relaunch) when the listener on
    the configured address is not provably this host's hub: several listeners,
-   argv that is not an evener hub, another user, or a socket mismatch.
+   a command line that is not a tokenizable `evener hub` invocation, an `--addr`
+   port that disagrees with the probed port, another user, or a socket mismatch.
 10. Lifecycle events never change registry membership: with `OnEvent` wired to a
     counter, attach/detach transitions change `Attached` and emit events, and
     `appsource.Registry.All()` is untouched.
-11. A blocked `Recv` on a half-open channel is bounded: after the
-    receive-inactivity deadline the manager closes the transport and enters
-    `reconnecting` instead of reporting a healthy idle attachment.
+11. A silent but healthy channel stays `attached` (receive silence alone is not
+    link-down, and there is no receive-inactivity deadline). Link-down is
+    detected from the ssh child's exit or a `Recv` error/`EOF`, and either
+    enters `reconnecting`.
 12. The restart verification compares `started_at` against the host-side
     timestamp captured before the restart, not the controller's clock, so a
     skewed host clock neither accepts a stale process nor rejects a fresh one.
@@ -943,14 +972,14 @@ from the component-03 registry.
   ad hoc hub relaunches with `nohup <argv> >> <log> 2>&1 </dev/null &`,
   preserving the recovered log (ops doc §"Restarting an ad hoc Hub").
   A first-class systemd/launchd unit for hosts that have none is still open.
-- **Keepalive ownership (settled as a requirement).** `ssh -o
-  ServerAliveInterval` alone is insufficient: it proves only the ssh server is
-  alive, so a blocked `Recv` on a half-open channel looks healthy. The manager
-  must bound receive inactivity, either with an AppWire-level ping
-  (`StreamTransport` implementing `Pinger`, currently deferred in
-  `appwire/stream_transport.go`) or a receive-inactivity watchdog (§"Channel +
-  reconnect"). Which of the two is an implementation choice; that one lands is
-  the contract.
+- **Keepalive ownership (settled).** Keepalive is `ssh -o
+  ServerAliveInterval`/`ServerAliveCountMax`; `StreamTransport` deliberately does
+  not implement `Pinger` (`appwire/stream_transport.go`), so there is no
+  application-level ping. A passive receive-inactivity deadline is **not** part
+  of the contract: a healthy hub may be silent for long stretches, and silence
+  alone must not be read as link-down. Link-down is the ssh child exiting, a
+  `Recv` error/`EOF` (`linkMonitor`/`Channel.markLost`), or the ssh-level
+  keepalive firing (§"Channel + reconnect").
 - **`evener_path` empty semantics (resolved).** Empty means "resolve `evener` on
   the remote `PATH`" for the invocation; the push deploy resolves the absolute
   install target with `command -v evener` + `readlink -f` (`sshconn/deploy.go`,

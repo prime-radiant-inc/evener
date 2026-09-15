@@ -9,6 +9,12 @@ connection manager, remote hub source).
 Owner surface: `cmd/evener-hub` (Go) and `cmd/evener-hub/frontend/src`
 (TypeScript). One PR-sized change, plus optional follow-up splits noted below.
 
+**Implementation status.** The Go half (06a) is implemented on
+`multi-host-pr06a-fleet-view-go` and is **pending merge, not on `main`**: the
+`sourceOnline`/`appsource.OnlineSource` interface and the truthful `Online` flag
+it drives do not exist on `main`. The frontend half (06b) is on
+`multi-host-pr06b-fleet-view-ui`.
+
 ## Purpose
 
 Make the hub's single navigation surface present every configured host as a
@@ -85,12 +91,16 @@ Rules this component must satisfy:
 - `Online` must be `true` only while the source's connection state says the
   host is attached and healthy (component 05's optional online interface reads
   it from the SSH connection manager); `false` for a configured-but-down host.
-  A source that reports no state defaults to online. **Shipped in 06a:**
-  `sourceOnline` (`cmd/evener-hub/web.go`) type-asserts
-  `appsource.OnlineSource` and defaults to true when the source does not
+  A source that reports no state defaults to online. **Implemented on
+  `multi-host-pr06a-fleet-view-go`, pending merge (none of these symbols is on
+  `main`):** `sourceOnline` (`cmd/evener-hub/web.go`) type-asserts
+  `appsource.OnlineSource` (also new on that branch,
+  `internal/appsource/online.go`) and defaults to true when the source does not
   implement it; `apiTreeSources` uses it for remote entries, and the live-row
   computation gates on `appThreadTreeLive` plus `sourceOnline` as well, so a
-  down host's rows are not presented as live.
+  down host's rows are not presented as live. (`apiTreeSources` and
+  `appThreadTreeLive` themselves already exist on `main`; the `sourceOnline`
+  wiring and gating are 06a's delta.)
 - `Label` is bounded by `maxNavigationLabelRunes` (`navigation_schema.go`);
   host labels are short, so truncation is a safety net, not a design point.
 - The manifest `sources` array is capped at **64 entries including `local`**

@@ -4,6 +4,12 @@ Parent: `2026-09-14-multi-host-evener-design.md` (§3, §4 item 3, §5 item 1).
 Sibling: `2026-09-14-multi-host-02-attach-bridge.md`.
 Spikes: `2026-09-14-multi-host-spikes-findings.md`.
 
+**Implementation status.** The `hostreg` package, `validateHostConfigs`, and the
+`hub.toml` `[[hosts]]` decoding are on `main`. The `sshconn` connection manager
+and the `hubcore.WebConfig` `RemoteHost*` wiring this spec also describes are
+implemented on `multi-host-pr04a-ssh-channel`/`multi-host-pr06a-fleet-view-go`
+and are **pending merge, not on `main`** — do not read them as shipped.
+
 ## Purpose
 
 Define how a controller hub learns which remote hosts it may manage: the
@@ -223,14 +229,15 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    `appwire.ParseRef` on a synthetic `name + ":x"` ref (`refs.go`).
    **Important gap this component must close:** `ParseRef` only rejects `..` in
    the *thread* part (`refs.go`); the source part is checked against the
-   pattern alone (`refs.go`), and `..` *matches* `[A-Za-z0-9._~-]+`. So
-   `validateHostConfigs` must additionally reject any `name` containing `..`
-   and any `name` that is empty or `"local"`. Document that the stricter `..`
-   rule is ours because names also appear in URL paths.
+   pattern alone (`refs.go`), and both `"."` and `..` *match*
+   `[A-Za-z0-9._~-]+`. So `validateHostConfigs` must additionally reject any
+   `name` equal to `"."` or containing `..`, and any `name` that is empty or
+   `"local"`. Document that the stricter `.`/`..` rules are ours because names
+   also appear in URL paths and as filesystem segments.
    **Settled: export `appwire.ValidRefPart`** (the raw grammar only — it keeps
    one source of truth and keeps `hostreg` free of hub imports, which the type
    boundary above requires). It deliberately does **not** apply the `..` rule;
-   `hostreg.ValidateName` layers the reserved-name and `..` checks on top.
+   `hostreg.ValidateName` layers the reserved-name, `.`, and `..` checks on top.
 
 3. **Registry + cycle rejection** — new package
    `cmd/evener-hub/internal/hostreg`.
@@ -287,18 +294,23 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      §Open questions item 4); until then a multi-hop cycle is not refused and
      configuration is acyclic by convention only.
 
-4. **Wiring** — as shipped (settled): `cmd/evener-hub/main.go` converts
-   `cfg.Hosts` into `[]hostreg.Host` and calls `hostreg.New` once at startup,
-   then builds the component-04 manager over that registry
-   (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same converted
-   entries travel through `hubcore.WebConfig` as `RemoteHosts`, together with
-   the component-04 seams `RemoteHostClient` (returns the current
+4. **Wiring** (design settled; **implementation pending merge, not on `main`**):
+   `cmd/evener-hub/main.go` converts `cfg.Hosts` into `[]hostreg.Host` and calls
+   `hostreg.New` once at startup, then builds the component-04 manager over that
+   registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
+   converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
+   together with the component-04 seams `RemoteHostClient` (returns the current
    `ch.Client()`), `RemoteHostFacts` (the channel's `Preflight()`), and
    `RemoteHostOnline` (`sshManager.Attached`); `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
-   startup (§"Source registration hook"). No other `WebConfig` field is
-   touched. (The earlier revision's `Hosts *hostreg.Registry` field is not the
-   shipped shape.)
+   startup (§"Source registration hook"). No other `WebConfig` field is touched.
+   (The earlier revision's `Hosts *hostreg.Registry` field is not the
+   implemented shape.) **Implementation status:** the `hostreg` package and
+   `hostreg.New` are on `main`; the `sshconn` manager and the
+   `hubcore.WebConfig` `RemoteHosts`/`RemoteHost{Client,Facts,Online}` fields are
+   implemented on the component branches (`multi-host-pr04a-ssh-channel`,
+   `multi-host-pr06a-fleet-view-go`) and are **pending merge** — they do not
+   exist on `main`, so this wiring must not be read as shipped.
 
 ## Data flow
 
@@ -353,15 +365,17 @@ Unit tests, all without a hub or network:
   for the missing-file case (`config.go` behavior).
 - `hostreg` package tests: `New` rejects a duplicate; `Add` rejects each named
   error; a self-edge (`m4` upstream `m4`) and a two-node cycle (`a` upstream of
-  `b`, then adding `a` with upstream `b`) return `ErrHostCycle`; `All()` is
-  name-sorted (mirroring `appsource.Registry.All`, `registry.go`);
-  the registry is safe for concurrent `Get`/`All`.
+  `b`, then adding `a` with upstream `b`) return `ErrHostCycle` **through
+  `AddWithUpstreams`/`SetUpstreams`**, not `Add` (which passes no upstreams, so
+  it can never reach `checkCycleLocked`; see §"Host registry"); `All()` is
+  name-sorted (mirroring `appsource.Registry.All`, `registry.go`); the registry
+  is safe for concurrent `Get`/`All`.
 - A host-count boundary test: 63 remote entries load; 64 fail with
   `ErrTooManyHosts` (the `local` entry is the 64th manifest source).
 - A ref-grammar parity test: for a corpus of names, assert
   `hostreg` accepts exactly the names `appwire.ParseRef(name+":x")` accepts,
-  minus the `..` and `local` cases we deliberately exclude. This pins the
-  grammar to `refs.go` rather than a duplicated regex.
+  minus the `.`, `..`, and `local` cases we deliberately exclude. This pins
+  the grammar to `refs.go` rather than a duplicated regex.
 - No fuzz target is required for this PR; the parser is exercised indirectly by
   the existing `config` loading and is table-driven here.
 
@@ -371,8 +385,9 @@ Unit tests, all without a hub or network:
    error and yields zero hosts.
 2. `[[hosts]]` decodes into `Config.Hosts` via the existing
    `LoadConfig`/`toml.Decode` path (`config.go`).
-3. An invalid `name` (fails `refPartPattern`, contains `..`, or equals `local`)
-   makes `LoadConfig` fail with a wrapped sentinel naming the entry.
+3. An invalid `name` (fails `refPartPattern`, equals `"."`, contains `..`, or
+   equals `local`) makes `LoadConfig` fail with a wrapped sentinel naming the
+   entry.
 4. Duplicate names fail. A cycle is refused with `ErrHostCycle` only through an
    explicit upstream list — `hostreg.AddWithUpstreams` (or `SetUpstreams` for an
    already-registered host) — and does not mutate the registry.
@@ -420,8 +435,9 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
   deferral.
 - **Where the registry is built (settled).** `main.go`, before the web server,
   passed through `hubcore.WebConfig` as `RemoteHosts`/`RemoteHostClient`/
-  `RemoteHostFacts`/`RemoteHostOnline` — which is what the shipped stack does
-  (§Implementation approach item 4). `newHubSourceRegistry` consumes
+  `RemoteHostFacts`/`RemoteHostOnline` — the wiring described in §Implementation
+  approach item 4, which is **pending merge** (see the header note), not on
+  `main`. `newHubSourceRegistry` consumes
   `cfg.RemoteHosts`; `NewWebServer` never reads `hub.toml`.
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
