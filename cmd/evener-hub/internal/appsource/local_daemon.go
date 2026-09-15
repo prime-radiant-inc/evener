@@ -96,8 +96,13 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
 // it has left for good: the roster saw its process or its rendezvous file go.
 // The daemon's own close frame is not guaranteed to reach them (it may be
 // revoked with the connection), and nothing else would. A daemon nobody is
-// relaying has nobody to tell.
-func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry) {
+// relaying has nobody to tell. sessionID is the session the roster resolved
+// for the entry - a legacy entry names none of its own, and its relay session
+// is keyed by the resolved one.
+func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID string) {
+	if sessionID != "" {
+		entry.SessionID = sessionID
+	}
 	ref, err := s.relaySessionRef(entry)
 	if err != nil {
 		return

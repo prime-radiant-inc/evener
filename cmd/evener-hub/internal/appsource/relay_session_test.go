@@ -46,7 +46,13 @@ func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*L
 		}
 		return out
 	}, nil)
-	source.dial = func(_ context.Context, endpoint string, _ *http.Client, _ http.Header) (appwire.Transport, error) {
+	source.dial = relayTestDial(daemon)
+	return source, daemon
+}
+
+// relayTestDial is the scripted daemon's side of a relay dial.
+func relayTestDial(daemon *relayTestDaemon) appwireDialFunc {
+	return func(_ context.Context, endpoint string, _ *http.Client, _ http.Header) (appwire.Transport, error) {
 		daemon.dials.Add(1)
 		var transport *scriptedAppwireTransport
 		transport = newScriptedAppwireTransport(func(_ context.Context, message appwire.Message) error {
@@ -77,7 +83,6 @@ func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*L
 			},
 		}, nil
 	}
-	return source, daemon
 }
 
 type countedRelayTransport struct {
@@ -1753,7 +1758,7 @@ func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
 	if err := call.transport.Close(); err != nil {
 		t.Fatal(err)
 	}
-	source.AnnounceDaemonGone(relayEntry("thread-1"))
+	source.AnnounceDaemonGone(relayEntry("thread-1"), "thread-1")
 
 	select {
 	case delivery := <-deliveries:
@@ -1825,7 +1830,7 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 	// The roster announces the daemon gone while the publisher is still held,
 	// then a reconnect attempt does what it does: advance the epoch, revoking
 	// the current publication fence.
-	source.AnnounceDaemonGone(relayEntry("thread-1"))
+	source.AnnounceDaemonGone(relayEntry("thread-1"), "thread-1")
 	session.mu.Lock()
 	session.advanceEpochLocked()
 	session.mu.Unlock()
@@ -1868,4 +1873,28 @@ func openCommittedRelay(t *testing.T, source *LocalDaemonSource, daemon *relayTe
 		t.Fatal("initial handoff did not commit")
 	}
 	return lease, deliveries, call
+}
+
+// A legacy rendezvous entry names no session; the probe resolved one, and the
+// relay session was keyed by it. The departure announcement must use that
+// resolved id, or it never finds the relay session to tell.
+func TestRelaySessionDaemonGoneReachesALegacyEntryThroughItsResolvedSession(t *testing.T) {
+	legacy := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://thread-1", SourceID: "local", ThreadID: "thread-1"}
+	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}}
+	}, nil)
+	source.dial = relayTestDial(daemon)
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "resolved")
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source.AnnounceDaemonGone(legacy, "resolved")
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the legacy entry's subscriber was never told the daemon is gone")
+	}
 }

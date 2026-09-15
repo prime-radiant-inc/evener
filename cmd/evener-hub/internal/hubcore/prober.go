@@ -63,7 +63,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 				id = entry.ThreadID
 			}
 			if id != "" {
-				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, OK: true}
+				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, ProtocolMismatch: true, OK: true}
 			}
 		}
 		return ProbeResult{}

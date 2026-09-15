@@ -1912,3 +1912,35 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 		t.Fatalf("overlapping refreshes announced %v, want the departure once", announced)
 	}
 }
+
+// mismatchProber answers the way StatusProber does for an incompatible
+// daemon: a restart-required entry, confirmed.
+type mismatchProber struct{ sessionID string }
+
+func (p mismatchProber) Probe(rendezvous.Entry) ProbeResult {
+	return ProbeResult{SessionID: p.sessionID, Status: appwire.ThreadStatusRestartRequired, ProtocolMismatch: true, OK: true}
+}
+
+// A protocol-mismatch answer is not bound to the entry's session - the
+// incompatible process never says which session it serves - so the process
+// behind the PID is asked as for a failed probe: a stale file whose endpoint
+// something incompatible re-bound is not listed as a daemon awaiting restart
+// unless its process is (or may be) the daemon.
+func TestRosterListsARestartRequiredEntryOnlyForItsOwnProcess(t *testing.T) {
+	for _, tc := range []struct {
+		identity ProcessIdentity
+		listed   bool
+	}{{ProcessOwnsEntry, true}, {ProcessIdentityUnknown, true}, {ProcessNotOwner, false}} {
+		dir := t.TempDir()
+		entry := rendezvous.Entry{PID: 1001, SessionID: "01OLD", ThreadID: "01OLD", Protocol: "evener-appwire-v1", Endpoint: "ws://daemon/rpc"}
+		writeRendezvous(t, dir, entry)
+		roster := NewRoster(dir, mismatchProber{sessionID: "01OLD"}).
+			SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return tc.identity })
+		roster.Refresh()
+		live, ok := roster.Find("01OLD")
+		listed := ok && !live.Crashed && live.Status == appwire.ThreadStatusRestartRequired
+		if listed != tc.listed {
+			t.Fatalf("identity %d: listed as restart-required = %v (ok=%v entry=%+v), want %v", tc.identity, listed, ok, live, tc.listed)
+		}
+	}
+}

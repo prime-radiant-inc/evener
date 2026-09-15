@@ -631,7 +631,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			runDir := t.TempDir()
 			cfg := hubcore.WebConfig{
 				StateDir: root, Past: past, RunDir: runDir,
-				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir), ResumeLocks: hubcore.NewResumeLocks(),
 				DaemonProcesses: liveClaimController(),
 			}
 			if tc.fence != nil {
@@ -1787,7 +1787,7 @@ func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
 
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, DeletionStore: store,
-				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir), ResumeLocks: hubcore.NewResumeLocks(),
 			}
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {

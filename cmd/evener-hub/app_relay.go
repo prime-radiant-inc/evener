@@ -720,6 +720,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					if pending.served[target.relayKey] {
 						continue
 					}
+					// A route published but not yet subscribed to has nobody
+					// to hear this yet; it is served once its read releases.
+					if server.SubscriberCount(target.relayKey) == 0 {
+						continue
+					}
 					pending.served[target.relayKey] = true
 					publishTarget(pending.delivery, target)
 				}
@@ -732,9 +737,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					if pending.delivery.DaemonGone {
 						if serveDaemonGone(&pending) {
 							kept = append(kept, pending)
-							continue
 						}
-						acknowledge(pending.delivery)
 						continue
 					}
 					targets, wait := lookupTargets(pending.routingKey, pending.routing)
@@ -757,15 +760,18 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			acceptDelivery := func(delivery appsource.RelayDelivery) {
 				captureRouteChange()
 				if delivery.DaemonGone {
+					// Acknowledged as soon as every subscribed route has it: the
+					// relay session needs the acknowledgement only to release the
+					// capture barrier of a read in flight - and a route still
+					// being bound IS such a read, so holding the acknowledgement
+					// for it would wait on itself. The copy kept for that route
+					// is the hub's own.
 					pending := pendingRelayDelivery{delivery: delivery, routing: relayNotificationUntargeted, served: map[string]bool{}}
-					if serveDaemonGone(&pending) {
-						pendingDeliveries = append(pendingDeliveries, pending)
-						if delivery.Proceed != nil {
-							delivery.Proceed()
-						}
-						return
-					}
+					stillPending := serveDaemonGone(&pending)
 					acknowledge(delivery)
+					if stillPending {
+						pendingDeliveries = append(pendingDeliveries, pending)
+					}
 					return
 				}
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
@@ -1104,7 +1110,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						unregisterPendingStateLocked(handle, state)
 						close(state.done)
 					}
-					resolveRoutesLocked()
+					// The route stays pending past this publication, until the
+					// read releases it (release, below): the appserver installs
+					// the client's subscription only after the read returns, and
+					// a departure announced in between must still reach it.
 					relayMu.Unlock()
 					for _, closeHandle := range closeHandles {
 						closeRelayHandle(closeHandle)

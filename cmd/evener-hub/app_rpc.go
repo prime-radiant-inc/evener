@@ -36,7 +36,9 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	// A daemon that leaves for good is announced by the roster, the one place
 	// that sees its process or its file go; the relay tells that daemon's
 	// subscribers to re-read.
-	roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry) })
+	// The roster's resolved session id is passed along: a legacy entry names
+	// no session of its own, and its relay session is keyed by the resolved one.
+	roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
 	registry.Add(local)
 	return registry
 }

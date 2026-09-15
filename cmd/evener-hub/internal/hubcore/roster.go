@@ -77,7 +77,11 @@ type ProbeResult struct {
 	CompletedJobs         []appwire.EvenerJobInfo
 	Watches               []appwire.EvenerWatchInfo
 	ChildWatches          map[string][]appwire.EvenerWatchInfo
-	OK                    bool
+	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
+	// talk to (restart required). Such an answer names no session of its own,
+	// so it does not vouch for the entry's PID the way a bound answer does.
+	ProtocolMismatch bool
+	OK               bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -542,12 +546,13 @@ func (r *Roster) refresh() error {
 	for _, res := range results {
 		e := res.entry
 		// An answering probe is bound to the entry's session (StatusProber)
-		// and vouches for it; otherwise the process behind the PID is asked
+		// and vouches for it; a protocol-mismatch answer names no session and
+		// vouches for nothing. Otherwise the process behind the PID is asked
 		// once per entry per refresh (see ProcessIdentity for why): gone or
 		// verifiably another process takes the crashed path, never the
 		// unconfirmed one. A roster without a prober asks nothing.
 		identity := ProcessIdentityUnknown
-		if r.prober != nil && !res.OK {
+		if r.prober != nil && (!res.OK || res.ProtocolMismatch) {
 			identity = r.procIdentity(e)
 		}
 		if identity == ProcessNotOwner {
