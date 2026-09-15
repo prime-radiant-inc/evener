@@ -2060,6 +2060,77 @@ func TestCloseDuringReconnectHandshakeEmitsNoFailedEvent(t *testing.T) {
 	}
 }
 
+// Close canceling a reconnect preflight that was in flight must not be reported
+// as a retryable transport failure: that emitted a spurious StateReconnecting
+// and sent the supervisor around another loop iteration during shutdown. The
+// canceled attempt maps to ErrManagerClosed, so the link-drop's own
+// StateReconnecting is the only one and the loop ends.
+func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+
+	var mu sync.Mutex
+	reconnectPreflight := false
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			blocking := reconnectPreflight
+			mu.Unlock()
+			if blocking {
+				enteredOnce.Do(func() { close(entered) })
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	events := make(chan Event, 128)
+	var reconnectings atomic.Int32
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) {
+			if ev.Kind == EventState && ev.State == StateReconnecting {
+				reconnectings.Add(1)
+			}
+			events <- ev
+		},
+		BackoffBase:    time.Millisecond,
+		BackoffMax:     time.Millisecond,
+		sleep:          func(context.Context, time.Duration) error { return nil },
+		jitter:         func(d time.Duration) time.Duration { return d },
+		attemptTimeout: 30 * time.Second,
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	mu.Lock()
+	reconnectPreflight = true
+	mu.Unlock()
+	ch.markLost()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never reached a reconnect preflight")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Close waited for the supervisor, so every event it produced is in hand.
+	// Exactly one StateReconnecting is correct: the link-drop transition in
+	// supervise. The canceled attempt must not add a second.
+	if got := reconnectings.Load(); got != 1 {
+		t.Fatalf("StateReconnecting events = %d, want 1 (the canceled attempt must not retry)", got)
+	}
+	assertNoFailedEvent(t, events)
+	if cur := m.currentChannel("alpha"); cur != nil {
+		t.Fatalf("closed manager kept a channel: %v", cur)
+	}
+}
+
 func assertNoFailedEvent(t *testing.T, events <-chan Event) {
 	t.Helper()
 	for {
