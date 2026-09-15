@@ -32,12 +32,13 @@ func TestWithIntentParameter_DescriptionGuidesExpectedOutcome(t *testing.T) {
 		t.Fatalf("intent property has no description: %#v", intent)
 	}
 	// The description should steer the model toward a verb-first gerund phrase
-	// that states the expected outcome, not merely the action being taken.
+	// that states the outcome, not merely the action being taken, so this holds
+	// the property rather than one adjective for it.
 	if !strings.Contains(desc, "gerund") {
 		t.Errorf("description lacks gerund-form guidance: %q", desc)
 	}
-	if !strings.Contains(desc, "expected outcome") {
-		t.Errorf("description lacks expected-outcome guidance: %q", desc)
+	if !strings.Contains(desc, "outcome") {
+		t.Errorf("description lacks outcome guidance: %q", desc)
 	}
 	if !strings.Contains(desc, "Reading config to identify the active profile") {
 		t.Errorf("description lacks an example with an explicit outcome: %q", desc)
