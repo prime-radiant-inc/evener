@@ -16,6 +16,7 @@ import {
 import { threadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useEntityView } from "../transcript/useEntityView";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import styles from "./activitypanel.module.css";
 import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
@@ -84,6 +85,10 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   const bodyGenerationRef = useRef(0);
   const currentSessionRef = useRef(sessionRef);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  // The same builder the transcript uses, over the same session: the detail
+  // strips open in this panel (the delegate line names its delegate id), and
+  // the panel is the owner that has both the session ref and the model.
+  const entities = useEntityView(sessionRef, model);
   currentSessionRef.current = sessionRef;
 
   useEffect(() => {
@@ -255,6 +260,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             <ActivityTree
               ref={treeRef}
               tree={currentTree}
+              entities={entities}
               expandedFoldIDs={entry.expandedFoldIDs}
               onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
               continuationFailures={entry.continuationFailures}

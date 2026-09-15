@@ -5,6 +5,7 @@ import {
   type ActivityRow,
   activityDelegateState,
   buildActivityRows,
+  type EntityView,
   jobIsFailed,
 } from "@evener/appwire-client";
 import {
@@ -50,6 +51,11 @@ export interface ActivityTreeProps {
   // already loading blocks the others the same way: the panel carries one
   // request at a time, so only the branch that asked first can be answered.
   rootRefreshing?: boolean;
+  /** The session's entity map (ActivityPanelBody's `useEntityView`): the
+   * detail strips open outside the transcript subtree, so the panel hands the
+   * map down the tree for the ids those strips name. Optional - rows render
+   * their ids as plain text without it. */
+  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface ActivityTreeHandle {
@@ -326,16 +332,28 @@ const StaticMetaSegments = memo(function StaticMetaSegments({
   return <RowSegments segments={segments} />;
 });
 
-function LiveRowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+function LiveRowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
   const now = useContext(TreeNowContext);
-  return <ActivityRowDetail row={row} now={now} />;
+  return <ActivityRowDetail row={row} now={now} entities={entities} />;
 }
 
 // Static detail strips carry no running age (metaText's terminal line has no
 // clock term), so they render once with a dummy instant and never subscribe.
-const RowDetail = memo(function RowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
-  if (!row.live) return <ActivityRowDetail row={row} now={0} />;
-  return <LiveRowDetail row={row} />;
+const RowDetail = memo(function RowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
+  if (!row.live) return <ActivityRowDetail row={row} now={0} entities={entities} />;
+  return <LiveRowDetail row={row} entities={entities} />;
 });
 
 interface FoldRowViewProps {
@@ -398,6 +416,7 @@ const FoldRowView = memo(function FoldRowView({
 
 interface DenseRowViewProps {
   row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
   detailOpen: boolean;
   tabIndex: number;
   onSetDetailOpen: (row: ActivityJobRow | ActivityDelegateRow, open: boolean) => void;
@@ -412,6 +431,7 @@ interface DenseRowViewProps {
 // quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
+  entities,
   detailOpen,
   tabIndex,
   onSetDetailOpen,
@@ -471,7 +491,7 @@ const DenseRowView = memo(function DenseRowView({
         {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
         {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}
       </div>
-      {detailOpen && <RowDetail row={row} />}
+      {detailOpen && <RowDetail row={row} entities={entities} />}
     </Fragment>
   );
 });
@@ -531,6 +551,7 @@ const ContinuationStripView = memo(function ContinuationStripView({
 
 interface RowBlockProps {
   slice: ActivityRow[];
+  entities?: ReadonlyMap<string, EntityView>;
   stripsByAfterRowID: Map<string, ContinuationStrip[]>;
   expandedFolds: Set<string>;
   effectiveFocusedID: string | null;
@@ -552,6 +573,7 @@ interface RowBlockProps {
 // re-renders it on real data/focus/detail changes - never on a tick.
 function RowBlock({
   slice,
+  entities,
   stripsByAfterRowID,
   expandedFolds,
   effectiveFocusedID,
@@ -590,6 +612,7 @@ function RowBlock({
         <DenseRowView
           key={row.id}
           row={row}
+          entities={entities}
           detailOpen={isDetailOpen(row)}
           tabIndex={tabIndex}
           onSetDetailOpen={onSetDetailOpen}
@@ -626,6 +649,7 @@ function RowBlock({
         <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
           <RowBlock
             slice={slice.slice(cursor + 1, end)}
+            entities={entities}
             stripsByAfterRowID={stripsByAfterRowID}
             expandedFolds={expandedFolds}
             effectiveFocusedID={effectiveFocusedID}
@@ -649,7 +673,16 @@ function RowBlock({
 }
 
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
-  { tree, expandedFoldIDs, onToggleFold, continuationFailures = {}, onContinue, loadingContinuationID, rootRefreshing },
+  {
+    tree,
+    entities,
+    expandedFoldIDs,
+    onToggleFold,
+    continuationFailures = {},
+    onContinue,
+    loadingContinuationID,
+    rootRefreshing,
+  },
   ref,
 ) {
   // Detail strips are per-row, not an accordion: each row carries its own
@@ -821,6 +854,7 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}
+          entities={entities}
           stripsByAfterRowID={stripsByAfterRowID}
           expandedFolds={expandedFolds}
           effectiveFocusedID={effectiveFocusedID}

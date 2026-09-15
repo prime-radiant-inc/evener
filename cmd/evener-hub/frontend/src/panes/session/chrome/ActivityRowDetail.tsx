@@ -3,9 +3,17 @@
 // line with the live or terminal facts the dense row has no room for, and -
 // for shell jobs with output - the tail of the job's log. Pure presentation
 // except the one output-tail fetch; ActivityTree owns the detailID state and
-// passes the row plus its ticking `now` straight through.
+// passes the row plus its ticking `now` straight through. The session's entity
+// map rides along with them, because the strip renders in the session CHROME -
+// outside the transcript subtree whose render context carries that map - and
+// the delegate line names a real entity.
 
-import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "@evener/appwire-client";
+import {
+  type ActivityDelegateRow,
+  type ActivityJobRow,
+  activityDelegateState,
+  type EntityView,
+} from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useState } from "react";
 import { activityDelegateDiagnostics } from "../../../protocol/activityData";
 import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
@@ -16,6 +24,7 @@ import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
+import { EntityRef } from "../transcript/EntityRef";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 
@@ -180,9 +189,17 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
 export function ActivityRowDetail({
   row,
   now,
+  entities,
 }: {
   row: ActivityJobRow | ActivityDelegateRow;
   now: number;
+  /** The session's entity map (ActivityPanelBody's `useEntityView`), so the
+   * ids this strip names resolve to the transcript's shared entity card. The
+   * strip lives in the session chrome, outside the transcript subtree that
+   * carries the render context's own map, so the panel hands it down. Absent
+   * (a direct render, or an id the map cannot answer for) leaves the id as the
+   * plain text it is today. */
+  entities?: ReadonlyMap<string, EntityView>;
 }): JSX.Element {
   const delegate = row.kind === "delegate" ? row.delegate : undefined;
   const mandate = delegate?.mandate ?? delegate?.task ?? delegate?.description;
@@ -210,7 +227,17 @@ export function ActivityRowDetail({
         <code className={CLASS.detailCommand}>{command}</code>
       )}
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
-      {delegate && <span className={CLASS.detailMeta}>Delegate {delegate.delegateId} · send · stop · status</span>}
+      {delegate && (
+        <span className={CLASS.detailMeta}>
+          Delegate{" "}
+          {/* embedded: the strip sits inside the row's own treeitem control, so
+              the trigger takes no tab stop of its own (ruling R13); triggerOnly:
+              the row already carries its own open control, and this line's words
+              stay exactly "Delegate <id> · send · stop · status". */}
+          <EntityRef view={entities?.get(delegate.delegateId)} id={delegate.delegateId} embedded triggerOnly />
+          {" · send · stop · status"}
+        </span>
+      )}
       {delegate?.parentWatchGranted && <span className={CLASS.detailMeta}>Watch enabled</span>}
       {delegate &&
         activityDelegateDiagnostics(delegate).map((diagnostic) => (

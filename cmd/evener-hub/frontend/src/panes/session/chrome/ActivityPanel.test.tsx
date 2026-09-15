@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -418,6 +418,17 @@ function deferred<T>() {
 
 function cloneFixture<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+// A dense row's detail strip is rendered as the row's SIBLING (the row opens
+// it), so the strip is found by its own complete text rather than inside the
+// row element - and by whole-text COMPARISON, because the id inside it is a
+// nested trigger, so a text-node query would only ever see the fragments
+// around it.
+function detailLineByText(text: string): HTMLElement {
+  const line = [...document.querySelectorAll<HTMLElement>("span")].find((element) => element.textContent === text);
+  if (line === undefined) throw new Error(`no detail line reads ${text}`);
+  return line;
 }
 
 beforeEach(() => {
@@ -1360,6 +1371,22 @@ describe("ActivityPanel", () => {
     expect(screen.getByRole("treeitem", { name: /inspect the repo/i })).toBeTruthy();
     expect(screen.queryByTestId("activity-inspector")).toBeNull();
     expect(screen.queryByText(/select activity/i)).toBeNull();
+  });
+
+  // The panel body owns the session's entity map (the same useEntityView the
+  // transcript uses) and hands it down the tree, so a delegate row's detail
+  // strip renders its id as a card trigger. The strip lives in the session
+  // chrome, outside the transcript subtree, so nothing else supplies the map.
+  test("a delegate row's detail strip resolves its id through the session's entity map", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/list", () => ({ data: activityTree() }));
+
+    render(<ActivityPanelBody sessionRef="ref_root" model={testModel()} />);
+    await screen.findByRole("tree");
+
+    // The line reads exactly as it did, with the id now a card trigger.
+    const line = detailLineByText("Delegate dlg_active · send · stop · status");
+    expect(within(line).getByTestId("entity-trigger").textContent).toBe("dlg_active");
   });
 
   test("mobile renders the tree directly with no inspector swap or back button", async () => {
