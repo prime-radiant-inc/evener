@@ -394,10 +394,16 @@ func forgetEmbeddedSkillsLocked() {
 // namespaced by user and verified private, so another user on a shared host
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
+	root, err := skillsBaseRoot()
+	if err != nil {
+		// A platform that cannot name a verified per-user root must not fall back
+		// to a shared temp root it cannot verify.
+		return "", err
+	}
 	// A root the platform cannot name must not become a predictable path under a
 	// shared temp root: joining an empty root would produce a relative name, so
 	// the randomized private base below is used instead.
-	if root := skillsBaseRoot(); root != "" {
+	if root != "" {
 		dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
 		if err := ensurePrivateCacheDir(dir); err == nil {
 			return dir, nil

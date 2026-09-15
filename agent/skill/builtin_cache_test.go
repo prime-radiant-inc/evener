@@ -508,14 +508,23 @@ func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
 		t.Fatalf("EmbeddedSkillsDir: %v", err)
 	}
 	embeddedSkillsCache.mu.Lock()
-	firstLeased := embeddedSkillsCache.leasedDir
+	firstLeased, firstLease := embeddedSkillsCache.leasedDir, embeddedSkillsCache.lease
 	embeddedSkillsCache.mu.Unlock()
-	if firstLeased != first {
-		t.Fatalf("leased dir = %q, want %q", firstLeased, first)
+	if firstLeased != first || firstLease == nil {
+		t.Fatalf("leased dir = %q, lease = %v, want %q", firstLeased, firstLease, first)
 	}
 
+	// Switch bases without dropping the lease held for the first copy: moving
+	// copies is what the production path has to handle.
 	secondBase := t.TempDir()
-	pointEmbeddedSkillsAtBase(t, secondBase)
+	embeddedSkillsBaseDir = func() (string, error) { return secondBase, nil }
+	embeddedSkillsCache.mu.Lock()
+	embeddedSkillsCache.dir = ""
+	embeddedSkillsCache.digest = ""
+	embeddedSkillsCache.skills = nil
+	embeddedSkillsCache.verified = false
+	embeddedSkillsCache.mu.Unlock()
+
 	second, err := EmbeddedSkillsDir()
 	if err != nil {
 		t.Fatalf("EmbeddedSkillsDir (second base): %v", err)
@@ -528,6 +537,9 @@ func TestEmbeddedSkillsDir_MovesTheLeaseToTheNewCopy(t *testing.T) {
 	embeddedSkillsCache.mu.Unlock()
 	if secondLeased != second {
 		t.Fatalf("leased dir = %q, want the new copy %q", secondLeased, second)
+	}
+	if firstLease.Valid() {
+		t.Fatal("moving copies left the old copy's lease held")
 	}
 
 	// The old copy must now be reapable: its lease was released.
@@ -835,24 +847,15 @@ func TestReleaseExpiredHeldLeasesLocked_DropsOnlyExpiredLeases(t *testing.T) {
 	}
 }
 
-// A platform that cannot name the per-user cache root must not fall back to a
-// predictable name under a shared temp root, where another account could create
-// it first; the randomized private base is used instead.
-func TestDefaultEmbeddedSkillsBaseDir_RandomizesWhenNoRoot(t *testing.T) {
+// A platform that cannot name a verified per-user cache root must fail rather
+// than create the base under a shared temp root it cannot verify.
+func TestDefaultEmbeddedSkillsBaseDir_FailsClosedWithoutARoot(t *testing.T) {
 	saved := skillsBaseRoot
-	skillsBaseRoot = func() string { return "" }
+	skillsBaseRoot = func() (string, error) { return "", errors.New("no user cache directory") }
 	t.Cleanup(func() { skillsBaseRoot = saved })
 
-	dir, err := defaultEmbeddedSkillsBaseDir()
-	if err != nil {
-		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if want := embeddedSkillsPrefix + processOwnerTag() + "-"; !strings.HasPrefix(filepath.Base(dir), want) {
-		t.Fatalf("base %q is not a randomized private directory", dir)
-	}
-	if !strings.HasPrefix(dir, os.TempDir()) {
-		t.Fatalf("base %q is not under the temp dir %q", dir, os.TempDir())
+	if _, err := defaultEmbeddedSkillsBaseDir(); err == nil {
+		t.Fatal("defaultEmbeddedSkillsBaseDir used an unverified root")
 	}
 }
 
