@@ -180,11 +180,17 @@ function terminalSegment(
   return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
+// Both live row kinds share one meta grammar (#1388): the first segment is the
+// usage pair when the daemon sent one, else the row's own status text, and the
+// quiet age follows. A shell job's ActivityJob carries no usage field at all,
+// so it always takes the status branch; a delegate takes it only until usage
+// arrives. Neither renders a placeholder dash - the empty token slot carried no
+// information and read as a value that failed to load.
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
   const { job } = row;
   if (row.live) {
     return [
-      { key: "tokens", text: "—" },
+      { key: "status", text: job.status },
       { key: "quiet", text: formatQuietAge(now - quietAnchorMillis(job)), tone: "quiet" },
     ];
   }
@@ -196,8 +202,9 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
   if (row.live) {
-    const segments: MetaSegment[] = [{ key: "tokens", text: tokens ?? "—" }];
-    if (!tokens) segments.push({ key: "status", text: delegateStatusText(delegate) });
+    const segments: MetaSegment[] = tokens
+      ? [{ key: "tokens", text: tokens }]
+      : [{ key: "status", text: delegateStatusText(delegate) }];
     // quietForMs arrives frozen at snapshot time, and a quiet delegate emits
     // no frames to refresh the snapshot: derive the displayed age from the
     // server's own quiet anchor (latestActivityAt, else runStartedAt — the
