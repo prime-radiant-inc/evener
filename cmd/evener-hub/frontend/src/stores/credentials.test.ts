@@ -723,6 +723,72 @@ describe("mutations returning the updated instance list", () => {
     expect(state.diagnostics).toEqual(["new diagnostics"]);
   });
 
+  test("a second refresh landing during a write keeps its newer inventory", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // One refresh lands before the write starts, marking the row...
+    fake.on("evener/instance/refreshModels", () => withModels([{ id: "m1" }, { id: "first-live" }]));
+    await credentialsStore.getState().refreshModels("work");
+
+    // ...the write starts...
+    let finishToggle!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+
+    // ...and a SECOND refresh for the same instance lands while it is out,
+    // with inventory newer than the write's answer.
+    fake.on("evener/instance/refreshModels", () => withModels([{ id: "m1", disabled: true }, { id: "second-live" }]));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "second-live"]);
+
+    finishToggle(withModels([{ id: "m1", disabled: true }, { id: "first-live" }]));
+    await toggle;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "second-live"]);
+  });
+
+  test("reconnecting lets a refresh stage a row the previous client never had", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // The session reconnects — its own first read is still out — and the new
+    // client's refresh starts for an instance this store has never held.
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("personal");
+    await Promise.resolve();
+    finishRefresh({
+      instances: [{ ...ONE_INSTANCE, name: "personal", models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    });
+    await refresh;
+    const personal = credentialsStore.getState().instances.find((entry) => entry.name === "personal");
+    expect(personal?.models?.map((model) => model.id)).toEqual(["personal-live"]);
+  });
+
   test("a superseded toggle from a replaced client does not touch the new client's listing", async () => {
     const first = connectFakeClient();
     const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
