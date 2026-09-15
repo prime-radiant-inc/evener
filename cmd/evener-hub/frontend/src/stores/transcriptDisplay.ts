@@ -1,9 +1,8 @@
+import type { AnyNotification, AppwireClientLike } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { transitionTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { WireError } from "../protocol/errors";
-import type { AnyNotification } from "../protocol/types.gen";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import {
   accessibleConfigSummary,

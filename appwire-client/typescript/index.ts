@@ -66,7 +66,7 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {

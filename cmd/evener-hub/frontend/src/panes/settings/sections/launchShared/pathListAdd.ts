@@ -4,7 +4,7 @@
 // PathListControl). Both feed the same wire fields (skillsDirs/pluginDirs/
 // mcpConfigs) to the same daemon, so both gate an add the same way instead of
 // one of them trusting whatever text the picker produced.
-import type { LaunchOption } from "../../../../protocol/types.gen";
+import type { LaunchOption } from "@evener/appwire-client";
 import { schemaPathKind } from "./schema";
 
 /** The subset of evener/path/validate's response this decision reads. `path` is

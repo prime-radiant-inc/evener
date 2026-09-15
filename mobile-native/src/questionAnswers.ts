@@ -1,7 +1,7 @@
 import {
   type AskAnswerItem,
   composeAskAnswers,
-} from "../../appwire-client/typescript/askAnswers";
+} from "@evener/appwire-client";
 import type {
   MobileAskQuestion,
   MobileConversation,

@@ -1,13 +1,12 @@
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { NavigationWatchSummary, ThreadModel } from "@evener/appwire-client";
 import {
   type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
+  errorText,
   parseActivityTree,
-} from "../../../protocol/activityData";
-import { errorText } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,

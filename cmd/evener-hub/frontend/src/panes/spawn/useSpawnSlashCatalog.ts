@@ -1,7 +1,6 @@
+import type { AppwireClientLike, LaunchConfigLayer, SpawnSlashCatalogResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import { errorText } from "../../protocol/errors";
-import type { LaunchConfigLayer, SpawnSlashCatalogResponse } from "../../protocol/types.gen";
 
 export const SPAWN_SLASH_CATALOG_DEBOUNCE_MS = 250;
 

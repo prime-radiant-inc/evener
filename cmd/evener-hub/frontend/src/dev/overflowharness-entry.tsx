@@ -19,15 +19,15 @@ import "../panes/session";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
-import { hydrateThread } from "../protocol/reducer";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   NavigationSessionLocation,
   ThreadCapabilities,
   ThreadReadResponse,
   ThreadTurnsListParams,
   ThreadTurnsListResponse,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";

@@ -1,5 +1,5 @@
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { expect, test, vi } from "vitest";
-import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import type { NormalizedResource } from "./codec";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
 import { keyID, NavigationBaseInvalidError, type NavigationResponse, type ResourceKey } from "./types";

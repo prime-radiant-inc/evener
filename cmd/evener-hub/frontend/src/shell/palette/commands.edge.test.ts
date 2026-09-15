@@ -3,9 +3,9 @@
 // - slashCommandInvocation for plugin and non-plugin commands
 // - rememberableId for stayOpen and non-stayOpen commands
 
+import type { CommandDescriptor } from "@evener/appwire-client";
+import { slashCommandInvocation, visibleCatalogCommands } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
-import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
-import type { CommandDescriptor } from "../../protocol/types.gen";
 import type { Command } from "./commands";
 import { copyToClipboard, rememberableId, sessionScopedHandoffMatch } from "./commands";
 

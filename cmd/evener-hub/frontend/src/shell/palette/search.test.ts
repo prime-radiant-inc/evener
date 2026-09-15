@@ -1,8 +1,8 @@
 // @vitest-environment node
+
+import type { ItemModel, SearchResponse, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { SearchResponse } from "../../protocol/types.gen";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";
 
 // --- fetchSearch: typed AppWire request ---

@@ -3,9 +3,10 @@
 // (marketplacesPlugins/index.tsx) - see MarketplacesSection's own comment
 // for why (its Refresh action needs to read this component's expansion
 // state).
+
+import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

@@ -1,4 +1,4 @@
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { InstanceEntry } from "@evener/appwire-client";
 import { credentialsStore } from "../../../../stores/credentials";
 
 // A superseded write's listing was discarded by the store's generation

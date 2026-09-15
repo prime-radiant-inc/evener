@@ -1,8 +1,7 @@
+import type { ThreadCapabilities, ThreadModel, ThreadStatus } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import type { IDockviewPanelHeaderProps } from "dockview-core";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ThreadModel } from "../protocol/model";
-import type { ThreadCapabilities, ThreadStatus } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneTab } from "./PaneTab";
 import type { PanePanelParams } from "./workspace";

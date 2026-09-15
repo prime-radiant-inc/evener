@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import type { TurnError } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { TurnError } from "../../../protocol/types.gen";
 import { asTurnError, classifyTurnError } from "./turnFailure";
 
 function err(overrides: Partial<TurnError> = {}): TurnError {

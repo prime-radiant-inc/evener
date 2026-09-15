@@ -1,6 +1,5 @@
+import type { ActivityJob, ActivityTree, TurnModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
-import type { TurnModel } from "../../../protocol/model";
 
 /** The job id a tool summary names and the entity map below indexes. */
 export const SUMMARY_ENTITY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";

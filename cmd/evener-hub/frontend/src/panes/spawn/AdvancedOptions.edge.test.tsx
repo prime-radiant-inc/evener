@@ -9,10 +9,10 @@
 // - McpControl rendering and onRemove (lines 498-501)
 // - McpControl onAdd validation (lines 505-516)
 
+import type { LaunchConfigResolved, LaunchOption } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { LaunchConfigResolved, LaunchOption } from "../../protocol/types.gen";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
 

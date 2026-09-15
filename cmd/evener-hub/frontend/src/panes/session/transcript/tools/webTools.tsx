@@ -19,9 +19,9 @@
 // stays a short line-oriented preview, matching the legacy
 // webSearchRenderer's own "don't dump the whole page inline" restraint.
 
+import type { ItemModel } from "@evener/appwire-client";
+import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import type { ItemModel } from "../../../../protocol/model";
-import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
 import { ContextCard } from "../../../../widgets/contextcard";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

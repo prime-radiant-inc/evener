@@ -5,10 +5,10 @@
 // - delegateSendFooter with started_job_id empty
 // - delegateSendFooter with watching field
 
+import type { ItemModel } from "@evener/appwire-client";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ItemModel } from "../../../../protocol/model";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 

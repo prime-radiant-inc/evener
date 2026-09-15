@@ -5,7 +5,7 @@
 // real submission flow and adds the "doesn't exist yet -> offer to create"
 // discrimination (the offer-create outcome + the in-form Create&start dialog,
 // spawn.js:527-566).
-import type { AppwireClientLike } from "../../protocol/clientLike";
+import type { AppwireClientLike } from "@evener/appwire-client";
 
 export type PreflightOutcome =
   | { kind: "ok" }
