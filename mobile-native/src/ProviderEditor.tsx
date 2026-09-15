@@ -95,14 +95,12 @@ export function ProviderEditor({
       if (!alive.current) return;
       const conflictMessage = endpointConflictFor(cause, instance !== undefined);
       if (conflictMessage !== null) {
-        // The hub refused this edit's asserted destination: the name moved
-        // since the listing this editor was opened from. Re-anchor to the row
-        // now on screen rather than reporting a failed save for an endpoint the
-        // user is not on, and let them re-enter the destination.
-        const current = model
-          .getSnapshot()
-          .data?.instances.find((row) => row.name === instance?.name);
-        setDraft((value) => ({ ...value, baseUrl: current?.baseUrl ?? "" }));
+        // The hub refused this edit's asserted destination: the name moved since
+        // the listing this editor was opened from. Report it and keep the draft.
+        // Re-anchoring from the model's snapshot would reseed a listing the
+        // refresh behind this rejection may not have updated - asserting the
+        // refused fingerprint again on every retry - and the next save draws its
+        // assertion from the instance prop, which that refresh does update.
         setError(conflictMessage);
         return;
       }

@@ -839,6 +839,33 @@ describe("the form", () => {
     expect(field("Name").value).toBe("work2");
   });
 
+  // Nothing fresh to re-anchor to: the re-read failed, so reseeding from the
+  // listing still in the store would assert the fingerprint the hub just
+  // refused, on this save and every retry. The draft is kept and the change is
+  // reported instead.
+  test("a hub endpoint-refusal whose re-read fails keeps the draft", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError("the endpoint moved", -32013, { evenerErrorInfo: "endpointConflict" });
+    });
+    fake.on("evener/instance/list", () => {
+      throw new Error("the listing is unavailable");
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("replaced under the same name"));
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
   test("emptying Base URL shows the reset note and sends clearBaseUrl", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", () => ({ instances: [WORK], availableProviders: [OPENAI] }));

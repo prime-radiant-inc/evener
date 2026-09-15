@@ -429,14 +429,20 @@ export function InstanceSheet({
           // The hub refused the destination this save asserted, so the name
           // moved between the listing the sheet was seeded from and the RPC.
           // Re-read and re-anchor to the row now on screen: leaving the draft
-          // alone would resubmit the obsolete fingerprint on every retry.
+          // alone would resubmit the obsolete fingerprint on every retry. Only
+          // an APPLIED read may re-anchor - reseeding from a listing the failed
+          // or superseded read left stale would assert the same refused
+          // fingerprint again.
+          let applied = false;
           try {
-            await credentialsStore.getState().fetch();
+            applied = await credentialsStore.getState().fetch();
           } catch {
-            // Best-effort: the row on screen is re-anchored below when it is
-            // there, and the sheet closes itself when it is gone.
+            // Best-effort: with no applied read there is nothing fresh to
+            // re-anchor to, so the draft and the row on screen stay as they are.
           }
-          const current = credentialsStore.getState().instances.find((i) => i.name === instance.name);
+          const current = applied
+            ? credentialsStore.getState().instances.find((i) => i.name === instance.name)
+            : undefined;
           if (current !== undefined) seed(current);
           setFormError(CHANGED_INSTANCE_ERROR);
         } else {

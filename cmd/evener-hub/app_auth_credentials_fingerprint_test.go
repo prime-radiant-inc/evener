@@ -42,7 +42,10 @@ func newRawProbeRegistry(t *testing.T, stateDir string, env map[string]string, i
 	return r
 }
 
-// assertConflict fails unless err is an appwire.WireError carrying CodeConflict.
+// assertConflict fails unless err is an appwire.WireError carrying CodeConflict
+// and the endpoint-conflict discriminator. The discriminator is what the clients
+// key their recovery on, so the code alone would let a refusal they cannot
+// recognize pass.
 func assertConflict(t *testing.T, err error) {
 	t.Helper()
 	wireErr, ok := errors.AsType[appwire.WireError](err)
@@ -51,6 +54,9 @@ func assertConflict(t *testing.T, err error) {
 	}
 	if wireErr.Code != appwire.CodeConflict {
 		t.Fatalf("error code = %d (%q), want conflict", wireErr.Code, wireErr.Message)
+	}
+	if data, ok := wireErr.Data.(appwire.ErrorData); !ok || data.EvenerErrorInfo != appwire.ErrorEndpointConflict {
+		t.Fatalf("error data = %#v (%q), want evenerErrorInfo %q", wireErr.Data, wireErr.Message, appwire.ErrorEndpointConflict)
 	}
 }
 
