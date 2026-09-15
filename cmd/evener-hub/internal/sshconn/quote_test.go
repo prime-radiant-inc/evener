@@ -1,6 +1,9 @@
 package sshconn
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestShellQuote(t *testing.T) {
 	cases := []struct {
@@ -53,15 +56,19 @@ func TestStripPSHeader(t *testing.T) {
 
 // TestRelaunchCommandQuotesHostDerivedValues proves the recovered command line
 // and the recovered log path cannot inject extra shell commands: a host that
-// returns a `ps` command line or `lsof` log path containing metacharacters must
-// not have them interpreted by the outer shell that starts the relaunch.
+// returns an argv word or `lsof` log path containing metacharacters must not have
+// them interpreted by the shell that starts the relaunch. Every recovered word is
+// quoted individually and the line is never re-parsed by `sh -c`.
 func TestRelaunchCommandQuotesHostDerivedValues(t *testing.T) {
-	cmd := "evener hub; touch /tmp/pwned"
+	argv := []string{"evener", "hub", "-config", "/home/dev/my hub.log; touch /tmp/pwned"}
 	logPath := "/home/dev/my hub.log"
-	got := relaunchCommand(cmd, logPath)
-	want := "nohup sh -c 'evener hub; touch /tmp/pwned' >>'/home/dev/my hub.log' 2>&1 </dev/null &"
+	got := relaunchCommand(argv, logPath)
+	want := "nohup evener hub -config '/home/dev/my hub.log; touch /tmp/pwned' >>'/home/dev/my hub.log' 2>&1 </dev/null &"
 	if got != want {
 		t.Fatalf("relaunchCommand:\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(got, "sh -c") {
+		t.Fatalf("relaunch re-parses the recovered line with a shell: %q", got)
 	}
 }
 

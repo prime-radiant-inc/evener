@@ -3,8 +3,11 @@ package sshconn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +40,19 @@ func (o Options) hubAddr() string {
 		return a
 	}
 	return defaultHubAddr
+}
+
+// hostAddr returns the listen address of this host's hub: the per-host registry
+// Addr when set, else the manager-wide Options.HubAddr, else the default.
+// channelArgv passes host.Addr as the bridge's --addr, so the restart and health
+// probes must read the same value to address the host's actual hub rather than
+// the controller's default port (a non-default port would otherwise kill the
+// wrong process or poll the wrong service).
+func (m *Manager) hostAddr(host hostreg.Host) string {
+	if a := strings.TrimSpace(host.Addr); a != "" {
+		return a
+	}
+	return m.opts.hubAddr()
 }
 
 // hubPort extracts the TCP port from a host:port hub address, defaulting to the
@@ -78,6 +94,16 @@ func (s supervisor) restartRemote() string {
 	}
 }
 
+// restartStatusIsAdvisory reports whether a nonzero restart-command status is
+// only diagnostic. Repo docs note `launchctl kickstart` can report failure even
+// when the restart succeeded (docs/evener-hub-remote-operations.md:290-293), so
+// its status must not short-circuit the health probe. systemd's `restart` status
+// stays authoritative: it fails for a real reason (a missing unit, no polkit
+// authorization) that a still-healthy old process would otherwise mask.
+func (s supervisor) restartStatusIsAdvisory() bool {
+	return s.kind == supervisorLaunchd
+}
+
 // detectSupervisorFrom classifies a host from raw supervisor listings. It is
 // pure so the table test needs no ssh: launchd for darwin, systemd (system,
 // then --user) for linux, otherwise a bare process.
@@ -113,14 +139,21 @@ func pickSupervisor(kind supervisorKind, what string, matches []string) (supervi
 	}
 }
 
-// parseLaunchdHubs finds launchd jobs whose labels name an evener hub.
-// `launchctl list` prints "PID Status Label" per line; a job with no running
-// pid shows "-". The doc's precedent is `launchctl list | grep evener-hub`.
+// parseLaunchdHubs finds launchd jobs whose labels name an evener hub and that
+// are actually running. `launchctl list` prints "PID Status Label" per line; a
+// loaded-but-not-running job shows "-" in the PID column. Treating such a job as
+// a live hub would make restartHub start a second hub (which then fails on
+// hub.lock) while an ad hoc hub kept serving the old version, so it must fall
+// through to the bare-process path instead. The doc's precedent is
+// `launchctl list | grep evener-hub`.
 func parseLaunchdHubs(out []byte) []string {
 	var labels []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 || fields[0] == "PID" {
+			continue
+		}
+		if fields[0] == "-" {
 			continue
 		}
 		if label := fields[len(fields)-1]; isEvenerHubName(label) {
@@ -131,17 +164,23 @@ func parseLaunchdHubs(out []byte) []string {
 }
 
 // parseSystemdHubs finds evener hub units in `systemctl list-units` output.
-// Each line starts with the unit name, e.g. "evener-hub.service loaded active".
-// A leading status glyph (●) is stripped.
+// Each line starts with the unit name followed by LOAD, ACTIVE, and SUB, e.g.
+// "evener-hub.service loaded active running". A leading status glyph (●) is
+// stripped. `--all` also lists loaded-but-inactive units, which must not be read
+// as a live hub: restarting one would start a second hub while an ad hoc one
+// still holds hub.lock.
 func parseSystemdHubs(out []byte) []string {
 	var units []string
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "●"))
-		if len(fields) == 0 {
+		if len(fields) < 3 {
 			continue
 		}
 		unit := fields[0]
 		if !strings.HasSuffix(unit, ".service") {
+			continue
+		}
+		if fields[1] != "loaded" || fields[2] != "active" {
 			continue
 		}
 		if isEvenerHubName(strings.TrimSuffix(unit, ".service")) {
@@ -193,16 +232,27 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	if sup.kind != supervisorNone {
 		remote := sup.restartRemote()
-		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-		if err != nil {
+		out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+		if runErr != nil && !sup.restartStatusIsAdvisory() {
 			// Surface the restart command's own failure even when the hub would
 			// answer a health probe: a healthy response alone cannot prove the
 			// restart took (the old process stays healthy through a failed
 			// `systemctl restart` when the user lacks sudo/polkit), so swallowing
 			// this cause is what let a failed restart look like success.
-			return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, err, tail(out))
+			return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 		}
-		return m.waitHealthy(ctx, host, expected)
+		if err := m.waitHealthy(ctx, host, expected); err != nil {
+			if runErr != nil {
+				// launchd: docs note an interrupted `kickstart` can report failure
+				// even when the restart succeeded
+				// (docs/evener-hub-remote-operations.md:290-293), so its status is
+				// diagnostic, not authoritative. The health failure is the real
+				// cause; name the command failure alongside it.
+				return fmt.Errorf("%w: host %q %s: %w: %s: %w", ErrRestart, host.Name, remote, runErr, tail(out), err)
+			}
+			return err
+		}
+		return nil
 	}
 
 	if err := m.restartBare(ctx, host); err != nil {
@@ -215,7 +265,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 // by listening port, recover the exact argv and log destination, stop it, and
 // relaunch detached with the recovered argv.
 func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
-	port := hubPort(m.opts.hubAddr())
+	port := hubPort(m.hostAddr(host))
 	pid, err := m.findHubPID(ctx, host, port)
 	if err != nil {
 		return err
@@ -232,6 +282,18 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	cmdline := stripPSHeader(string(out))
 	if cmdline == "" {
 		return fmt.Errorf("%w: host %q could not recover argv for pid %s", ErrRestart, host.Name, pid)
+	}
+	// Validate before killing: the process merely holds the hub's port, which a
+	// port collision could make an unrelated service. Only a tokenizable
+	// `evener hub` invocation whose --addr agrees with the probed port is
+	// restarted; anything else is refused rather than guessed at.
+	argv, err := hubArgvFromCommandLine(cmdline)
+	if err != nil {
+		return fmt.Errorf("%w: host %q pid %s: %w (command line %q)", ErrRestart, host.Name, pid, err, cmdline)
+	}
+	if a, ok := hubAddrFlag(argv); ok && hubPort(a) != port {
+		return fmt.Errorf("%w: host %q pid %s listens on :%s but was launched with --addr %q; refusing to restart it",
+			ErrRestart, host.Name, pid, port, a)
 	}
 
 	logPath := ""
@@ -250,7 +312,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 		return err
 	}
 
-	relaunch := relaunchCommand(cmdline, logPath)
+	relaunch := relaunchCommand(argv, logPath)
 	rout, rerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if rerr != nil {
 		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))
@@ -350,8 +412,8 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 // still answering) and could attach to the dying old process during its
 // shutdown drain, tearing down the fresh channel.
 func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
-	port := hubPort(m.opts.hubAddr())
-	remote := "curl -fsS localhost:" + port + "/api/health"
+	port := hubPort(m.hostAddr(host))
+	remote := "curl -fsS localhost:" + shellQuote(port) + "/api/health"
 	var lastVersion string
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
@@ -383,19 +445,129 @@ func parseHealthVersion(out []byte) (string, bool) {
 	return resp.Version, true
 }
 
-// relaunchCommand builds the detached remote relaunch. It appends to the
-// recovered log so the hub's history is preserved (docs/evener-hub-remote-
-// operations.md:388-394); with no recovered log the output is discarded.
-//
-// The recovered command line is passed to `sh -c` as a single quoted word: the
-// text came back from `ps` as a shell command line, so it must be re-parsed as
-// one, but it is host-derived and must not be allowed to inject into the outer
-// shell that starts the relaunch. The log path is quoted for the same reason.
-func relaunchCommand(cmdline, logPath string) string {
-	if logPath != "" {
-		return "nohup sh -c " + shellQuote(cmdline) + " >>" + shellQuote(logPath) + " 2>&1 </dev/null &"
+// hubArgvFromCommandLine recovers the argv of the process whose command line ps
+// reported, refusing anything that is not a plain `evener hub` invocation. It is
+// what keeps restartBare from killing and relaunching a process merely because it
+// holds the hub's port.
+func hubArgvFromCommandLine(line string) ([]string, error) {
+	argv, err := tokenizeCommandLine(line)
+	if err != nil {
+		return nil, err
 	}
-	return "nohup sh -c " + shellQuote(cmdline) + " </dev/null >/dev/null 2>&1 &"
+	if len(argv) == 0 {
+		return nil, errors.New("empty command line")
+	}
+	if base := path.Base(argv[0]); base != "evener" {
+		return nil, fmt.Errorf("executable %q is not evener", argv[0])
+	}
+	if !slices.Contains(argv[1:], "hub") {
+		return nil, errors.New("argv does not run the hub subcommand")
+	}
+	return argv, nil
+}
+
+// tokenizeCommandLine splits a command line recovered from `ps -o command=` into
+// the argv words a shell would have produced, honoring single quotes, double
+// quotes, and backslash escapes. It refuses any line carrying an unquoted shell
+// metacharacter: such a line is a compound command or a redirection rather than
+// the simple exec a hub is, so it cannot be tokenized unambiguously and must not
+// be re-run.
+func tokenizeCommandLine(s string) ([]string, error) {
+	var words []string
+	var cur strings.Builder
+	haveWord := false
+	flush := func() {
+		if haveWord {
+			words = append(words, cur.String())
+			cur.Reset()
+			haveWord = false
+		}
+	}
+	for i := 0; i < len(s); {
+		switch c := s[i]; c {
+		case ' ', '\t', '\n', '\r':
+			flush()
+			i++
+		case '\'':
+			haveWord = true
+			i++
+			end := strings.IndexByte(s[i:], '\'')
+			if end < 0 {
+				return nil, errors.New("unterminated single quote")
+			}
+			cur.WriteString(s[i : i+end])
+			i += end + 1
+		case '"':
+			haveWord = true
+			i++
+			for i < len(s) && s[i] != '"' {
+				if s[i] == '\\' && i+1 < len(s) {
+					if n := s[i+1]; n == '"' || n == '\\' || n == '$' || n == '`' {
+						cur.WriteByte(n)
+						i += 2
+						continue
+					}
+				}
+				cur.WriteByte(s[i])
+				i++
+			}
+			if i >= len(s) {
+				return nil, errors.New("unterminated double quote")
+			}
+			i++
+		case '\\':
+			haveWord = true
+			if i+1 >= len(s) {
+				return nil, errors.New("trailing backslash")
+			}
+			cur.WriteByte(s[i+1])
+			i += 2
+		case ';', '|', '&', '<', '>', '(', ')', '`', '$':
+			return nil, fmt.Errorf("unquoted shell metacharacter %q", string(c))
+		default:
+			haveWord = true
+			cur.WriteByte(c)
+			i++
+		}
+	}
+	flush()
+	return words, nil
+}
+
+// hubAddrFlag returns the value of the hub's --addr/-addr argument in argv,
+// accepting both the `-addr value` and `-addr=value` spellings. A hub launched
+// without the flag used the default address, reported as absent.
+func hubAddrFlag(argv []string) (string, bool) {
+	for i, a := range argv {
+		for _, name := range []string{"-addr", "--addr"} {
+			if a == name && i+1 < len(argv) {
+				return argv[i+1], true
+			}
+			if v, ok := strings.CutPrefix(a, name+"="); ok {
+				return v, true
+			}
+		}
+	}
+	return "", false
+}
+
+// relaunchCommand builds the detached remote relaunch from the recovered argv.
+// Each word is quoted individually and the recovered line is never handed to
+// `sh -c`: the line is host-derived, so re-parsing it as a command would execute
+// a metacharacter inside a literal argument (a `;` in a path, say). Redirection
+// and backgrounding are ours, not the host's. It appends to the recovered log so
+// the hub's history is preserved (docs/evener-hub-remote-operations.md:388-394);
+// with no recovered log the output is discarded.
+func relaunchCommand(argv []string, logPath string) string {
+	words := make([]string, len(argv))
+	for i, a := range argv {
+		words[i] = shellQuote(a)
+	}
+	cmd := strings.Join(words, " ")
+	if logPath != "" {
+		return "nohup " + cmd + " >>" + shellQuote(logPath) + " 2>&1 </dev/null &"
+	}
+	return "nohup " + cmd + " </dev/null >/dev/null 2>&1 &"
 }
 
 // stripPSHeader drops a leading `ps` header line so header-bearing output (a ps
@@ -436,7 +608,10 @@ func parseLogPath(out []byte) (string, bool) {
 		if fields[4] != "REG" {
 			continue
 		}
-		name := fields[len(fields)-1]
+		// The NAME column begins at field 8 and may itself contain spaces (a log
+		// path like "/home/dev/my hub.log"), so rejoin the remainder rather than
+		// taking the last whitespace-delimited word.
+		name := strings.Join(fields[8:], " ")
 		if !strings.HasPrefix(name, "/") {
 			continue
 		}

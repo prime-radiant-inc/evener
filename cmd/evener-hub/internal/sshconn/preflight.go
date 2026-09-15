@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -183,14 +182,7 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	pf.Home = env["HOME"]
 	pf.ConfigRoot, pf.StateRoot = resolveRoots(goos, env)
 
-	checkOut, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
-	if err != nil {
-		if isProtocolMismatchOutput(checkOut) {
-			return pf, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(checkOut))
-		}
-		return pf, sshRunFailure(host.Name, "launch-check", err, tail(checkOut))
-	}
-	lc, err := parseLaunchCheck(checkOut)
+	lc, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
 		return pf, err
 	}
@@ -200,10 +192,26 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	if lc.Protocol != appwire.ProtocolVersion {
 		return pf, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, lc.Protocol, appwire.ProtocolVersion)
 	}
-	if !slices.Contains(lc.LaunchFlags, requiredLaunchFlag) {
-		return pf, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, lc.LaunchFlags, requiredLaunchFlag)
-	}
+	// The launch-flag contract is enforced by ensureOnce *after* version
+	// auto-match, not here: a 04a-era host binary missing a required flag must be
+	// given the chance to be upgraded by the version-match deploy before it is
+	// refused, otherwise it is permanently rejected and no deploy can ever fix it.
 	return pf, nil
+}
+
+// probeLaunchCheck runs `evener launch-check` on the host and returns its parsed
+// contract. It is the one place the invocation and its protocol-refusal and
+// decode classification live, so preflight and the post-deploy re-probe in
+// ensureOnce cannot drift apart.
+func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (launchCheck, error) {
+	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
+	if err != nil {
+		if isProtocolMismatchOutput(out) {
+			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
+		}
+		return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
+	}
+	return parseLaunchCheck(out)
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth

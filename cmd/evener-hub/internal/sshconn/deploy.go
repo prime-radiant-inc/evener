@@ -171,15 +171,44 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 	return m.resolveDeployTarget(ctx, host, p)
 }
 
+// resolvePathScript is a POSIX-sh path resolver that prints the real path a file
+// names, following symlinks. It deliberately avoids `readlink -f`: that flag is a
+// GNU/coreutils extension which BSD `readlink` (macOS) rejects with `readlink:
+// illegal option -- f`, so every darwin/arm64 deploy failed at path resolution.
+// It prints nothing and exits nonzero when the path does not resolve to an
+// existing file, which the caller reads as a clear error rather than a silent
+// fallback to the symlink.
+const resolvePathScript = `evener_resolve() {
+  p=$1
+  while [ -L "$p" ]; do
+    d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
+    t=$(readlink "$p") || return 1
+    case $t in
+      /*) p=$t ;;
+      *) p=$d/$t ;;
+    esac
+  done
+  [ -e "$p" ] || return 1
+  d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
+  printf '%s\n' "$d/${p##*/}"
+}
+evener_resolve `
+
+// resolveDeployCommand builds the remote command that prints the real path p
+// names.
+func resolveDeployCommand(p string) string {
+	return resolvePathScript + shellQuote(p)
+}
+
 // resolveDeployTarget resolves p to the real file it names, so the atomic mv
 // replaces the installed executable rather than clobbering a symlink. `make
 // install` commonly installs evener as a symlink and `command -v evener` returns
 // that symlink; mv-ing onto it would replace the link and break the installed
-// layout (and later upgrades). readlink -f prints nothing for a path that does
+// layout (and later upgrades). The resolver prints nothing for a path that does
 // not exist, which is a clear error rather than a silent fallback to the
 // symlink.
 func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p string) (string, error) {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "readlink -f "+shellQuote(p)), nil)
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveDeployCommand(p)), nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve install path %q: %w: %s", ErrDeploy, host.Name, p, err, tail(out))
 	}

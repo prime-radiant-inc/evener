@@ -1,11 +1,13 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -56,7 +58,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 			switch {
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
-			case strings.Contains(joined, "readlink -f /opt/evener/bin/evener"):
+			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
 				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(joined, "cat >"):
 				pushArgv = append([]string(nil), argv...)
@@ -136,7 +138,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/home/dev/.local/bin/evener\n"), nil
-		case strings.Contains(joined, "readlink -f"):
+		case strings.Contains(joined, "evener_resolve"):
 			return []byte("/home/dev/.local/bin/evener\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushJoined = joined
@@ -176,7 +178,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		case strings.Contains(joined, "test -d"):
 			testDirRemote = joined
 			return nil, nil
-		case strings.Contains(joined, "readlink -f"):
+		case strings.Contains(joined, "evener_resolve"):
 			return []byte(target + "\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushRemote = joined
@@ -221,7 +223,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "test -d /usr/local/bin"):
 			return nil, nil
-		case strings.Contains(joined, "readlink -f "+link):
+		case strings.Contains(joined, "evener_resolve "+link):
 			return []byte(realPath + "\n"), nil
 		case strings.Contains(joined, "cat >"):
 			pushRemote = joined
@@ -247,6 +249,93 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	}
 	if strings.Contains(pushRemote, "mv "+realPath+".tmp "+link) {
 		t.Fatalf("push replaces the symlink %q instead of its target: %q", link, pushRemote)
+	}
+}
+
+// TestResolveDeployCommandIsPortableAcrossReadlinkVariants proves the deploy path
+// resolver does not depend on `readlink -f`, a GNU/coreutils extension that BSD
+// `readlink` (macOS) rejects with `readlink: illegal option -- f` — the failure
+// that made every darwin/arm64 deploy fail at path resolution. It runs the real
+// resolver under a `readlink` shim emulating the BSD behavior and confirms the
+// legacy form fails under that same shim, so the test embodies the pre-fix
+// failure it guards against.
+func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh not available: %v", err)
+	}
+	realReadlink, err := exec.LookPath("readlink")
+	if err != nil {
+		t.Skipf("readlink not available: %v", err)
+	}
+
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved := filepath.Join(realDir, "evener")
+	if err := os.WriteFile(resolved, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link1 := filepath.Join(root, "link1")
+	link2 := filepath.Join(root, "link2")
+	if err := os.Symlink(resolved, link1); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(link1, link2); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeBin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	shim := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  -f) echo 'readlink: illegal option -- f' >&2; echo 'usage: readlink [-n] [file ...]' >&2; exit 1;;\n" +
+		"  -n) shift;;\n" +
+		"esac\n" +
+		"exec " + realReadlink + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "readlink"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "PATH="+fakeBin+":"+os.Getenv("PATH"))
+
+	run := func(script string) (string, string, error) {
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = env
+		var out, errBuf bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &errBuf
+		err := cmd.Run()
+		return out.String(), errBuf.String(), err
+	}
+
+	// The resolver the deploy uses must succeed under the BSD-style readlink.
+	out, stderr, err := run(resolveDeployCommand(link2))
+	if err != nil {
+		t.Fatalf("resolver failed under a BSD-style readlink: %v: %s", err, stderr)
+	}
+	if got := strings.TrimSpace(out); got != resolved {
+		t.Fatalf("resolver output = %q, want %q", got, resolved)
+	}
+
+	// The pre-fix command must fail under the same shim: this is the darwin
+	// failure the resolver replaces.
+	if _, stderr, err := run("readlink -f " + shellQuote(link2)); err == nil {
+		t.Fatal("legacy `readlink -f` unexpectedly succeeded under the BSD-style readlink shim")
+	} else if !strings.Contains(stderr, "illegal option") {
+		t.Fatalf("legacy command failed for an unexpected reason: %s", stderr)
+	}
+
+	// A path that does not resolve to an existing file prints nothing and fails,
+	// so the caller reports a clear error instead of falling back to the symlink.
+	out, _, err = run(resolveDeployCommand(filepath.Join(root, "missing")))
+	if err == nil {
+		t.Fatalf("resolver succeeded for a missing path (stdout %q)", out)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("resolver printed %q for a missing path, want nothing", out)
 	}
 }
 

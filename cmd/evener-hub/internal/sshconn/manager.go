@@ -384,7 +384,20 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		// the deployed build. Record that so the attached channel (and callers of
 		// Channel.Preflight) report the version actually running, not the
 		// pre-deploy one.
+		//
+		// Re-probe the launch flags for the same reason: the flag gate below must
+		// judge the deployed binary, not the one this deploy just replaced, or a
+		// host predating a required flag could never be upgraded to a build that
+		// advertises it.
+		refreshed, err := m.probeLaunchCheck(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		facts.LaunchFlags = refreshed.LaunchFlags
 		facts.Version = m.opts.controllerVersion()
+	}
+	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
+		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
 	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
