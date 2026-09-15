@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { parseTaskListData } from "./taskData";
+import { parseTaskListData, taskAggregateLabel } from "./taskData";
 
 // parseTaskListData narrows TaskListResponse.data (typed `unknown` on the
 // wire - appwire/types.go:896-898, `TaskListResponse{Data any}`) into a
@@ -184,4 +184,30 @@ test("skips individual malformed entries (missing a required field) rather than 
     { id: 1, type: "implement", description: "good", prompt: "", status: "open" },
     { id: 3, type: "implement", description: "also good", prompt: "", status: "done" },
   ]);
+});
+
+test("the aggregate reads 'N of M tasks left' while work remains", () => {
+  expect(taskAggregateLabel({ total: 7, done: 1, cancelled: 5, remaining: 1 })).toBe("1 of 7 tasks left");
+  expect(taskAggregateLabel({ total: 7, done: 3 })).toBe("4 of 7 tasks left");
+  expect(taskAggregateLabel({ total: 20, done: 16 })).toBe("4 of 20 tasks left");
+});
+
+test("the aggregate singularizes the noun for a one-task list", () => {
+  expect(taskAggregateLabel({ total: 1, done: 0 })).toBe("1 of 1 task left");
+  expect(taskAggregateLabel({ total: 1, done: 1 })).toBe("All 1 task done");
+  expect(taskAggregateLabel({ total: 1, done: 0, cancelled: 1, remaining: 0 })).toBe("All 1 task settled");
+});
+
+test("the aggregate infers an omitted remaining the way the daemon computes it", () => {
+  expect(taskAggregateLabel({ total: 7, done: 1, cancelled: 5 })).toBe("1 of 7 tasks left");
+  expect(taskAggregateLabel({ total: 7, done: 1, remaining: 5 })).toBe("5 of 7 tasks left");
+});
+
+test("the aggregate distinguishes a clean finish from an all-cancelled tail", () => {
+  expect(taskAggregateLabel({ total: 3, done: 3 })).toBe("All 3 tasks done");
+  expect(taskAggregateLabel({ total: 3, done: 0, cancelled: 3, remaining: 0 })).toBe("All 3 tasks settled");
+});
+
+test("an empty aggregate is 'No tasks'", () => {
+  expect(taskAggregateLabel({ total: 0, done: 0 })).toBe("No tasks");
 });
