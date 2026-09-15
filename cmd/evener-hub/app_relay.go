@@ -244,6 +244,9 @@ func stampResyncTarget(notification appwire.Notification, threadID, ref string) 
 	if len(notification.Params) != 0 && json.Unmarshal(notification.Params, &params) != nil {
 		return notification
 	}
+	if params == nil { // "params": null decodes into a nil map
+		params = map[string]json.RawMessage{}
+	}
 	threadIDValue, err := json.Marshal(threadID)
 	if err != nil {
 		return notification

@@ -188,7 +188,7 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		bySess:            make(map[string]LiveEntry),
 		byPID:             make(map[int]LiveEntry),
 		entryPublishedGen: make(map[int]uint64),
-		procAlive:         ProcessAlive,
+		procAlive:         processAlive,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
 			return fsnotifyWatcher{w}, err

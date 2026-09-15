@@ -190,7 +190,14 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
 				currentEntry, resolveErr := s.relayEntry(ref)
 				if resolveErr != nil {
-					return nil, nil, &relayDaemonGoneError{err: resolveErr}
+					// Only an entry that is no longer listed means the daemon
+					// is gone; a resolver failure on a listed entry (its
+					// session moved under the thread, no workspace ref)
+					// names a daemon that is still there.
+					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted {
+						return nil, nil, &relayDaemonGoneError{err: resolveErr}
+					}
+					return nil, nil, resolveErr
 				}
 				transport, dialErr := s.dial(ctx, currentEntry.Endpoint, s.client, daemonAuthHeader(currentEntry.HubToken))
 				if dialErr != nil {
@@ -995,8 +1002,17 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 			return item, nil
 		}
 	}
-	return LocalDaemonEntry{}, appwire.SessionUnavailable("thread not found: " + threadID)
+	return LocalDaemonEntry{}, &localDaemonThreadNotFoundError{err: appwire.SessionUnavailable("thread not found: " + threadID)}
 }
+
+// localDaemonThreadNotFoundError marks the one resolver failure that means no
+// listed entry names the thread. The wire error inside is what every caller
+// reported before; the type only lets the relay tell "unlisted" apart from a
+// resolver failure on an entry that is still there.
+type localDaemonThreadNotFoundError struct{ err error }
+
+func (e *localDaemonThreadNotFoundError) Error() string { return e.err.Error() }
+func (e *localDaemonThreadNotFoundError) Unwrap() error { return e.err }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
 	entries := s.listedEntries()

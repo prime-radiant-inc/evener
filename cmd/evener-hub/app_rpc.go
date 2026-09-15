@@ -18,14 +18,29 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
+	// A hub configured without a roster still lists daemons through one,
+	// over the same rendezvous directory and the same probe, refreshed on
+	// every lookup instead of by a watcher: a rendezvous file names a daemon
+	// only once the process behind it answers for that entry. Liveness alone
+	// cannot vouch for a file - a crashed daemon's PID can be reused by
+	// anything - and the relay classifies a daemon as gone only once it is no
+	// longer listed, so an unverified file would keep a dead daemon dialable.
+	roster := cfg.Roster
+	var refreshBeforeListing bool
+	if roster == nil && cfg.RunDir != "" {
+		roster = hubcore.NewRoster(cfg.RunDir, &hubcore.StatusProber{})
+		refreshBeforeListing = true
+	}
 	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		if cfg.Roster != nil {
-			live := cfg.Roster.List()
+		if roster != nil {
+			if refreshBeforeListing {
+				roster.Refresh()
+			}
+			live := roster.List()
 			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
 			for _, item := range live {
 				if item.Crashed {
@@ -60,23 +75,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			}
 			return entries
 		}
-		if cfg.RunDir == "" {
-			return nil
-		}
-		raw, _ := rendezvous.List(cfg.RunDir)
-		entries := make([]appsource.LocalDaemonEntry, 0, len(raw))
-		for _, entry := range raw {
-			// A crashed daemon leaves its file behind. The roster drops a
-			// daemon whose process is gone, and the relay classifies a daemon
-			// as gone only once it is no longer listed (it keeps dialling a
-			// listed one), so the file alone must not keep a dead process
-			// dialable here either.
-			if !hubcore.ProcessAlive(entry.PID) {
-				continue
-			}
-			entries = append(entries, appsource.LocalDaemonEntry{Entry: entry})
-		}
-		return entries
+		return nil
 	}, http.DefaultClient))
 	return registry
 }

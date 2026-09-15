@@ -1883,3 +1883,111 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
 	}
 }
+
+// Only "no longer listed" means gone. A resolver failure against an entry that
+// is still listed - here the session id moved under the thread, so the
+// canonical ref no longer matches this relay session - names a daemon that
+// is very much there, and must not send listeners re-reading an ended state
+// (review round 4 on #1325).
+func TestRelaySessionResolverFailureOnAListedEntryIsNotGone(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+
+	// The entry stays listed under thread-1 but now names another session,
+	// so relayEntry fails with "relay session identity changed".
+	moved := relayEntry("thread-1")
+	moved.SessionID = "thread-2"
+	listingMu.Lock()
+	listed = []rendezvous.Entry{moved}
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recovery attempts at 0, 100, 300 and 700ms all see the listed entry.
+	select {
+	case delivery := <-deliveries:
+		t.Fatalf("a listed daemon was announced gone: %+v", delivery.Notification)
+	case <-time.After(1500 * time.Millisecond):
+	}
+}
+
+// Recovery keeps retrying while the daemon is gone (it may come back), and
+// every failed attempt would be a reason to announce it again. The listener is
+// told once per disconnect (review round 4 on #1325).
+func TestRelaySessionDaemonGoneIsAnnouncedOncePerDisconnect(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery.Notification)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resync reached the listener after the daemon exited for good")
+	}
+	// Recovery retries at 100, 200 and 400ms after the announcing attempt.
+	select {
+	case delivery := <-deliveries:
+		t.Fatalf("the daemon was announced gone again: %+v", delivery.Notification)
+	case <-time.After(1500 * time.Millisecond):
+	}
+}

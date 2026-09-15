@@ -878,15 +878,15 @@ func fuzzScenarioPreferLiveEntry(t *testing.T) {
 }
 
 func fuzzScenarioProcessAlive(t *testing.T) {
-	if ProcessAlive(0) {
-		t.Fatal("ProcessAlive(0) should be false")
+	if processAlive(0) {
+		t.Fatal("processAlive(0) should be false")
 	}
-	if ProcessAlive(-1) {
-		t.Fatal("ProcessAlive(-1) should be false")
+	if processAlive(-1) {
+		t.Fatal("processAlive(-1) should be false")
 	}
 	// Current process should be alive.
-	if !ProcessAlive(os.Getpid()) {
-		t.Fatal("ProcessAlive(current) should be true")
+	if !processAlive(os.Getpid()) {
+		t.Fatal("processAlive(current) should be true")
 	}
 }
 

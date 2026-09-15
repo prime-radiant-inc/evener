@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -416,13 +417,7 @@ func TestStampResyncTargetKeepsTheOtherFields(t *testing.T) {
 func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		appserver.Subscribe(ctx, "gone")
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "gone", SessionID: "gone", Source: "local", Evener: appwire.EvenerThread{Ref: "local:gone"}}}, nil
-	})
-	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
-	defer upstream.Close()
+	daemon, upstream := newDaemonStandIn(t, "gone")
 	// The rendezvous file claims a real process, alive for now.
 	process := exec.Command("sleep", "60")
 	if err := process.Start(); err != nil {
@@ -481,6 +476,73 @@ func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGon
 		case <-deadline:
 			t.Fatal("the subscriber was never told to re-read: the dead daemon's rendezvous file kept it dialable")
 		}
+	}
+}
+
+// newDaemonStandIn serves one session over a real WebSocket the way a daemon
+// does, enough for both a subscribing thread/read and the roster's identity
+// probe (thread/list plus a bare thread/read naming the root).
+func newDaemonStandIn(t *testing.T, sessionID string) (*appserver.Server, *httptest.Server) {
+	t.Helper()
+	thread := appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: "local:" + sessionID}}
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{thread}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if p.Subscribe {
+			appserver.Subscribe(ctx, sessionID)
+		}
+		return appwire.ThreadReadResponse{Thread: thread}, nil
+	})
+	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(upstream.Close)
+	return daemon, upstream
+}
+
+// A daemon frame is the daemon's to shape; "params": null decodes into a nil
+// map, and writing the route into it would take the hub down (review round 4
+// on #1325).
+func TestStampResyncTargetToleratesNullParams(t *testing.T) {
+	stamped := stampResyncTarget(appwire.Notification{
+		Method: appwire.NotifyEvenerThreadResync,
+		Params: json.RawMessage(`null`),
+	}, "gone-child", "local:gone-child")
+	var params appwire.ThreadResyncParams
+	if err := json.Unmarshal(stamped.Params, &params); err != nil {
+		t.Fatalf("stamped params: %v", err)
+	}
+	if params.Ref != "local:gone-child" || params.ThreadID != "gone-child" {
+		t.Fatalf("stamped params = %+v, want local:gone-child/gone-child", params)
+	}
+}
+
+// Process liveness alone cannot vouch for a rendezvous file: the PID a
+// crashed daemon left behind can be reused by anything. Without a roster the
+// hub lists a file only once the process behind it answers for that entry,
+// the same probe the roster applies (review round 4 on #1325).
+func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnALivePID(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   "127.0.0.1:1",
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  "stale",
+		SessionID: "stale",
+	})
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	local, ok := sources.Source("local")
+	if !ok {
+		t.Fatal("no local source")
+	}
+	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(listed.Data) != 0 {
+		t.Fatalf("a stale file on a live PID was listed as a daemon: %+v", listed.Data)
 	}
 }
 

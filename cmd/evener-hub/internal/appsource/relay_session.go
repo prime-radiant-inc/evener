@@ -23,8 +23,8 @@ func (e *relayDaemonGoneError) Error() string { return e.err.Error() }
 func (e *relayDaemonGoneError) Unwrap() error { return e.err }
 
 func isRelayDaemonGone(err error) bool {
-	var gone *relayDaemonGoneError
-	return errors.As(err, &gone)
+	_, gone := errors.AsType[*relayDaemonGoneError](err)
+	return gone
 }
 
 type relaySession struct {

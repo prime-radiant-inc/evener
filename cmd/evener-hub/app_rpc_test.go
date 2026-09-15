@@ -1860,30 +1860,33 @@ func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
 }
 
 func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
-	runDir := t.TempDir()
 	base := time.Now().UTC()
-	// No roster here, so an entry is listed only while its process is: this
-	// process and its parent are two that are.
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
+	// Nothing answers at these endpoints, so the entries are seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	older := rendezvous.Entry{
+		PID:       101,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
 		ThreadID:  "02wMz5Txv2enqVTitaig6F",
 		SessionID: "02wMz5Txv2enqVTitaig6F",
 		StartedAt: base.Add(-time.Hour),
-	})
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getppid(),
+	}
+	newer := rendezvous.Entry{
+		PID:       102,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:2/rpc",
 		SourceID:  "local",
 		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
 		SessionID: "02wMz5Txv47YP64RR3B9YJ",
 		StartedAt: base,
-	})
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: older, SessionID: older.SessionID},
+		hubcore.LiveEntry{Entry: newer, SessionID: newer.SessionID},
+	)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2063,7 +2066,6 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runDir := t.TempDir()
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	liveUpdated := base
 	pastUpdated := base.Add(-time.Hour)
@@ -2085,22 +2087,22 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// The hub has no roster here, so the live entry is kept only while its
-	// process is: this test's own.
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
+	// Nothing answers at this endpoint, so the live entry is seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	live := rendezvous.Entry{
+		PID:       501,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:501/rpc",
 		SourceID:  "local",
 		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
 		SessionID: "02wMz5Txv9yYdSRJat13MZ",
 		StartedAt: liveStarted,
-	})
+	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
@@ -9425,12 +9427,21 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
+	// The stand-in answers the hub's resume read and, with no roster in this
+	// hub, the rendezvous directory's identity probe (thread/list and a bare
+	// thread/read naming the root) that lists it in the first place. Like a
+	// real daemon it carries one id as both thread and session id: the probe
+	// lists it by session id, and the resume reads it by thread id.
+	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
+	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if params.Ref != "local:th_resumed" {
+		if params.Ref != "" && params.Ref != "local:th_resumed" {
 			t.Fatalf("ref=%q", params.Ref)
 		}
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
+		return appwire.ThreadReadResponse{Thread: resumed}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -9442,14 +9453,14 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 				t.Fatalf("resume session=%q", req.SessionID)
 			}
 			entry := rendezvous.Entry{
-				// No roster here, so the entry is listed only while its
-				// process is.
+				// The probe, not this PID, decides whether the entry is
+				// listed; it still has to be a live process.
 				PID:       os.Getpid(),
 				Protocol:  appwire.ProtocolVersion,
 				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
 				SourceID:  "local",
 				ThreadID:  "th_resumed",
-				SessionID: "sess_resumed",
+				SessionID: "th_resumed",
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
