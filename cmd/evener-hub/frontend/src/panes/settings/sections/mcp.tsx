@@ -11,9 +11,10 @@
 // themselves and clicking one fills the field - beyond parity, where the
 // legacy gave the directory lists (plugins/skills) a picker and left config
 // files typeahead-only, an asymmetry with no principled reason.
+
+import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { MCPServerSpec, SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {

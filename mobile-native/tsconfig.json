@@ -4,6 +4,16 @@
     "strict": true,
     "types": [
       "node"
-    ]
+    ],
+    // tsx reads this file, and only this file — not tsconfig.check.json, which
+    // `npm run check` passes explicitly. Without these three entries the
+    // scripts/*.mts tools cannot load their own app modules, because those
+    // import the AppWire package by name. scripts/check-script-imports.mts is
+    // the gate that holds it.
+    "paths": {
+      "@evener/appwire-client": ["../appwire-client/typescript/index.ts"],
+      "@evener/appwire-client/docContent": ["../appwire-client/typescript/docContent.ts"],
+      "@evener/appwire-client/testing/*": ["../appwire-client/typescript/testing/*"]
+    }
   }
 }

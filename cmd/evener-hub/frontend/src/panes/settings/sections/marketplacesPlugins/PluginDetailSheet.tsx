@@ -5,8 +5,9 @@
 // mobile (same content, geometry follows useIsMobile). The catalog
 // description is lazily pulled from the browse cache (browseMarketplace
 // no-ops when the marketplace is already cached, so re-opens are free).
+
+import { errorText } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";

@@ -3,7 +3,7 @@ import type {
 	FeatureSet,
 	KeybindingsOverrides,
 	KeybindingsRule,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import {
 	fromWireConfig,

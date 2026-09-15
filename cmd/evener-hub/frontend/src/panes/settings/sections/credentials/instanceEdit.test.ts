@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { draftFor, instanceEditParams, PROTOCOL_OPTIONS, SURFACE_OPTIONS, varRows } from "./instanceEdit";
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {

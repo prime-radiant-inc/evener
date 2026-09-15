@@ -1,8 +1,6 @@
+import type { SessionURL, ThreadModel } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError, WireError } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { sessionActionError, WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { SessionURL } from "../../../protocol/types.gen";
 import {
   blurHumanNote,
   canWriteHumanNote,

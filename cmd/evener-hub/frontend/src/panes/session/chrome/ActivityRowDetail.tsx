@@ -3,21 +3,26 @@
 // line with the live or terminal facts the dense row has no room for, and -
 // for shell jobs with output - the tail of the job's log. Pure presentation
 // except the one output-tail fetch; ActivityTree owns the detailID state and
-// passes the row plus its ticking `now` straight through.
+// passes the row plus its ticking `now` straight through. The session's entity
+// map rides along with them, because the strip renders in the session CHROME -
+// outside the transcript subtree whose render context carries that map - and
+// the delegate line names a real entity.
 
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
   type ActivityWatchRow,
+  activityDelegateDiagnostics,
   activityDelegateState,
+  type EntityView,
+  formatClockTime,
+  splitMandate,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
 } from "@evener/appwire-client";
-import { Fragment, type JSX, useEffect, useState } from "react";
-import { activityDelegateDiagnostics } from "../../../protocol/activityData";
-import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
+import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";
@@ -25,6 +30,7 @@ import { AnsiLineContent } from "../../../widgets/codeblock/ansiLine";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
+import { EntityRef } from "../transcript/EntityRef";
 import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { useTreeNow } from "./treeNow";
@@ -95,7 +101,11 @@ function keyedInstants(instants: number[]): Array<{ millis: number; key: string 
 // lands where now actually is. Nothing here implies a drop or a future firing -
 // the only instants drawn are the ones the wire actually carried.
 function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; now: number }): JSX.Element | null {
-  const instants = watchDeliveryInstants(watch);
+  // The ring is bounded (32 instants) but this strip re-renders on every tick
+  // while its row is open, so parse and sort it once per watch identity instead
+  // of on every render. A tick hands this component the same watch object, so
+  // the ring is parsed and sorted only when the watch's data actually changes.
+  const instants = useMemo(() => watchDeliveryInstants(watch), [watch]);
   if (instants.length === 0) return null;
   const dots = keyedInstants(instants);
   const earliest = instants[0] ?? 0;
@@ -339,9 +349,17 @@ function JobOutputPreview({ ownerRef, jobId }: { ownerRef: string; jobId: string
 export function ActivityRowDetail({
   row,
   now,
+  entities,
 }: {
   row: ActivityJobRow | ActivityDelegateRow;
   now: number;
+  /** The session's entity map (ActivityPanelBody's `useEntityView`), so the
+   * ids this strip names resolve to the transcript's shared entity card. The
+   * strip lives in the session chrome, outside the transcript subtree that
+   * carries the render context's own map, so the panel hands it down. Absent
+   * (a direct render, or an id the map cannot answer for) leaves the id as the
+   * plain text it is today. */
+  entities?: ReadonlyMap<string, EntityView>;
 }): JSX.Element {
   const delegate = row.kind === "delegate" ? row.delegate : undefined;
   const mandate = delegate?.mandate ?? delegate?.task ?? delegate?.description;
@@ -369,7 +387,17 @@ export function ActivityRowDetail({
         <code className={CLASS.detailCommand}>{command}</code>
       )}
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
-      {delegate && <span className={CLASS.detailMeta}>Delegate {delegate.delegateId} · send · stop · status</span>}
+      {delegate && (
+        <span className={CLASS.detailMeta}>
+          Delegate{" "}
+          {/* embedded: the strip sits inside the row's own treeitem control, so
+              the trigger takes no tab stop of its own (ruling R13); triggerOnly:
+              the row already carries its own open control, and this line's words
+              stay exactly "Delegate <id> · send · stop · status". */}
+          <EntityRef view={entities?.get(delegate.delegateId)} id={delegate.delegateId} embedded triggerOnly />
+          {" · send · stop · status"}
+        </span>
+      )}
       {delegate?.parentWatchGranted && <span className={CLASS.detailMeta}>Watch enabled</span>}
       {delegate &&
         activityDelegateDiagnostics(delegate).map((diagnostic) => (
@@ -393,11 +421,13 @@ export function ActivityRowDetail({
 // delivery timeline. A condition watch gets the explanatory line instead:
 // there is no period to draw, and the block must not pretend there is.
 //
-// It is the one watch surface that reads the tree clock: a caller with its own
-// ticking clock (the pane chrome) passes `now`, and the standalone pane passes
-// nothing and falls back to the tree's live context. Reading it HERE, rather
-// than in the row, is what keeps a collapsed watch row from re-rendering on
-// every tick with identical output.
+// It is the one watch surface that reads the tree clock, and in production the
+// tick has exactly one source: TreeNowContext. ActivityTree renders
+// <ActivityWatchDetail row={row} /> with no clock prop, so this strip never
+// follows the chrome's clock. The optional `now` is a deterministic seam for
+// direct tests, not a second production clock source. Reading the clock HERE,
+// rather than in the row, is what keeps a collapsed watch row from re-rendering
+// on every tick with identical output.
 export function ActivityWatchDetail({ row, now }: { row: ActivityWatchRow; now?: number }): JSX.Element {
   const { watch } = row;
   const contextNow = useTreeNow();

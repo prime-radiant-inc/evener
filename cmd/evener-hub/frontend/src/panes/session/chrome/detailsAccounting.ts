@@ -2,7 +2,7 @@
 // dependency-free of React (same convention as statusFormat.ts) so each is
 // trivially unit-testable.
 
-import type { ThreadModel, TurnModel } from "../../../protocol/model";
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 
 // TokenPair is one turn's or one session's up/down token counts, already
 // resolved to real numbers.

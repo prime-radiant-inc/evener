@@ -26,7 +26,7 @@
 // tsx's add-time validation both surface ONLY the custom inline error -
 // no native browser validation bubble.
 
-import type { LaunchConfigLayer, LaunchOption } from "../../../../protocol/types.gen";
+import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {

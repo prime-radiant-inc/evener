@@ -1,4 +1,13 @@
-import type { SandboxEscalationRequested } from "../../../appwire-client/typescript/types.gen";
+import type {
+  EvenerUsage,
+  InputItem,
+  OutputImage,
+  SandboxEscalationRequested,
+  Thread,
+  ThreadCapabilities,
+  ThreadItem,
+  Turn,
+} from "@evener/appwire-client";
 import type { MobileApproval } from "./model";
 // Pure AppWire-to-mobile thread projection. projectThread folds a wire
 // Thread (protocol/types.gen.ts) into a MobileConversation view model that
@@ -15,16 +24,7 @@ import type { MobileApproval } from "./model";
 import {
   hasItemFailure,
   isInProgressStatus,
-} from "../../../appwire-client/typescript/itemFailure";
-import type {
-  EvenerUsage,
-  InputItem,
-  OutputImage,
-  Thread,
-  ThreadCapabilities,
-  ThreadItem,
-  Turn,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type {
   ActivityDetail,
   ActivityMember,

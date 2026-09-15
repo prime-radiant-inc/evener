@@ -1,6 +1,6 @@
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";

@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { NavigationMutation } from "../../appwire-client/typescript/types.gen";
+import type { NavigationMutation } from "@evener/appwire-client";
 import {
 	type NavigationActionBackend,
 	type NavigationOperation,

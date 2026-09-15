@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import type { ActivityDelegate } from "../../appwire-client/typescript/activityData";
+import type { ActivityDelegate } from "@evener/appwire-client";
 import {
   delegateModel,
   delegatePacket,

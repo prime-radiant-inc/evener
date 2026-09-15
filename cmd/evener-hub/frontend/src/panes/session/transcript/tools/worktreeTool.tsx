@@ -24,7 +24,7 @@
 // "Switched to", and an `already_disposed` dispose never claims a
 // dirty-discard, because nothing was torn down to discard.
 
-import { clip, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
+import { clip, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
 import { MCPToolArguments } from "../MCPToolArguments";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

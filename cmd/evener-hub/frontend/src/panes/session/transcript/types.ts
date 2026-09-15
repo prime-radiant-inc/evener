@@ -5,8 +5,9 @@
 // T2 registers the real message renderers (agentMessage/userMessage/
 // steering/system/reasoning), T1 itself registers ONLY "commandExecution"
 // (ToolCallItem, which dispatches into toolRenderers.ts).
+
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import type { ComponentType } from "react";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { TranscriptRenderContextValue } from "../../../transcriptDisplay/renderContext";
 import { RawItemView } from "./RawItemView";
 

@@ -1,12 +1,8 @@
+import type { AuthDevicePollResponse, AuthLoginCompleteResponse, InstanceListResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type {
-  AuthDevicePollResponse,
-  AuthLoginCompleteResponse,
-  InstanceListResponse,
-} from "../../../../protocol/types.gen";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";

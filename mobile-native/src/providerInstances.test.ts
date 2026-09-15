@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import type {
   AnyNotification,
   InstanceListResponse,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
 

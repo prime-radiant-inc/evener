@@ -8,16 +8,16 @@
 // - renderOption envMap branch (line 211)
 // - renderOption mcpServerList branch (lines 219-220)
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
   PathValidateResponse,
-} from "../../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";

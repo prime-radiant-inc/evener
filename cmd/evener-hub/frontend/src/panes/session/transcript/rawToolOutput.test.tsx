@@ -1,7 +1,7 @@
+import type { ItemModel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ItemModel } from "../../../protocol/model";
 import { RawToolOutput } from "./RawToolOutput";
 
 afterEach(cleanup);

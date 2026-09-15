@@ -15,7 +15,7 @@
 // than a thrown error, so a caller can render "nothing to show" without an error
 // path of its own - the same contract the Spawn pane's branch chip has always
 // had (floor §1.7).
-import type { AppwireClientLike } from "../protocol/clientLike";
+import type { AppwireClientLike } from "@evener/appwire-client";
 
 export interface GitLocation {
   // Branch name, or a detached-HEAD short SHA, or "" when unknown.

@@ -22,9 +22,10 @@
 // never painted (live-verified). Popover portals the panel to document.body
 // at a position: fixed coordinate computed off the trigger's own
 // getBoundingClientRect(), so the clipping ancestor can't cut it off.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import { sessionActionError } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, Popover, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

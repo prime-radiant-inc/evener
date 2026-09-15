@@ -1,9 +1,9 @@
-import { visibleCatalogCommands } from "../../appwire-client/typescript/catalogCommands";
-import { sessionActionError } from "../../appwire-client/typescript/errors";
 import {
   mergeSlashCommands,
+  sessionActionError,
   type SlashMenuItem,
-} from "../../appwire-client/typescript/slashCompletion";
+  visibleCatalogCommands,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface CatalogState {
