@@ -181,6 +181,8 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, nil)
+	prepareDone := trace.stage(ctx, "launch_preparation")
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -193,11 +195,13 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 			req.Project, req.StateDir, err = resolveEvenerLaunchProjectStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 		}
 		if err != nil {
+			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
 	}
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
+		prepareDone(err)
 		return rendezvous.Entry{}, err
 	}
 	defer cleanup()
@@ -219,6 +223,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	})
 	if req.Provider != "" {
 		if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -226,9 +231,14 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	// session's persisted metadata, not ambient launch config, selects the model;
 	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
 	// resume because of a stale launch-config model.
+	contractDone := trace.stage(ctx, "launch_contract")
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, "", req.Env); err != nil {
+		contractDone(err)
+		prepareDone(err)
 		return rendezvous.Entry{}, err
 	}
+	contractDone(nil)
+	prepareDone(nil)
 	return ResumeDaemon(ctx, h.EvenerBinary, h.RunDir, req, timeout)
 }
 
@@ -369,7 +379,12 @@ func SpawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 
 // spawnDaemon is SpawnDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+	ctx, trace := withThreadLifecycleLog(ctx, "spawn", "", hubLog)
+	daemonStarted := time.Now()
+	trace.record(ctx, "daemon", "begin", daemonStarted, nil, 0, 0)
+	defer func() { trace.record(ctx, "daemon", "complete", daemonStarted, launchErr, entry.PID, 0) }()
+	launchDone := trace.stage(ctx, "launch")
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -385,17 +400,20 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 	// the id and reports it through rendezvous, so the file is adopted below.
 	dlog, err := openDaemonLog(runDir, "")
 	if err != nil {
+		launchDone(err)
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		launchDone(err)
 		dlog.close()
 		// Nothing was ever written to it and no session will ever claim it.
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
@@ -405,18 +423,28 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
+	waitStarted := time.Now()
+	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, cmd.Process.Pid, 0)
+	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
+	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		// Take the tail FIRST: it is the only account of this failure anyone
 		// gets. Then drop the file, because the session id that would have
 		// named it only ever arrives with the rendezvous entry this launch did
 		// not get, so nothing will ever read it again (kata dd8d).
-		failure := launchFailureError(launchFailurePrefix("daemon spawn", err), err, dlog.tail(daemonLaunchOutputLimit))
+		tail := dlog.tail(daemonLaunchOutputLimit)
+		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
+		failure := launchFailureError(launchFailurePrefix("daemon spawn", err), err, tail)
 		dlog.removeIfPending()
 		return rendezvous.Entry{}, failure
 	}
 	dlog.adopt(entry.SessionID)
+	// A fresh daemon only reveals its session through rendezvous. Bind that
+	// identity to the final record without mutating a caller's context trace.
+	completedTrace := *trace
+	completedTrace.sessionID = entry.SessionID
+	trace = &completedTrace
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }
@@ -460,7 +488,11 @@ func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
-func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (rendezvous.Entry, error) {
+func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", req.SessionID, hubLog)
+	done := trace.stage(ctx, "daemon")
+	defer func() { done(launchErr) }()
+	launchDone := trace.stage(ctx, "launch")
 	if evenerBinary == "" {
 		evenerBinary = "evener"
 	}
@@ -475,15 +507,18 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	// session's own log.
 	dlog, err := openDaemonLog(runDir, req.SessionID)
 	if err != nil {
+		launchDone(err)
 		return rendezvous.Entry{}, err
 	}
 	dlog.attach(cmd)
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		launchDone(err)
 		dlog.close()
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
+	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
@@ -492,17 +527,24 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	}()
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
-	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
+	waitStarted := time.Now()
+	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, cmd.Process.Pid, 0)
+	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
+	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		failure := launchFailureError(launchFailurePrefix("resume", err), err, dlog.tail(daemonLaunchOutputLimit))
+		tail := dlog.tail(daemonLaunchOutputLimit)
+		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
+		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
 	if err := dlog.promote(); err != nil {
 		_ = cmd.Process.Kill()
 		promotionErr := fmt.Errorf("promote daemon log: %w", err)
-		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, dlog.tail(daemonLaunchOutputLimit))
+		tail := dlog.tail(daemonLaunchOutputLimit)
+		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, cmd.Process.Pid, len(tail))
+		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
