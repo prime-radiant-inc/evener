@@ -254,7 +254,10 @@ test("watch card renders a trigger and its note separately", () => {
   );
 
   const card = focusCard();
-  expect(card.textContent).toContain("output matching “ready”");
+  // The card words its trigger through the shared composer, so a pattern reads
+  // exactly as it does in a watch list row: quoted, with no label of its own.
+  expect(card.textContent).toContain("“ready”");
+  expect(card.textContent).not.toContain("output matching");
   const noteLabel = within(card).getByText("Note");
   expect(noteLabel.tagName).toBe("DT");
   expect(noteLabel.nextElementSibling?.textContent).toBe("Preserve the release context");

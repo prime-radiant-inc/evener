@@ -1,13 +1,17 @@
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -70,12 +74,27 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   vi.useRealTimers();
+});
+
+test("Settings Connect provider opens discovery and retains management on cancel", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  expect(await screen.findByText("work")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
 });
 
 describe("initial load", () => {
@@ -207,6 +226,132 @@ describe("the detail sheet", () => {
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
     await screen.findByText("Removed instance personal");
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
+  });
+
+  // The listing a removal answers with is only the truth if the store kept it.
+  // The guided owner clears its retained draft on the removal report, so the
+  // report must not fire against a listing a concurrent read threw away.
+  test("a superseded removal reconciles the listing before it is reported", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let signalRemoved!: () => void;
+    const removedCalled = new Promise<void>((resolve) => {
+      signalRemoved = resolve;
+    });
+    const listingsAtRemoval: InstanceEntry[][] = [];
+    const onInstanceRemoved = vi.fn(() => {
+      listingsAtRemoval.push(credentialsStore.getState().instances);
+      signalRemoved();
+    });
+    render(<CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal wins the store race, so the
+    // removal's own response - the only one without the row - is discarded.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const WITHOUT_PERSONAL: InstanceListResponse = { instances: [WORK], availableProviders: [] };
+    fake.on("evener/instance/list", () => WITHOUT_PERSONAL);
+    await act(async () => {
+      resolveRemoval(WITHOUT_PERSONAL);
+      await removedCalled;
+    });
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(listingsAtRemoval[0]).toEqual([WORK]);
+  });
+
+  // fetch() swallows a failed read into the store's error field instead of
+  // rejecting, so a resolved reconcile promise is no confirmation. The
+  // superseded removal is still reported: its RPC resolved (only its response
+  // was discarded), so the entry left providers.toml, and the row the listing
+  // still shows is one this client read before the removal landed. The owner
+  // needs that report - it is the only thing that clears what the guided flow
+  // retained for the name (see ConnectProviderDialog's removal cases) - and the
+  // toast still says the listing could not be confirmed.
+  test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    let resolveRemoval!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          resolveRemoval = resolve;
+        }),
+    );
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    // A listing read issued after the removal supersedes its response.
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    fake.on("evener/instance/list", () => {
+      throw new Error("list denied");
+    });
+    await act(async () => {
+      resolveRemoval({ instances: [WORK], availableProviders: [] });
+      // The reconcile read fails outright; wait until the flow settles on
+      // either the honest unconfirmed-removal error or (wrongly) a success.
+      await vi.waitFor(() => {
+        if (!screen.queryByText(/could not be confirmed/) && !screen.queryByText("Removed instance personal")) {
+          throw new Error("no outcome toast yet");
+        }
+      });
+    });
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+  });
+
+  // The applied path is not automatically a confirmation either: the store's
+  // own listing is the applied response, and it must actually have lost the row.
+  test("a removal whose applied listing still holds the row is not reported as removed", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    fake.on("evener/instance/remove", () => ({ instances: [WORK, PERSONAL], availableProviders: [] }));
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    // The row is gone on the host: re-issuing the remove could only fail, so
+    // the confirm dialog closes with the failure.
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
 });
 
@@ -344,8 +489,21 @@ describe("credential verification", () => {
 
   test("resets pending state and ignores a late result after same-name instance refresh", async () => {
     const fake = connectFakeClient();
-    const oldInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://old.example/v1" });
-    const refreshedInstance = instance({ name: "work", providerId: "anthropic", baseUrl: "https://new.example/v1" });
+    // A destination carries a fingerprint in production unless the hub cannot
+    // key one, and this test is about the late result, not a fingerprint
+    // refusal: both rows assert their own destination so the probe is sent.
+    const oldInstance = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://old.example/v1",
+      endpointFingerprint: "fp-old",
+    });
+    const refreshedInstance = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://new.example/v1",
+      endpointFingerprint: "fp-new",
+    });
     const response = deferred<AuthTestResponse>();
     let listCalls = 0;
     fake.on("evener/instance/list", () => {
@@ -375,13 +533,108 @@ describe("credential verification", () => {
     });
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  // A destination the hub cannot fingerprint has no assertion to send, and an
+  // unasserted probe would dial whatever the name resolves to now: the test is
+  // refused before any RPC is sent, with an error toast and no pending state.
+  test("the test refuses a destination the hub cannot fingerprint", async () => {
+    const fake = connectFakeClient();
+    const unkeyed = instance({
+      name: "work",
+      providerId: "anthropic",
+      baseUrl: "https://unkeyed.example/v1",
+    });
+    fake.on("evener/instance/list", () => ({ instances: [unkeyed], availableProviders: [] }));
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toEqual([]);
+    await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+    expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  // roborev PR #1136: the probe asserts the destination the row was read from,
+  // so the hub can refuse a check whose name has since been re-pointed to an
+  // unreviewed endpoint instead of sending the stored credential there.
+  test("the test asserts the selected instance's fingerprint", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/test", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+      return { provider: "work", status: "success", message: "Credentials verified." };
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    await vi.waitFor(() => {
+      const calls = fake.calls.filter((call) => call.method === "evener/auth/test");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work" });
+    });
+  });
+
+  // roborev PR #1136: the hub refusing the asserted destination is not an
+  // endpoint failure - the name moved since this listing was read, so there is
+  // no honest probe result to show. Report the changed connection, clear the
+  // pending test, and re-read the listing so a retry asserts the destination
+  // now on screen rather than the one the credential was aimed at.
+  test("a refused assertion is reported as a changed connection and re-reads the listing", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    let listCalls = 0;
+    fake.on("evener/instance/list", () => {
+      listCalls += 1;
+      return { instances: [WORK_FP], availableProviders: [] };
+    });
+    fake.on("evener/auth/test", () => {
+      throw new WireError("endpoint changed", -32013, { evenerErrorInfo: "conflict" });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const callsBefore = listCalls;
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    await screen.findByText(ENDPOINT_CHANGED_TEST_MESSAGE);
+    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    // The refused assertion is not a result: the pending test clears and the
+    // action returns to its idle label.
+    await waitFor(() =>
+      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    // A retry has to assert the destination now on screen, so the listing is
+    // re-read after the refusal.
+    await waitFor(() => expect(listCalls).toBeGreaterThan(callsBefore));
+  });
 });
 
 describe("single-open-editor invariant", () => {
   test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" />);
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
     await screen.findByText("work");
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
@@ -411,7 +664,7 @@ describe("OAuth start branches", () => {
       flowId: "redirect-flow",
       url: "https://auth/start",
     }));
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
     const user = userEvent.setup();
@@ -419,7 +672,11 @@ describe("OAuth start branches", () => {
     await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
     await screen.findByRole("dialog", { name: "Sign in to personal" });
     expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull();
-    expect(openSpy).toHaveBeenCalledWith("https://auth/start", "_blank", "noopener");
+    expect(openedNewTab(anchors)).toEqual({
+      url: "https://auth/start",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
     expect(screen.getByRole("link", { name: /re-open authorize url/i })).toBeTruthy();
   });
 
@@ -599,7 +856,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -625,6 +882,47 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Credentials cleared for work");
   });
 
+  test("a cleared credential whose listing read is lost is still reported as cleared", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let logout!: (value: AuthLogoutResponse) => void;
+    fake.on(
+      "evener/auth/logout",
+      () =>
+        new Promise<AuthLogoutResponse>((resolve) => {
+          logout = resolve;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    // Dropped connection during the clear: the logout succeeded, and the
+    // follow-up listing read rejecting must not report "Clear failed".
+    await act(async () => {
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    });
+    await act(async () => {
+      logout({
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      });
+    });
+    // The handler continues past the lost listing read over a few more
+    // microtasks; flush them inside act before asserting.
+    await act(async () => {});
+    await screen.findByText("Credentials cleared for work");
+    expect(screen.queryByText(/Clear failed/)).toBeNull();
+  });
+
   // #713: a stray stored key shadowed behind an active OAuth login needs an
   // affordance that clears the key without dropping the login - distinct
   // from Clear (authLogout), which for a signed-in Codex row would remove
@@ -642,7 +940,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     });
     fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "shadowed" });
+      expect(params).toEqual({ provider: "shadowed", originClientId: "test-tab" });
       return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     render(
@@ -679,7 +977,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     });
     fake.on("evener/instance/list", () => ({ instances: [VERTEX], availableProviders: [] }));
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "vertex" });
+      expect(params).toEqual({ provider: "vertex", originClientId: "test-tab" });
       return {
         provider: "vertex",
         supported: true,
@@ -731,6 +1029,184 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     await screen.findByText("Removed instance personal");
   });
 
+  // A confirmation is issued against the instance the user was looking at:
+  // the row's endpoint fingerprint travels with the action so the hub refuses
+  // a name that now resolves elsewhere instead of clearing or removing a
+  // replacement's credentials/configuration.
+  test("Clear sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear credentials" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Credentials cleared for work");
+  });
+
+  test("Clear stored key sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const SHADOWED = instance({
+      name: "shadowed",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      hasStoredFile: true,
+      endpointFingerprint: "fp-shadowed",
+    });
+    fake.on("evener/instance/list", () => ({ instances: [SHADOWED], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({
+        provider: "shadowed",
+        expectedEndpointFingerprint: "fp-shadowed",
+        originClientId: "test-tab",
+      });
+      return { provider: "shadowed", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("shadowed");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "shadowed");
+    await user.click(within(inspector).getByRole("button", { name: "Clear stored key" }));
+    const dialog = screen.getByRole("dialog", { name: "Clear stored key" });
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Stored key cleared for shadowed");
+  });
+
+  test("Remove sends the endpoint fingerprint of the row the confirm was opened for", async () => {
+    const fake = connectFakeClient();
+    const PERSONAL_FP = { ...PERSONAL, endpointFingerprint: "fp-personal" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK, PERSONAL_FP], availableProviders: [] }));
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal", expectedEndpointFingerprint: "fp-personal" });
+      return { instances: [WORK], availableProviders: [] };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByText("Removed instance personal");
+  });
+
+  // A name the environment also supplies keeps resolving after the authored
+  // entry is removed: the hub re-lists it as an implicit instance, and the
+  // access it resolves is the environment's, not the removed entry's. The
+  // removal is confirmed by the authored row leaving - requiring the *name* to
+  // vanish would report a removal that did happen as unconfirmed, leaving the
+  // sheet open on stale authored state.
+  test("removing an instance the environment also supplies confirms on the authored row leaving", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal" });
+      return {
+        instances: [
+          WORK,
+          instance({
+            name: "personal",
+            providerId: "openai-codex",
+            implicit: true,
+            activeSource: "env:OPENAI_API_KEY",
+          }),
+        ],
+        availableProviders: [],
+      };
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+    await screen.findByText(/Removed instance personal/);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.queryByText(/could not be confirmed/)).toBeNull();
+  });
+
+  // The authored entry's name can survive the removal as an environment-
+  // supplied implicit row. A sheet left open on that name keeps the removed
+  // instance's dirty draft and offers a Save that would author a new override
+  // out of it, so a confirmed removal clears the selection: the replacement
+  // row opens fresh.
+  test("a confirmed removal closes the sheet even when the name survives as an environment-supplied row", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [] }));
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [
+          instance({
+            name: "work",
+            providerId: "anthropic",
+            implicit: true,
+            activeSource: "env:ANTHROPIC_API_KEY",
+          }),
+        ],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    // A dirty draft in the sheet's own editor lights its Save button - exactly
+    // the control that must not survive onto the replacement implicit row.
+    await user.type(within(inspector).getByLabelText("Base URL"), "https://edited.example");
+    expect((within(inspector).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/Removed instance work; environment access for it is still active/);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "work" })).toBeNull());
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(
+      fake.calls.filter((call) => call.method === "evener/instance/edit" || call.method === "evener/instance/create"),
+    ).toEqual([]);
+  });
+
   test("cancelling a confirm dialog makes no RPC call and keeps the sheet open", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
@@ -748,6 +1224,72 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
     expect(removeCalls).toEqual([]);
     expect(screen.getByRole("dialog", { name: "personal" })).toBeTruthy();
+  });
+});
+
+describe("credential dialogs against a moving endpoint", () => {
+  // The section captures the row's endpoint fingerprint when a credential
+  // editor opens and passes it to the dialog, which submits that captured
+  // value. A concurrent change that puts a different endpoint under the same
+  // name updates the dialog's live row but not the captured fingerprint, so
+  // the already-entered secret cannot be re-targeted to it.
+  test("a name that resolves to a different endpoint refuses the save, clears the value, and shows an error", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    const setKey = vi.fn();
+    fake.on("evener/auth/apiKey/set", setKey);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
+    const dialog = screen.getByRole("dialog", { name: "Set API key for work" });
+    await user.type(within(dialog).getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    // A concurrent client puts a different endpoint under the same name.
+    const MOVED = { ...WORK, endpointFingerprint: "fp-changed" };
+    fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(within(dialog).getByRole("alert").textContent).toContain("different endpoint"));
+    expect(setKey).not.toHaveBeenCalled();
+    expect((within(dialog).getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+  });
+
+  test("an unchanged destination submits the captured fingerprint", async () => {
+    const fake = connectFakeClient();
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-original" };
+    fake.on("evener/instance/list", () => ({ instances: [WORK_FP], availableProviders: [] }));
+    fake.on("evener/auth/apiKey/set", (params) => {
+      expect(params).toEqual({
+        provider: "work",
+        value: "sk-secret",
+        expectedEndpointFingerprint: "fp-original",
+        originClientId: "test-tab",
+      });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
+    const dialog = screen.getByRole("dialog", { name: "Set API key for work" });
+    await user.type(within(dialog).getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() => expect(fake.calls.some((c) => c.method === "evener/auth/apiKey/set")).toBe(true));
   });
 });
 
@@ -778,7 +1320,7 @@ describe("diagnostics and writesRefused", () => {
     expect(screen.queryByText("Warnings")).toBeNull();
   });
 
-  test("writesRefused disables Add and each sheet's Remove/make default, but not Test credentials/Set key/Clear", async () => {
+  test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
@@ -789,7 +1331,11 @@ describe("diagnostics and writesRefused", () => {
     await screen.findByText("work");
     const user = userEvent.setup();
 
-    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
+    // Credentials go to the credential store, not providers.toml, and the
+    // registry still serves the curated/implicit set when the user layer fails
+    // to load - so the guided entry point must stay usable while writes are
+    // refused.
+    expect((screen.getByRole("button", { name: "Connect provider" }) as HTMLButtonElement).disabled).toBe(false);
 
     const workInspector = await openSheet(user, "work");
     expect((within(workInspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
@@ -808,6 +1354,15 @@ describe("diagnostics and writesRefused", () => {
     expect(
       (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
+  });
+
+  test("writesRefused disables the raw add-instance action that authors providers.toml", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [], writesRefused: true }));
+    render(<CredentialsSection sectionId="credentials" fullEditor />);
+    await screen.findByText("work");
+
+    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

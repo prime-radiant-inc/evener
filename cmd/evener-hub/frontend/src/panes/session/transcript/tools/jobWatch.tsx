@@ -42,6 +42,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
+import { filterSummaryPhrase, watchTriggerPhrases } from "../watchConditionPhrase";
 import { watchEventLabel } from "../watchEventLabel";
 import { HeadClippedOutputBody } from "./bodies";
 import styles from "./jobWatch.module.css";
@@ -280,23 +281,6 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   return `Watch ${source} for ${clauses.join(" · ")}`;
 }
 
-// filterSummaryPhrase names an event-filter watch's shape in words, shared by
-// summaries, list rows, and row details so the three never drift (RoboRev PR
-// #954 review 3): error and ok both explicit with the tool named when
-// present; a status-less filter still names the tool ("calls on …"), and a
-// bare filter with neither reads "matching events".
-interface FilterPhrase {
-  filterToolName?: string;
-  filterStatus?: string;
-}
-
-function filterSummaryPhrase(condition: FilterPhrase): string {
-  const tool = condition.filterToolName ? ` on ${condition.filterToolName}` : "";
-  if (condition.filterStatus === "error") return `failed tool calls${tool}`;
-  if (condition.filterStatus === "ok") return `successful tool calls${tool}`;
-  return condition.filterToolName ? `calls on ${condition.filterToolName}` : "matching events";
-}
-
 // conditionSentence renders one humanized trigger sentence from a parsed
 // Condition: pattern, timer cadence, heartbeat, events, and filter in
 // prose, machine tokens in mono. Shared by list rows (short form) and
@@ -305,29 +289,12 @@ function rowConditionPhrase(row: WatchRow): string {
   const state = watchDisplayState(row);
   if (state === "watching") {
     if (row.condition) {
-      const parsed = parseConditionText(row.condition, row.note);
       const source = sourceLabel(row.source);
-      if (parsed.afterSeconds !== undefined) return `${humanizeSeconds(parsed.afterSeconds)} · ${source}`;
-      if (parsed.repeatSeconds !== undefined) {
-        return `every ${humanizeInterval(parsed.repeatSeconds).replace(/^every /, "")} · ${source}`;
-      }
-      const bits: string[] = [];
-      if (parsed.outputMatch) bits.push(`“${parsed.outputMatch}”`);
-      // The every throttle rides the events bit when one renders, else the
-      // filter bit — it is one shared throttle ("events: […] every N where …"),
-      // so it must never print twice. Parens match the create summary's
-      // "(every N)" shape (RoboRev PR #954 review 3).
-      const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
-      if (parsed.events.length > 0) {
-        const names = parsed.events.map(watchEventLabel).join(", ");
-        bits.push(`${names}${every}`);
-      }
-      if (parsed.filterToolName || parsed.filterStatus) {
-        bits.push(`${filterSummaryPhrase(parsed)}${parsed.events.length === 0 ? every : ""}`);
-      }
-      if (parsed.progressIntervalMS !== undefined) {
-        bits.push(humanizeInterval(parsed.progressIntervalMS / 1000));
-      }
+      const parsed = parseConditionText(row.condition, row.note);
+      // The trigger wording comes from the shared composer, so this row and the
+      // watch card can never word the same condition differently.
+      const { timer, bits } = watchTriggerPhrases(parsed);
+      if (timer) return `${timer} · ${source}`;
       if (bits.length > 0) return `${bits.join(" · ")} · ${source}`;
       // No trigger bits parsed: the condition is either a bare note or
       // unrecognized grammar. A note-only row still names its note (the

@@ -4,7 +4,9 @@
 // design.md §11.3): computing the credential display from InstanceEntry's
 // activeSource/credentialRequired/auth fields and the providerId grouping -
 // no rendering, no store access, easily unit-tested in isolation.
+
 import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
 const STORED_CREDENTIAL_JSON_LABEL = "Configured via stored credential JSON";
@@ -154,4 +156,45 @@ export function safeCredentialTestResult(provider: string, response: AuthTestRes
 
 export function safeCredentialTestMessage(status: string): string {
   return CREDENTIAL_TEST_MESSAGES[status] ?? ENDPOINT_FAILURE_MESSAGE;
+}
+
+// isEndpointConflict recognizes the hub's refusal of an asserted destination
+// (appwire.Conflict: code -32013 with data.evenerErrorInfo "conflict"): the
+// name no longer resolves where the client asserting it was told it does. Every
+// credential flow presents this as a changed connection rather than a failure
+// of the endpoint itself.
+export function isEndpointConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+}
+
+// ENDPOINT_CHANGED_TEST_MESSAGE is what a credential test says when the hub
+// refuses its asserted destination: the name moved since the listing the row
+// was read from, so testing again has to start from the destination now on
+// screen.
+export const ENDPOINT_CHANGED_TEST_MESSAGE =
+  "This connection changed to a different endpoint. Check its destination and test again.";
+
+// FINGERPRINT_UNAVAILABLE_ERROR is what a credential write says when the row has
+// a destination but serves no fingerprint: the hub accepts an empty assertion
+// rather than validating it, so the save is refused locally with the same
+// "review its destination" remedy as a moved endpoint - the listing that carries
+// the fingerprint again is what makes the save work.
+export const FINGERPRINT_UNAVAILABLE_ERROR =
+  "The hub cannot check this endpoint right now, so the key was not sent. Review its destination and try again once it can be checked.";
+
+// FINGERPRINT_UNAVAILABLE_TEST_MESSAGE is what a credential test says when the
+// row has a destination but no fingerprint to assert: the hub would have
+// nothing to compare and would dial whatever the name resolves to now, so the
+// check is refused before it is sent (instanceDialogs refuses a write the same
+// way).
+export const FINGERPRINT_UNAVAILABLE_TEST_MESSAGE =
+  "The hub cannot check this endpoint right now, so the test was not run. Review its destination and try again once it can be checked.";
+
+// fingerprintUnavailable reports the row a credential test must not run for: it
+// has a destination, and the listing could not key a fingerprint for it. A row
+// with no destination - a provider without a base URL - is not this case, and
+// keeps testing as before: there is nothing for the hub to check, which is the
+// rule instanceDialogs applies to a write.
+export function fingerprintUnavailable(row: InstanceEntry | undefined): boolean {
+  return row !== undefined && (row.baseUrl ?? "") !== "" && (row.endpointFingerprint ?? "") === "";
 }
