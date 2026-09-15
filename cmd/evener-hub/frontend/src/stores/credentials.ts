@@ -85,7 +85,7 @@ export interface CredentialsStoreState {
   // the add dialog, the removal report) act on the store's verdict, never on
   // the raw response.
   create(params: InstanceCreateParams): Promise<boolean>;
-  edit(params: InstanceEditParams): Promise<boolean>;
+  edit(params: InstanceEditParams, expectedEndpointFingerprint?: string): Promise<boolean>;
   remove(name: string, expectedEndpointFingerprint?: string): Promise<boolean>;
   setDefault(name: string): Promise<boolean>;
   // Auth mutations return the raw wire response and never touch
@@ -207,9 +207,18 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
     return applyMutation(() => client.request("evener/instance/create", params));
   },
 
-  async edit(params) {
+  async edit(params, expectedEndpointFingerprint) {
     const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/edit", params));
+    // The assertion rides the request the way remove's does, and is omitted when
+    // the row served no fingerprint: the sheet must stay usable while the hub
+    // cannot key, and an absent assertion is the pre-fingerprint behaviour the
+    // hub keeps for the TUI and older clients.
+    return applyMutation(() =>
+      client.request("evener/instance/edit", {
+        ...params,
+        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+      }),
+    );
   },
 
   async remove(name, expectedEndpointFingerprint) {

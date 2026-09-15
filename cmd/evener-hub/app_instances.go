@@ -941,9 +941,12 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// so a client that sent no assertion - the TUI, an older client - resolves
 	// nothing. One key for the whole edit, so the assertion inside the locks is
 	// checked against the key the caller's row was served with.
+	// asserted is read once: the same value decides whether the key is needed
+	// before the locks and whether the assertion is checked under them.
+	asserted := params.ExpectedEndpointFingerprint != ""
 	var key []byte
 	var keyErr error
-	if params.ExpectedEndpointFingerprint != "" {
+	if asserted {
 		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
 	}
 
@@ -986,7 +989,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	// its pre-fingerprint behaviour for those callers rather than the
 	// fail-closed rule the credential writes apply to an empty assertion: the
 	// field has to stay backward compatible.
-	if params.ExpectedEndpointFingerprint != "" {
+	if asserted {
 		if err := c.auth.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
 			return err
 		}
