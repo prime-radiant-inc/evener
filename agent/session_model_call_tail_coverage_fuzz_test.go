@@ -186,7 +186,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 		if mode == 4 {
 			s.cfg.testOnly.responsesContinuationHistoryCurrentFunc = func(responsesContinuationHistoryReservation, []schema.Turn) bool { return false }
 		}
-		out, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, history, false)
+		out, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), s.currentProfile(), req, history, false)
 		if out.HistoryMode == "" {
 			t.Fatalf("planning mode %d returned empty history mode", mode)
 		}
@@ -195,7 +195,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 	s := modelCallTailSession(t)
 	s.cfg.OpenAIResponsesContinuation = "auto"
 	s.cfg.testOnly.responsesContinuationSupportRegistry = map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{}
-	if got, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
+	if got, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), s.currentProfile(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
 		t.Fatalf("disabled registry mode = %q", got.HistoryMode)
 	}
 }
