@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
@@ -183,9 +184,40 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 		PreviousResponseID: "resp-anchor",
 	}
 	fullHistory := []llm.Message{llm.User(strings.Repeat("history ", 100))}
-	fallback := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
+	fallback := responsesContinuationFullHistoryFallbackRequest(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, fullHistory)
 	if fallback.MaxTokens != nil {
 		t.Fatalf("anchor recovery MaxTokens = %d, want cleared before re-budgeting", *fallback.MaxTokens)
+	}
+}
+
+// A fallback rebuild is estimated against the fallback's own row: the request it
+// produces is the one the fallback model dispatches, so billing it by the names
+// it carries would undercount exactly the rows whose adapter replays unsigned
+// thinking while their names say nothing.
+func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T) {
+	res := registry.Resolved{
+		Instance: "thinking-gw", ModelID: "gateway-zz",
+		Protocol: registry.ProtocolOpenAIChat,
+		Caps:     registry.Caps{ThinkingAsText: new(true)},
+	}
+	req := llm.Request{
+		Provider: "thinking-gw", Model: "gateway-zz", HistoryMode: llm.HistoryModeFullHistory,
+		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "the visible answer"},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
+		}}},
+	}
+	got, ok := responsesContinuationModelFallbackRequest(res, req, nil)
+	if !ok {
+		t.Fatal("model fallback rebuild refused a full-history request")
+	}
+	want := llm.EstimateInputTokensForResolved(res, req).Tokens
+	if got.InputTokensEstimate != want || got.FullHistoryInputTokensEstimate != want {
+		t.Fatalf("fallback estimates = input:%d full:%d, want %d from the fallback row",
+			got.InputTokensEstimate, got.FullHistoryInputTokensEstimate, want)
+	}
+	if nameOnly := llm.EstimateInputTokens(req).Tokens; nameOnly >= want {
+		t.Fatalf("control: the name rule must undercount this row (%d vs %d)", nameOnly, want)
 	}
 }
 
@@ -859,4 +891,50 @@ func task4LargePNG() []byte {
 		panic(err)
 	}
 	return out.Bytes()
+}
+
+// The continuation estimates ride the request into admission and pressure
+// accounting, so they must bill the target the request will actually dispatch
+// to. A gateway instance whose resolved row replays unsigned thinking text has no
+// name marker for the name rule to read, so the name-based estimator undercounts
+// every request the session plans and an oversized request can hide behind it.
+func TestSessionContinuationShadowEstimateUsesTheResolvedTarget(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "thinking-gw"})
+	profile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
+	resolved := profile.Resolved()
+	resolved.Protocol = registry.ProtocolOpenAIChat
+	resolved.Caps.ThinkingAsText = new(true)
+	profile = profile.WithResolved(resolved)
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	if got := sess.profile.Resolved(); got.Protocol != registry.ProtocolOpenAIChat || !registry.BoolValue(got.Caps.ThinkingAsText) {
+		t.Fatalf("harness: session row = %+v, want the replaying openai-chat row", got)
+	}
+
+	req := llm.Request{
+		Provider: profile.ID(),
+		Model:    profile.Model(),
+		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "the visible answer"},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
+		}}},
+	}
+	// Control: for this row the two rules disagree, so the assertion below can
+	// only pass when the resolved row decided. The name rule sees no vendor
+	// marker and bills the thinking part at nothing.
+	resolvedTokens := llm.EstimateInputTokensForResolved(resolved, req).Tokens
+	nameTokens := llm.EstimateInputTokens(req).Tokens
+	if resolvedTokens <= nameTokens {
+		t.Fatalf("control: resolved estimate %d must exceed the name-based %d for this row", resolvedTokens, nameTokens)
+	}
+
+	got := sess.applyResponsesContinuationShadowEstimate(req)
+	if got.InputTokensEstimate != resolvedTokens {
+		t.Fatalf("InputTokensEstimate = %d, want the resolved-target estimate %d (the name-based rule would bill %d)",
+			got.InputTokensEstimate, resolvedTokens, nameTokens)
+	}
 }

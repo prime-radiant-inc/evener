@@ -510,6 +510,15 @@ func imageDimensions(img *ImageData) (int, int, bool) {
 func providerTokenFamily(provider, model string) string {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	m := strings.ToLower(strings.TrimSpace(model))
+	// gpt-oss is deliberately generic in the registry (§6.1) — its rows declare
+	// text-only input — so no spelling of it may claim OpenAI's image rules. The
+	// family map already refuses it for a resolved row, but that refusal is
+	// invisible here: "gpt-" matches the OpenAI branch, and a gateway's
+	// openai/gpt-oss name matches the leading-"o" one, so without this the name
+	// stage re-claims the tokenizer the family map just declined.
+	if strings.Contains(m, "gpt-oss") {
+		return ""
+	}
 	switch {
 	case p == "google" || p == "gemini" || strings.Contains(m, "gemini"):
 		return "google"

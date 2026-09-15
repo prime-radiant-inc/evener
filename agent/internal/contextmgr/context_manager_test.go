@@ -1608,6 +1608,27 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 	}
 }
 
+// The estimate readers must stay total without a profile: a Manager built with
+// none (NewManager(nil, ...), as the session-log strategy tests do) has no window
+// and no resolved row to read, which is "unknown", not a crash. These paths were
+// pure and total before the profile-aware accounting.
+func TestContextManager_NilProfileEstimatesStayTotal(t *testing.T) {
+	cm := NewManager(nil, nil, cheapmodel.New(nil))
+	const text = "hello from a manager with no profile"
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(text))}
+
+	if usage := cm.EstimateUsage(history, 0); usage != (schema.ContextMetrics{}) {
+		t.Fatalf("EstimateUsage with no profile = %+v, want the zero metrics: no window is known", usage)
+	}
+	if got := cm.EstimatePressure(history, 0); got != 0 {
+		t.Fatalf("EstimatePressure with no profile = %v, want 0: no window is known", got)
+	}
+	messages := []llm.Message{llm.User(text)}
+	if got, want := cm.estimateTokens(history), llm.EstimateMessagesInputTokens(messages).Tokens; got != want {
+		t.Fatalf("estimateTokens with no profile = %d, want the targetless estimate %d", got, want)
+	}
+}
+
 func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t *testing.T) {
 	profile := testProfile("openai", "gpt-5.2", 0)
 	resolved := profile.Resolved()

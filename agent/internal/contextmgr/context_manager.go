@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // CompactionMeta holds session-level metadata injected into compaction summaries.
@@ -368,13 +369,35 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 // tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	cw := prof.ContextWindowSize()
+	cw := contextWindowOf(prof)
 	if cw <= 0 {
 		return 0
 	}
 
 	totalTokens := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	return float64(totalTokens) / float64(cw)
+}
+
+// contextWindowOf returns the profile's context window, or 0 when the manager
+// has no profile. A Manager built without one (NewManager(nil, ...), as the
+// session-log strategy tests do) has no window to read, and the readers below
+// report "unknown" for that rather than crashing.
+func contextWindowOf(prof *provider.Profile) int {
+	if prof == nil {
+		return 0
+	}
+	return prof.ContextWindowSize()
+}
+
+// resolvedTargetOf returns the profile's resolved registry row, or the zero row
+// when there is no profile: the estimator then falls back to the names the turns
+// carry, exactly as the targetless estimator did before the profile-aware
+// accounting.
+func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
+	if prof == nil {
+		return registry.Resolved{}
+	}
+	return prof.Resolved()
 }
 
 // profileSnapshot reads the active profile together with the API measurement
@@ -422,7 +445,7 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 // measurement, and the estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	cw := prof.ContextWindowSize()
+	cw := contextWindowOf(prof)
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
@@ -473,7 +496,7 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 		}
 		messages = append(messages, t.Message)
 	}
-	return llm.EstimateMessagesInputTokensForResolved(prof.Resolved(), messages).Tokens
+	return llm.EstimateMessagesInputTokensForResolved(resolvedTargetOf(prof), messages).Tokens
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

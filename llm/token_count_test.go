@@ -683,13 +683,23 @@ func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRo
 	if got, want := EstimateMessagesInputTokensForResolved(oSeries, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
 		t.Fatalf("o-series image history = %d, want %d: the o family is OpenAI's", got, want)
 	}
-	// gpt-oss is generic per §6.1, not an OpenAI claim: with no vendor marker in
-	// the names, the protocol decides.
-	gptOSS := registry.Resolved{
-		Instance: "cerebras", Protocol: registry.ProtocolAnthropic,
-		Model: registry.Model{Family: "gpt-oss"},
+	// gpt-oss is generic per §6.1, not an OpenAI claim, and the carve-out has to
+	// hold for the names real rows carry: "gpt-" and a leading "o" (a gateway's
+	// openai/gpt-oss name) both look like OpenAI to the name rule, so the name
+	// stage must not re-claim the tokenizer the family map refused. With no
+	// vendor decision left, the protocol decides.
+	for _, modelID := range []string{"gpt-oss-120b", "openai/gpt-oss-120b", "openai.gpt-oss-120b"} {
+		gptOSS := registry.Resolved{
+			Instance: "cerebras", ModelID: modelID, Protocol: registry.ProtocolAnthropic,
+			Model: registry.Model{Family: "gpt-oss"},
+		}
+		if got, want := EstimateMessagesInputTokensForResolved(gptOSS, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+			t.Fatalf("gpt-oss row %q image history = %d, want %d: the gpt-oss family must not claim OpenAI", modelID, got, want)
+		}
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(gptOSS, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
-		t.Fatalf("gpt-oss image history = %d, want %d: the gpt-oss family must not claim OpenAI", got, want)
+	// The rule at its source: a gpt-oss name is no vendor decision at all, so the
+	// name-only entry points cannot claim OpenAI's image rules for it either.
+	if got := providerTokenFamily("cerebras", "gpt-oss-120b"); got != "" {
+		t.Fatalf("providerTokenFamily(cerebras, gpt-oss-120b) = %q, want no family: gpt-oss is deliberately generic", got)
 	}
 }
