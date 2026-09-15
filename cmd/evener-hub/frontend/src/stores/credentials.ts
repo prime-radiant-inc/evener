@@ -37,6 +37,7 @@ import type {
   ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
+import { hostRequest, LOCAL_HOST } from "./hostRouting";
 
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
@@ -59,6 +60,12 @@ export interface CredentialsStoreState {
   loading: boolean;
   error: string | null;
   fetch(): Promise<void>;
+  // fetchHost scopes evener/instance/list to the selected host (component
+  // 07b): a remote host's provider instances are read from that host's own
+  // registry through evener/host/request, so the spawn form's provider setup
+  // describes the machine it is about to launch on. It shares fetch()'s
+  // ordering guard and normalization; fetch() itself stays controller-scoped.
+  fetchHost(host: string): Promise<void>;
   create(params: InstanceCreateParams): Promise<void>;
   // Resolves true when the listing this edit answered with is the one the
   // store now holds, false when a newer request superseded it. The instance
@@ -131,24 +138,39 @@ async function applyMutation(request: () => Promise<InstanceListResponse>): Prom
   }
 }
 
+// CredentialsSet is the subset of the store's own setState the shared list
+// loader writes through.
+type CredentialsSet = (partial: Partial<CredentialsStoreState>) => void;
+
+// loadInstances is the single evener/instance/list path. fetch() and
+// fetchHost(host) both route through it, so the ordering guard and the
+// always-present list state are applied in exactly one place.
+async function loadInstances(set: CredentialsSet, host: string): Promise<void> {
+  const client = requireClient();
+  requestedList = true;
+  const version = ++requestVersion;
+  set({ loading: true, error: null });
+  try {
+    const resp = await hostRequest(client, host, "evener/instance/list", {});
+    if (version !== requestVersion || connectionStore.getState().client !== client) return;
+    set({ ...listState(resp), loading: false });
+  } catch (err) {
+    if (version !== requestVersion || connectionStore.getState().client !== client) return;
+    set({ loading: false, error: errorText(err) });
+  }
+}
+
 export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
   ...emptyListState(),
   loading: false,
   error: null,
 
   async fetch() {
-    const client = requireClient();
-    requestedList = true;
-    const version = ++requestVersion;
-    set({ loading: true, error: null });
-    try {
-      const resp = await client.request("evener/instance/list", {});
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ ...listState(resp), loading: false });
-    } catch (err) {
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ loading: false, error: errorText(err) });
-    }
+    await loadInstances(set, LOCAL_HOST);
+  },
+
+  async fetchHost(host) {
+    await loadInstances(set, host);
   },
 
   async create(params) {

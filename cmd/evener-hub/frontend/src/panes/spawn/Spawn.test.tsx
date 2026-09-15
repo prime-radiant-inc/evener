@@ -8,6 +8,8 @@ import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  HostForwardedResult,
+  HostRequestParams,
   InstanceListResponse,
   LaunchConfigResolved,
   LaunchOption,
@@ -26,6 +28,7 @@ import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import type { ResourceState } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -35,7 +38,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
-import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -5356,4 +5359,74 @@ test("a draft naming a host removed from the manifest shows local and omits sour
 
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params).not.toHaveProperty("source");
+});
+
+// --- host-routed discovery (Component 07b) ---------------------------------
+
+// The discovery methods the spawn form's mount path issues for the selected
+// host. The on-demand methods (path completion/validation, dirs/create, recent
+// projects, the slash catalog, plugin preview) are covered by their own seams'
+// tests; stores/hostRouting.test.ts covers the whole spec set at the seam.
+const MOUNT_DISCOVERY_METHODS = [
+  "model/list",
+  "evener/harnesses/list",
+  "evener/launch/schema",
+  "evener/launch/resolve",
+  "evener/git/head",
+  "evener/instance/list",
+] as const;
+
+test("a selected remote host routes every discovery call through evener/host/request", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = new FakeClient("ready");
+  const forwarded: Record<string, unknown> = {
+    "model/list": {
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    },
+    "evener/harnesses/list": { data: [{ id: "evener", label: "evener", kind: "evener" }] },
+    "evener/launch/schema": { options: [] },
+    "evener/launch/resolve": { effective: {}, layers: {}, provenance: {} },
+    "evener/git/head": { head: "main" },
+    "evener/instance/list": { instances: [], availableProviders: [] },
+    "evener/projects/recent": { data: [] },
+    "evener/paths/complete": { data: [] },
+    "evener/path/validate": { path: "", valid: true },
+    "evener/dirs/create": { path: "", created: true },
+    "evener/plugin/preview": { plugins: [] },
+    "evener/spawn/slashCatalog": { commands: [], skills: [] },
+  };
+  fake.on("evener/host/request", (params) => {
+    const method = (params as HostRequestParams).method;
+    return (forwarded[method] ?? {}) as HostForwardedResult;
+  });
+  connectionStore.getState().connect(fake);
+
+  // Select the remote host before the form mounts, so the mount-time discovery
+  // calls are issued against it from the first render.
+  const draft = selectSpawnDirectory("/tmp/remote-routing");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-routing");
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => {
+    const routed = new Set(
+      fake.calls
+        .filter((call) => call.method === "evener/host/request")
+        .map((call) => (call.params as HostRequestParams).method),
+    );
+    for (const method of MOUNT_DISCOVERY_METHODS) expect(routed.has(method)).toBe(true);
+  });
+
+  // Every proxied call names the selected host...
+  for (const call of fake.calls.filter((call) => call.method === "evener/host/request")) {
+    expect((call.params as HostRequestParams).host).toBe("buildbox");
+  }
+  // ...and nothing was left controller-scoped.
+  for (const method of HOST_DEPENDENT_DISCOVERY_METHODS) {
+    expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  }
 });

@@ -36,4 +36,16 @@ describe("resolveHeadBranch (floor §1.7, evener/git/head)", () => {
     expect(await resolveHeadBranch(client, "  ")).toBe("");
     expect(client.calls).toHaveLength(0);
   });
+
+  test("reads a remote working directory's HEAD through the host proxy", async () => {
+    client.on("evener/host/request", () => ({ head: "remote-branch" }));
+
+    expect(await resolveHeadBranch(client, "/srv/app", "buildbox")).toBe("remote-branch");
+    expect(client.calls).toEqual([
+      {
+        method: "evener/host/request",
+        params: { host: "buildbox", method: "evener/git/head", params: { cwd: "/srv/app" } },
+      },
+    ]);
+  });
 });

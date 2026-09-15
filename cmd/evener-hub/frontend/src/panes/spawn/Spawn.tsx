@@ -34,6 +34,7 @@ import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
+import { hostRequest } from "../../stores/hostRouting";
 import { selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -348,7 +349,27 @@ function SpawnForm({
 }) {
   const client = useClient();
   const toasts = useToasts();
-  const providerSetup = useProviderSetup();
+  const [source, setSource] = useDraftField(draft, "source");
+  // The manifest carries every configured launch source (Component 06a). It is
+  // empty until it loads, and in the common single-host case holds only
+  // "local" - either way no picker renders, so the existing form is unchanged.
+  const sources = useNavigationStore(selectSources);
+  // A draft may name a host that is no longer launchable: removed from the
+  // manifest while the draft lived, or still listed but offline (the hub keeps
+  // offline sources in the manifest - only the online flag flips). Both fall
+  // back to local rather than submitting a source the hub rejects with
+  // "spawn source is not available"; the stale draft value stays until the
+  // picker changes it, so a host that comes back online is chosen again.
+  const chosenSource = sources.find((candidate) => candidate.id === source);
+  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
+  const remoteHosts = sources.filter((candidate) => candidate.id !== "local");
+  // Every host-dependent discovery/validation call below is issued against
+  // hostChoice (component 07b): remote hosts read models, harnesses, launch
+  // config, paths, projects, the slash catalog, git HEAD, plugin diagnostics,
+  // and provider instances through evener/host/request; "local" keeps the
+  // plain call. hostChoice is the same value the form submits as
+  // ThreadStartParams.Source.
+  const providerSetup = useProviderSetup(hostChoice);
   const [connectingProvider, setConnectingProvider] = useState(false);
   const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
   const providerConnected = useCallback(() => {
@@ -378,20 +399,6 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
-  const [source, setSource] = useDraftField(draft, "source");
-  // The manifest carries every configured launch source (Component 06a). It is
-  // empty until it loads, and in the common single-host case holds only
-  // "local" - either way no picker renders, so the existing form is unchanged.
-  const sources = useNavigationStore(selectSources);
-  // A draft may name a host that is no longer launchable: removed from the
-  // manifest while the draft lived, or still listed but offline (the hub keeps
-  // offline sources in the manifest - only the online flag flips). Both fall
-  // back to local rather than submitting a source the hub rejects with
-  // "spawn source is not available"; the stale draft value stays until the
-  // picker changes it, so a host that comes back online is chosen again.
-  const chosenSource = sources.find((candidate) => candidate.id === source);
-  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
-  const remoteHosts = sources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   const [directoryOpen, setDirectoryOpen] = useState(false);
@@ -500,6 +507,7 @@ function SpawnForm({
   const slashCatalog = useSpawnSlashCatalog({
     client,
     cwd,
+    host: hostChoice,
     harness,
     launchOverrides: combinedOverrides,
     pluginRevision,
@@ -735,11 +743,14 @@ function SpawnForm({
       };
     }
     const cache = modelListCache.current.entries;
-    const key = `${harness}\0${cwd}`;
+    const key = `${hostChoice}\0${harness}\0${cwd}`;
     const cached = cache.get(key);
     if (cached) return cached;
 
-    const request = client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined });
+    const request = hostRequest(client, hostChoice, "model/list", {
+      harness: harness || undefined,
+      cwd: cwd || undefined,
+    });
     let tracked: Promise<ModelListResponse>;
     tracked = request.catch((error) => {
       if (cache.get(key) === tracked) cache.delete(key);
@@ -747,7 +758,7 @@ function SpawnForm({
     });
     cache.set(key, tracked);
     return tracked;
-  }, [client, harness, cwd, providerSetup.instances, credentialsGeneration]);
+  }, [client, hostChoice, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
@@ -759,41 +770,44 @@ function SpawnForm({
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
   // help here; these coalesce so a consumer counting entries never sees null.
   const listRecents = useCallback(
-    () => client.request("evener/projects/recent", {}).then((r) => r.data ?? []),
-    [client],
+    () => hostRequest(client, hostChoice, "evener/projects/recent", {}).then((r) => r.data ?? []),
+    [client, hostChoice],
   );
   // Injected into every PathField on this pane (the working directory here and
   // the advanced panel's path/pathList fields): the widget derives includeFiles
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      client.request("evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
-    [client],
+      hostRequest(client, hostChoice, "evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
+    [client, hostChoice],
   );
   const validatePath = useCallback(
     (path: string, kind: string) =>
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
-      client
-        .request("evener/path/validate", { path, kind })
-        .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
-    [client],
+      hostRequest(client, hostChoice, "evener/path/validate", { path, kind }).then((r) => ({
+        valid: r.valid,
+        error: r.error,
+        path: r.path,
+      })),
+    [client, hostChoice],
   );
-  const createDirectory = useCallback((path: string) => createDir(client, path), [client]);
+  const createDirectory = useCallback((path: string) => createDir(client, path, hostChoice), [client, hostChoice]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
-      client.request("evener/launch/resolve", {
+      hostRequest(client, hostChoice, "evener/launch/resolve", {
         cwd,
         launchOverrides: pluginSelectionSupported
           ? withPluginSelection(overrides, pluginSelection)
           : withPluginSelection(overrides, { mode: "default" }),
       }),
-    [client, cwd, pluginSelection, pluginSelectionSupported],
+    [client, hostChoice, cwd, pluginSelection, pluginSelectionSupported],
   );
 
   const pluginPreview = usePluginPreview({
     client,
     cwd,
+    host: hostChoice,
     launchOverrides: combinedOverrides,
     pluginRevision,
     enabled: pluginSelectionSupported,
@@ -829,17 +843,19 @@ function SpawnForm({
   useMountAutofocus(textareaRef, focused);
 
   // Draft defaults and URL prefill are owned above the form's lifetime.
-  // Mount only the asynchronous catalogs and focus the current prompt.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
+  // Load the host-dependent catalogs and focus the current prompt. Reloaded
+  // when the selected host changes (component 07b): harnesses and launch
+  // schema describe the host, so a remote selection must not keep showing the
+  // controller's lists.
   useEffect(() => {
     let active = true;
-    client.request("evener/harnesses/list", {}).then(
+    hostRequest(client, hostChoice, "evener/harnesses/list", {}).then(
       (r) => {
         if (active) setHarnesses(r.data);
       },
       () => {},
     );
-    client.request("evener/launch/schema", {}).then(
+    hostRequest(client, hostChoice, "evener/launch/schema", {}).then(
       (r) => {
         if (active) setSchemaOptions(perLaunchEvenerOptions(r));
       },
@@ -848,7 +864,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, []);
+  }, [client, hostChoice]);
 
   // Persisted defaults span every project, so only an explicitly global Evener
   // catalog has authority to sweep them. Picker catalogs may belong to another
@@ -857,7 +873,7 @@ function SpawnForm({
   useEffect(() => {
     const request = {
       active: true,
-      promise: client.request("model/list", { harness: "evener" }),
+      promise: hostRequest(client, hostChoice, "model/list", { harness: "evener" }),
     };
     setGlobalModelRequest(request);
     request.promise.then(
@@ -872,7 +888,7 @@ function SpawnForm({
     return () => {
       request.active = false;
     };
-  }, [client, providerSetup.instances, credentialsGeneration]);
+  }, [client, hostChoice, providerSetup.instances, credentialsGeneration]);
 
   // Validate each entered draft independently of storage: an earlier sweep may
   // already have deleted its saved model while the live draft still retains it.
@@ -954,13 +970,13 @@ function SpawnForm({
   useEffect(() => {
     if (cwd.trim() === "") return undefined;
     let active = true;
-    resolveHeadBranch(client, cwd).then((head) => {
+    resolveHeadBranch(client, cwd, hostChoice).then((head) => {
       if (active) setBranchHead({ cwd, head });
     });
     return () => {
       active = false;
     };
-  }, [client, cwd]);
+  }, [client, cwd, hostChoice]);
 
   // Default-model preview (kata xgk8): thread/start resolves Model from the
   // SAME layered launch config this previews (app_threadlifecycle.go -
@@ -1446,7 +1462,7 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      const outcome = await preflightDir(client, cwd);
+      const outcome = await preflightDir(client, cwd, hostChoice);
       if (outcome.kind === "abort") {
         toasts.push("error", outcome.message);
         busyRef.current = false;
@@ -1487,7 +1503,7 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      await createDir(client, path);
+      await createDir(client, path, hostChoice);
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
