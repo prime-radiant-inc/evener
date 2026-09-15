@@ -69,11 +69,11 @@ const (
 //	steer  active && steer   (the hub advertises steer as harness support)
 //	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
 //	       and not while the queue revision is stale after a partial drain
-//	queue  queue             (the hub folds the active status in already)
-//	send   send              (likewise; and the composer's own contract admits a
-//	                          source that advertises send while a turn runs --
-//	                          composer_panel_covtest_test.go -- so the wire's
-//	                          word is taken as is)
+//	queue  active && queue
+//	send   !active && send   (the status is applied here as the SDK does, on top
+//	                          of the hub folding it into the flag: a source that
+//	                          advertises send while a turn runs is not composed
+//	                          into, since turn/start would be refused)
 type sessionControls struct {
 	stop, steer, drain, queue, send bool
 	// drainReason says why drain is false: the harness, the status, or the
@@ -89,8 +89,8 @@ func (m hubModel) sessionControls() sessionControls {
 		stop:  active && caps.Interrupt,
 		steer: active && caps.Steer,
 		drain: caps.Steer && (active || parked) && !m.queueRevisionStale,
-		queue: caps.Queue,
-		send:  caps.Send,
+		queue: active && caps.Queue,
+		send:  !active && caps.Send,
 	}
 	switch {
 	case c.drain:

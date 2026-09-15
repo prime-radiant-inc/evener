@@ -536,7 +536,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 		// keybind doesn't fight with idle-state composing. Anything else --
 		// a queue, a running turn, a harness without steer, a syncing revision
 		// -- gets the twin's own reason for refusing.
-		if m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth == 0 && !m.queueRevisionStale && m.detail.Capabilities.Steer {
+		if m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
 			return m, nil
 		}
 		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")

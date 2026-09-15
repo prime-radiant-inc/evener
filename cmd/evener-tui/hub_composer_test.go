@@ -70,17 +70,19 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 		t.Fatalf("queue-without-steer composer must not advertise force-steer:\n%s", got)
 	}
 
-	// Send-capable active sources stay in send mode even when they do not
-	// advertise queue.
+	// A source that advertises send while a turn runs is not composed into
+	// (the status is applied to send, as the SDK's sessionControls does, and a
+	// turn/start against a running turn would be refused): with no queue
+	// either, the composer is read-only and keeps the draft.
 	m.detail.Capabilities.Queue = false
 	got = m.sessionView()
-	for _, want := range []string{"enter: send", "> nudge the running turn"} {
+	for _, want := range []string{"read-only:", "source does not advertise queue", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("busy send composer missing %q:\n%s", want, got)
+			t.Fatalf("busy send-only composer missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "read-only:") {
-		t.Fatalf("busy send-capable composer must not be read-only:\n%s", got)
+	if strings.Contains(got, "enter: send") {
+		t.Fatalf("busy send-only composer offered send during a running turn:\n%s", got)
 	}
 
 	// Neither queue nor send: read-only.

@@ -1529,9 +1529,12 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 		t.Fatalf("queue-ready status missing:\n%s", got)
 	}
 
+	// Send is not offered while a turn runs (the status is applied to it, as the
+	// SDK's sessionControls does), so a running source without queue reads
+	// read-only whether or not it advertises send.
 	m.detail.Capabilities.Queue = false
-	if got := m.sessionView(); !strings.Contains(got, "send: ready") {
-		t.Fatalf("send-ready active status missing:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
+		t.Fatalf("read-only active status missing:\n%s", got)
 	}
 
 	m.detail.Capabilities.Send = false
