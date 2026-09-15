@@ -29,17 +29,17 @@ beforeEach(() => {
 
 describe("railRowsExpr readiness predicate", () => {
   test("reports not ready (null) while the rail is empty", () => {
-    expect(evaluateExpr(driver.railRowsExpr(2))).toBeNull();
+    expect(evaluateExpr(driver.railRowsExpr({ atLeast: 2 }))).toBeNull();
   });
 
   test("reports not ready (null) with only one row", () => {
     renderRail(["a"]);
-    expect(evaluateExpr(driver.railRowsExpr(2))).toBeNull();
+    expect(evaluateExpr(driver.railRowsExpr({ atLeast: 2 }))).toBeNull();
   });
 
   test("returns the rows once at least two are present", () => {
     renderRail(["a", "b", "c"]);
-    const ready = evaluateExpr(driver.railRowsExpr(2));
+    const ready = evaluateExpr(driver.railRowsExpr({ atLeast: 2 }));
     expect(ready).not.toBeNull();
     expect(ready.rows.map((row) => row.ref)).toEqual(["a", "b", "c"]);
   });
