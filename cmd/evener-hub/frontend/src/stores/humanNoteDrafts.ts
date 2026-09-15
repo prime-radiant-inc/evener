@@ -3,7 +3,7 @@ import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
-import { registerPanelStoreEvictor } from "./panelStoreEviction";
+import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
 export interface HumanNoteDraft {
@@ -209,11 +209,16 @@ function flushPendingHumanNoteSaves(): void {
 export function acknowledgeHumanNote(record: MutationRecord, note: string): void {
   const draft = get(record.targetRef);
   if (!draft || draft.submitted?.id !== record.clientMutationId) return;
-  if (draft.generation !== draft.submitted.generation) {
-    put(record.targetRef, { ...draft, submitted: undefined });
-    return;
-  }
-  put(record.targetRef, { ...draft, text: note, dirty: false, saved: true, error: null, submitted: undefined });
+  const next =
+    draft.generation !== draft.submitted.generation
+      ? { ...draft, submitted: undefined }
+      : { ...draft, text: note, dirty: false, saved: true, error: null, submitted: undefined };
+  put(record.targetRef, next);
+  // Clearing the pending state can make the record reclaimable while its
+  // pane is already gone - the workspace-change sweep that preserved it
+  // will not come again, so the transition itself must schedule the sweep,
+  // or the acknowledged draft lingers in the map forever.
+  schedulePanelStoreEviction();
 }
 export function useHumanNoteDraft(ref: string): HumanNoteDraft | undefined {
   return useStore(drafts, (state) => state.records.get(ref));
