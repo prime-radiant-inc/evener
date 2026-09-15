@@ -328,6 +328,35 @@ only `local`, so the fan-out currently degenerates to one source.
   next start). New rows are written with their owning source. **Implementation
   status:** neither the migration nor the source column exists today; this is
   the implementing PR's requirement.
+  **Session pin assignments must be source-qualified too.** Archive and favorite
+  host qualification is not the only controller-side identity keyed by a bare
+  session ID: pin sections and session-pin assignments are as well, with the same
+  collision. The pin store keys its `session_pin` table by `session_id` alone and
+  `Assign`/`CreateOrReuseAndAssign`/`Unpin`/`DeleteSession` take a bare
+  `sessionID` (`cmd/evener-hub/internal/hubcore/pin_section.go`); the pin RPC
+  params carry a `SessionRef` that is re-resolved to a bare tree-node ID and
+  matched against **local** IDs (`SessionPinAssignParams`/`SessionPinUnpinParams`,
+  `appwire/types.go`; `resolvePinSession`/`sessionRefMatchesID`/
+  `resolveTopLevelSessionRef`, `app_pin_section.go`); and the navigation
+  projection looks a session pin up by both the bare node id and the bare `ref`
+  string (`PinSectionBySession`/`PinAssignments`, `navigation_projection.go`). A
+  remote session's `session_id` is its bare thread ID, so a pin on `host:th_1`
+  and a local `th_1` are indistinguishable: identical IDs on different hosts
+  overwrite one another's assignment, and a remote pin is classified against the
+  local tree. **Requirement:** pin storage, the RPC responses, and the
+  navigation keys are keyed by `(source, id)` — the same `ref.SourceID` host
+  qualification the archive/favorite stores carry — so two hosts' sessions with
+  the same bare ID hold separate pins; the assign/unpin handlers resolve the
+  requested `SessionRef` through the owning source (a `host:<id>` ref names that
+  host's session, a bare/`local:` ref the local host) and reject an unknown
+  source typed, and the projection matches a row's pin by its source-qualified
+  key. `PinSection.ID`/name identity itself is controller-global and unchanged.
+  Existing `session_pin` rows are migrated by adding a `source` column and
+  backfilling `source = "local"` (idempotent, exactly as the favorite/archive
+  migration above) so no present local pin is lost. **Implementation status:**
+  the `session_pin` table, the pin handlers, and the projection maps are all
+  bare-ID keyed today; the source column and the source-aware resolver are the
+  implementing PR's requirement.
   **Project summaries must carry the owning source, and destructive
   local-project actions must be gated by it.** The project the rail renders has
   no host dimension today: the resolved model is `identifier.Project` =
@@ -482,6 +511,11 @@ only `local`, so the fan-out currently degenerates to one source.
      component 04's typed `ErrDeploy`/`ErrProtocolIncompatible` — never a silent
      disabled row.
    - Idempotent while attached (`Ensure` is), so a repeated Connect is safe.
+   - **Origin guard:** attaching dials a remote host, so the handler is gated by
+     component 07's shared host-routing origin guard (§"Host-routing origin
+     guard"): a **remote-originated** request (`origin` non-empty) is refused
+     typed before `Ensure` is called, so a peer hub cannot make this hub attach a
+     new host. A local-originated Connect is unaffected.
    - **Ownership:** component 04 owns `Ensure`; the handler lives with the other
      hub-scoped host methods in `registerMiscHandlers` (`app_rpc.go`). It is a
      plain hub-scoped method — **not** a forwarded `evener/host/request` admin
@@ -717,6 +751,14 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     with distinct identities, neither resolved from a local path; a remote
     path that exists on the controller's filesystem does not adopt the
     controller's project identity.
+  - Source-qualified session pins: two hosts' sessions with the **same bare
+    thread ID** (`host:<id>` and `local:<id>`) hold separate pin assignments —
+    assigning one does not move the other, unpinning one leaves the other, and
+    the projection marks each row pinned by its own source. Assert the pin
+    assignment/unpin RPC resolves a `host:<id>` `SessionRef` through the host and
+    a bare/`local:` ref through the local source, and that an unknown source is
+    refused typed; assert the migration backfills `source = "local"` on a
+    pre-existing `session_pin` row without losing it.
   - Source cap: a manifest built from 63 hosts + `local` validates; 64 hosts +
     `local` (65 entries) is the over-limit case component 03's
     `ErrTooManyHosts` prevents from being configured.
@@ -788,6 +830,10 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     with the same ID (or path) hold separate favorite/archive keys, and a
     project archive on a non-local host succeeds without resolving
     `params.WorkingDir` against the controller's filesystem.
+12. Session pin assignments carry the owning source: two hosts' sessions with the
+    same bare thread ID hold separate pins, the assign/unpin handlers resolve the
+    requested `SessionRef` through its source, and a pre-existing local pin
+    survives the `source = "local"` migration.
 
 ## PR size estimate (LOC)
 

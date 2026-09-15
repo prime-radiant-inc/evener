@@ -39,7 +39,8 @@ var ErrStreamClosed = errors.New(...)        // exported sentinel, latched by Cl
 // Recv: readLine (bufio.Reader.ReadSlice('\n') loop, bounded by limit) -> unmarshal -> Message
 // Close: latch ErrStreamClosed, close the underlying rw (unblocks a blocked
 //   Recv and, per the accepted-stream contract, a blocked Write), then drain
-//   admitted writes within streamCloseDrainTimeout
+//   admitted writes within streamCloseDrainTimeout; the underlying close is
+//   itself invoked so it cannot block Close's return (see Implementation)
 ```
 
 The one framing mechanism is a `bufio.Reader` over the `io.ReadWriteCloser` and
@@ -98,14 +99,26 @@ shipped mechanism, so they are not interchangeable descriptions.
   lands is interrupted by the close and reports the recorded terminal cause; a
   write not yet admitted returns `ErrStreamClosed` (or the cancellation) without
   writing anything.
-  **The drain never waits indefinitely.** Because the interrupt-on-close
-  guarantee is the stream's, not Go's, `Close` bounds its wait for admitted
-  writes with an explicit shutdown timeout (a package constant, e.g.
-  `streamCloseDrainTimeout`) and returns on expiry with the terminal cause still
-  latched. This is the backstop that keeps a stream violating the accepted
-  contract from hanging bridge shutdown: `Close` returns, later `Send`/`Recv`
-  report `ErrStreamClosed`, and the offending write is abandoned rather than
-  awaited forever.
+  **`Close` never waits indefinitely — neither on the underlying close nor on
+  the drain.** Because the interrupt-on-close guarantee is the stream's, not
+  Go's, `Close` bounds its wait for admitted writes with an explicit shutdown
+  timeout (a package constant, e.g. `streamCloseDrainTimeout`) and returns on
+  expiry with the terminal cause still latched. This is the backstop that keeps a
+  stream violating the accepted contract from hanging bridge shutdown: `Close`
+  returns, later `Send`/`Recv` report `ErrStreamClosed`, and the offending write
+  is abandoned rather than awaited forever. **The bound must also cover the
+  underlying `rw.Close()` itself.** The order above calls the underlying close
+  *before* the drain precisely so it interrupts a blocked write, but that makes
+  `Close` synchronously dependent on the underlying `Close` returning: a stream
+  whose own `Close` blocks (or is slow to release resources) would keep `Close`
+  blocked *before* the drain timeout is ever reached, defeating it. `Close`
+  therefore invokes the underlying `rw.Close()` in a way that cannot block its
+  own return — for example, running `rw.Close()` on its own goroutine and
+  bounding the whole shutdown (close + drain) by `streamCloseDrainTimeout`, so
+  an underlying close that never returns still lets `Close` return with the
+  terminal cause latched and later `Send`/`Recv` reporting `ErrStreamClosed`.
+  The requirement is a **bounded `Close`**: no step of `Close` may wait
+  unboundedly on a stream that violates the accepted-stream contract.
   **The admitted-write drain is `Close`-only; it is not a promise of every
   poison path.** `poison()`/cancellation close the underlying stream to
   interrupt a blocked `Write` but deliberately do **not** take the write lock or
@@ -123,8 +136,10 @@ shipped mechanism, so they are not interchangeable descriptions.
   rewrite cannot regress to wait-before-close. **Two parts of this contract are
   not yet implemented and are tracked code follow-ups:** the accepted-stream
   interrupt-on-close requirement is a caller obligation the transport does not
-  enforce today, and the shipped `drainWrites()` waits without a
-  `streamCloseDrainTimeout` bound. The production callers already pass
+  enforce today, and the shipped `Close`/`drainWrites()` waits without a
+  `streamCloseDrainTimeout` bound **and calls the underlying `doClose()`
+  synchronously**, so an underlying close that blocks would prevent the bound
+  from being reached. The production callers already pass
   interrupt-on-close streams (SSH channel stdio, `os.Pipe`, `net.Conn`), so no
   live hang is observed; the timeout constant is the guard that makes a
   non-conforming stream impossible to hang shutdown with.
@@ -238,15 +253,23 @@ corrupt stream"):
   small), reports the terminal cause, makes later `Send`/`Recv` return
   `ErrStreamClosed`, and abandons the stalled write. This is the regression
   guard for the accepted-stream contract above.
+- **Bounded underlying close (new):** a non-conforming stream whose own `Close`
+  **blocks indefinitely** must not hang the transport's `Close` either: assert
+  `Close` returns within the bound (test seam set small), reports the terminal
+  cause, and makes later `Send`/`Recv` return `ErrStreamClosed`. This is the
+  regression guard for the bounded-`Close` requirement — the drain timeout alone
+  does not cover a blocked underlying close because the underlying close is
+  called first.
 
 ## Acceptance criteria
 
 - `go test ./appwire/ -run StreamTransport` passes.
 - `StreamTransport` satisfies `appwire.Transport` and drives `appwire.Client`.
-- `Close` never waits indefinitely: the admitted-write drain is bounded by
-  `streamCloseDrainTimeout`, so a stream that violates the interrupt-on-close
-  contract cannot hang bridge shutdown (regression-tested with a non-conforming
-  stream).
+- `Close` never waits indefinitely: **both** the underlying `rw.Close()` and the
+  admitted-write drain are bounded by `streamCloseDrainTimeout`, so a stream that
+  violates the interrupt-on-close contract — or whose own `Close` blocks — cannot
+  hang bridge shutdown (regression-tested with a non-conforming stream and with
+  a blocking underlying close).
 - No change to the WebSocket transport's behavior.
 
 ## PR size

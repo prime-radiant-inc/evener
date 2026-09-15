@@ -772,8 +772,9 @@ Ref translation detail (`remote_hub_refs.go`):
   (`appwire/types.go`), so it must stay exactly what the remote hub
   minted.
 - **Nested response refs are translated recursively, not only at the top
-  level.** Two response shapes carry session refs below their top level, and
-  both must be walked with no field left as a remote `local:<id>`:
+  level.** Several response shapes carry session refs below their top level
+  (three today), and each must be walked with no field left as a remote
+  `local:<id>`:
   - the `ListJobs` result (`evener/jobs/list`, `JobsListResponse.Data` =
     `appwire.JobActivityTree`, `appwire/types.go`) embeds a recursive session
     tree. Match the actual schema: the recursion carriers are
@@ -789,18 +790,46 @@ Ref translation detail (`remote_hub_refs.go`):
     `JobActivityEntry`/`JobActivityJob`/`JobActivityDelegate`,
     `appwire/types.go`). Every one of these is a session reference exactly like
     a top-level `ref`.
+    **`JobsListResponse.Data` is typed `any` today, so the walk needs a decode
+    step first.** The catalog defines `JobsListResponse.Data any`
+    (`appwire/types.go`), not `appwire.JobActivityTree`; a typed recursive walk
+    over a generic map would rewrite nothing in a real response, and the
+    `evener/jobs/list` client decodes remote data into generic maps. The
+    requirement is therefore: before walking nested refs, decode a `Data`
+    payload the response actually carries into `appwire.JobActivityTree` and
+    walk the typed tree — **preserving any payload that does not decode** as an
+    `any` it passes through untouched (an unrecognized/forward-compatible
+    shape is not blanked or dropped). Either decode-compatible-payloads plus
+    pass-through, or make the wire field itself typed (`Data
+    appwire.JobActivityTree`) and regenerate the bindings, is acceptable; what
+    is not acceptable is a typed walk that silently no-ops because the runtime
+    value is a `map[string]any`. This must be tested **through the actual stream
+    client** (`appwire.Client.Request` decoding a real JSON response), not only
+    against a Go value that was already the typed struct.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
     (`EvenerJobInfo.TranscriptRef`) and `Delegates[].TranscriptRef`
     (`EvenerDelegateInfo.TranscriptRef`).
+  - the `Thread.Evener.PendingEscalations[]` array
+    (`Evener.PendingEscalations []SandboxEscalationRequested`, `appwire/types.go`)
+    on any thread snapshot (a `ReadThread`/`ListThreads` response or a
+    `thread/started` notification): each item's `Ref`
+    (`SandboxEscalationRequested.Ref`) is the session ref the escalation card
+    belongs to — a bare thread ID is not enough, and a pending card routed by a
+    remote `local:<id>` resolves against the controller's own `local`, the wrong
+    machine, where the session does not exist. Rewrite each `.Ref` from the
+    remote `local:<id>` to the controller `host:<id>`; the item's `ThreadID` is
+    a bare, unnamespaced ID and needs no change (matching the bare-`threadId`
+    rule below).
   A nested `local:<id>` left untranslated makes the controller/TUI route the
   job, delegate, or child session to the controller's *own* `local` — the wrong
   machine, where the child session does not exist. `RemoteHubSource` must
   rewrite every such field from the remote `local:<id>` to the controller
-  `host:<id>`, walking `JobActivityTree` and `EvenerDiagnostics` to their leaves.
-  This is the same rule the notification list below states, applied to the two
-  response carriers; a new nested ref field inherits it.
+  `host:<id>`, walking `JobActivityTree`, `EvenerDiagnostics`, and
+  `Evener.PendingEscalations` to their leaves. This is the same rule the
+  notification list below states, applied to the response carriers; a new nested
+  ref field inherits it.
 - Sub-thread aliases: the remote hub emits them as read-only threads with
   `Kind:"subagent"`, empty capabilities, `Ref:"local:<child>"`, and
   `ParentRef:"local:<owner>"` (`local_daemon.go`). Translating both
@@ -816,7 +845,16 @@ Ref translation detail (`remote_hub_refs.go`):
   - a nested `Thread` snapshot (`NotifyThreadStarted`, wire string
     `"thread/started"`; see the notification catalog in `appwire/protocol.go`)
     gets the full outbound thread translation above applied to it — `Source`,
-    `Evener.Ref`, and `Evener.ParentRef`.
+    `Evener.Ref`, `Evener.ParentRef`, and each `Evener.PendingEscalations[].Ref`.
+  - the escalation notifications `evener/sandbox/escalation/requested`
+    (`NotifyEvenerSandboxEscalationRequested`, payload `SandboxEscalationRequested`)
+    and `evener/sandbox/escalation/resolved`
+    (`NotifyEvenerSandboxEscalationResolved`, payload `SandboxEscalationResolved`)
+    carry a top-level `Ref` beside a bare `ThreadID` identifying the session the
+    escalation belongs to (`appwire/types.go`); both `.Ref` fields are session
+    references and must be rewritten to `host:<id>`. The relay's own ref-first
+    read (`app_relay.go`) routes on `ref`, so an untranslated `local:<id>` here
+    both routes to the wrong session and exposes a `local:` ref to the browser.
   - the nested job/delegate transcript refs carried by `evener/job/started` and
     `evener/job/finished` (`EvenerJobParams.Job` =
     `EvenerJobInfo.TranscriptRef`, `appwire/types.go`) and by
@@ -963,7 +1001,12 @@ network.
    `NotifyThreadStatusChanged` (`"thread/status/changed"`) with `ref:"local:S"`
    and a `NotifyThreadStarted` (`"thread/started"`) with a nested `Thread`;
    assert the subscriber sees `host:S` and a translated nested ref
-   (`Source`/`Evener.Ref`/`Evener.ParentRef`). Add job/delegate coverage:
+   (`Source`/`Evener.Ref`/`Evener.ParentRef`). Add escalation coverage: a
+   `thread/started` whose nested `Thread.Evener.PendingEscalations[]` carries
+   `Ref:"local:<child>"`, and a `evener/sandbox/escalation/requested` /
+   `evener/sandbox/escalation/resolved` payload with `Ref:"local:<child>"`,
+   must both reach the subscriber as `host:<child>`; the payload's bare
+   `ThreadID` is unchanged. Add job/delegate coverage:
    `evener/job/started` and `evener/job/finished` (`EvenerJobParams.Job.
    TranscriptRef:"local:<child>"`) and `evener/delegate/updated`
    (`EvenerDelegateParams.Delegate.TranscriptRef:"local:<child>"`) must reach
@@ -1020,13 +1063,18 @@ network.
     for a substring: `Root.Ref`; each `Root.Entries[]` entry's
     `Job.OwnerRef`/`Job.TranscriptRef`; each `Delegate.ChildRef`; the recursive
     `Delegate.Child.Ref` with its own `Child.Entries[]`; and each
-    `Turns[].OwnerRef`/`Turns[].TranscriptRef` — walking
+    `Turns[].OwnerRef`/`Turns[].TranscriptRef`; each
+    `Thread.Evener.PendingEscalations[].Ref` on a thread snapshot — walking
     `Tree.Root.Entries[]` → `Delegate.Child.Entries[]` → `Turns[]`. Each must
     equal the expected `host:<id>`. A `ReadThread`/`ListThreads` response whose
     `Thread.Evener.Diagnostics` carries `Jobs[].TranscriptRef` and
     `Delegates[].TranscriptRef` is asserted the same way. Do **not** assert by
     scanning for a `local:` substring: legitimate non-ref strings could contain
     it, and a substring scan does not pin which typed ref fields were rewritten.
+    Feed the `ListJobs` response through the **actual stream client**
+    (`appwire.Client.Request` over a `StreamTransport` answering with the real
+    JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
+    assert an unrecognized `Data` payload passes through untouched.
 
 ## Acceptance criteria
 
@@ -1052,20 +1100,26 @@ network.
   broker delivers a copy to every registered consumer (thread subscriptions and
   the component-07 admin fan-out), and a slow consumer cannot stall another.
 - Notification translation rewrites **every** session-reference field — the
-  top-level `ref`, a nested `Thread`, and the nested `TranscriptRef` on
-  `EvenerJobInfo`/`EvenerDelegateInfo` in `evener/job/*` and
-  `evener/delegate/updated` — so no remote child reference reaches the
-  controller as `local:<id>`.
+  top-level `ref` (including the `evener/sandbox/escalation/{requested,resolved}`
+  payloads), a nested `Thread` (including each `Evener.PendingEscalations[].Ref`),
+  and the nested `TranscriptRef` on `EvenerJobInfo`/`EvenerDelegateInfo` in
+  `evener/job/*` and `evener/delegate/updated` — so no remote child reference
+  reaches the controller as `local:<id>`.
 - Response ref translation rewrites every session-reference field **recursively**
   through the `ListJobs` result (`appwire.JobActivityTree`: `Root.Ref`; each
   `Entries[]` entry's `Job.OwnerRef`/`TranscriptRef`; `Delegate.ChildRef` and
   the recursive `Delegate.Child.Ref` with its own `Entries[]`; and
   `Delegate.Turns[].OwnerRef`/`Turns[].TranscriptRef` — the recursion carriers
   are `JobActivityDelegate.Child *JobActivitySession` /
-  `JobActivityDelegate.Turns []JobActivityJob`) and through
+  `JobActivityDelegate.Turns []JobActivityJob`), through
   `Thread.Evener.Diagnostics`
-  (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), so no
-  nested remote `local:<id>` reaches the controller unrewritten.
+  (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), and
+  through `Thread.Evener.PendingEscalations[].Ref`, so no nested remote
+  `local:<id>` reaches the controller unrewritten. Because
+  `JobsListResponse.Data` is `any` today, the translation first decodes a
+  decode-compatible `Data` payload into `appwire.JobActivityTree` (or the wire
+  field is made typed) and passes any unrecognized payload through untouched,
+  verified through the actual stream client.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
 - The loop guard's origin signal comes from the explicit, cooperative bridge marker

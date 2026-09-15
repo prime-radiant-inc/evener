@@ -39,7 +39,11 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   path (component 05, §"Ref translation detail"), this caps fan-out at depth 1
   and terminates any A→B→A chain regardless of what the config can see — the
   caller-identity guard that a later host-list RPC would make config-aware. The
-  guard is a v1 requirement; the attach-time upstream-list detection
+  guard is not thread-fan-out-only: it also covers every **remote dispatch** a
+  hub can initiate — the remote-administration proxy, credential push, remote
+  force-stop, and host attach (component 07, §"Host-routing origin guard") — so a
+  peer hub cannot use the admin surface to make this hub contact a third host.
+  The guard is a v1 requirement; the attach-time upstream-list detection
   (`AddWithUpstreams`/`SetUpstreams`) stays deferred. The guard's **origin
   signal is an explicit, cooperative bridge marker on the connection** — the
   `evener hub attach --stdio` bridge presents `X-Evener-Bridge: 1` (component
@@ -201,7 +205,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–13)
+## Tracked code follow-ups (rounds 7–14)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -267,10 +271,14 @@ exact scope. None is a present fact.
   carry the owning source; `refreshRemoteThreadSnapshot`/`remoteThreadFetch`
   resolve through the attached-only lookup.
 - **[06] archive/favorite/delete** — `ArchiveParams`/`FavoriteSetParams`/
-  `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` key by
-  `(source, id)`; a non-local/unknown source is rejected server-side; an
+  `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` **accept
+  and key a non-local source** by `(source, id)` (they route archive/favorite by
+  source and must **not** reject it); only project deletion
+  (`evener/project/delete`) rejects a non-local/unknown source server-side; an
   idempotent SQLite migration backfills `source = "local"`; the frontend hides
-  delete/archive for non-local rows.
+  **deletion** (not archive/favorite) for non-local rows. (Corrected in round 14:
+  the earlier line said a non-local source is rejected server-side and that the
+  frontend hides delete *and* archive, which would break remote archive/favorite.)
 - **[06] connect + picker** — add the `evener/host/attach` protocol row and
   handler (`registerMiscHandlers`) calling `sshManager.Ensure` with typed-error
   pass-through; give every offline/never-attached host an enabled Connect/Attach
@@ -294,3 +302,36 @@ exact scope. None is a present fact.
   no-longer-writable instance; the pusher calls it instead of the racy
   status-then-`apiKey/set` pair, and classifies `ActiveSource == "none"` by auth
   scheme, skipping `AuthNone`.
+- **[07] host-routing origin guard (round 14, High)** — enforce the component-05
+  loop guard at the one shared host-routing seam (the per-host client accessor or
+  a `routeToHost(ctx, hostID, …)` helper) so a **remote-originated** request
+  (`origin` non-empty) is refused typed **before any remote dial** for
+  `evener/host/request`, `evener/host/pushCredentials`, the non-local
+  `evener/thread/forceStop` branch, component 06's `evener/host/attach`, and
+  every future remote dispatch; a local-originated request proceeds. Scope:
+  `cmd/evener-hub/app_host_admin.go`, `app_host_credentials.go`,
+  `app_force_stop.go`, the `evener/host/attach` handler, and the request-context
+  `origin` plumbing (`cmd/evener-hub/app_rpc.go`).
+- **[01] bounded `Close` (round 14)** — `appwire/stream_transport.go` `Close`
+  must bound/interrupt the **underlying `rw.Close()`** as well as the
+  admitted-write drain (the underlying close is currently synchronous, so a
+  blocking underlying `Close` prevents `streamCloseDrainTimeout` from being
+  reached); no step of `Close` may wait unboundedly on a non-conforming stream.
+- **[05] pending-escalation ref translation (round 14)** — `remote_hub_refs.go`
+  must also rewrite `Thread.Evener.PendingEscalations[].Ref`
+  (`SandboxEscalationRequested.Ref`) on every thread snapshot and the top-level
+  `Ref` of the `evener/sandbox/escalation/{requested,resolved}` payloads, beside
+  the `JobActivityTree`/`EvenerDiagnostics` walk; `ThreadID` stays bare.
+- **[05] `JobsListResponse.Data` decoding (round 14)** — `evener/jobs/list`
+  defines `JobsListResponse.Data any` (`appwire/types.go`), so ref rewriting must
+  first decode a decode-compatible `Data` payload into `appwire.JobActivityTree`
+  (or the wire field is made typed) and pass an unrecognized payload through
+  untouched; a typed recursive walk over a generic map silently rewrites nothing.
+  Verified through the actual stream client.
+- **[06] source-qualified session pins (round 14)** — `hubcore.PinSectionStore`
+  (`cmd/evener-hub/internal/hubcore/pin_section.go`, `session_pin.session_id`),
+  the `SessionPinAssign`/`SessionPinUnpin` handlers (`app_pin_section.go`), and
+  the navigation projection (`navigation_projection.go`
+  `PinSectionBySession`/`PinAssignments`) key session pins by `(source, id)`; the
+  `SessionRef` resolves through its owning source; an idempotent migration adds a
+  `source` column and backfills `source = "local"`.

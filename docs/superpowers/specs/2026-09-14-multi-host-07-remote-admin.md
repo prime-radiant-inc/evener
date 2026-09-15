@@ -52,6 +52,13 @@ existing local store and writes the remote one.
   UI force-stop on a `host:<thread>` reaches the owning host instead of being
   rejected by the controller's local-only check — separate from the generic
   proxy, see §"Dedicated ref-translating dispatch".
+- The **host-routing origin guard**: every controller path that connects to a
+  remote host — this proxy, the credential push, the
+  `evener/thread/forceStop` non-local branch, component 06's
+  `evener/host/attach`, and any future remote dispatch — refuses a
+  remote-originated request **before dialing a remote host**, so the
+  component-05 loop guard bounds admin routing too
+  (§"Host-routing origin guard").
 
 ## Non-scope
 
@@ -196,6 +203,11 @@ The handler:
    (`appwire/client.go`) and returns `out` as the browser response, passing
    wire errors through unchanged.
 
+Before any of the above, the handler applies the shared host-routing origin
+guard (§"Host-routing origin guard"): a **remote-originated** request
+(`origin` non-empty) is refused typed with no dial, because `Host` always
+names a remote host. A local-originated request proceeds as above.
+
 The per-host client is the one components 04/05 already maintain for
 `RemoteHubSource` (created the way `spike/client/main.go` and
 `appsource/local_daemon.go` create one: `appwire.NewClient(transport)`).
@@ -246,6 +258,74 @@ the `evener/host/request` allow-list.
 rejects every non-local ref, and component 07 does not yet add this branch, so a
 remote force-stop is rejected today. The branch is the implementing PR's
 requirement.
+
+**Origin guard.** Before step 3 dials the host, the non-local branch applies the
+shared host-routing origin guard (§"Host-routing origin guard"): a
+remote-originated `forceStopThread` request is refused typed and no call is
+issued, so a peer hub cannot make this hub signal another host's daemon. The
+**local** branch is unaffected — a remote-originated request naming a `local:`
+session is served from this hub's own local state, exactly as component 05's
+loop guard specifies.
+
+### Host-routing origin guard (all remote dispatch)
+
+Component 05 (§"Ref translation detail"; §Error handling "Loop-guard refusal")
+bounds fan-out at depth 1 by refusing, at the typed fan-out seam, to route a
+request whose request-context `origin` is non-empty to any source other than
+`local`. Stated for the thread/turn fan-out paths, that guard must also cover
+**every controller path that connects to a remote host**, because a consumer hub
+that is itself attached *as a host* (design §2 "Topology", the A→B→A case) can
+otherwise use the admin surface to make its controller contact a third host: a
+request that arrives at hub B over the attach bridge (`origin` non-empty) and
+names host C in `evener/host/request` — or triggers the credential push, a
+remote `forceStop`, or a host attach — would make B dial C, bypassing the
+depth-1 cap.
+
+Requirement: the guard is enforced at **one shared host-routing seam** that
+every remote dispatch passes through — the per-host client accessor (component
+05's exposed admin accessor) or a single `routeToHost(ctx, hostID, …)` helper
+beside it — **not** by a per-handler check that a new remote path can forget.
+The seam refuses, with a typed `appwire.InvalidParams` naming the origin, any
+call that would contact a remote host when the request's `origin` is non-empty.
+Concretely:
+
+- `evener/host/request` (§"Proxy method") — `Host` always names a configured
+  remote host, so every remote-originated call is refused; the method is never
+  served from another host and never falls back to local execution.
+- `evener/host/pushCredentials` (§"Credential push method") — refused; it is a
+  remote dispatch, so a remote-originated push cannot copy credentials onto a
+  host the caller's own controller reached.
+- the `evener/thread/forceStop` non-local branch (§"Dedicated ref-translating
+  dispatch") — refused; it forwards to the owning host's client.
+- component 06's `evener/host/attach` (which calls `sshManager.Ensure`) —
+  refused; a remote-originated request may not make this hub attach a new host.
+- the `evener/host/notification` fan-out (§"Notification envelope") does **not**
+  contact a remote host — it re-emits a host's own notification to this hub's
+  local browser clients — so it is unaffected: the guard gates *remote
+  dispatch*, not local re-emission. A future path that re-emits to another
+  remote source is gated by the same seam.
+- **Any future remote dispatch path passes through the seam.** A new
+  controller-side method that dials, feeds, or forwards to a remote host must
+  call the shared seam, so the guard cannot be omitted by construction.
+
+A **local** request (`origin` empty — an ordinary browser, TUI, or CLI session
+of this hub) is unaffected: the proxy, credential push, force-stop, and attach
+all proceed as specified above. This mirrors component 05's rule that a
+remote-originated request is served from the **recipient hub's own local state
+only**; the admin surface has no local-state variant of a remote-host action, so
+the correct disposition for a remote-originated remote-dispatch request is the
+typed refusal.
+
+**Implementation status:** no `origin` exists in the request context today
+(component 05, §"Ref translation detail"), and no admin handler consults one;
+this guard is the implementing PR's requirement.
+
+**Coverage:** a scenario test that injects a remote-originated
+`evener/host/request` — and the credential push, the non-local force-stop, and
+`evener/host/attach` — and asserts each is refused typed **before any remote
+dial** (a per-host client spy records no request), while a local-originated call
+proceeds; plus an assertion that every remote-dispatch entry point routes
+through the shared seam.
 
 ### Notification envelope
 
@@ -312,6 +392,10 @@ Read side (local):
 - `credentials.LoadStore(cmdutil.CredentialsPath())` (`internal/credentials/store.go`,
   `cmdutil/registry.go`), or the hub's already-loaded `cfg.CredsStore`
   (`cmd/evener-hub/main.go`, `internal/hubcore/config.go`).
+
+The push is a remote dispatch, so it is gated by the shared host-routing origin
+guard (§"Host-routing origin guard"): a remote-originated
+`evener/host/pushCredentials` is refused typed before any host is dialed.
 - `Store.Names()` (`store.go`) lists the file-layer entries; `Store.Get(name)`
   (`store.go`) returns one value. `Store.Set` writes atomically at mode `0600`
   (`store.go`) — but the push does **not** write the
@@ -611,6 +695,10 @@ receives a key, and the controller writes nothing.
   A proxy call to an offline host never falls back to local execution.
 - Disallowed method → `appwire.InvalidParams`; the allow-list is checked before
   any forwarding.
+- Remote dispatch from a remote-originated request → `appwire.InvalidParams`,
+  refused before any dial by the shared host-routing origin guard
+  (§"Host-routing origin guard") — the proxy, credential push, non-local
+  force-stop, and host attach all share the one refusal.
 - Remote wire errors are returned verbatim (`appwire.WireError` passthrough),
   including the launch credential-env refusal (`app_launch.go`) and the
   auth Codex/gcp-adc refusals (`app_auth.go`).
@@ -635,6 +723,13 @@ receives a key, and the controller writes nothing.
   allow-list against `appwire.CatalogMethodNames(appwire.ScopeHub)` so a catalog
   addition forces a deliberate allow/deny decision rather than a silent
   auto-allow.
+- **Host-routing origin guard.** A request whose request context carries a
+  non-empty `origin` (remote-originated) is refused typed for
+  `evener/host/request`, `evener/host/pushCredentials`, the non-local
+  `evener/thread/forceStop` branch, and `evener/host/attach` — assert the
+  per-host client spy records **no** request and no `sshManager.Ensure` call;
+  a local-originated request (empty `origin`) proceeds normally. Assert every
+  remote-dispatch entry point routes through the shared seam.
 - **Remote force-stop test.** A `host:<thread>` force-stop resolves the host,
   translates the ref to `local:<thread>`, issues `evener/thread/forceStop` on the
   host's client (assert the forwarded ref and that it does **not** go through
@@ -706,6 +801,11 @@ receives a key, and the controller writes nothing.
     host's hub (never `evener/host/request`), a `local:` ref keeps the shipped
     path, and an unknown/unattached host is refused typed — no call is rejected
     with "force stop requires a local session ref".
+11. A remote-originated request (`origin` non-empty) can reach **no** remote
+    host through any controller dispatch: `evener/host/request`, the credential
+    push, the non-local `evener/thread/forceStop`, and `evener/host/attach` are
+    each refused typed before any dial, at the one shared host-routing seam; a
+    local-originated request is unaffected.
 
 ## PR size estimate (LOC)
 
