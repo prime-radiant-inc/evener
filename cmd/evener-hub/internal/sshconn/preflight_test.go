@@ -128,6 +128,19 @@ func TestParseLaunchCheck(t *testing.T) {
 	if _, err := parseLaunchCheck([]byte(`{"version":"dev"}`)); !errors.Is(err, ErrPreflightDecode) {
 		t.Fatalf("missing protocol err = %v, want ErrPreflightDecode", err)
 	}
+	// The launch contract always reports a build version (buildinfo.Version(), or
+	// "dev"). An empty one is a broken contract, not a version that merely differs:
+	// reading it as a mismatch would send the host into a deploy whose identity was
+	// never established.
+	for _, out := range []string{
+		`{"protocol":"evener-appwire-v5"}`,
+		`{"protocol":"evener-appwire-v5","version":""}`,
+		`{"protocol":"evener-appwire-v5","version":"   "}`,
+	} {
+		if _, err := parseLaunchCheck([]byte(out)); !errors.Is(err, ErrPreflightDecode) {
+			t.Fatalf("parseLaunchCheck(%s) err = %v, want ErrPreflightDecode", out, err)
+		}
+	}
 }
 
 func TestIsProtocolMismatchOutput(t *testing.T) {

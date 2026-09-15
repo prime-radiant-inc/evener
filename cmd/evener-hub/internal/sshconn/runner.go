@@ -373,6 +373,25 @@ func (d *diagSink) tail() string {
 	return string(d.buf)
 }
 
+// syncWriter serializes writes to one underlying writer. The manager builds one
+// over Options.Stderr and hands it to every attach: os/exec copies each ssh
+// child's stderr on its own goroutine, and each attach owns a separate diagSink,
+// so without a writer shared across hosts a caller-supplied sink that is not safe
+// for concurrent use (bytes.Buffer, as tests use) would be corrupted or raced by
+// concurrent attaches.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newSyncWriter(w io.Writer) *syncWriter { return &syncWriter{w: w} }
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // appendTail appends p to buf while retaining at most limit trailing bytes.
 func appendTail(buf, p []byte, limit int) []byte {
 	if limit <= 0 {

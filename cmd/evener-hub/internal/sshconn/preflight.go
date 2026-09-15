@@ -148,6 +148,13 @@ func parseLaunchCheck(out []byte) (launchCheck, error) {
 	if strings.TrimSpace(lc.Protocol) == "" {
 		return launchCheck{}, fmt.Errorf("%w: launch-check reported no protocol", ErrPreflightDecode)
 	}
+	if strings.TrimSpace(lc.Version) == "" {
+		// The launch contract always reports a build version (buildinfo.Version(),
+		// or "dev"). An absent one is a broken contract, not a version that merely
+		// differs: reading it as a mismatch would drive a deploy against a host
+		// whose identity was never established.
+		return launchCheck{}, fmt.Errorf("%w: launch-check reported no version", ErrPreflightDecode)
+	}
 	return lc, nil
 }
 

@@ -2421,3 +2421,298 @@ func assertNoFailedEvent(t *testing.T, events <-chan Event) {
 		return
 	}
 }
+
+// ClientIfAttached is the non-dialing lookup components 05/06 use: it must answer
+// from the installed channel alone — never preflighting or attaching a dormant
+// host — and must stop answering the moment that channel drops or the manager
+// closes. It is the client half of the Attached signal, so it reads the same
+// installed-channel state.
+func TestClientIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	// No reconnect may replace the dropped channel while this test watches, so the
+	// supervisor sleeps far longer than the test runs.
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("ClientIfAttached(unattached) = %v, %v; want nil, false", client, ok)
+	}
+	if client, ok := m.ClientIfAttached("ghost"); ok || client != nil {
+		t.Fatalf("ClientIfAttached(unknown host) = %v, %v; want nil, false", client, ok)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("ClientIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	client, ok := m.ClientIfAttached("alpha")
+	if !ok || client == nil {
+		t.Fatalf("ClientIfAttached(attached) = %v, %v; want the live client, true", client, ok)
+	}
+	if client != ch.Client() {
+		t.Fatal("ClientIfAttached returned a client other than the installed channel's")
+	}
+	// The registry is the authority on a name's spelling here too: a padded name
+	// must resolve to the same host Ensure attached (TestEnsureNormalizesHostName).
+	if client, ok := m.ClientIfAttached("  alpha  "); !ok || client != ch.Client() {
+		t.Fatalf("ClientIfAttached did not normalize the name: %v, %v", client, ok)
+	}
+
+	ch.markLost()
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("ClientIfAttached(a dropped channel) = %v, %v; want nil, false", client, ok)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("ClientIfAttached(a closed manager) = %v, %v; want nil, false", client, ok)
+	}
+}
+
+// A caller that gives up while its attach is finishing must not be handed a
+// channel. The channel is manager-owned and already supervised, so it is not torn
+// down; the caller gets its own error instead.
+func TestEnsureCanceledDuringAttachReturnsContextError(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		// EventAttached is delivered under the host lock, after the channel is
+		// published and before Ensure's final validation: canceling here lands in
+		// exactly that window.
+		OnEvent: func(ev Event) {
+			if ev.Kind == EventAttached {
+				cancel()
+			}
+		},
+	})
+
+	ch, err := m.Ensure(ctx, "alpha")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ensure = %v, want context.Canceled", err)
+	}
+	if ch != nil {
+		t.Fatalf("Ensure returned %+v to a caller that had given up", ch)
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client == nil {
+		t.Fatal("a canceled caller tore down the manager-owned channel")
+	}
+}
+
+// A caller cancellation is not a host failure. It must come back as the caller's
+// own context error — not the transport-shaped ErrSSHStart its cancellation
+// produced — and must not announce a lifecycle transition the host never made.
+func TestCallerCancellationReturnsItsOwnErrorWithoutStateEvent(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	started := make(chan struct{})
+	var once sync.Once
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+			once.Do(func() { close(started) })
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		startFn: goodStartFn(t),
+	}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) { events <- ev },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(ctx, "alpha")
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("preflight never ran")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Ensure = %v, want context.Canceled", err)
+		}
+		if errors.Is(err, ErrSSHStart) {
+			t.Fatalf("Ensure = %v: a caller cancellation is not a transport failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure did not return after its context was canceled")
+	}
+	drained := false
+	for !drained {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventState && ev.State == StateDisconnected {
+				t.Fatalf("a canceled caller announced %+v; the host never made that transition", ev)
+			}
+		default:
+			drained = true
+		}
+	}
+}
+
+// toggleWrites forwards writes to a pipe until fail is set, then reports a broken
+// pipe. It models an ssh child whose stdin pipe died while its stdout is still
+// open: the send-side link-down edge, with no read-side EOF to observe.
+type toggleWrites struct {
+	fail *atomic.Bool
+	w    io.WriteCloser
+}
+
+func (t *toggleWrites) Write(p []byte) (int, error) {
+	if t.fail.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	return t.w.Write(p)
+}
+
+func (t *toggleWrites) Close() error { return t.w.Close() }
+
+// toggledStdio is a fakeBridge's stdio with a switchable Stdin.
+type toggledStdio struct {
+	*fakeStdio
+	stdin io.WriteCloser
+}
+
+func (s *toggledStdio) Stdin() io.WriteCloser { return s.stdin }
+
+// A send whose write fails is as much a link-down edge as a read EOF. Without it
+// isLost stays false, and the manager keeps offering a channel whose every write
+// fails — including through the non-dialing lookup.
+func TestFailedSendMarksTheLinkLost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var failSend atomic.Bool
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			b := newFakeBridge(appwire.ProtocolVersion)
+			return &toggledStdio{
+				fakeStdio: b.stdio,
+				stdin:     &toggleWrites{fail: &failSend, w: b.stdio.inW},
+			}, nil
+		},
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client == nil {
+		t.Fatal("the attached channel is not available through the lookup")
+	}
+
+	failSend.Store(true)
+	if err := ch.Transport().Send(context.Background(), appwire.NotificationMessage("noop", nil)); err == nil {
+		t.Fatal("a send over a broken stdin pipe reported success")
+	}
+	if !ch.isLost() {
+		t.Fatal("a failed send left the channel marked live")
+	}
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("the manager kept offering a channel whose writes fail: %v, %v", client, ok)
+	}
+}
+
+// Close can land between the two post-publish liveness checks, after the manager
+// was last seen open. That outcome is the terminal ErrManagerClosed, not the
+// retryable drop a caller would loop on, and Close — not the host — owns the
+// events for the teardown so the helper emits none.
+func TestLostAfterPublishClassifiesAManagerClosedByTheRace(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{})
+	dropped := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	dropped.markLost()
+	if err := m.lostAfterPublish("alpha", dropped); !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("lostAfterPublish(open manager) = %v, want the retryable drop", err)
+	}
+	if got := m.currentChannel("alpha"); got != dropped {
+		t.Fatal("a dropped predecessor lost its slot: its supervisor can no longer own the host")
+	}
+
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	// Put the flag back even if the assertion below fails: the cleanup Close would
+	// otherwise wait forever for a teardown that never ran, turning a failed check
+	// into a ten-minute hang.
+	defer func() {
+		m.mu.Lock()
+		m.closed = false
+		m.mu.Unlock()
+	}()
+	if err := m.lostAfterPublish("alpha", nil); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("lostAfterPublish(closed manager) = %v, want ErrManagerClosed", err)
+	}
+}
+
+// Every attach builds its own diagSink, and os/exec copies each ssh child's
+// stderr on its own goroutine. Those copies share the manager's one diagnostic
+// writer, so that writer must serialize them: a caller-supplied sink is not
+// required to be safe for concurrent use, and the tests pass bytes.Buffer.
+func TestAttachDiagnosticsShareOneSerializedWriter(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var buf bytes.Buffer
+	sinkCh := make(chan io.Writer, 1)
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
+			sinkCh <- stderr
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{Stderr: &buf})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	sink := <-sinkCh
+	if got := sink.(*diagSink).w; got != io.Writer(m.diagWriter) {
+		t.Fatalf("attach wired its diagnostics to %T, want the manager's serialized writer", got)
+	}
+
+	const (
+		writers = 8
+		writes  = 32
+		chunk   = 16
+	)
+	var wg sync.WaitGroup
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			block := bytes.Repeat([]byte{byte('a' + i)}, chunk)
+			for range writes {
+				if _, err := m.diagWriter.Write(block); err != nil {
+					t.Errorf("Write: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	data := buf.Bytes()
+	if want := writers * writes * chunk; len(data) != want {
+		t.Fatalf("diagnostic sink holds %d bytes, want %d", len(data), want)
+	}
+	for off := 0; off < len(data); off += chunk {
+		for _, b := range data[off : off+chunk] {
+			if b != data[off] {
+				t.Fatalf("chunk at byte %d interleaved: %q", off, data[off:off+chunk])
+			}
+		}
+	}
+}
