@@ -2127,74 +2127,26 @@ func TestHubModelNotificationClosedIsNotError(t *testing.T) {
 	}
 }
 
-// The hub advertises steer as harness support, not as "a turn is running"
-// (server/appwire_runtime.go appCapabilitiesLocked; #1363): an idle session on
-// a harness that steers reads steer=true on the wire. The TUI applies the
-// state itself -- its composer is in send mode at idle, so the ctrl+s hint is
-// not offered and the binding is a silent no-op -- and keeps the capability
-// so the hint appears the moment the session goes busy.
-func TestHubModelIdleSessionWithSteerSupportAdvertisesSteer(t *testing.T) {
-	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			if params.Ref != "local:01SEND" {
-				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
-			}
-			thread := appwireThread(hubTreeNode{
-				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
-			}, "/tmp/evener")
-			// The hub's idle set: send on, queue off, steer on (harness support).
-			thread.Evener.Capabilities.Send = true
-			thread.Evener.Capabilities.Queue = false
-			thread.Evener.Capabilities.Steer = true
-			return appwire.ThreadReadResponse{Thread: thread}, nil
-		})
-	})
-	defer cleanup()
-
+// parkedQueueModel is a session after a Stop parked its queue: idle, queued
+// work (only a held queue reports that way), the harness advertising steer or
+// not. The composer stays in send mode either way; Ctrl+S is the difference.
+func parkedQueueModel(t *testing.T, client *appwire.Client, steer bool) hubModel {
+	t.Helper()
 	m := newSessionHubModel(client)
-	m.detail.State = appwire.ThreadStatusActive
-	m.detail.Capabilities.Steer = false
-	m.session.processing = true
-	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
-		ThreadID: "01SEND",
-		Ref:      "local:01SEND",
-		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-	})
-
-	cmd := m.applyHubNotification(*notification.Notification)
-	if cmd == nil {
-		t.Fatal("idle status notification should refresh session detail")
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Queue = false
+	m.detail.Capabilities.Steer = steer
+	m.session.processing = false
+	m.sessionQueue = []string{"parked follow-up"}
+	if got := m.sessionComposerMode(); got != hubComposerModeSend {
+		t.Fatalf("composer mode=%v, want send", got)
 	}
-	updated, _ := m.Update(cmd())
-	got := updated.(hubModel)
-	if !got.detail.Capabilities.Steer {
-		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
-	}
-	if got.session.processing {
-		t.Fatal("session stayed processing after idle status refresh")
-	}
-	view := got.sessionView()
-	if strings.Contains(view, "ctrl+s") {
-		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
-	}
-	if !strings.Contains(view, "send: ready") {
-		t.Fatalf("idle composer is not in send mode:\n%s", view)
-	}
-	steered, steerCmd := got.handleSessionForceSteer()
-	if steerCmd != nil {
-		t.Fatal("ctrl+s at idle produced a command; it must be a silent no-op outside queue mode")
-	}
-	after := steered.(hubModel)
-	if afterView := after.sessionView(); afterView != view {
-		t.Fatalf("ctrl+s at idle changed the session view:\n%s", afterView)
-	}
+	return m
 }
 
-// A Stop parks the daemon's queue: the session reports idle with queued
-// work (only a held queue does; an unparked one upgrades idle to active),
-// and a turn/drainAsSteer sent while idle is one of the runs that releases
-// it. With the hub advertising steer as harness support, the composer enters
-// the parked-queue mode and Ctrl+S drains the queue as steering.
+// A turn/drainAsSteer sent while idle is one of the runs that releases a
+// parked queue, so Ctrl+S drains it (sessionCanDrainQueue).
 func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	var drained []appwire.TurnDrainAsSteerParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
@@ -2205,19 +2157,9 @@ func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	})
 	defer cleanup()
 
-	m := newSessionHubModel(client)
-	m.detail.State = appwire.ThreadStatusIdle
-	m.detail.Capabilities.Send = true
-	m.detail.Capabilities.Queue = false
-	m.detail.Capabilities.Steer = true
-	m.session.processing = false
-	m.sessionQueue = []string{"parked follow-up"}
-
-	if got := m.sessionComposerMode(); got != hubComposerModeParkedQueue {
-		t.Fatalf("composer mode=%v, want parked queue", got)
-	}
+	m := parkedQueueModel(t, client, true)
 	view := m.sessionView()
-	for _, want := range []string{"ctrl+s: run queue as steer", "enter: send"} {
+	for _, want := range []string{"ctrl+s: run queue as steer", "enter: send", "QUEUE 1"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
 		}
@@ -2236,26 +2178,14 @@ func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	}
 }
 
-// The same parked queue on a harness that advertises no steer: plain send
-// mode, no Ctrl+S hint, and the binding is a silent no-op.
+// The same parked queue on a harness that advertises no steer: no Ctrl+S
+// hint, and the binding is a silent no-op.
 func TestHubModelParkedQueueWithoutSteerOffersNoDrain(t *testing.T) {
-	m := newSessionHubModel(nil)
-	m.detail.State = appwire.ThreadStatusIdle
-	m.detail.Capabilities.Send = true
-	m.detail.Capabilities.Queue = false
-	m.detail.Capabilities.Steer = false
-	m.session.processing = false
-	m.sessionQueue = []string{"parked follow-up"}
-
-	if got := m.sessionComposerMode(); got != hubComposerModeSend {
-		t.Fatalf("composer mode=%v, want send", got)
-	}
-	view := m.sessionView()
-	if strings.Contains(view, "ctrl+s") {
+	m := parkedQueueModel(t, nil, false)
+	if view := m.sessionView(); strings.Contains(view, "ctrl+s") {
 		t.Fatalf("composer without steer offered ctrl+s:\n%s", view)
 	}
-	_, cmd := m.handleSessionForceSteer()
-	if cmd != nil {
+	if _, cmd := m.handleSessionForceSteer(); cmd != nil {
 		t.Fatal("ctrl+s without steer produced a command; it must be a silent no-op")
 	}
 }
@@ -2266,9 +2196,16 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 			if params.Ref != "local:01SEND" {
 				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
 			}
-			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+			thread := appwireThread(hubTreeNode{
 				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
-			}, "/tmp/evener")}, nil
+			}, "/tmp/evener")
+			// The hub's idle set: send on, queue off, and steer on, because the
+			// hub advertises steer as harness support rather than "a turn is
+			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363).
+			thread.Evener.Capabilities.Send = true
+			thread.Evener.Capabilities.Queue = false
+			thread.Evener.Capabilities.Steer = true
+			return appwire.ThreadReadResponse{Thread: thread}, nil
 		})
 	})
 	defer cleanup()
@@ -2276,6 +2213,7 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = false
 	m.session.processing = true
 	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID: "01SEND",
@@ -2298,8 +2236,20 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if got.session.processing {
 		t.Fatal("session stayed processing after idle status refresh")
 	}
-	if view := got.sessionView(); !strings.Contains(view, "send: ready") {
+	view := got.sessionView()
+	if !strings.Contains(view, "send: ready") {
 		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
+	}
+	// Steer stays advertised at idle; with nothing queued there is nothing to
+	// drain, so no ctrl+s hint and the binding is a silent no-op.
+	if !got.detail.Capabilities.Steer {
+		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
+	}
+	if strings.Contains(view, "ctrl+s") {
+		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
+	}
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s at idle with nothing queued produced a command; it must be a silent no-op")
 	}
 }
 

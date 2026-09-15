@@ -528,15 +528,13 @@ func (m hubModel) restoreInstructionMessage() string {
 // the drain request so the daemon appends and drains atomically. With nothing
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
-	switch m.sessionComposerMode() {
-	case hubComposerModeQueue, hubComposerModeParkedQueue:
-	default:
-		// Not in a queue-able state; nothing to do. Silently no-op so the
+	if !m.sessionCanDrainQueue() {
+		if m.sessionComposerMode() == hubComposerModeQueue {
+			m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
+			return m, nil
+		}
+		// Not in a drainable state; nothing to do. Silently no-op so the
 		// keybind doesn't fight with idle-state composing.
-		return m, nil
-	}
-	if !m.detail.Capabilities.Steer {
-		m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
 		return m, nil
 	}
 	ref, ok := m.currentRef()

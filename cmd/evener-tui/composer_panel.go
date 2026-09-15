@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
@@ -54,14 +55,6 @@ const (
 	hubComposerModeQueue
 	hubComposerModeFork
 	hubComposerModeReadOnly
-	// hubComposerModeParkedQueue is send mode with a queue a Stop parked:
-	// the session is idle, the queue is non-empty (the daemon reports that
-	// only for a held queue -- an unparked queue upgrades idle to active),
-	// and the harness steers. Enter sends as usual, which runs the new
-	// message first and then the parked messages; Ctrl+S drains the parked
-	// queue as steering now, the same turn/drainAsSteer the daemon accepts
-	// with nothing running. The rule is the web's canDrainQueue.
-	hubComposerModeParkedQueue
 )
 
 func (m hubModel) sessionComposerMode() hubComposerMode {
@@ -78,19 +71,23 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 		return hubComposerModeReadOnly
 	}
 	if m.sessionCanStartTurn() {
-		if m.sessionQueueParked() {
-			return hubComposerModeParkedQueue
-		}
 		return hubComposerModeSend
 	}
 	return hubComposerModeReadOnly
 }
 
-// sessionQueueParked reports a queue a Stop parked: idle with queued work on
-// a harness that steers. Only a held queue reports that way (see
-// hubComposerModeParkedQueue).
-func (m hubModel) sessionQueueParked() bool {
-	return stateLabel(m.detail.State) == "idle" && len(m.sessionQueue) > 0 && m.detail.Capabilities.Steer
+// sessionCanDrainQueue is the Go twin of the SDK's canDrainQueue
+// (appwire-client/typescript/submitRouting.ts): Ctrl+S may drain the queue as
+// steering when the harness steers and either a turn is running or the queue
+// is one a Stop parked -- idle with queued work, which only a held queue
+// reports (an unparked queue upgrades idle to active), and which the
+// turn/drainAsSteer the daemon accepts with nothing running releases. It is
+// independent of the composer mode, which decides only Enter's route.
+func (m hubModel) sessionCanDrainQueue() bool {
+	if !m.detail.Capabilities.Steer {
+		return false
+	}
+	return m.sessionTurnRunning() || (m.detail.State == appwire.ThreadStatusIdle && len(m.sessionQueue) > 0)
 }
 
 func (m hubModel) sessionComposerReadOnlyReason() string {
@@ -191,18 +188,21 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	case hubComposerModeReadOnly:
 		panel.Label = "read-only"
 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
-	case hubComposerModeParkedQueue:
-		// Send mode's chrome plus the one extra binding: Ctrl+S runs the
-		// parked queue as steering now.
-		panel.Keys = append([]string{"enter: send", "ctrl+s: run queue as steer"}, keys...)
-		panel.CanSteer = true
-		panel.ChipContext.Mode = "PARKED " + itoa(len(m.sessionQueue))
 	default:
 		// No section label in default compose mode — the chip strip
 		// already carries all the live context; an extra "message" line
 		// is redundant chrome.
 		if m.sessionCanStartTurn() {
-			panel.Keys = append([]string{"enter: send"}, keys...)
+			sendKeys := []string{"enter: send"}
+			// A queue a Stop parked: Ctrl+S runs it as steering now.
+			if m.sessionCanDrainQueue() {
+				sendKeys = append(sendKeys, "ctrl+s: run queue as steer")
+				panel.CanSteer = true
+			}
+			panel.Keys = append(sendKeys, keys...)
+		}
+		if depth := len(m.sessionQueue); depth > 0 {
+			panel.ChipContext.Mode = "QUEUE " + itoa(depth)
 		}
 	}
 	return panel
