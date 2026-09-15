@@ -110,13 +110,64 @@ func TestReapStaleFallbackBases_UnlinksALinkWithoutFollowingIt(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
+	// A regular file under the same prefix is not this package's to remove.
+	stray := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag()+"-stray")
+	if err := os.WriteFile(stray, []byte("stray"), 0o600); err != nil {
+		t.Fatalf("write stray file: %v", err)
+	}
 
 	reapStaleFallbackBases(os.TempDir(), time.Now(), "", "")
 
 	if _, err := os.Lstat(link); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("planted link still present: %v", err)
 	}
+	if _, err := os.Lstat(stray); err != nil {
+		t.Fatalf("reaper removed a regular file: %v", err)
+	}
 	if _, err := os.Stat(canary); err != nil {
 		t.Fatalf("reaper removed the link's target: %v", err)
+	}
+}
+
+// A predictable base another user has squatted must yield one private base for
+// the process, not a fresh one per call: a retry that resolves a new base would
+// publish another copy there and keep another lease.
+func TestDefaultEmbeddedSkillsBaseDir_ReusesItsPrivateBase(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	squatted := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag())
+	if err := os.Mkdir(squatted, 0o700); err != nil {
+		t.Fatalf("create squatted path: %v", err)
+	}
+	// Chmod, not the Mkdir mode, so the ambient umask cannot make it private.
+	if err := os.Chmod(squatted, 0o755); err != nil {
+		t.Fatalf("open up squatted path: %v", err)
+	}
+	t.Cleanup(func() {
+		privateSkillsBaseMu.Lock()
+		base := privateSkillsBase
+		privateSkillsBase = ""
+		privateSkillsBaseMu.Unlock()
+		if base != "" {
+			_ = os.RemoveAll(base)
+		}
+	})
+
+	first, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
+	}
+	if first == squatted {
+		t.Fatalf("used the squatted path %q", first)
+	}
+	second, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir (again): %v", err)
+	}
+	if first != second {
+		t.Fatalf("private base changed between calls: %q then %q", first, second)
+	}
+	if !cacheDirExists(second) {
+		t.Fatalf("private base %q is not a directory", second)
 	}
 }

@@ -390,6 +390,13 @@ func forgetEmbeddedSkillsLocked() {
 	releaseSkillsLeaseLocked()
 }
 
+// privateSkillsBaseMu guards privateSkillsBase, the randomized base this process
+// resolved when the predictable name was unusable.
+var (
+	privateSkillsBaseMu sync.Mutex
+	privateSkillsBase   string
+)
+
 // defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
 // lives in. It sits under the temp dir because a session confined to its
 // worktree can still read temp, while the config root is sandbox-denylisted and
@@ -416,11 +423,18 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// sticky bit prevents removing a foreign directory. A randomized private
 	// directory keeps the bundled skills available instead of failing the
 	// session; it is not shared between processes, which is the price of the
-	// name being unusable.
+	// name being unusable. It is resolved once per process: publishing into a
+	// fresh base on every retry would keep a copy and a lease per retry.
+	privateSkillsBaseMu.Lock()
+	defer privateSkillsBaseMu.Unlock()
+	if privateSkillsBase != "" && cacheDirExists(privateSkillsBase) {
+		return privateSkillsBase, nil
+	}
 	fallback, err := os.MkdirTemp("", embeddedSkillsPrefix+processOwnerTag()+"-*")
 	if err != nil {
 		return "", fmt.Errorf("creating private skill cache: %w", err)
 	}
+	privateSkillsBase = fallback
 	return fallback, nil
 }
 
@@ -444,6 +458,11 @@ func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir str
 			continue
 		}
 		if !dirInfo(info) {
+			if info.Mode()&os.ModeSymlink == 0 {
+				// A regular or special file under this name is not this package's
+				// to remove.
+				continue
+			}
 			// A symlink or Windows reparse point under a fallback base name is
 			// never a base: unlink the entry itself rather than traverse it, so it
 			// can neither be removed through nor shadow a real base.
