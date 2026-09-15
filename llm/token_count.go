@@ -321,9 +321,13 @@ type targetInfo struct {
 	family          string
 	// resolved marks a target built from a registry row. The row's instance is
 	// an alias it was reached through, not vendor identity, so the media-family
-	// name rule reads a resolved target's model name alone.
-	resolved         bool
-	unsignedThinking bool
+	// name rule reads a resolved target's model name alone -- unless the caller
+	// supplied the provider itself, which is evidence the caller chose to give.
+	resolved bool
+	// providerFromCaller marks a provider name that came from the caller rather
+	// than from the row's instance.
+	providerFromCaller bool
+	unsignedThinking   bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A
@@ -331,22 +335,26 @@ type targetInfo struct {
 // model -- any gateway can be called anything -- so a resolved target offers only
 // its model name; a caller that passed names alone has nothing else to go on.
 func (t targetInfo) vendorNameBasis() string {
-	if t.resolved {
+	if t.resolved && !t.providerFromCaller {
 		return ""
 	}
 	return t.provider
 }
 
 // mediaFamily is the image-token family for the target, resolved from the most
-// particular fact available to the least: the row's surface, then its recorded
-// model family, then the model's own name, and only then the wire protocol. A
+// particular fact available to the least: the row's recorded model family, then
+// its surface, then the model's own name, and only then the wire protocol. A
 // tokenizer family is a property of the model, not of the endpoint that serves
 // it: OpenRouter serves anthropic/claude-* and google/gemini-* rows over
-// openai-chat, and a row the registry never classified still carries a name
-// that says which model it is. The protocol answers last because it describes
-// only the endpoint; the name rule is the last resort for callers that passed
-// names only.
+// openai-chat, a row the registry never classified still carries a name that says
+// which model it is, and a resolver can fill the surface from the provider when
+// the row omits it -- so the family, which is the model's own, answers before the
+// surface. The protocol answers last because it describes only the endpoint; the
+// name rule is the last resort for callers that passed names only.
 func (t targetInfo) mediaFamily() string {
+	if f := mediaFamilyFromModelFamily(t.family); f != "" {
+		return f
+	}
 	switch t.surface {
 	case registry.SurfaceAnthropic:
 		return "anthropic"
@@ -354,9 +362,6 @@ func (t targetInfo) mediaFamily() string {
 		return "openai"
 	case registry.SurfaceGoogle:
 		return "google"
-	}
-	if f := mediaFamilyFromModelFamily(t.family); f != "" {
-		return f
 	}
 	if f := providerTokenFamily(t.vendorNameBasis(), t.model); f != "" {
 		return f
@@ -405,13 +410,14 @@ func targetFromNames(provider, model string) targetInfo {
 // the caller did not supply come from the row, so media estimation uses the
 // resolved identity rather than the generic fallback.
 func targetFromResolved(res registry.Resolved, provider, model string) targetInfo {
-	if strings.TrimSpace(provider) == "" {
+	providerFromCaller := strings.TrimSpace(provider) != ""
+	if !providerFromCaller {
 		provider = res.Instance
 	}
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, resolved: true, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, resolved: true, providerFromCaller: providerFromCaller, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
@@ -542,11 +548,26 @@ func providerTokenFamily(provider, model string) string {
 		return "google"
 	case strings.Contains(p, "anthropic") || strings.Contains(m, "claude"):
 		return "anthropic"
-	case strings.Contains(p, "openai") || strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "o"):
+	case strings.Contains(p, "openai") || strings.HasPrefix(m, "gpt-") || oSeriesModelName(m):
 		return "openai"
 	default:
 		return ""
 	}
+}
+
+// oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"
+// alone, an "o-" prefix (o-mini, o-pro), "o" followed by a digit (o1, o3,
+// o4-mini), and the namespaced spellings of those (openai/o3, openai.o3). A bare
+// leading "o" is not an OpenAI claim: open-mistral, olmo, openchat, openrouter/*
+// and ollama/* are other models behind other protocols.
+func oSeriesModelName(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	m = strings.TrimPrefix(m, "openai/")
+	m = strings.TrimPrefix(m, "openai.")
+	if m == "o" || strings.HasPrefix(m, "o-") {
+		return true
+	}
+	return len(m) >= 2 && m[0] == 'o' && m[1] >= '0' && m[1] <= '9'
 }
 
 func estimateGoogleImageTokens(width, height int) int {

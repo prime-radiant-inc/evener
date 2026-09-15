@@ -669,6 +669,62 @@ func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing
 	}
 }
 
+// The o-series matcher is an OpenAI rule, not "any id that starts with o": a
+// Mistral, OLMo, OpenChat or OPT model -- or a gateway path like openrouter/* or
+// ollama/* -- served over another protocol keeps that protocol's image rules.
+func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	for _, modelID := range []string{"open-mistral-7b", "olmo-2-7b", "openchat-3.5", "openrouter/auto", "ollama/llama3"} {
+		row := registry.Resolved{Instance: "gateway", ModelID: modelID, Protocol: registry.ProtocolAnthropic}
+		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+			t.Fatalf("row %q image history = %d, want %d: a leading o is not an OpenAI claim", modelID, got, want)
+		}
+	}
+	for _, modelID := range []string{"o", "o3", "o4-mini", "o-mini", "o-pro", "openai/o3", "openai.o4"} {
+		row := registry.Resolved{Instance: "gateway", ModelID: modelID, Protocol: registry.ProtocolAnthropic}
+		if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+			t.Fatalf("o-series row %q image history = %d, want %d: the o-series is OpenAI's", modelID, got, want)
+		}
+	}
+}
+
+// The model's own family is the more particular fact: a row that records claude
+// while carrying an OpenAI provider surface still bills Anthropic's image rules,
+// because the surface describes where the row was reached, not what the model is.
+func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsProviderSurface(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	row := registry.Resolved{
+		Instance: "gateway", ModelID: "gateway-zz",
+		Surface: registry.SurfaceOpenAI, Model: registry.Model{Family: "claude"},
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, estimateAnthropicImageTokens(1024, 1024); got != want {
+		t.Fatalf("claude-family row over an openai surface = %d, want %d: the family is the model's own", got, want)
+	}
+}
+
+// A provider name the caller supplied is evidence the caller chose to give, unlike
+// a row's instance alias: the resolved and name-based estimators must agree on a
+// row that carries no other facts.
+func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	req := Request{
+		Provider: "google", Model: "gateway-zz",
+		Messages: []Message{{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+		}}},
+	}
+	row := registry.Resolved{Instance: "google"}
+	if got, want := EstimateInputTokensForResolved(row, req).Tokens, EstimateInputTokens(req).Tokens; got != want {
+		t.Fatalf("resolved estimate with a caller-supplied provider = %d, want the name-based estimate %d", got, want)
+	}
+}
+
 // An instance name is an alias, not vendor identity: a generic row that happens
 // to be named "anthropic" must not bill Anthropic's image rules for a model the
 // registry never classified, so a resolved target's family comes from the row's
