@@ -19,7 +19,11 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return s.remoteHubMutationCallError(clientMutationID, err)
+		// Acquiring the client dials/attaches the remote host; when that fails
+		// no request crossed the wire, so the outcome is known and this must
+		// stay a SessionUnavailable the auto-resume gate can act on. Only a
+		// failure of the dispatched request itself can be in doubt.
+		return s.mapCallError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		return s.remoteHubMutationCallError(clientMutationID, err)
@@ -55,10 +59,17 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 }
 
 // StartThread forwards thread/start, which the remote hub serves hub-scoped and
-// spawns on its own host. ThreadStartParams carries no ref.
+// spawns on its own host. ThreadStartParams carries no ref, so its Harness field
+// is the controller's source selector and must not be forwarded verbatim: the
+// remote hub would look for a source named after this host and fail with
+// "spawn source is not available". It is rewritten to the remote hub's own
+// harness ("evener" resolves to the remote's "local" source, hubThreadStart),
+// mirroring hubModelListInner, which clears the selector before ListModels.
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	remote := params
+	remote.Harness = "evener"
 	var out appwire.ThreadStartResponse
-	if err := s.call(ctx, appwire.MethodThreadStart, params, &out); err != nil {
+	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
 	return out, nil
