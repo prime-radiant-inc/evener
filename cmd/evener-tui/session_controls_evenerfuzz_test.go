@@ -264,6 +264,7 @@ func testSessionSendBranches(t *testing.T) {
 	m.detail.Capabilities.Queue = true
 	m.detail.Capabilities.Steer = true
 	m.sessionQueue = []string{"queued"}
+	m.detail.Queue.Depth = 1
 	_, _ = m.handleSessionForceSteer()
 }
 

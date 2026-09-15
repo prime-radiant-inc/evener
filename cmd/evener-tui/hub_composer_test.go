@@ -323,6 +323,7 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	// Pre-populate the local queue (as if we'd already pressed Enter
 	// once during processing) and have composer text in flight too.
 	m.sessionQueue = []string{"earlier queued line"}
+	m.detail.Queue.Depth = 1
 	m.sessionQueueRef = m.detail.Ref
 	m.session.setInputValue("composer text in flight")
 

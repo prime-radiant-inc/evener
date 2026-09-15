@@ -87,7 +87,7 @@ func (m hubModel) sessionCanDrainQueue() bool {
 	if !m.detail.Capabilities.Steer {
 		return false
 	}
-	return m.sessionTurnRunning() || (m.detail.State == appwire.ThreadStatusIdle && len(m.sessionQueue) > 0)
+	return m.sessionTurnRunning() || (m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0)
 }
 
 func (m hubModel) sessionComposerReadOnlyReason() string {
@@ -179,7 +179,9 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		}
 		queueHints = append(queueHints, keys...)
 		panel.Keys = queueHints
-		queueDepth := len(m.sessionQueue)
+		// The wire's depth, not the preview's length: the preview only renders
+		// rows and may lag or be absent.
+		queueDepth := m.detail.Queue.Depth
 		if queueDepth > 0 {
 			panel.ChipContext.Mode = "QUEUE " + itoa(queueDepth)
 		} else {
@@ -202,7 +204,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			sendKeys = append(sendKeys, keys...)
 			panel.Keys = sendKeys
 		}
-		if depth := len(m.sessionQueue); depth > 0 {
+		if depth := m.detail.Queue.Depth; depth > 0 {
 			panel.ChipContext.Mode = "QUEUE " + itoa(depth)
 		}
 	}

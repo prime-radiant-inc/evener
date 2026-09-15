@@ -2138,7 +2138,10 @@ func parkedQueueModel(t *testing.T, client *appwire.Client, steer bool) hubModel
 	m.detail.Capabilities.Queue = false
 	m.detail.Capabilities.Steer = steer
 	m.session.processing = false
-	m.sessionQueue = []string{"parked follow-up"}
+	// The wire's depth is what the queue holds; the preview is display rows
+	// and can lag or be empty (a daemon that sends depth without previews).
+	m.detail.Queue = appwire.QueueState{Depth: 3}
+	m.sessionQueue = nil
 	// A harness label makes the composer render its production footer (the
 	// mode-aware hint bar) rather than the bare Keys fallback.
 	m.detail.SourceLabel = "evener"
@@ -2166,11 +2169,11 @@ func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
 	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		Queue:    appwire.QueueState{Depth: 1, Revision: 7, Preview: []string{"parked follow-up"}},
+		Queue:    appwire.QueueState{Depth: 3, Revision: 7},
 	})
 	m.applyHubNotification(*queueChanged.Notification)
 	view := m.sessionView()
-	for _, want := range []string{"ctrl+s", "steer", "QUEUE 1"} {
+	for _, want := range []string{"ctrl+s", "steer", "QUEUE 3"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
 		}
