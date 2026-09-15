@@ -116,6 +116,13 @@ function delegateName(delegate: ActivityDelegate): string {
   return delegate.mandate ?? delegate.task ?? delegate.description ?? delegate.child?.label ?? delegate.childSessionId;
 }
 
+// rowStatusText is the one place a dense row's displayed status text is chosen:
+// a job states its raw status, a delegate its resolved state. The row view and
+// both meta grammars read it through here, so the two row kinds cannot drift.
+function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
+  return row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
+}
+
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
 // is alive, failed is danger, needs-you is attention, and idle/ended keep the
 // glyph's default low ink. The label preserves the dot's accessible name.
@@ -180,31 +187,33 @@ function terminalSegment(
   return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
-// Both live row kinds share one meta grammar (#1388): the first segment is the
-// usage pair when the daemon sent one, else the row's own status text, and the
-// quiet age follows. A shell job's ActivityJob carries no usage field at all,
-// so it always takes the status branch; a delegate takes it only until usage
-// arrives. Neither renders a placeholder dash - the empty token slot carried no
-// information and read as a value that failed to load.
+// liveMetaSegments is the one place the live meta grammar is built (#1388): the
+// usage pair when the daemon sent one, else the row's status text, then the
+// quiet age when its anchor is known. Sharing it keeps the two row kinds
+// reading the same - a shell job's ActivityJob carries no usage field at all,
+// so it always takes the status branch, while a delegate takes it only until
+// usage arrives. Neither renders a placeholder dash: the empty token slot
+// carried no information and read as a value that failed to load.
+function liveMetaSegments(tokens: string | undefined, statusText: string, quietMs: number | undefined): MetaSegment[] {
+  const first: MetaSegment = tokens ? { key: "tokens", text: tokens } : { key: "status", text: statusText };
+  const segments: MetaSegment[] = [first];
+  if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+  return segments;
+}
+
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
   const { job } = row;
   if (row.live) {
-    return [
-      { key: "status", text: job.status },
-      { key: "quiet", text: formatQuietAge(now - quietAnchorMillis(job)), tone: "quiet" },
-    ];
+    return liveMetaSegments(undefined, rowStatusText(row), now - quietAnchorMillis(job));
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status, jobIsFailed(job))];
+  return [terminalSegment(job, rowStatusText(row), jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
   if (row.live) {
-    const segments: MetaSegment[] = tokens
-      ? [{ key: "tokens", text: tokens }]
-      : [{ key: "status", text: delegateStatusText(delegate) }];
     // quietForMs arrives frozen at snapshot time, and a quiet delegate emits
     // no frames to refresh the snapshot: derive the displayed age from the
     // server's own quiet anchor (latestActivityAt, else runStartedAt — the
@@ -215,10 +224,8 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
       delegate.latestActivityAt ?? (delegate.quietForMs != null ? delegate.runStartedAt : undefined),
     );
     const quiet = quietAnchorAt !== undefined ? Math.max(0, now - quietAnchorAt) : (delegate.quietForMs ?? undefined);
-    if (quiet !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quiet), tone: "quiet" });
-    return segments;
+    return liveMetaSegments(tokens ?? undefined, rowStatusText(row), quiet);
   }
-  const statusText = delegateStatusText(delegate);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
   if (delegate.durationMs !== undefined && delegate.durationMs !== null) {
@@ -227,7 +234,7 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
     segments.push(
       terminalSegment(
         { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
-        statusText,
+        rowStatusText(row),
         activityDelegateState(delegate).failed,
       ),
     );
@@ -530,7 +537,7 @@ const DenseRowView = memo(function DenseRowView({
   registerRowRef,
 }: DenseRowViewProps): ReactNode {
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
-  const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
+  const statusText = rowStatusText(row);
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
   const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;

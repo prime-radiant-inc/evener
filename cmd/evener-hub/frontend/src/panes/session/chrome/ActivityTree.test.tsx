@@ -529,13 +529,8 @@ describe("ActivityTree", () => {
     expect(screen.getAllByRole("treeitem")).toHaveLength(3);
   });
 
-  // #1388: both row kinds render the same right-hand meta cluster through the
-  // same segment grammar, so a row with no token usage must read the same
-  // whichever kind it is. A shell job's ActivityJob carries no usage field at
-  // all, so its first segment can never be tokens; a delegate's usage is
-  // optional. With no usage both therefore open on the status segment - not on
-  // a placeholder em-dash that carries no information - and the quiet age
-  // follows.
+  // #1388: a live row with no usage opens its meta on its status, and both row
+  // kinds read the same - see liveMetaSegments in ActivityTree.tsx.
   test("a live row with no usage opens its meta on status, matching across row kinds", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
@@ -584,7 +579,7 @@ describe("ActivityTree", () => {
     const delegateMeta = metaText(screen.getByRole("treeitem", { name: "Quiet delegate" }));
 
     expect(jobMeta).toBe("running · 12s");
-    expect(delegateMeta).toBe(jobMeta);
+    expect(delegateMeta).toBe("running · 12s");
   });
 
   test("terminal entries hide behind a fold row; clicking it toggles the fold only", async () => {
