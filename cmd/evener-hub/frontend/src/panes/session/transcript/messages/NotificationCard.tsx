@@ -13,7 +13,7 @@
 // the message (markdown) and concerns carry the signal; the plumbing facts stay
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -29,6 +29,7 @@ import {
   toggleDisclosure,
 } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
 import {
@@ -123,12 +124,21 @@ function Excerpt({ text, ansi }: { text: string; ansi: boolean }) {
   );
 }
 
-function Field({ label, value, testId }: { label: string; value: string | number; testId: string }) {
+function Field({ label, value, testId }: { label: string; value: ReactNode; testId: string }) {
   return (
     <span className={CLASS.field} data-testid={testId}>
       <span className={CLASS.fieldLabel}>{label}</span> {value}
     </span>
   );
+}
+
+// An identity field's value IS an entity id, so it renders as the transcript's
+// shared card trigger - the same one a tool summary's id renders as, hovered or
+// focused for the card. Resolving is the map's business: an id the session's
+// entity map cannot answer for falls back to the plain text it is today
+// (EntityRef's own contract), so no field ever shows a dead trigger.
+function EntityIdField({ label, id, testId }: { label: string; id: string; testId: string }) {
+  return <Field label={label} value={<EntityRef id={id} />} testId={testId} />;
 }
 
 function NotificationMetadata({ notification }: { notification: ParsedNotification }) {
@@ -150,10 +160,10 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
   if (notification.type === "watch") {
     const fields = [
       notification.watchId && (
-        <Field key="watch-id" label="Watch id" value={notification.watchId} testId="notification-field-watch-id" />
+        <EntityIdField key="watch-id" label="Watch id" id={notification.watchId} testId="notification-field-watch-id" />
       ),
       notification.jobId && notification.jobId !== "self" && (
-        <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
+        <EntityIdField key="job-id" label="Job id" id={notification.jobId} testId="notification-field-job-id" />
       ),
     ].filter(Boolean);
     if (fields.length === 0) return null;
@@ -161,18 +171,18 @@ function NotificationMetadata({ notification }: { notification: ParsedNotificati
   }
   const fields = [
     notification.delegateId && (
-      <Field
+      <EntityIdField
         key="delegate-id"
         label="Delegate id"
-        value={notification.delegateId}
+        id={notification.delegateId}
         testId="notification-field-delegate-id"
       />
     ),
     notification.jobId && (
-      <Field key="job-id" label="Job id" value={notification.jobId} testId="notification-field-job-id" />
+      <EntityIdField key="job-id" label="Job id" id={notification.jobId} testId="notification-field-job-id" />
     ),
     notification.watchId && (
-      <Field key="watch-id" label="Watch id" value={notification.watchId} testId="notification-field-watch-id" />
+      <EntityIdField key="watch-id" label="Watch id" id={notification.watchId} testId="notification-field-watch-id" />
     ),
     notification.status && (
       <Field key="status" label="Status" value={notification.status} testId="notification-field-status" />
