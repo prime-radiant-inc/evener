@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
-import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
+import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
 import { isTestFile } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
@@ -46,13 +46,20 @@ const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
 // resolvable against the tarball.
 const NAMES_NO_VALUE_KINDS = new Set(["export-namespace-from"]);
 
-export function packageValuesIn(source, file, problems) {
+// What resolve-check.mjs may do that a consumer may not. Taking a module whole
+// is how the fixture proves a specifier nobody names a value from resolves at
+// all, so those kinds are the point there rather than a gap. The ones left out
+// stay reported even in the fixture: a default import of a package that
+// publishes none, a require in an ESM file, a bare `export *` naming nothing.
+const FIXTURE_ACCEPTS = new Set([...NAMES_NO_VALUE_KINDS, "import-namespace", "import-side-effect", "dynamic-import"]);
+
+export function packageValuesIn(source, file, problems, accept = NAMES_NO_VALUE_KINDS) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
   for (const site of moduleSpecifierSites(ts, source)) {
     const names = bySpecifier.get(site.text);
     if (!names) continue;
     if (site.typeOnly) continue;
-    if (NAMES_NO_VALUE_KINDS.has(site.kind)) continue;
+    if (accept.has(site.kind)) continue;
     if (!ACCOUNTABLE_KINDS.has(site.kind)) {
       problems?.push(`${file}: ${site.kind} of ${site.text} names no binding this check can account for`);
       continue;
@@ -135,13 +142,20 @@ export function consumerValueImports(repoRoot) {
 // running the fixture proves it resolves; and one nothing uses must still be
 // proved, since the package publishes it either way.
 export function describeResolveCheckDrift(fixtureSource, fixtureName, usage) {
-  const declaredValues = packageValuesIn(fixtureSource, fixtureName, []);
+  const problems = [];
+  // The fixture is held to the same rule as a consumer: a site this check
+  // cannot account for is reported, not dropped on the floor.
+  const declaredValues = packageValuesIn(fixtureSource, fixtureName, problems, FIXTURE_ACCEPTS);
+  // isLoadedAtRuntime, not `!site.typeOnly`: the statement-level flag is false
+  // for `import { type Foo } from "pkg"`, which is erased all the same, so a
+  // fixture whose only use of a specifier was inline-type would have "proved"
+  // a resolution that never happens. The sibling walk and the package-test
+  // gate read it through the same predicate.
   const reached = new Set(
     moduleSpecifierSites(ts, fixtureSource)
-      .filter((site) => !site.typeOnly)
+      .filter(isLoadedAtRuntime)
       .map((site) => site.text),
   );
-  const problems = [];
   for (const [specifier, entry] of usage) {
     const declared = [...declaredValues.get(specifier)].sort();
     if (entry.values.length > 0) {
@@ -159,7 +173,7 @@ export function describeResolveCheckDrift(fixtureSource, fixtureName, usage) {
     }
     if (!reached.has(specifier)) {
       problems.push(
-        `${fixtureName} does not load ${specifier} at all, so running it proves nothing about that specifier`,
+        `${fixtureName} does not load ${specifier} at runtime, so running it proves nothing about that specifier`,
       );
     }
   }
