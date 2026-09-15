@@ -550,6 +550,58 @@ func TestReloadDoesNotCarryRowsIntoANewIncarnation(t *testing.T) {
 	}
 }
 
+// TestReloadForgetsSnapshotsForRecreatedNames pins the other half of the
+// incarnation contract: a name new to a successful snapshot is a new
+// incarnation, so the cached inventory an earlier snapshot recorded for it —
+// a failed reload's fallback can record one — must not survive to be handed
+// to whatever instance takes that name next.
+func TestReloadForgetsSnapshotsForRecreatedNames(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	valid := "[providers.other]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"sk\"\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EVENER_PROVIDERS_CONFIG", path)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GROQ_API_KEY", "")
+	h := NewProviderRegistry(hermeticLoader)
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	// The key appears, a broken file parks the holder on the fallback, and a
+	// fetch lands rows for the implicit instance there.
+	t.Setenv("GROQ_API_KEY", "gk")
+	if err := os.WriteFile(path, []byte("default = \"openai\"\n[instances.openai]\ntype = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err == nil {
+		t.Fatal("broken file must fail Reload")
+	}
+	h.ReapplyLive(mustBegin(t, h, "groq"), "groq", h.identityOf(t, "groq"), []registry.Model{{ID: "gpt-live-x"}})
+	h.mu.Lock()
+	_, recorded := h.lastGoodLive["groq"]
+	h.mu.Unlock()
+	if !recorded {
+		t.Fatal("the fallback's landing recorded no snapshot, so this test proves nothing")
+	}
+	// The file loads again: groq is new to the successful snapshot, so the
+	// snapshot the fallback recorded belongs to a dead incarnation.
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	h.mu.Lock()
+	_, kept := h.lastGoodLive["groq"]
+	h.mu.Unlock()
+	if kept {
+		t.Fatal("snapshot for a recreated name survived the reload")
+	}
+}
+
 func TestReloadFailurePreservesLiveForRestoredInstances(t *testing.T) {
 	// A failed reload parks the holder on the implicit-only fallback;
 	// when the file is fixed and the last-good registry comes back,

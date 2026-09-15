@@ -14,6 +14,12 @@ type authenticatorOverrideKey struct{}
 // authenticator (and its state root) to the request instead of racing
 // a global rewire. A nil override keeps the historical lookup.
 func WithAuthenticatorOverride(ctx context.Context, auth Authenticator) context.Context {
+	if auth == nil {
+		// context.WithValue panics on a nil value, and the documented
+		// contract is that nil keeps the historical lookup: the unchanged
+		// context IS that lookup.
+		return ctx
+	}
 	return context.WithValue(ctx, authenticatorOverrideKey{}, auth)
 }
 
