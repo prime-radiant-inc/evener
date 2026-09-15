@@ -19,19 +19,23 @@ All of that died with the vanilla frontend (`660376f78`); the rail is React
 
 **Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): archive/unarchive/delete mutations trigger at most one AppWire read per affected loaded navigation representation (manifest, catalog page, project root); an idle rail issues zero navigation reads after hydration, and a mutation plus its AppWire notification do not duplicate a resource read.
 
-**Two section shapes, and only one of them is a disclosure** — this is the
-biggest change from the card's old text:
+**Every section heading is a disclosure, and its chevron trails the title** —
+this is the biggest change from the card's old text:
 
-- **Test runs** is a plain `RailSection` (`Rail.tsx:100-108,595-601`): an
-  `<h3>` reading exactly `Test runs`, with **no count and no disclosure
-  button**, rendered whenever `test_runs[]` is non-empty and omitted entirely
-  when it is not (`:101`). Its *project rows* are collapsed, not the section.
-- **Archived** is the one real disclosure (`ArchivedSection`,
-  `Rail.tsx:121-130,602-612`): a `<button aria-expanded>` reading
-  `Archived sessions (N)` (`:125`), collapsed by default, holding whole
-  archived projects *plus* the archived-tier sessions diverted out of still-
-  active projects (`railNodes.ts:306-321,332-335`). There is no `Archived (N)`
-  header and no `section:test-runs` key.
+- **Live, Projects and Test runs** are plain `RailSection`s (`Rail.tsx`): an
+  `<h3>` wrapping a `<button aria-expanded>` whose label is exactly the heading
+  text (`Live`, `Projects`, `Test runs`), with the chevron drawn AFTER the
+  label to match the row chevrons. Each renders whenever its bucket is
+  non-empty and is omitted entirely when it is not, and each starts open with
+  its fold state persisted under `section:live` / `section:projects` /
+  `section:test_runs`. Its *project rows* are collapsed, not the section.
+- **Archived** is the same disclosure shape (`ArchivedSection`) reading
+  `Archived sessions (N)`, but collapsed by default, holding whole archived
+  projects *plus* the archived-tier sessions diverted out of still-active
+  projects (`railNodes.ts`). Its state is `section:archived`. There is no
+  `Archived (N)` header and no `section:test-runs` key.
+- **Pinned sections** (one per durable pin section, named by its author) are
+  the same disclosure plus a heading-level `⋯` menu.
 
 ## Pre-state
 
@@ -113,13 +117,14 @@ a browser, and only assert what the rail renders.
   `archived_projects[]`.
 - **Step 5**: `h3` headings include both `Projects` and `Test runs` (no count,
   no parenthetical on either) and there is no `Archived sessions` button yet —
-  the disclosure renders only when it has something to hold (`Rail.tsx:602`).
-  `$A`'s project row sits under `Projects` and `$B`'s under `Test runs`, each
-  collapsed, so neither project's *session* row is in the DOM
+  the archived disclosure renders only when it has something to hold. Each of
+  those headings carries a `button[aria-expanded="true"]` whose chevron sits
+  after the label. `$A`'s project row sits under `Projects` and `$B`'s under
+  `Test runs`, each collapsed, so neither project's *session* row is in the DOM
   (`default_expanded` is `rollup_live>0||rollup_attn>0`, `tree.go:946`, false
-  for an ended session). Falsify: a `Test runs (1)` header, or a collapsible
-  Test-runs section — that is the pre-rewrite shape and would mean this card is
-  describing a UI that no longer exists.
+  for an ended session). Falsify: a `Test runs (1)` parenthetical (the count
+  belongs to `Archived sessions` alone), or a section heading with no
+  disclosure button.
 - **Step 6**: the `Archived sessions (1)` button now exists with
   `aria-expanded="false"`, and `$A` is absent from the DOM until it is
   clicked. After the click, `$A`'s project row renders. Falsify: the count is

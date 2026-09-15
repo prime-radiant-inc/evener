@@ -201,71 +201,100 @@ function activityEntryRow(
   };
 }
 
+// What one session hands a caller mid-walk: the level and parent id its rows
+// carry, its entries, and the one way to turn an entry into a row. Emitting a
+// row also descends into a delegate's child, so the recursion exists once.
+interface ActivitySessionWalk {
+  session: ActivitySessionNode;
+  level: number;
+  entriesParentID: string;
+  entries: readonly ActivityEntry[];
+  emit(entry: ActivityEntry, fromFold: boolean): void;
+}
+
+interface ActivityRowVisit {
+  onRow(row: ActivityJobRow | ActivityDelegateRow): void;
+  visitSession(walk: ActivitySessionWalk): void;
+}
+
+// The single recursive walk behind both surfaces below. It owns the row
+// factory, the entries' parent id, and the descent into delegate children;
+// callers own which entries they visit, in what order, and where a fold row
+// belongs among them.
+function walkActivitySessions(tree: ActivityTree, visit: ActivityRowVisit): void {
+  function visitSession(session: ActivitySessionNode, level: number, parentID: string | undefined): void {
+    const entriesParentID = parentID ?? activityNodeID(session);
+    visit.visitSession({
+      session,
+      level,
+      entriesParentID,
+      entries: session.entries,
+      emit(entry, fromFold) {
+        const row = activityEntryRow(entry, session.ref, level, entriesParentID, fromFold);
+        visit.onRow(row);
+        if (entry.kind === "delegate" && entry.delegate.child) {
+          visitSession(entry.delegate.child, level + 1, row.id);
+        }
+      },
+    });
+  }
+
+  visitSession(tree.root, 1, undefined);
+}
+
 // Walks every loaded entry, ignoring fold/disclosure state, so an entity
 // resolves identically whether or not its fold is expanded.
 export function indexActivityEntities(tree: ActivityTree): Map<string, ActivityJobRow | ActivityDelegateRow> {
   const index = new Map<string, ActivityJobRow | ActivityDelegateRow>();
 
-  function visitSession(session: ActivitySessionNode, parentRef: string, level: number, parentID?: string): void {
-    const entriesParentID = parentID ?? activityNodeID(session);
-    for (const entry of session.entries) {
-      // Mirror the panel's fold origin so an indexed row matches that entry
-      // when disclosed, without making index membership disclosure-dependent.
-      const panelWouldFoldEntry = !entryIsActive(entry);
-      const row = activityEntryRow(entry, parentRef, level, entriesParentID, panelWouldFoldEntry);
+  walkActivitySessions(tree, {
+    onRow(row) {
       if (row.kind === "job") {
         index.set(row.job.jobId, row);
-        continue;
+        return;
       }
       index.set(row.delegate.delegateId, row);
-      if (row.delegate.child) visitSession(row.delegate.child, row.transcriptRef, level + 1, row.id);
-    }
-  }
+    },
+    // Every entry, in the session's own order, each carrying the fold origin
+    // the panel would give it: index membership stays independent of what is
+    // disclosed, while an indexed row still matches that entry's panel row.
+    visitSession(walk) {
+      for (const entry of walk.entries) walk.emit(entry, !entryIsActive(entry));
+    },
+  });
 
-  visitSession(tree.root, tree.root.ref, 1);
   return index;
 }
 
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {
   const rows: ActivityRow[] = [];
 
-  function appendEntry(
-    entry: ActivityEntry,
-    session: ActivitySessionNode,
-    level: number,
-    parentID: string,
-    fromFold: boolean,
-  ): void {
-    const row = activityEntryRow(entry, session.ref, level, parentID, fromFold);
-    rows.push(row);
-    if (entry.kind === "delegate" && entry.delegate.child) {
-      visitSession(entry.delegate.child, level + 1, row.id);
-    }
-  }
+  walkActivitySessions(tree, {
+    onRow(row) {
+      rows.push(row);
+    },
+    visitSession(walk) {
+      const live: ActivityEntry[] = [];
+      const inactive: ActivityEntry[] = [];
+      for (const entry of walk.entries) {
+        (entryIsActive(entry) ? live : inactive).push(entry);
+      }
+      for (const entry of live) walk.emit(entry, false);
+      if (inactive.length === 0) return;
+      const id = foldRowID(activityNodeID(walk.session));
+      rows.push({
+        kind: "fold",
+        id,
+        parentID: walk.entriesParentID,
+        level: walk.level,
+        foldParentID: activityNodeID(walk.session),
+        inactiveCount: inactive.length,
+        failedCount: inactive.filter(entryIsFailed).length,
+      });
+      if (!expandedFolds.has(id)) return;
+      for (const entry of inactive) walk.emit(entry, true);
+    },
+  });
 
-  function visitSession(session: ActivitySessionNode, level: number, parentID?: string): void {
-    const entriesParentID = parentID ?? activityNodeID(session);
-    const live: ActivityEntry[] = [];
-    const inactive: ActivityEntry[] = [];
-    for (const entry of session.entries) {
-      (entryIsActive(entry) ? live : inactive).push(entry);
-    }
-    for (const entry of live) appendEntry(entry, session, level, entriesParentID, false);
-    if (inactive.length === 0) return;
-    const id = foldRowID(activityNodeID(session));
-    rows.push({
-      kind: "fold",
-      id,
-      parentID: entriesParentID,
-      level,
-      foldParentID: activityNodeID(session),
-      inactiveCount: inactive.length,
-      failedCount: inactive.filter(entryIsFailed).length,
-    });
-    if (!expandedFolds.has(id)) return;
-    for (const entry of inactive) appendEntry(entry, session, level, entriesParentID, true);
-  }
-
-  visitSession(tree.root, 1);
   return rows;
 }
