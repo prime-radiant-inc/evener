@@ -34,7 +34,7 @@ import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
-import { hostRequest } from "../../stores/hostRouting";
+import { hostRequest, isLocalHost } from "../../stores/hostRouting";
 import { selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -846,20 +846,32 @@ function SpawnForm({
   // Load the host-dependent catalogs and focus the current prompt. Reloaded
   // when the selected host changes (component 07b): harnesses and launch
   // schema describe the host, so a remote selection must not keep showing the
-  // controller's lists.
+  // controller's lists - neither while the new host's answer is in flight nor
+  // after it fails, when a retained catalog would let the user pick a harness
+  // the selected host does not have.
+  const catalogHostRef = useRef(hostChoice);
   useEffect(() => {
     let active = true;
+    if (catalogHostRef.current !== hostChoice) {
+      catalogHostRef.current = hostChoice;
+      setHarnesses([]);
+      setSchemaOptions([]);
+    }
     hostRequest(client, hostChoice, "evener/harnesses/list", {}).then(
       (r) => {
         if (active) setHarnesses(r.data);
       },
-      () => {},
+      () => {
+        if (active) setHarnesses([]);
+      },
     );
     hostRequest(client, hostChoice, "evener/launch/schema", {}).then(
       (r) => {
         if (active) setSchemaOptions(perLaunchEvenerOptions(r));
       },
-      () => {},
+      () => {
+        if (active) setSchemaOptions([]);
+      },
     );
     return () => {
       active = false;
@@ -881,7 +893,13 @@ function SpawnForm({
         // model/list can serialize an empty Go slice as `data: null`
         // (appwire.ModelListResponse.Data carries no omitempty). Normalize here
         // so the sweep never iterates a non-iterable and skips its work.
-        if (request.active) sweepStaleModels(r.data ?? []);
+        // Persisted defaults are the CONTROLLER's own localStorage, and a
+        // remote host's catalog describes only that host. Sweeping local
+        // defaults against it would permanently delete models the controller
+        // still offers. Only the local host's catalog has authority here; a
+        // remote draft is validated against the remote list by the effect
+        // below, which never writes storage.
+        if (request.active && isLocalHost(hostChoice)) sweepStaleModels(r.data ?? []);
       },
       () => {},
     );

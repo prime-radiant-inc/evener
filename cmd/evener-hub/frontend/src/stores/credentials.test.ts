@@ -2,9 +2,9 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
+import type { AuthTestResponse, HostForwardedResult, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
-import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
+import { credentialsStore, hostPartition, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -330,6 +330,169 @@ describe("mutations returning the updated instance list", () => {
       credentialsStore.getState().create({ name: "work", base: "openai-codex", baseUrl: "" }),
     ).rejects.toThrow("name already exists");
     expect(credentialsStore.getState().instances).toEqual([]);
+  });
+});
+
+// --- host-partitioned instance lists (component 07b) ------------------------
+//
+// A remote host's listing is HOST-SCOPED data. fetchHost(remote) must not write
+// it into the controller-scoped top-level fields: Settings > Credentials and
+// ConnectProviderDialog read those and their mutations act on the controller,
+// so a remote listing there would be displayed as the controller's and then
+// silently reverted (or destroyed) by any controller-scoped write or refetch.
+// The reverse must hold too: the controller's own loads and evener/auth/updated
+// refetches must never replace a remote host's listing.
+
+const REMOTE_INSTANCE: InstanceEntry = {
+  name: "buildbox-anthropic",
+  providerId: "anthropic",
+  protocol: "anthropic",
+  auth: "bearer",
+  isDefault: true,
+  implicit: false,
+  authModes: ["apiKey"],
+  activeSource: "store",
+  hasStoredFile: true,
+  hasStoredOAuth: false,
+  envVar: "",
+  storedEmail: "",
+  credentialRequired: true,
+};
+
+const REMOTE_LIST: InstanceListResponse = { instances: [REMOTE_INSTANCE], availableProviders: [] };
+
+// serveRemoteList answers the proxy call for evener/instance/list for the
+// "buildbox" host, asserting the forwarded envelope is exactly the one
+// fetchHost promised.
+function serveRemoteList(fake: FakeClient, response: InstanceListResponse): void {
+  fake.on("evener/host/request", (params) => {
+    expect(params).toEqual({ host: "buildbox", method: "evener/instance/list", params: {} });
+    return response as unknown as HostForwardedResult;
+  });
+}
+
+describe("host-partitioned instance lists (component 07b)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("a remote fetchHost partitions its listing and leaves the controller's fields alone", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    serveRemoteList(fake, REMOTE_LIST);
+
+    await credentialsStore.getState().fetchHost("buildbox");
+
+    const state = credentialsStore.getState();
+    expect(state.instances).toEqual([ONE_INSTANCE]); // the controller's own list
+    expect(hostPartition(state, "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+    expect(hostPartition(state, "buildbox").loading).toBe(false);
+    // The remote read was the only one forwarded; the controller load went direct.
+    expect(fake.calls.filter((call) => call.method === "evener/host/request")).toEqual([
+      {
+        method: "evener/host/request",
+        params: { host: "buildbox", method: "evener/instance/list", params: {} },
+      },
+    ]);
+  });
+
+  test("an evener/auth/updated controller refetch cannot replace a remote host's listing", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    serveRemoteList(fake, REMOTE_LIST);
+    await credentialsStore.getState().fetchHost("buildbox");
+
+    fake.emitNotification({ method: "evener/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    expect(hostPartition(credentialsStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+  });
+
+  test("a controller read does not supersede an in-flight remote host read", async () => {
+    const fake = connectFakeClient();
+    let finishRemote: (value: InstanceListResponse) => void = () => {};
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finishRemote = (value) => resolve(value as unknown as HostForwardedResult);
+        }),
+    );
+    const remote = credentialsStore.getState().fetchHost("buildbox");
+    await Promise.resolve();
+
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    finishRemote(REMOTE_LIST);
+    await remote;
+
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    expect(hostPartition(credentialsStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+  });
+
+  test("a controller-scoped instance mutation leaves a remote host's listing intact", async () => {
+    const fake = connectFakeClient();
+    serveRemoteList(fake, REMOTE_LIST);
+    await credentialsStore.getState().fetchHost("buildbox");
+
+    fake.on("evener/instance/remove", () => ({ instances: [], availableProviders: [] }));
+    await credentialsStore.getState().remove("buildbox-anthropic");
+
+    expect(credentialsStore.getState().instances).toEqual([]);
+    expect(hostPartition(credentialsStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
+    // The mutation was issued on the plain connection, never forwarded to the
+    // remote host whose row the user was looking at.
+    expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+  });
+
+  test("a failed remote load reports on its own partition and leaves the controller's status alone", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    fake.on("evener/host/request", () => {
+      throw new Error("remote hub unavailable");
+    });
+
+    await credentialsStore.getState().fetchHost("buildbox");
+
+    const state = credentialsStore.getState();
+    expect(hostPartition(state, "buildbox").error).toBe("remote hub unavailable");
+    expect(hostPartition(state, "buildbox").loading).toBe(false);
+    expect(state.error).toBeNull();
+    expect(state.loading).toBe(false);
+    expect(state.instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("a reconnect releases a remote host's in-flight status without discarding its listing", async () => {
+    const fake = connectFakeClient();
+    serveRemoteList(fake, REMOTE_LIST);
+    await credentialsStore.getState().fetchHost("buildbox");
+    let finish!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finish = (value) => resolve(value as unknown as HostForwardedResult);
+        }),
+    );
+    const reload = credentialsStore.getState().fetchHost("buildbox");
+    await Promise.resolve();
+    expect(hostPartition(credentialsStore.getState(), "buildbox").loading).toBe(true);
+
+    fake.emitStateChange("reconnecting");
+    expect(hostPartition(credentialsStore.getState(), "buildbox").loading).toBe(false);
+    finish({ instances: [{ ...REMOTE_INSTANCE, name: "stale" }], availableProviders: [] });
+    await reload;
+    // The interrupted load cannot commit over the connection transition, and
+    // the listing it was refreshing is still the one the store holds.
+    expect(hostPartition(credentialsStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
   });
 });
 

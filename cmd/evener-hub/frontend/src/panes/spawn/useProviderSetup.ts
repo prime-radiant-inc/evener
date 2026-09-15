@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
-import { useCredentialsStore } from "../../stores/credentials";
-import { hostRequest, LOCAL_HOST } from "../../stores/hostRouting";
+import { hostPartition, useCredentialsStore } from "../../stores/credentials";
+import { hostRequest, isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 
 /** Credential configuration is read from the hub, never a browser first-run flag.
  * A failed lookup is unknown; it must not send a configured user through setup. */
 export function useProviderSetup(host: string = LOCAL_HOST) {
   const { client, state: connection } = useConnectionStore();
-  const { instances, loading, error, writesRefused, fetchHost } = useCredentialsStore();
+  // The instance list is host-dependent (component 07b). The controller's own
+  // (LOCAL_HOST) listing lives in the store's top-level fields; a remote host's
+  // lives in its own `hosts[host]` partition. Read the selected host's slot so
+  // the controller's evener/auth/updated refetch -- and the controller-scoped
+  // Settings/ConnectProviderDialog writers -- can never replace the remote
+  // host's registry underneath this form.
+  const local = isLocalHost(host);
+  const instances = useCredentialsStore((state) => (local ? state.instances : hostPartition(state, host).instances));
+  const loading = useCredentialsStore((state) => (local ? state.loading : hostPartition(state, host).loading));
+  const error = useCredentialsStore((state) => (local ? state.error : hostPartition(state, host).error));
+  const writesRefused = useCredentialsStore((state) =>
+    local ? state.writesRefused : hostPartition(state, host).writesRefused,
+  );
+  const fetchHost = useCredentialsStore((state) => state.fetchHost);
   // The instance list is host-dependent (component 07b): fetch it from the
   // selected host. The retry path must carry the same host, not silently fall
   // back to the controller's instances.

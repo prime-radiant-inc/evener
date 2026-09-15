@@ -746,4 +746,23 @@ describe("ConnectProviderDialog", () => {
     expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeNull();
   });
+
+  // The dialog is a CONTROLLER-scoped editor: every instance/auth mutation it
+  // issues goes to the controller, so it must read the controller's listing --
+  // never a remote host's. Component 07b keeps a remote host's listing in its
+  // own store partition, which is what makes the mount-time fetch() here
+  // harmless to the spawn form's remote view.
+  test("mounting the dialog reads the controller's list and issues no proxied call", async () => {
+    const controller = instance({ name: "controller-only", providerId: "anthropic", activeSource: "store" });
+    const fake = connectFakeClient({ instances: [controller], availableProviders: [] });
+    fake.on("evener/host/request", () => {
+      throw new Error("the controller-scoped dialog must never route through the proxy");
+    });
+
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+
+    expect(await screen.findByText("controller-only")).toBeTruthy();
+    expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
+  });
 });

@@ -37,7 +37,7 @@ import type {
   ProviderDescriptor,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
-import { hostRequest, LOCAL_HOST } from "./hostRouting";
+import { hostRequest, isLocalHost, LOCAL_HOST } from "./hostRouting";
 
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
@@ -48,6 +48,12 @@ function requireClient(): AppwireClientLike {
 }
 
 export interface CredentialsStoreState {
+  // instances/availableProviders/diagnostics/userLayer/writesRefused are the
+  // CONTROLLER's own (LOCAL_HOST) provider listing, exactly as before component
+  // 07b: Settings > Credentials and ConnectProviderDialog are controller-scoped
+  // editors and read these. A remote host's listing is kept in `hosts` below,
+  // partitioned by host id, so a host-scoped load can never overwrite (or be
+  // overwritten by) the controller's list.
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
   // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
@@ -59,12 +65,20 @@ export interface CredentialsStoreState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
+  // hosts holds one partition per NON-CONTROLLER host id, each the listing
+  // evener/instance/list returned for that host through evener/host/request.
+  // Keyed by host so a remote spawn form reads the registry of the machine it
+  // is about to launch on without the controller-scoped top-level fields -- and
+  // without the evener/auth/updated refetch -- ever seeing it.
+  hosts: Record<string, HostInstanceState>;
   fetch(): Promise<void>;
   // fetchHost scopes evener/instance/list to the selected host (component
   // 07b): a remote host's provider instances are read from that host's own
   // registry through evener/host/request, so the spawn form's provider setup
   // describes the machine it is about to launch on. It shares fetch()'s
-  // ordering guard and normalization; fetch() itself stays controller-scoped.
+  // ordering guard and normalization, but NOT its slot: the controller's list
+  // stays in the top-level fields and a remote host's lands in `hosts[host]`,
+  // so neither load can overwrite the other. fetch() itself is controller-only.
   fetchHost(host: string): Promise<void>;
   create(params: InstanceCreateParams): Promise<void>;
   // Resolves true when the listing this edit answered with is the one the
@@ -101,6 +115,39 @@ type ListState = Pick<
   "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
 >;
 
+// HostInstanceState is one non-controller host's own provider listing: the
+// same normalized fields as the controller's, plus that host's own request
+// status. A remote host's load cannot move the controller's `loading`/`error`,
+// and the controller's refetch cannot move a remote host's.
+export interface HostInstanceState extends ListState {
+  loading: boolean;
+  error: string | null;
+}
+
+// EMPTY_HOST_INSTANCE_STATE is a host partition before its first load. A module
+// constant, not a fresh literal: useProviderSetup selects it so a host with no
+// entry yet has a stable snapshot identity instead of re-rendering forever.
+export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+  loading: false,
+  error: null,
+});
+
+/**
+ * hostPartition reads one non-controller host's own partition out of the store
+ * state, or the empty partition before that host has ever been loaded. The
+ * controller's own listing is NOT a partition (it is the top-level fields), so
+ * callers reading a selected host choose that branch themselves - see
+ * useProviderSetup.
+ */
+export function hostPartition(state: CredentialsStoreState, host: string): HostInstanceState {
+  return state.hosts[host] ?? EMPTY_HOST_INSTANCE_STATE;
+}
+
 function listState(resp: InstanceListResponse): ListState {
   return {
     instances: resp.instances,
@@ -118,59 +165,108 @@ function emptyListState(): ListState {
   return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
 }
 
-let requestVersion = 0;
+// One request counter per host plus a connection epoch. Ordering is per host:
+// a slow remote load must neither cancel an unrelated controller read nor be
+// cancelled by it (and two different remote hosts must not race each other),
+// while a connection change still retires every in-flight load at once.
+let connectionEpoch = 0;
+const hostVersions = new Map<string, number>();
 let requestedList = false;
 
-// Reads and writes share ordering: only the most recently started request
-// can replace the listing, even when responses arrive out of order. Reports
-// whether THIS response is the one that replaced it: a superseded response
-// carries a listing the store discarded, and a caller steering a view on the
-// strength of its own write has to be able to tell the two apart.
+type RequestToken = { host: string; version: number; epoch: number };
+
+function beginRequest(host: string): RequestToken {
+  const version = (hostVersions.get(host) ?? 0) + 1;
+  hostVersions.set(host, version);
+  return { host, version, epoch: connectionEpoch };
+}
+
+// Reports whether THIS request is still the most recent one started for its
+// host on the same connection. Reads and writes share this: only the latest
+// request per host can replace that host's listing, even when responses arrive
+// out of order.
+function isCurrentRequest(token: RequestToken, client: AppwireClientLike): boolean {
+  return (
+    hostVersions.get(token.host) === token.version &&
+    connectionEpoch === token.epoch &&
+    connectionStore.getState().client === client
+  );
+}
+
+// applyMutation applies one controller-scoped evener/instance/* response to the
+// controller's own listing. Reports whether THIS response is the one that
+// replaced it: a superseded response carries a listing the store discarded, and
+// a caller steering a view on the strength of its own write has to be able to
+// tell the two apart.
 async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<boolean> {
-  const version = ++requestVersion;
+  const client = requireClient();
+  const token = beginRequest(LOCAL_HOST);
   try {
     const response = await request();
-    if (version !== requestVersion) return false;
+    if (!isCurrentRequest(token, client)) return false;
     credentialsStore.setState({ ...listState(response), loading: false, error: null });
     return true;
   } finally {
-    if (version === requestVersion) credentialsStore.setState({ loading: false });
+    if (isCurrentRequest(token, client)) credentialsStore.setState({ loading: false });
   }
 }
-
-// CredentialsSet is the subset of the store's own setState the shared list
-// loader writes through.
-type CredentialsSet = (partial: Partial<CredentialsStoreState>) => void;
 
 // loadInstances is the single evener/instance/list path. fetch() and
 // fetchHost(host) both route through it, so the ordering guard and the
-// always-present list state are applied in exactly one place.
-async function loadInstances(set: CredentialsSet, host: string): Promise<void> {
+// always-present list state are applied in exactly one place. The controller's
+// own list (LOCAL_HOST) lands in the top-level fields; every other host's lands
+// in its own `hosts` partition.
+async function loadInstances(host: string): Promise<void> {
   const client = requireClient();
   requestedList = true;
-  const version = ++requestVersion;
-  set({ loading: true, error: null });
+  const token = beginRequest(host);
+  if (isLocalHost(host)) {
+    credentialsStore.setState({ loading: true, error: null });
+    try {
+      const resp = await hostRequest(client, host, "evener/instance/list", {});
+      if (!isCurrentRequest(token, client)) return;
+      credentialsStore.setState({ ...listState(resp), loading: false });
+    } catch (err) {
+      if (!isCurrentRequest(token, client)) return;
+      credentialsStore.setState({ loading: false, error: errorText(err) });
+    }
+    return;
+  }
+  setHostState(host, (previous) => ({ ...previous, loading: true, error: null }));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
-    if (version !== requestVersion || connectionStore.getState().client !== client) return;
-    set({ ...listState(resp), loading: false });
+    if (!isCurrentRequest(token, client)) return;
+    setHostState(host, () => ({ ...listState(resp), loading: false, error: null }));
   } catch (err) {
-    if (version !== requestVersion || connectionStore.getState().client !== client) return;
-    set({ loading: false, error: errorText(err) });
+    if (!isCurrentRequest(token, client)) return;
+    setHostState(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
   }
 }
 
-export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
+// setHostState replaces one host's partition through the same `set` every
+// reader sees: the function form keeps the other partitions' identities stable,
+// so subscribing selectors re-render only for the host that changed.
+function setHostState(host: string, update: (previous: HostInstanceState) => HostInstanceState): void {
+  credentialsStore.setState((state) => {
+    const previous = state.hosts[host] ?? EMPTY_HOST_INSTANCE_STATE;
+    const next = update(previous);
+    if (next === previous) return {};
+    return { hosts: { ...state.hosts, [host]: next } };
+  });
+}
+
+export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   ...emptyListState(),
+  hosts: {},
   loading: false,
   error: null,
 
   async fetch() {
-    await loadInstances(set, LOCAL_HOST);
+    await loadInstances(LOCAL_HOST);
   },
 
   async fetchHost(host) {
-    await loadInstances(set, host);
+    await loadInstances(host);
   },
 
   async create(params) {
@@ -305,8 +401,11 @@ function attachNotifications(client: AppwireClientLike | null): void {
 // own connect() effect).
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
-    requestVersion += 1;
-    credentialsStore.setState({ loading: false });
+    // A new connection retires every in-flight load at once, and no host
+    // partition may stay stuck on "loading" behind a request that can no
+    // longer commit.
+    connectionEpoch += 1;
+    credentialsStore.setState((current) => ({ loading: false, hosts: clearHostLoading(current.hosts) }));
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
   }
@@ -328,17 +427,35 @@ connectionStore.subscribe((state, previous) => {
 const initialClient = connectionStore.getState().client;
 if (initialClient) attachNotifications(initialClient);
 
+// clearHostLoading releases every remote host's in-flight status without
+// discarding the listing it holds - a reconnect's refetch either replaces that
+// listing or reports its own failure, exactly like the controller's own fields.
+function clearHostLoading(hosts: Record<string, HostInstanceState>): Record<string, HostInstanceState> {
+  let changed = false;
+  const next: Record<string, HostInstanceState> = {};
+  for (const [host, hostState] of Object.entries(hosts)) {
+    if (hostState.loading) {
+      next[host] = { ...hostState, loading: false };
+      changed = true;
+    } else {
+      next[host] = hostState;
+    }
+  }
+  return changed ? next : hosts;
+}
+
 // resetCredentialsStoreForTests resets this singleton store's state between
 // tests, including the module-private wiring/debounce bookkeeping above -
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
-  requestVersion += 1;
+  connectionEpoch += 1;
+  hostVersions.clear();
   requestedList = false;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
-  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
+  credentialsStore.setState({ ...emptyListState(), hosts: {}, loading: false, error: null });
 }
