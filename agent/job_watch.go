@@ -49,14 +49,54 @@ const (
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
+	// maxWatchEvents bounds the events list ONE watch may carry, next to
+	// maxLiveWatches' bound on how many watches a manager holds. The list is
+	// copied into every projection of the watch (the diagnostics facet, the page
+	// rows, the hub's navigation summary, the SPA payload) and each projection
+	// clones it, so an unbounded list here is an unbounded payload everywhere.
+	// The watchable kinds are a fixed handful, so this is generous.
+	maxWatchEvents = 64
+	// maxWatchConditionChars bounds the condition strings a watch may carry at
+	// registration: output_match, event_filter.tool_name, and the filter as the
+	// browser renders it (the name with its label and status beside it). It is the
+	// hub's navigation label bound and the wire codec's own bound for these
+	// fields: a longer value would be truncated on its way to the browser and then
+	// shown as the condition the watch matches, which is a claim this daemon must
+	// not make. Refused here, so the hub's truncation only ever sees a row from
+	// some other producer. Counted in runes, like every other "...Chars" bound here.
+	maxWatchConditionChars = 512
 	// watchDeliveryBudget caps the condition fires a watch config may deliver
 	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
 	// tick counts a delivery but is a clock rather than a condition, so it never
 	// counts against this. Hard-coded, no config knob.
 	watchDeliveryBudget = 50
+	// watchDeliveryTimeCap bounds the per-watch ring of recent delivery instants
+	// that feeds the activity panel's delivery timeline. The ring is a display
+	// aid, not an audit log: progress ticks make a watch's delivery count
+	// unbounded, so the cap trades history older than the most recent deliveries
+	// for a small fixed per-watch footprint (32 × 24-byte time.Time) that stays
+	// bounded across an unbounded number of live watches. 32 is more instants
+	// than a readable timeline plots.
+	watchDeliveryTimeCap = 32
 	// maxLiveTimers caps timers per job manager; with the 60-second floor it
 	// bounds a session to eight timer wakes a minute.
 	maxLiveTimers = 8
+	// maxLiveWatches caps the live watches one job manager holds, the way
+	// maxLiveTimers bounds timers: it bounds what that manager stores, projects
+	// and ships for its own session, and it is what keeps a single session's
+	// registration from arming watches without end.
+	//
+	// It is deliberately not a bound on a session's projected row. That row is a
+	// rollup -- the session's own manager's rows plus the receiver watches it owns
+	// on descendants, each of those managers capped here -- so it grows with the
+	// number of source sessions holding watches for the receiver. That is the
+	// design, not the gap: a receiver watch belongs on its receiver's row (a
+	// subtree rollup counts each watch once, for its receiver), and the hub caps
+	// the rows it displays and counts what it drops.
+	//
+	// Registration refuses a key that would grow the set rather than trimming it,
+	// so no live watch goes missing without the agent hearing about it.
+	maxLiveWatches = 32
 	// runawaySelfInfluenceDepth caps how many delivered self-influenced priors a
 	// watch send may descend from before the breaker drops it as a runaway. The
 	// existing watchDeliveryBudget is the coarser whole-watch volume floor.
@@ -231,6 +271,22 @@ type watchConfig struct {
 	// reconstructed into terminalFlush on restore are never built via
 	// newWatchConfig and so are intentionally left zero (they are not live).
 	createdAt time.Time
+	// deliveryTimes is a bounded ring of the most recent delivery instants for
+	// this config, oldest first and capped at watchDeliveryTimeCap. It is
+	// stamped from jm.now() in the same locked helper that increments
+	// deliveries, so the count and the ring can never diverge. It feeds the
+	// activity panel's timeline only; nothing schedules from it.
+	deliveryTimes []time.Time
+	// lastClockFire is the most recent instant a clock tick actually fired for
+	// this config - a timer's fire or a progress-interval tick - stamped from
+	// jm.now() under jm.mu where that tick fires. The delivery ring mixes every
+	// delivery kind (output matches, event fires, attach scans), so the derived
+	// next fire reads this instead of the ring: a watch that legally combines
+	// output_match with progress_interval_ms would otherwise date its progress
+	// cadence from an unrelated output match. Zero means the clock has not
+	// fired yet. Restored and detached configs never schedule, so they leave it
+	// zero exactly as they leave createdAt zero.
+	lastClockFire time.Time
 }
 
 type watchArgs struct {
@@ -606,7 +662,24 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.RepeatSeconds != 0 && (a.RepeatSeconds < 60 || a.RepeatSeconds > 3600) {
 		return errors.New("invalid_request: repeat_seconds must be between 60 and 3600")
 	}
+	// A negative every is not "no throttle": it asks for a throttle the daemon
+	// cannot honour, and installing an unthrottled watch in its place would
+	// deliver every matching event to a caller who asked for one in N. Refuse it
+	// here, before the every>0 branches below treat it as absent everywhere.
+	if a.Every < 0 {
+		return fmt.Errorf("invalid_request: every must be a positive count (it fires on each Nth matching event), got %d", a.Every)
+	}
 	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
+	// The payload bounds: a watch whose trigger arguments are unbounded makes
+	// every projection of it unbounded too, so they are refused here rather than
+	// truncated (a cut regex or a cut tool name would silently change what the
+	// watch matches).
+	if len(a.Events) > maxWatchEvents {
+		return fmt.Errorf("invalid_request: events names at most %d kinds, got %d", maxWatchEvents, len(a.Events))
+	}
+	if runes := len([]rune(a.OutputMatch)); runes > maxWatchConditionChars {
+		return fmt.Errorf("invalid_request: output_match must be at most %d characters, got %d", maxWatchConditionChars, runes)
+	}
 	// every:1 is the semantic default (fire on each occurrence), so it reads as
 	// unset everywhere downstream; the single-concrete-kind requirement applies
 	// only to every>1, which actually throttles.
@@ -616,6 +689,18 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.EventFilter != nil {
 		a.EventFilter.ToolName = strings.TrimSpace(a.EventFilter.ToolName)
 		a.EventFilter.Status = strings.ToLower(strings.TrimSpace(a.EventFilter.Status))
+		if runes := len([]rune(a.EventFilter.ToolName)); runes > maxWatchConditionChars {
+			return fmt.Errorf("invalid_request: event_filter.tool_name must be at most %d characters, got %d", maxWatchConditionChars, runes)
+		}
+		// The hub renders the filter as ONE label ("tool_name=…, status=…") and
+		// bounds that label, so the field's own bound is not enough: a name at the
+		// bound plus the decoration around it was cut on its way to the browser,
+		// which then showed a shortened tool name as the one being matched. Bound
+		// the rendered label with the very function that renders it, so the two
+		// cannot drift apart.
+		if summary := watchEventFilterSummary(a.EventFilter); len([]rune(summary)) > maxWatchConditionChars {
+			return fmt.Errorf("invalid_request: event_filter must render to at most %d characters, got %d (tool_name shares the bound with its label and status)", maxWatchConditionChars, len([]rune(summary)))
+		}
 		if a.EventFilter.ToolName == "" && a.EventFilter.Status == "" {
 			a.EventFilter = nil
 		}
@@ -747,6 +832,13 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		return watchResult{}, fmt.Errorf("invalid_request: too many timers (%d live); clear one first", maxLiveTimers)
 	}
 	existing := jm.watches[key]
+	// Only a fresh key grows the set: re-registering or replacing one the
+	// manager already holds is refused by neither this guard nor the cap's
+	// intent. See maxLiveWatches.
+	if existing == nil && len(jm.watches) >= maxLiveWatches {
+		jm.mu.Unlock()
+		return watchResult{}, fmt.Errorf("invalid_request: too many watches (%d live); clear one first", maxLiveWatches)
+	}
 	detachedCfgs, detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
 		equal := existing.configHash == cfg.configHash
@@ -1284,7 +1376,11 @@ func canonicalWatchEvents(events []string) []string {
 	}
 	out := append([]string(nil), events...)
 	sort.Strings(out)
-	return out
+	// Duplicates collapse: matching is by kind, so a repeated name would add
+	// nothing but payload to every projection of the watch. This runs after
+	// validation, so the single-concrete-kind rules still read the caller's own
+	// list.
+	return slices.Compact(out)
 }
 
 func cloneWatchEventFilter(filter *watchEventFilter) *watchEventFilter {
@@ -1787,16 +1883,25 @@ func noteConditionFireLocked(cfg *watchConfig) (accepted, crossedBudget bool) {
 	return true, tripConditionFireBudgetLocked(cfg)
 }
 
-// countWatchDeliveryLocked increments the model-facing delivery count for cfg.
-// It says nothing about the breaker: the budget bounds CONDITION fires, so a
-// periodic progress tick counts a delivery here and never trips anything, and a
-// condition fire's crossing is reported by noteConditionFireLocked at the match.
-// The caller must hold jm.mu.
-func countWatchDeliveryLocked(cfg *watchConfig) {
+// countWatchDeliveryLocked increments the model-facing delivery count for cfg
+// and appends this delivery's instant to its bounded timeline ring, stamped
+// from the job manager's clock. Counting and stamping happen together here so
+// the count and the ring can never diverge. It says nothing about the breaker:
+// the budget bounds CONDITION fires, so a periodic progress tick counts a
+// delivery here and never trips anything, and a condition fire's crossing is
+// reported by noteConditionFireLocked at the match. The caller must hold jm.mu.
+func (jm *jobManager) countWatchDeliveryLocked(cfg *watchConfig) {
 	if cfg == nil {
 		return
 	}
 	cfg.deliveries++
+	now := jm.now()
+	if len(cfg.deliveryTimes) == watchDeliveryTimeCap {
+		copy(cfg.deliveryTimes, cfg.deliveryTimes[1:])
+		cfg.deliveryTimes[watchDeliveryTimeCap-1] = now
+		return
+	}
+	cfg.deliveryTimes = append(cfg.deliveryTimes, now)
 }
 
 // recordWatchDeliveryLocked counts a delivery at the send rail's settle end and
@@ -1805,7 +1910,7 @@ func countWatchDeliveryLocked(cfg *watchConfig) {
 // this is the second of the two ends that can report the crossing; the latch
 // keeps the pair to one teardown. The caller must hold jm.mu.
 func (jm *jobManager) recordWatchDeliveryLocked(cfg *watchConfig) (crossedBudget bool) {
-	countWatchDeliveryLocked(cfg)
+	jm.countWatchDeliveryLocked(cfg)
 	return tripConditionFireBudgetLocked(cfg)
 }
 
@@ -2434,6 +2539,380 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 	return entries
 }
 
+// liveWatchStatuses snapshots the session's visible live watches as structured
+// status rows. It walks the same jm.watches map under the same lock and reuses
+// the same visibility predicate as liveWatchSummaries, so the two projections
+// always agree on which watches are visible; only liveWatchSummaries feeds
+// job_list's model-facing output, and this one leaves it untouched.
+func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
+	return jm.liveWatchStatusesForSession(jm.sessionID)
+}
+
+// liveWatchStatusesForSession is liveWatchStatuses' session-parameterized body:
+// it snapshots the configs THIS manager holds that are visible to sessionID. A
+// config with no receiver key belongs to the manager that owns it, so it is
+// visible only when that manager is sessionID's own; otherwise a descendant's
+// keyless watch would leak onto an ancestor's projection.
+//
+// The rows are ordered by (source, id) before returning. The walk below reads a
+// map, so without this the order varies between two snapshots of unchanged
+// state -- unstable wire output, and row churn for a consumer that rebuilds its
+// rows from it. The order lives here, next to the walk, rather than at each call
+// site: four of this function's callers sorted the result afterward, and the
+// fifth published an unordered projection that no test could distinguish from a
+// changed one.
+func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatusInfo {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
+	for _, cfg := range jm.watches {
+		if !watchConfigVisibleToSession(cfg, sessionID) {
+			continue
+		}
+		if cfg.receiverSessionID == "" && jm.sessionID != sessionID {
+			continue
+		}
+		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
+	}
+	sortWatchStatuses(statuses)
+	return statuses
+}
+
+func sortWatchStatuses(statuses []WatchStatusInfo) {
+	sort.SliceStable(statuses, func(i, j int) bool {
+		if statuses[i].Source != statuses[j].Source {
+			return statuses[i].Source < statuses[j].Source
+		}
+		return statuses[i].ID < statuses[j].ID
+	})
+}
+
+// aggregateWatchStatuses projects the watches every supplied manager holds that
+// are visible to receiverSessionID. Managers are deduped so two live sessions
+// sharing one manager do not double every row, and the result is ordered like
+// the single-manager projection. Superseded as a production entry point by the
+// page walk's per-row aggregation (appendWatchStatusesByRow, inside
+// LiveWatchRowsForSessions); it is reached only from tests, which keep the
+// receiver-rollup contract pinned through it.
+func aggregateWatchStatuses(receiverSessionID string, managers []*jobManager) []WatchStatusInfo {
+	var statuses []WatchStatusInfo
+	seen := make(map[*jobManager]struct{}, len(managers))
+	for _, jm := range managers {
+		if jm == nil {
+			continue
+		}
+		if _, ok := seen[jm]; ok {
+			continue
+		}
+		seen[jm] = struct{}{}
+		statuses = append(statuses, jm.liveWatchStatusesForSession(receiverSessionID)...)
+	}
+	sortWatchStatuses(statuses)
+	return statuses
+}
+
+// liveWatchStatuses aggregates every live manager that can hold a config whose
+// receiver is THIS session: its own manager plus the stable watch-source
+// sessions (stableWatchSourceSessions), the same set the #655 stop inventory
+// scans. A receiver watch on a descendant's job lives in that descendant's job
+// manager with this session recorded as the receiver, so reading only
+// s.jobManager made it invisible to both sessions - the exact "watch my child's
+// long-running job" case this feature exists for.
+func (s *Session) liveWatchStatuses() []WatchStatusInfo {
+	if s == nil {
+		return nil
+	}
+	// Answered from the same page walk the list path uses, so the two cannot
+	// disagree about which rows are this session's. A known session with no
+	// watches keeps the non-nil empty answer its siblings document
+	// (TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer pins it for the public
+	// seams): nil means "this session cannot be answered for", never "it has no
+	// watches now".
+	rows, ok := s.LiveWatchRowsForSessions([]string{s.ID()})[s.ID()]
+	if !ok {
+		return nil
+	}
+	return rows
+}
+
+// LiveWatchRowsForSessions resolves the supplied thread IDs to the live watch
+// rows that belong on each of their rows, in one pass over this session's live
+// tree.
+//
+// It is the batch form of LiveWatchesForSession, and the thread LIST path is why
+// it exists: that path knows every row ID before it samples any of them, and
+// resolving them one at a time searched the descendant tree once per row and
+// asked every manager for its rows once per row -- a lock and a fresh slice per
+// manager per row -- so a page of N sessions against N managers paid up to N x N
+// of both. A page now takes one lock per manager: each manager appends its
+// watches once, keyed by the row each one belongs on, and every requested ID
+// reads its rows back out of that.
+//
+// An entry exists only for an ID this session can answer for: the root, or a
+// live descendant. A present entry with an empty non-nil slice is a real answer
+// -- that row has no watches now -- exactly as the single-ID resolvers' non-nil
+// empty is; an absent ID is their nil answer (an empty or unknown ID, and the
+// root asked through LiveWatchesForDescendant). No IDs means no answers: nil.
+func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]WatchStatusInfo {
+	if s == nil || len(sessionIDs) == 0 {
+		return nil
+	}
+	answerable := make(map[string]*Session, len(sessionIDs))
+	answerable[s.ID()] = s
+	for _, descendant := range s.liveDescendantSessions() {
+		if descendant == nil {
+			continue
+		}
+		answerable[descendant.ID()] = descendant
+	}
+	// The managers a row's watches can live in: every answerable session's own
+	// manager, plus the sessions a delegate controller lets hold a receiver watch
+	// for one of them -- a delegate session is not a subagent descendant, so its
+	// manager would otherwise be missed. One controller serves its whole tree, so
+	// its source list is asked for once, not once per row.
+	rows := make(map[string][]WatchStatusInfo, len(answerable))
+	seenManagers := make(map[*jobManager]struct{}, len(answerable))
+	seenControllers := make(map[*delegateTreeController]struct{}, 1)
+	appendManager := func(session *Session) {
+		if session == nil || session.jobManager == nil {
+			return
+		}
+		if _, ok := seenManagers[session.jobManager]; ok {
+			return
+		}
+		seenManagers[session.jobManager] = struct{}{}
+		session.jobManager.appendWatchStatusesByRow(rows)
+	}
+	for _, session := range answerable {
+		appendManager(session)
+		controller := session.delegateController
+		if controller == nil {
+			continue
+		}
+		if _, ok := seenControllers[controller]; ok {
+			continue
+		}
+		seenControllers[controller] = struct{}{}
+		for _, source := range session.stableWatchSourceSessions() {
+			appendManager(source)
+		}
+	}
+	out := make(map[string][]WatchStatusInfo, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if _, ok := answerable[sessionID]; !ok {
+			continue
+		}
+		sessionRows := rows[sessionID]
+		if sessionRows == nil {
+			sessionRows = []WatchStatusInfo{}
+		}
+		sortWatchStatuses(sessionRows)
+		out[sessionID] = sessionRows
+	}
+	return out
+}
+
+// appendWatchStatusesByRow appends this manager's live watches to rows, keyed by
+// the session whose row each one belongs on: its receiver's row when it has one,
+// and this manager's own session's row when it does not. A keyless watch belongs
+// to the session that owns the manager, which is what keeps a child's watch off
+// its ancestors' rows.
+func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if cfg == nil {
+			continue
+		}
+		row := cfg.receiverSessionID
+		if row == "" {
+			row = jm.sessionID
+		}
+		rows[row] = append(rows[row], watchStatusInfoFromConfig(cfg))
+	}
+}
+
+// LiveWatchesForDescendant returns the live watch rows visible to the descendant
+// session sessionID, so its own thread row can carry them. Today a session's
+// watches are projected only onto its own row by the daemon's status sampler;
+// a subagent session's watches reached no row at all, because the root's status
+// is the only one the daemon projects. This resolves the descendant through the
+// manager that owns children and delegates to that child's own liveWatchStatuses,
+// so isolation matches the root's: a receiver watch the child holds for an
+// ancestor is filtered out here (it belongs on the ancestor's row), and a
+// keyless watch the child owns never surfaces on an ancestor's projection. The
+// root is not its own descendant, so a root (or unknown) session ID returns nil.
+// A KNOWN descendant with no watches is a third case: it returns a NON-nil empty
+// slice, because the list path must be able to tell "this descendant has no
+// watches now" from "this ID is not a descendant I can see". nil therefore means
+// only the root, an empty ID, or an unknown ID.
+//
+// This is sampled on read, not cached: watch state changes without a per-child
+// app event on this daemon, so the caller re-derives it on every list/read. The
+// walk itself is LiveWatchRowsForSessions', so a single-ID caller and a page
+// caller can never disagree about which sessions are answerable. The page walk is
+// the production entry point; this single-ID form and LiveWatchesForSession below
+// are reached only from tests, which pin the page's contracts through these
+// narrower seams.
+func (s *Session) LiveWatchesForDescendant(sessionID string) []WatchStatusInfo {
+	if s == nil || sessionID == "" || sessionID == s.ID() {
+		return nil
+	}
+	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
+}
+
+// LiveWatchesForSession resolves a row's thread ID to the live watch rows that
+// belong on it, so a thread LIST read can refresh watches that changed with no
+// per-thread app event. It is the broader sibling of LiveWatchesForDescendant:
+// that one keeps its narrower contract (the root is not its own descendant, so
+// it returns nil for the root), while this one also answers for the root's own
+// row, carrying every manager that holds a watch for that session -- including a
+// receiver watch a descendant session holds for it.
+//
+// This is NOT the set Session.DetailedStatus().Watches carries, and must not be
+// replaced by it: that facet is the session's own manager only, by the
+// envelope-sampling contract (a sampled method may take this session's mu and
+// nothing else, so it cannot reach a descendant's manager). The receiver rollup
+// therefore reaches a row from the LIST path (cmd/evener/serve.go), which samples
+// here. Dropping that sampling makes "watch my child's long-running job"
+// invisible on both sessions' rows.
+//
+// An empty answer for the root is non-nil: the caller merges only a nil answer
+// as "no fresh sample, leave the cached projection alone", so a non-nil empty
+// slice is how a watch cleared since the last diagnostics refresh leaves the
+// row. A known descendant with no watches is likewise non-nil empty, exactly as
+// the root's is, so a descendant cleared since the last refresh leaves its row
+// too. An unknown or empty ID stays nil (LiveWatchesForDescendant's own
+// behavior).
+func (s *Session) LiveWatchesForSession(sessionID string) []WatchStatusInfo {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	return s.LiveWatchRowsForSessions([]string{sessionID})[sessionID]
+}
+
+// watchStatusInfoFromConfig projects one live config into its structured
+// status row. It reads only config fields and never mutates them.
+func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {
+	if cfg == nil {
+		return WatchStatusInfo{}
+	}
+	return WatchStatusInfo{
+		ID:             cfg.id,
+		Source:         watchPublicSource(cfg.sourcePublic, cfg.target),
+		Target:         cfg.target,
+		SendTo:         watchSendTo(cfg),
+		Note:           cfg.note,
+		Cadence:        watchCadencesOf(cfg),
+		OutputMatch:    cfg.outputMatch,
+		Events:         append([]string(nil), cfg.events...),
+		WildcardEvents: cfg.wildcardEvents,
+		Deliveries:     cfg.deliveries,
+		DeliveryTimes:  watchDeliveryTimesOf(cfg),
+		CreatedAt:      cfg.createdAt.Format(time.RFC3339Nano),
+		// A one-shot that has already fired is no longer armed, even while its
+		// durable teardown is still pending: the armed state and the derived next
+		// fire must answer "is it still waiting" the same way.
+		Active: !watchOneShotHasFired(cfg),
+	}
+}
+
+// watchOneShotHasFired reports whether a one-shot watch has already fired. A
+// one-shot fires once, whatever fires it, so its first delivery of ANY kind ends
+// it -- and no single field marks that moment. firedPendingEnd is written only
+// once the durable teardown starts, a send-routed fire stamps lastClockFire
+// before it counts a delivery, and a condition-fired one-shot has a delivery
+// before either. All three signals therefore read as spent, and both the armed
+// state and the derived next fire take their answer from here so the two can
+// never disagree. A repeating watch never reports spent this way.
+func watchOneShotHasFired(cfg *watchConfig) bool {
+	if cfg == nil || !cfg.oneShot {
+		return false
+	}
+	return cfg.firedPendingEnd || !cfg.lastClockFire.IsZero() || len(cfg.deliveryTimes) > 0
+}
+
+// watchDeliveryTimesOf renders cfg's bounded delivery-instant ring oldest
+// first, formatting each instant exactly the way watchStatusInfoFromConfig
+// formats CreatedAt (RFC3339Nano). An empty ring yields nil, which the
+// omitempty wire tag renders as an absent field.
+func watchDeliveryTimesOf(cfg *watchConfig) []string {
+	if cfg == nil || len(cfg.deliveryTimes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.deliveryTimes))
+	for _, at := range cfg.deliveryTimes {
+		out = append(out, at.Format(time.RFC3339Nano))
+	}
+	return out
+}
+
+// watchCadencesOf projects a config's orthogonal trigger sources into cadence
+// rows in the same order watchConditionSummary renders them. A timer's
+// progressIntervalMS is timerSeconds*1000, so the timer branch comes first and
+// prevents the timer from also reading as a progress cadence.
+func watchCadencesOf(cfg *watchConfig) []WatchCadenceInfo {
+	var cadences []WatchCadenceInfo
+	if cfg.outputMatch != "" {
+		cadences = append(cadences, WatchCadenceInfo{Kind: "output"})
+	}
+	switch {
+	case cfg.timer && cfg.oneShot:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "after", Seconds: float64(cfg.timerSeconds), DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.timerSeconds)*time.Second)})
+	case cfg.timer:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "every", Seconds: float64(cfg.timerSeconds), DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.timerSeconds)*time.Second)})
+	case cfg.progressIntervalMS > 0:
+		cadences = append(cadences, WatchCadenceInfo{Kind: "progress", Seconds: float64(cfg.progressIntervalMS) / 1000, DerivedNextFireAt: watchDerivedNextFireAt(cfg, time.Duration(cfg.progressIntervalMS)*time.Millisecond)})
+	}
+	if cfg.wildcardEvents || len(cfg.events) > 0 {
+		// Mirror watchConditionSummary exactly: only a concrete (non-wildcard)
+		// event watch renders its every-Nth throttle and its filter, so only it
+		// carries them on the wire. A wildcard watch has neither.
+		events := WatchCadenceInfo{Kind: "events"}
+		if !cfg.wildcardEvents {
+			events.Every = cfg.triggerEvery
+			events.Filter = watchEventFilterSummary(cfg.eventFilter)
+		}
+		cadences = append(cadences, events)
+	}
+	return cadences
+}
+
+// watchDerivedNextFireAt is the best honest next-fire instant for one
+// clock-driven watch, from data the config already holds. A repeating ticker
+// (every/progress) advances from its newest CLOCK fire, or from the install
+// instant when it has not fired yet; a one-shot advances from the install
+// instant. A one-shot that already fired has no next fire. The delivery ring is
+// deliberately not consulted: it holds every delivery kind, so an output match
+// on a watch that also ticks would move the progress cadence's date. The value
+// is approximate - the runtime keeps a Go ticker, whose callback the scheduler
+// can delay and whose missed ticks coalesce - which is why every surface that
+// shows it words it with a "~". Returns "" when no instant can be derived.
+func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
+	if cfg == nil || interval <= 0 {
+		return ""
+	}
+	// A one-shot advances from the install instant and fires exactly once. Once
+	// it has fired it has no next fire; its durable teardown is the only thing
+	// still pending, and that is not a fire. watchOneShotHasFired owns that
+	// question, so the countdown cannot outlive the armed state.
+	if watchOneShotHasFired(cfg) {
+		return ""
+	}
+	// A repeating cadence advances from whichever of its install instant and its
+	// newest CLOCK fire is later: a clock that steps backwards (or a fire stamped
+	// before the install instant during a skew) must not move the next fire
+	// earlier, where the panel would hide it as already past.
+	base := cfg.createdAt
+	if !cfg.lastClockFire.IsZero() && cfg.lastClockFire.After(cfg.createdAt) {
+		base = cfg.lastClockFire
+	}
+	if base.IsZero() {
+		return ""
+	}
+	return base.Add(interval).Format(time.RFC3339Nano)
+}
+
 // watchListEntryLess orders watch rows by (Source, ID) — the shared ordering
 // for every receiver-keyed watch projection.
 func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
@@ -2586,7 +3065,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 				n = jobFinishedEventIdentity(n, data)
 			}
 			notifications = append(notifications, n)
-			countWatchDeliveryLocked(cfg)
+			jm.countWatchDeliveryLocked(cfg)
 		}
 		if crossedBudget {
 			overBudget = append(overBudget, cfg)
@@ -2881,7 +3360,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match.Text, matchRoot).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, match.Provenance)))
 			} else {
 				notifications = append(notifications, jm.watchNotificationFromWatch(cfg, jobID, "output_match: "+match.Text, match.Provenance))
-				countWatchDeliveryLocked(cfg)
+				jm.countWatchDeliveryLocked(cfg)
 			}
 			if crossedBudget {
 				overBudget = append(overBudget, cfg)
@@ -2998,7 +3477,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	jm.mu.Lock()
 	accepted, crossedBudget := noteConditionFireLocked(cfg)
 	if accepted {
-		countWatchDeliveryLocked(cfg)
+		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
 	if !accepted {
@@ -3455,6 +3934,13 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		jm.mu.Unlock()
 		return false
 	}
+	if dec.fire {
+		// This tick is the cadence's own fire instant, whether it routes to a
+		// send rail (whose delivery is counted only when the frame settles) or
+		// to the notification counted below. The delivery ring cannot serve as
+		// the clock's history; see lastClockFire.
+		cfg.lastClockFire = jm.now()
+	}
 	if dec.sendDelivery {
 		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick", root).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, root.Provenance)))
 	}
@@ -3471,7 +3957,8 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
 		}
 		notifications = append(notifications, n)
-		cfg.deliveries++ // periodic ticks never trip the condition-fire budget
+		// Periodic ticks never trip the condition-fire budget.
+		jm.countWatchDeliveryLocked(cfg)
 	}
 	jm.mu.Unlock()
 

@@ -104,17 +104,56 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = stdin
-	var stdout, stderr bytes.Buffer
+	stdout := cappedBuffer{limit: runOutputLimit}
+	stderr := cappedBuffer{limit: runOutputLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return append(stdout.Bytes(), stderr.Bytes()...), &RunError{
-			Stdout: stdout.Bytes(),
-			Stderr: stderr.Bytes(),
-			Err:    err,
-		}
+	err := cmd.Run()
+	switch {
+	case err != nil:
+		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
+			&RunError{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Err: err}
+	case stdout.truncated || stderr.truncated:
+		// A preflight answer is a few hundred bytes. Refusing what the cap cut
+		// short is the honest option: parsing a silently truncated prefix is how a
+		// host gets misread. The command itself is bounded by ctx, so a flooding
+		// remote cannot outlive the attempt.
+		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
+			&RunError{
+				Stdout: stdout.buf.Bytes(),
+				Stderr: stderr.buf.Bytes(),
+				Err:    fmt.Errorf("output exceeded the %d byte limit", runOutputLimit),
+			}
 	}
-	return stdout.Bytes(), nil
+	return stdout.buf.Bytes(), nil
+}
+
+// runOutputLimit caps one stream from a one-shot command. Preflight output is a
+// few hundred bytes; the cap exists so a hostile or broken remote command cannot
+// make the controller buffer unbounded output before anything parses it.
+const runOutputLimit = 1 << 20
+
+// cappedBuffer accumulates at most limit bytes and remembers whether more
+// arrived. Writes always report success: the child must not be blocked by our
+// cap, and the caller learns about the truncation from the flag instead.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.buf.Len(); room > 0 {
+		if len(p) <= room {
+			b.buf.Write(p)
+			return len(p), nil
+		}
+		b.buf.Write(p[:room])
+	}
+	if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
 }
 
 // execStdio owns one exec.Cmd's pipes. Wait and Kill are each run at most once
@@ -189,14 +228,20 @@ func sshSeconds(d time.Duration) string {
 	return strconv.Itoa(max(int(d/time.Second), 1))
 }
 
-// sshBaseArgv is the option prefix shared by every ssh invocation.
+// sshBaseArgv is the option prefix shared by every ssh invocation. -T refuses a
+// pseudo-terminal even when a user's ssh_config asks for one: a PTY would rewrite
+// newlines in the framed stream and fold remote diagnostics into stdout.
 func sshBaseArgv(o Options) []string {
 	return []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=" + sshSeconds(o.connectTimeout()),
 		"-o", "ServerAliveInterval=" + sshSeconds(o.serverAliveInterval()),
-		"-o", "ServerAliveCountMax=" + sshSeconds(time.Duration(o.serverAliveCountMax())*time.Second),
+		// ServerAliveCountMax is a unitless count, not a duration: render it
+		// directly rather than routing it through seconds arithmetic, which can
+		// overflow for a large configured value.
+		"-o", "ServerAliveCountMax=" + strconv.Itoa(o.serverAliveCountMax()),
 	}
 }
 
@@ -325,6 +370,25 @@ func (d *diagSink) tail() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return string(d.buf)
+}
+
+// syncWriter serializes writes to one underlying writer. The manager builds one
+// over Options.Stderr and hands it to every attach: os/exec copies each ssh
+// child's stderr on its own goroutine, and each attach owns a separate diagSink,
+// so without a writer shared across hosts a caller-supplied sink that is not safe
+// for concurrent use (bytes.Buffer, as tests use) would be corrupted or raced by
+// concurrent attaches.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newSyncWriter(w io.Writer) *syncWriter { return &syncWriter{w: w} }
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // appendTail appends p to buf while retaining at most limit trailing bytes.

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -88,6 +89,64 @@ func TestAuthStorageSaveIsAtomic(t *testing.T) {
 		t.Fatalf("loaded.AccessToken = %q, want %q", loaded.AccessToken, "new-access-token")
 	}
 
+	matches, err := filepath.Glob(filepath.Join(stateDir, "auth", "openai.json.*"))
+	if err != nil {
+		t.Fatalf("Glob() error = %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files left behind: %v", matches)
+	}
+}
+
+// The replacement is what keeps a reader from ever seeing a partial credential:
+// the temp file is written and synced out of the way, so a write that fails
+// partway leaves the target exactly as it was and takes its temp file with it.
+// Half a record at the path would be read as a corrupt one, and a caller
+// restoring captured bytes would have no way to tell that from a credential
+// that was always broken.
+type failingTempFile struct{ name string }
+
+func (f failingTempFile) Name() string              { return f.name }
+func (f failingTempFile) Chmod(os.FileMode) error   { return nil }
+func (f failingTempFile) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+func (f failingTempFile) Sync() error               { return nil }
+func (f failingTempFile) Close() error              { return nil }
+
+func TestAuthStorageWriteLeavesTheTargetIntactWhenTheWriteFails(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
+		t.Fatalf("SaveAuth() error = %v", err)
+	}
+	path := AuthFilePath(stateDir, "openai")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	originalCreateTemp := authCreateTemp
+	authCreateTemp = func(dir, pattern string) (authTempFile, error) {
+		f, err := os.CreateTemp(dir, pattern)
+		if err != nil {
+			return nil, err
+		}
+		if err := f.Close(); err != nil {
+			return nil, err
+		}
+		return failingTempFile{name: f.Name()}, nil
+	}
+	t.Cleanup(func() { authCreateTemp = originalCreateTemp })
+
+	if err := WriteAuthFile(path, []byte("replacement that never lands\n")); err == nil {
+		t.Fatal("WriteAuthFile() = nil, want the write failure")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after the failed write error = %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("the target after a failed write = %q, want the previous %q", after, before)
+	}
 	matches, err := filepath.Glob(filepath.Join(stateDir, "auth", "openai.json.*"))
 	if err != nil {
 		t.Fatalf("Glob() error = %v", err)

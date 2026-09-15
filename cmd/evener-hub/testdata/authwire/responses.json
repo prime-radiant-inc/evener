@@ -272,6 +272,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "implicit": true,
         "isDefault": true,
         "authModes": [
@@ -289,6 +290,7 @@
         "surface": "openai",
         "auth": "oauth-openai-codex",
         "baseUrl": "https://chatgpt.com/backend-api/codex",
+        "endpointFingerprint": "60e7b06303c74677c149dd6480e72ed7dd71e5fd1daa53409e2204ad0d5fd709",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -306,6 +308,7 @@
         "surface": "openai",
         "auth": "bearer",
         "baseUrl": "https://api.openai.com/v1",
+        "endpointFingerprint": "e1cce0757f4316416c6fc4f54488242936266a1e0f5174f25dd70eb54f910169",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -323,6 +326,7 @@
         "surface": "generic",
         "auth": "optional-bearer",
         "baseUrl": "http://localhost:11434/v1",
+        "endpointFingerprint": "e4504377a70358057266033aa1f3e94b0da8fc1db1784c33d476cc9cdea118f5",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -341,6 +345,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "implicit": false,
         "isDefault": false,
         "authModes": [
@@ -358,6 +363,7 @@
         "surface": "generic",
         "auth": "none",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "implicit": false,
         "isDefault": false,
         "authModes": [
@@ -375,6 +381,7 @@
         "surface": "generic",
         "auth": "optional-bearer",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "credentialHeader": "Authorization=Bearer $GATEWAY_KEY",
         "implicit": false,
         "isDefault": false,
@@ -394,6 +401,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "apiKeyEnv": "UNKEYED_KEY",
         "implicit": false,
         "isDefault": false,
@@ -415,6 +423,7 @@
         "surface": "generic",
         "auth": "gcp-adc",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "implicit": false,
         "isDefault": false,
         "authModes": [

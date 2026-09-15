@@ -2,6 +2,7 @@
 
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
@@ -55,6 +56,35 @@ describe("MutationOutboxIndexedDB", () => {
   beforeEach(() => {
     indexedDB = new IDBFactory();
     databaseName = `mutation-outbox-${crypto.randomUUID()}`;
+    setMutationClientIdentityForTests(undefined);
+  });
+
+  test("settling an accepted receipt preserves the submitting client", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    setMutationClientIdentityForTests("tab-a");
+    const persisted = await store.enqueueIntent({
+      ...intent("accepted elsewhere"),
+      optimisticDisplay: { input: [{ type: "text", text: "accepted elsewhere" }] },
+    });
+    // Another tab reads the shared storage and the daemon accepts the send:
+    // the outbox -> optimistic transition must not make the record unattributed,
+    // or every tab claims the accepted-but-unreflected mutation as its own.
+    setMutationClientIdentityForTests("tab-b");
+    expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
+    const [accepted] = await store.listOptimistic();
+    expect(accepted?.originClientId).toBe("tab-a");
+  });
+
+  test("a resent recovery belongs to the resending client", async () => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    setMutationClientIdentityForTests("tab-a");
+    const original = await store.enqueueIntent(intent("needs a retry"));
+    await store.transferToRecovery(original.clientMutationId, "rejected");
+    // The resend is a fresh submission by whichever client performed it.
+    setMutationClientIdentityForTests("tab-b");
+    const resent = await store.resendRecovery(original.clientMutationId, intent("retry text"));
+    expect(resent?.originClientId).toBe("tab-b");
+    expect(await store.getOutbox(resent!.clientMutationId)).toMatchObject({ originClientId: "tab-b" });
   });
 
   test("reload restores the complete persisted intent", async () => {
@@ -73,6 +103,9 @@ describe("MutationOutboxIndexedDB", () => {
     expect(restored).toEqual({
       version: 1,
       clientMutationId: "mutation-1",
+      // The submitting client's identity is part of the persisted intent: it
+      // is what keeps one tab from claiming another tab's durable records.
+      originClientId: expect.any(String),
       targetRef: TARGET,
       threadId: "thread-1",
       intentSequence: 1,

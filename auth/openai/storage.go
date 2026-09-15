@@ -138,7 +138,17 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	}
 	data = append(data, '\n')
 
-	tmp, err := authCreateTemp(filepath.Dir(path), instanceName+".json.*")
+	return WriteAuthFile(path, data)
+}
+
+// WriteAuthFile writes data to path as an auth file, replacing whatever was
+// there atomically: a 0600 temp file in the same directory is synced and
+// renamed into place, so a reader never observes a partially written file and a
+// crash inside the write leaves the previous contents instead of a truncated
+// credential. SaveAuth is its marshalling caller; a caller restoring captured
+// bytes shares these guarantees rather than approximating them.
+func WriteAuthFile(path string, data []byte) error {
+	tmp, err := authCreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("create temp auth file: %w", err)
 	}

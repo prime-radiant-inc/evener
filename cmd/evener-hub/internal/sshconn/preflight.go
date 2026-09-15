@@ -22,8 +22,14 @@ const requiredLaunchFlag = "api-log"
 
 // Preflight is what one non-interactive probe learns about a host. It records
 // the resolved roots verbatim from the host environment (never inventing XDG
-// values the host does not have) so the controller knows where the host's
-// auth-token and hub.lock live.
+// values the host does not have).
+//
+// ConfigRoot and StateRoot are the host's *default* evener roots: the same
+// HOME/XDG chain the host binary uses when it has no config override. A host
+// hub.toml that sets hub_state_root (or a config root) moves the running hub to
+// a different directory, and `evener hub attach` — which reads its own config —
+// follows it there, so these fields are not where that hub's token and lock
+// necessarily live.
 type Preflight struct {
 	Host         string
 	OS           string // GOOS
@@ -31,8 +37,12 @@ type Preflight struct {
 	UnameOS      string // raw `uname -s`
 	UnameMachine string // raw `uname -m`
 	Home         string
-	ConfigRoot   string
-	StateRoot    string
+	// ConfigRoot is the default evener config root (~/.config/evener or
+	// XDG_CONFIG_HOME/evener), not a hub.toml override.
+	ConfigRoot string
+	// StateRoot is the default evener state root (~/.local/state/evener or
+	// XDG_STATE_HOME/evener), not a hub.toml hub_state_root override.
+	StateRoot string
 	// UID is the host's numeric effective uid (`id -u`), or empty when the host
 	// did not report a numeric one. The supervised darwin restart interpolates it
 	// into `gui/<uid>/<label>`; it is expired on the controller, never left for
@@ -166,6 +176,10 @@ func parseLaunchCheck(out []byte) (launchCheck, error) {
 		return launchCheck{}, fmt.Errorf("%w: launch-check reported no protocol", ErrPreflightDecode)
 	}
 	if strings.TrimSpace(lc.Version) == "" {
+		// The launch contract always reports a build version (buildinfo.Version(),
+		// or "dev"). An absent one is a broken contract, not a version that merely
+		// differs: reading it as a mismatch would drive a deploy against a host
+		// whose identity was never established.
 		return launchCheck{}, fmt.Errorf("%w: launch-check reported no version", ErrPreflightDecode)
 	}
 	return lc, nil
@@ -312,15 +326,24 @@ func isProtocolMismatchOutput(out []byte) bool {
 }
 
 // authFailureMarkers are ssh stderr phrases that mean the host cannot
-// authenticate non-interactively. Under BatchMode these are terminal: ssh will
-// never prompt, so retrying only spams the host.
+// authenticate non-interactively. Despite the name, a match is deliberately
+// NOT terminal: isTerminal excludes ErrSSHAuth, so the reconnect loop keeps
+// retrying. ssh forwards a remote command's stderr and exit status on this same
+// stream, so the refusal cannot be attributed to ssh, and retrying is the safe
+// side of that ambiguity (see sshRunFailure and ErrSSHAuth).
+//
+// Every marker is a shape ssh itself emits, because a remote command's stderr
+// reaches the controller on that same stream: a bare "Permission denied" is what
+// a host prints when it refuses to execute the binary we asked for, and reading
+// that as an authentication refusal would end the reconnect loop for good. ssh
+// always names the methods it tried in parentheses — "Permission denied
+// (publickey,password,keyboard-interactive)." — and that parenthetical is what
+// makes the spelling ssh's own.
 var authFailureMarkers = []string{
-	"Permission denied",
+	"Permission denied (",
 	"Host key verification failed",
-	"Authentication failed",
 	"no mutual signature algorithm",
 	"Too many authentication failures",
-	"not accessible to the current user",
 }
 
 func isAuthFailure(stderr string) bool {
@@ -332,16 +355,49 @@ func isAuthFailure(stderr string) bool {
 	return false
 }
 
-// sshRunFailure classifies a failed one-shot ssh invocation. An authentication
-// refusal is terminal (ErrSSHAuth): under BatchMode ssh never prompts, so
-// retrying only hammers a host that cannot let us in. Everything else is a
-// transport failure and stays retryable (ErrSSHStart). diag is carried either
-// way, because it names the cause.
+// sshRunFailure classifies a failed one-shot ssh invocation. An
+// authentication-shaped failure that no remote command could have produced (a
+// failed Start) is reported as ErrSSHAuth; everything else is the transport
+// class ErrSSHStart. Neither is terminal: ssh forwards the remote command's
+// stderr and exit status, so a refusal cannot be proven to be ssh's own, and
+// retrying is the safe side of that ambiguity (see ErrSSHAuth). diag is carried
+// either way, because it names the cause.
 func sshRunFailure(hostName, what string, err error, diag string) error {
-	if isAuthFailure(sshDiagnostic(err, diag)) {
+	if isSSHAuthFailure(err, diag) {
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHAuth, hostName, what, err, diag)
 	}
 	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
+}
+
+// isSSHAuthFailure decides whether a failure can be attributed to ssh's own
+// non-interactive authentication refusal. It is the ONE rule the attach path
+// shares (manager.attach): an authentication marker is attributable to ssh only
+// when no remote command could have produced it.
+//
+// A failed one-shot Run cannot prove that. ssh forwards the remote command's own
+// stderr onto the same stream as its diagnostics, and it forwards the remote
+// command's exit status unchanged — including 255, the single status ssh(1) uses
+// for its own failures. With both the text and the status reachable by the remote
+// command, reading status 255 as an ssh refusal would let a remote program that
+// exits 255 with an ssh-shaped error stop the reconnect loop for good. The safe
+// side of that trade is to keep the ambiguous failure retryable.
+//
+// A failed Start is different: ssh never spawned, so no remote command ran and
+// the marker on the diagnostic stream is necessarily ssh's own. The caller
+// classifies that case from the marker alone — and, because a real spawn failure
+// produces no diagnostic at all, an unauthenticable host ordinarily lands in the
+// retryable ErrSSHStart class instead. ErrSSHAuth is not terminal either way.
+func isSSHAuthFailure(err error, diag string) bool {
+	if !isAuthFailure(sshDiagnostic(err, diag)) {
+		return false
+	}
+	// A completed Run carries a status the remote command can forge along with the
+	// text, so it stays retryable; only a failure that never ran a remote command
+	// (no *RunError) is unambiguous.
+	if _, completed := errors.AsType[*RunError](err); completed {
+		return false
+	}
+	return true
 }
 
 // sshDiagnostic narrows a failure to what ssh itself reported. The remote

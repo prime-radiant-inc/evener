@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -57,15 +58,6 @@ func (f *fakeRunner) recordedStarts() [][]string {
 	return append([][]string(nil), f.starts...)
 }
 
-// exitStatus builds the error a failed remote command reports for a given exit
-// code. Classification reads the code from a real *exec.ExitError, so tests that
-// exercise the 127 "command not found" path must produce one rather than a plain
-// errors.New("exit status 127").
-func exitStatus(t *testing.T, code int) error {
-	t.Helper()
-	return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
-}
-
 // fakeStdio is an in-memory Stdio. Stdout is fed by a fakeBridge server; Stdin
 // is drained by it.
 type fakeStdio struct {
@@ -74,6 +66,10 @@ type fakeStdio struct {
 	inR  *io.PipeReader
 	outW *io.PipeWriter
 
+	// waitErr is what Wait reports, standing in for the child's exit status: a
+	// *exec.ExitError with ssh's own 255 is what makes an attach handshake's auth
+	// refusal terminal (see exitStatus).
+	waitErr  error
 	killOnce sync.Once
 	waitDone chan struct{}
 }
@@ -94,7 +90,7 @@ func (s *fakeStdio) Kill() error {
 
 func (s *fakeStdio) Wait() error {
 	<-s.waitDone
-	return nil
+	return s.waitErr
 }
 
 // drop simulates the SSH link dying without a deliberate Close: the server stops
@@ -122,6 +118,40 @@ func newFakeBridge(initProtocol string) *fakeBridge {
 	return b
 }
 
+// newSilentBridge models a hub whose AppWire handshake never answers: it drains
+// the framed request stream and never writes a response, so a client's
+// Initialize can only end at its own deadline.
+func newSilentBridge() *fakeBridge {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	b := &fakeBridge{
+		stdio: &fakeStdio{inW: inW, outR: outR, inR: inR, outW: outW, waitDone: make(chan struct{})},
+	}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := inR.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	return b
+}
+
+// exitStatus returns a real *exec.ExitError carrying code, the fixture for a
+// child that exited with that status. ssh(1) exits 255 when ssh itself fails
+// (a refused connection, an authentication refusal) and otherwise reports the
+// remote command's own status.
+func exitStatus(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != code {
+		t.Fatalf("building an exit-status-%d fixture: %v", code, err)
+	}
+	return err
+}
+
 func (b *fakeBridge) serve(inR *io.PipeReader, outW *io.PipeWriter) {
 	srv := appwire.NewStreamTransport(&stdioReadWriter{in: outW, out: inR})
 	for {
@@ -136,6 +166,21 @@ func (b *fakeBridge) serve(inR *io.PipeReader, outW *io.PipeWriter) {
 			}
 		}
 	}
+}
+
+// floodNotifications writes n AppWire notification frames to the bridge's
+// stdout, so a client that never drains its bounded notification buffer overflows.
+// An error means the stream broke first (the client tears it down on overflow);
+// the caller only cares that the frames it did write arrived, so it is reported
+// rather than fatal.
+func (b *fakeBridge) floodNotifications(n int) error {
+	srv := appwire.NewStreamTransport(&stdioReadWriter{in: b.stdio.outW, out: b.stdio.inR})
+	for i := range n {
+		if err := srv.Send(context.Background(), appwire.NotificationMessage("noop", map[string]int{"seq": i})); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const goodLaunchCheck = `{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`

@@ -63,7 +63,10 @@ type Event struct {
 type Options struct {
 	// Runner is the process seam; nil uses the production execRunner.
 	Runner Runner
-	// Stderr is the ssh diagnostic sink; nil uses os.Stderr.
+	// Stderr is the ssh diagnostic sink; nil uses os.Stderr. Every attach's ssh
+	// child copies its stderr on its own goroutine, and each attach builds its own
+	// diagSink over this one writer, so the manager serializes the copies: a
+	// caller may pass a writer that is not safe for concurrent use.
 	Stderr io.Writer
 	// Logger, when set, receives lifecycle log lines.
 	Logger func(format string, args ...any)
@@ -124,6 +127,30 @@ type Options struct {
 	attemptTimeout            time.Duration
 	deployTimeout             time.Duration
 	controllerVersionOverride string
+	// afterPublish, when set, runs under the host lock immediately after a
+	// successful publishChannel and before the post-publish validation, on both
+	// the Ensure and the reconnect paths. Tests use it to drop the just-published
+	// channel deterministically.
+	afterPublish func(name string, ch *Channel)
+	// beforeHostGate, when set, runs at the top of Ensure, before the caller waits
+	// for the host gate. Tests use it to establish, without a sleep, that one
+	// contender has reached a gate the test holds before another one does.
+	beforeHostGate func(name string)
+	// beforeSuperviseGate, when set, runs in a host's supervisor after it observes
+	// the link drop and before it contends for the host gate. Tests use it to park
+	// a dropped channel's supervisor, so a concurrent Ensure's retire-and-attach
+	// interleaving is exact rather than a race the sleep had to bias.
+	beforeSuperviseGate func(name string, ch *Channel)
+	// superviseExited, when set, runs after a supervisor goroutine has returned
+	// and released any gate it held. Tests use it to observe "the supervisor
+	// stood down" instead of sleeping long enough to hope it did.
+	superviseExited func(name string)
+	// afterChildExit, when set, runs in the child-wait goroutine once the exited
+	// SSH child's exit edge has been published. Tests use it to inspect, without
+	// a sleep or a scheduling race, what a consumer could observe at the moment
+	// the reaping is announced: a channel whose process has exited must never be
+	// reported live by ClientIfAttached/installedLiveChannel.
+	afterChildExit func(name string, ch *Channel)
 }
 
 func (o Options) runner() Runner {
@@ -240,14 +267,46 @@ type Manager struct {
 	reg    *hostreg.Registry
 	opts   Options
 	runner Runner
+	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
+	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
+	// child's stderr on its own goroutine, so without a shared lock two hosts'
+	// copies would write to a caller-supplied writer concurrently — a writer like
+	// bytes.Buffer is not safe for that.
+	diagWriter *syncWriter
 
 	baseCtx context.Context
 	cancel  context.CancelFunc
 
 	mu     sync.Mutex
 	closed bool
-	locks  map[string]*sync.Mutex
-	chans  map[string]*Channel
+	// closeDone is closed by the first Close once every teardown wait is done. A
+	// later concurrent Close blocks on it instead of returning while the first is
+	// still closing channels and waiting on ensureWG/supervisorsWG, so "Close
+	// returned" means no lifecycle event remains to be delivered for every caller,
+	// not just the first.
+	closeDone chan struct{}
+	closeErr  error
+	// supervisors holds, per host, the set of live reconnect loops. A replacement
+	// attach registers a new loop without discarding the previous one, and a
+	// terminal failure cancels every loop for the host — including one parked in a
+	// backoff that a replacement's attach would otherwise have orphaned (a second
+	// EventFailed, or an Attached after that Failed, for a host already announced
+	// finished).
+	supervisors map[string]map[*supervisorLoop]struct{}
+	// supervisorsWG counts the live supervise goroutines (each reconnect attempt
+	// runs inside one), so Close can wait for them to quiesce before it returns.
+	supervisorsWG sync.WaitGroup
+	// ensureWG counts in-flight Ensure callers. They are caller goroutines, not
+	// supervisors, so Close cannot learn about them from the channel snapshot or
+	// supervisorsWG; without this accounting an initial Ensure for a host with no
+	// mapped channel would emit its terminal/error events after Close returned.
+	ensureWG sync.WaitGroup
+	// announced records, per host, the channel whose Attached has no matching
+	// Detached yet. Close reads it to pair the events for the channel it tears
+	// down without emitting a Detached for one already paired.
+	announced map[string]*Channel
+	locks     map[string]*sync.Mutex
+	chans     map[string]*Channel
 	// devDeployed records hosts this Manager has installed its own identity-less
 	// dev build on, so the deploy happens at most once per process rather than on
 	// every reconnect.
@@ -294,12 +353,16 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		reg:             reg,
 		opts:            opts,
 		runner:          opts.runner(),
+		diagWriter:      newSyncWriter(opts.stderr()),
 		baseCtx:         baseCtx,
 		cancel:          cancel,
+		closeDone:       make(chan struct{}),
 		locks:           map[string]*sync.Mutex{},
 		chans:           map[string]*Channel{},
 		devDeployed:     map[string]bool{},
 		pendingRestarts: map[string]pendingRestartState{},
+		supervisors:     map[string]map[*supervisorLoop]struct{}{},
+		announced:       map[string]*Channel{},
 	}
 }
 
@@ -312,9 +375,10 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 // exponential backoff and jitter until Manager.Close. ctx bounds this call and
 // the handshake, not the channel's lifetime.
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
-	if m.isClosed() {
+	if !m.beginEnsure() {
 		return nil, ErrManagerClosed
 	}
+	defer m.ensureWG.Done()
 	if m.reg == nil {
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
@@ -328,33 +392,130 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// a second per-host lock.
 	name = host.Name
 
+	if m.opts.beforeHostGate != nil {
+		m.opts.beforeHostGate(name)
+	}
 	lock := m.hostLock(name)
-	lock.Lock()
+	// Honor the caller's context while waiting for the host gate: a canceled
+	// caller must not park behind another Ensure's or a supervisor's long
+	// preflight/attach, and must not be handed a channel afterwards.
+	if err := lockHostCtx(ctx, lock); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 
 	if ch := m.liveChannel(name); ch != nil {
-		// Close may have run since the lookup above; a channel it already tore
-		// down is not usable, and reporting it as such is the honest answer.
-		if m.isClosed() || ch.isClosed() {
-			lock.Unlock()
-			_ = ch.Close()
-			return nil, ErrManagerClosed
-		}
+		err := m.channelUsable(name, ch)
 		lock.Unlock()
-		return ch, nil
+		if err == nil {
+			return ch, nil
+		}
+		if errors.Is(err, ErrManagerClosed) {
+			// Close tore this channel down; closing it again is a no-op.
+			_ = ch.Close()
+		}
+		return nil, err
 	}
 	// A channel whose link has dropped is no longer usable, but it keeps
 	// ownership until a replacement is attached: were this attach to fail, its
 	// supervisor must still find the channel mapped so it can run the reconnect
 	// loop. Only a successful publish retires it.
 	stale := m.currentChannel(name)
-	// ensureOnce bounds each of its phases itself (preflight, deploy/restart,
-	// then the attach handshake), so a hung remote command still cannot hold this
-	// host's lock for good without an outer deadline.
-	ch, err := m.ensureOnce(ctx, host, true)
+	// Retire the replaced channel on every path out of here, early returns
+	// included: a Close racing this attach must not leave the old ssh child, its
+	// pipes, and its transport alive. It runs outside the host lock, since
+	// Channel.Close blocks on that child's exit.
+	defer func() {
+		if stale != nil {
+			_ = stale.Close()
+		}
+	}()
+	// ensureOnce bounds each of its phases itself (preflight, deploy/restart, then
+	// the attach handshake), so no outer attemptLimit is applied here; tie the
+	// attempt to the manager's lifetime instead, so an in-flight attempt cannot
+	// outlive Manager.Close with its ssh child alive.
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(m.baseCtx, cancel)
+	defer stopClose()
+	ch, err := m.ensureOnce(attemptCtx, host, true)
 	if err != nil {
+		// Close canceling the attempt surfaces a preflight that was in flight as a
+		// retryable transport failure; the canceled base context, not the host, is
+		// why. Match the handshake path and report the closed manager rather than a
+		// retryable error a supervisor would keep chasing. A terminal cause found
+		// concurrently is kept, because it names what actually went wrong.
+		if m.baseCtx.Err() != nil && !isTerminal(err) {
+			err = ErrManagerClosed
+		}
+		// Shutdown began while this attach was in flight. Close owns the last
+		// events for the channels it tears down, and this caller goroutine is only
+		// quiesced by ensureWG (see beginEnsure), so emitting here would surface a
+		// Disconnected or a Failed for a host nothing will ever announce.
+		if m.baseCtx.Err() != nil {
+			if isTerminal(err) {
+				m.clearChannel(name)
+				m.stopSupervisor(name)
+			}
+			lock.Unlock()
+			return nil, err
+		}
+		// The caller gave up while the attempt was in flight. The transport-shaped
+		// failure its cancellation produced is not this host's problem, and the
+		// host's state is not this caller's to announce: report the caller's own
+		// error and emit nothing, exactly as the already-canceled path above does.
+		// A terminal cause found concurrently is kept, because it names what
+		// actually went wrong.
+		if cerr := ctx.Err(); cerr != nil && !isTerminal(err) {
+			lock.Unlock()
+			return nil, cerr
+		}
+		// A terminal failure is the documented EventFailed case, not just a state
+		// transition: a consumer has to be able to tell it from a retryable one.
+		if isTerminal(err) {
+			// A retired channel was announced as attached, so its consumer needs the
+			// matching Detached before the terminal Failed — the contract this file's
+			// event docs state, and without it component 05 keeps the source.
+			if stale != nil {
+				m.detachEvent(name, StateDisconnected)
+			}
+			// Close canceling the attach is not a host failure: consumers shutting the
+			// manager down must not see an EventFailed for it, exactly as the early
+			// isClosed return above emits nothing.
+			if !errors.Is(err, ErrManagerClosed) {
+				m.failedEvent(name, err)
+			}
+			// The replacement cannot be built, so the dropped channel must not keep
+			// ownership: its supervisor would treat the host as its own and repeat a
+			// failure that cannot succeed. The deferred close reaps it.
+			m.clearChannel(name)
+			// A supervisor that retired its own channel and is waiting out a
+			// backoff must stop too: otherwise it repeats the terminal outcome
+			// (a second EventFailed for a host already announced as finished).
+			m.stopSupervisor(name)
+		}
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
 		return nil, err
+	}
+	// Validate before publishing, as reconnectOnce does. Publishing first would
+	// displace the dropped channel whose supervisor is waiting to recover, and a
+	// replacement that died in the handshake would then leave the host with no
+	// supervisor at all — the predecessor's gone with the map entry and none
+	// started for the replacement.
+	if ch.isClosed() || ch.isLost() {
+		// A dropped predecessor stays mapped: its supervisor still owns the host and
+		// will reconnect. With no predecessor there is nothing to supervise, so the
+		// state is honestly disconnected.
+		if stale == nil {
+			m.stateEvent(name, StateDisconnected)
+		}
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, errChannelDropped(name)
 	}
 	if !m.publishChannel(name, ch) {
 		// Close landed while this attach was in flight. Handing back a channel
@@ -363,40 +524,203 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		_ = ch.Close()
 		return nil, ErrManagerClosed
 	}
+	if m.opts.afterPublish != nil {
+		m.opts.afterPublish(name, ch)
+	}
+	if m.isClosed() || ch.isClosed() {
+		// Close landed between publishing and announcing: nothing will supervise
+		// this channel, so consumers must not hear about it either.
+		// The channel it replaced was announced, so its consumer still needs the
+		// matching Detached: Close's own pairing sees the replacement, not it.
+		if stale != nil {
+			m.detachEvent(name, StateDisconnected)
+		}
+		// The discarded replacement must give the map slot back: leaving it mapped
+		// would keep a closed channel where a consumer treats Close as terminal.
+		m.clearChannel(name)
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, ErrManagerClosed
+	}
+	if ch.isLost() {
+		// The link died between the pre-publish validation and here.
+		err := m.lostAfterPublish(name, stale)
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, err
+	}
 	// Announce under the lock, as reconnectOnce does. That is what orders the
 	// retired channel's Detached before this Attached, and it keeps a concurrent
 	// Ensure or supervisor from interleaving its own transitions with them.
 	if stale != nil {
 		m.detachEvent(name, StateReconnecting)
 	}
-	m.attachEvent(name, StateAttached)
-	go m.supervise(host, ch, lock)
-	lock.Unlock()
-
-	// The state is settled; then comes the slow part. Close may have run while
-	// the lock was held and closed every channel it could see, so re-check
-	// before claiming success. A window between this check and the caller's use
-	// is inherent: Close is terminal for the Manager.
-	if m.isClosed() || ch.isClosed() {
+	m.attachEvent(name, ch, StateAttached)
+	if !m.startSupervise(host, ch, lock) {
+		// Close set its flag between the publish and here, so no supervisor will
+		// ever own this channel. Pair the Attached just announced so a consumer can
+		// drop the source it installed, and reap the channel rather than leave a
+		// closed entry mapped.
+		m.detachEvent(name, StateDisconnected)
+		m.clearChannel(name)
+		lock.Unlock()
 		_ = ch.Close()
 		return nil, ErrManagerClosed
 	}
-	if stale != nil {
-		// Retire the replaced channel without the lock: Channel.Close blocks on
-		// the ssh child's exit.
-		_ = stale.Close()
+	if m.isClosed() || ch.isClosed() {
+		// Close landed between announcing and returning. Consumers must be able to
+		// drop what they just installed, so pair the Attached with a Detached while
+		// the lock still orders the two.
+		m.detachEvent(name, StateDisconnected)
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, ErrManagerClosed
 	}
+	if ch.isLost() {
+		// The link died between validating and returning. The supervisor this call
+		// just started owns the reconnect and will pair the Attached with a
+		// Detached; the caller must not be handed a dead channel as a success.
+		lock.Unlock()
+		return nil, errChannelDropped(name)
+	}
+	if err := ctx.Err(); err != nil {
+		// The caller gave up while the attach was finishing — during the
+		// EventAttached callback or the final validation. The channel is
+		// manager-owned and already supervised, so it is not torn down: report the
+		// cancellation rather than hand a channel to a caller that cannot use it.
+		lock.Unlock()
+		return nil, err
+	}
+	lock.Unlock()
 	return ch, nil
+}
+
+// ClientIfAttached returns name's current initialized client ONLY while a live,
+// not-closed channel is installed, and reports false otherwise. It is the
+// non-dialing lookup a background caller (component 06's fleet snapshot) and the
+// notification broker's reconnect rebind (component 05) use in place of Ensure:
+// it never spawns ssh, preflights, deploys, or attaches, so it can neither
+// eagerly attach a dormant host nor re-dial one that dropped between a check and
+// the call.
+//
+// Liveness is decided by the same predicate Ensure and Attached use
+// (liveChannel: present, not closed, not lost), read together with the manager's
+// open state so a client is never offered once shutdown has begun: the rebind
+// runs from a lifecycle callback, including Close's own Detached, and a channel
+// Close is tearing down must not be handed out. It deliberately does NOT take the
+// per-host gate:
+// EventAttached is delivered under that lock (see Options.OnEvent) and the
+// rebind that consumes this lookup runs from that callback, so a re-entrant
+// acquisition would deadlock. The installed channel is read under the manager
+// mutex, which is the lock that publishes and clears it.
+func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool) {
+	if m.reg == nil {
+		return nil, false
+	}
+	host, ok := m.reg.Get(name)
+	if !ok {
+		// An unknown host is not attached by definition; report it as such
+		// instead of inventing the ErrHostNotFound Ensure would.
+		return nil, false
+	}
+	ch, ok := m.installedLiveChannel(host.Name)
+	if !ok {
+		return nil, false
+	}
+	return ch.Client(), true
+}
+
+// installedLiveChannel returns name's channel only while the manager is still
+// open and the channel is usable, reading m.closed and the map under one mutex
+// acquisition so the two can never be observed apart. ClientIfAttached is the
+// rebind path a lifecycle callback uses, and Close emits its Detached while the
+// channel is still mapped and not yet closed: a check that is not atomic with the
+// lookup lets that callback rebind to a channel Close is tearing down.
+func (m *Manager) installedLiveChannel(name string) (*Channel, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, false
+	}
+	ch := m.chans[name]
+	if ch == nil || ch.isClosed() || ch.isLost() {
+		return nil, false
+	}
+	return ch, true
+}
+
+// lostAfterPublish retires the channel Ensure just published when the link died
+// between the publish and the caller taking it, and classifies the outcome. It
+// runs with name's host lock held, before the caller closes the published
+// channel.
+//
+// publishChannel has already taken the map slot from stale, whose supervisor is
+// blocked on this lock: clearing the map without giving the slot back would leave
+// that supervisor owning nothing and orphan the host until the next Ensure, so
+// the slot returns to stale exactly as the pre-publish check preserves it. When
+// Close landed between the checks that guard this path, the manager — not the
+// host — ended the attempt: the drop is then terminal, and reporting the
+// retryable one would send the caller around a loop that cannot succeed.
+//
+// Close owns the events for the channels it tears down, but its snapshot holds
+// the replacement this call already published (or nothing) and never stale, so it
+// cannot pair stale's outstanding Attached: the Detached is emitted here, exactly
+// as the sibling pre-announce path at the isClosed/isClosed check does.
+func (m *Manager) lostAfterPublish(name string, stale *Channel) error {
+	m.clearChannel(name)
+	if stale != nil {
+		if !m.restoreChannel(name, stale) {
+			// Close won the race between the pre-publish check and here: its
+			// snapshot sees the replacement, so stale's Attached would otherwise
+			// leak. Pair it now that the manager is terminal.
+			m.detachEvent(name, StateDisconnected)
+			return ErrManagerClosed
+		}
+	} else if m.isClosed() {
+		return ErrManagerClosed
+	} else {
+		m.stateEvent(name, StateDisconnected)
+	}
+	return errChannelDropped(name)
+}
+
+// channelUsable classifies a channel's fitness to hand to a caller: nil when it
+// is usable, ErrManagerClosed when the manager itself has closed (terminal), and
+// a retryable error when the link died under us. A lost channel is not a closed
+// manager: conflating the two reported a recoverable link drop as terminal.
+func (m *Manager) channelUsable(name string, ch *Channel) error {
+	if m.isClosed() {
+		return ErrManagerClosed
+	}
+	if ch.isClosed() || ch.isLost() {
+		return errChannelDropped(name)
+	}
+	return nil
+}
+
+// errChannelDropped reports a channel that died before it could be used. It is
+// deliberately not ErrManagerClosed: the manager is healthy and the channel's
+// supervisor is already reconnecting, so the caller should retry rather than
+// treat the host as finished.
+func errChannelDropped(name string) error {
+	return fmt.Errorf("%w: host %q link dropped before the channel was usable", ErrSSHStart, name)
 }
 
 // Close cancels every supervisor and closes every live channel. It is terminal
 // for the Manager: the base context stays canceled, and a later Ensure reports
 // ErrManagerClosed rather than attaching a channel nothing would supervise.
+//
+// Concurrent callers all wait for the same teardown. A second Close blocks until
+// the first has finished closing channels and joining ensureWG/supervisorsWG, so
+// each caller can treat its own return as the point after which no lifecycle
+// event will be delivered; every caller receives the same teardown error.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.closed {
+		done := m.closeDone
 		m.mu.Unlock()
-		return nil
+		<-done
+		return m.closeErr
 	}
 	m.closed = true
 	m.cancel()
@@ -417,12 +741,39 @@ func (m *Manager) Close() error {
 		// announced as usable after its teardown has begun.
 		lock := m.hostLock(e.name)
 		lock.Lock()
+		// Pair the Attached a consumer saw with a Detached, under the same lock
+		// that ordered them: the supervisor returns on the canceled base context
+		// without emitting one, so shutdown is where that channel's source is
+		// dropped. claimAnnounced makes this a no-op for a channel whose Detached
+		// was already emitted (a replacement retired as Close raced it).
+		if m.claimAnnounced(e.name, e.ch) {
+			m.detachEvent(e.name, StateDisconnected)
+		}
 		err := e.ch.Close()
+		// No channel may remain mapped once Close returns: a consumer that treats
+		// Close as terminal must not find an entry that looks live afterwards.
+		m.clearChannel(e.name)
 		lock.Unlock()
 		if err != nil && first == nil {
 			first = err
 		}
 	}
+	// Wait out any in-flight Ensure caller. An initial Ensure for a host with no
+	// mapped channel is a caller goroutine, not a supervisor: it is absent from the
+	// channel snapshot and from supervisorsWG, so only this accounting keeps its
+	// terminal/error emissions from surfacing after Close returns.
+	m.ensureWG.Wait()
+	// Wait for the supervisors to quiesce. baseCtx is already canceled, so each
+	// one ends after at most one state transition; letting Close return first
+	// would surface lifecycle events after Close, which consumers treat as
+	// terminal. OnEvent runs synchronously, so any event a supervisor still emits
+	// is delivered before this returns.
+	m.supervisorsWG.Wait()
+	// Publish the outcome and release every concurrent caller at once. The write
+	// happens-before the close, and each waiter's receive happens-after it, so the
+	// closeErr a waiter reads is ordered without the mutex.
+	m.closeErr = first
+	close(m.closeDone)
 	return first
 }
 
@@ -766,7 +1117,7 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 // initializes the AppWire client.
 func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight) (*Channel, error) {
 	argv := channelArgv(m.opts, host)
-	sink := newDiagSink(m.opts.stderr())
+	sink := newDiagSink(m.diagWriter)
 	stdio, err := m.runner.Start(ctx, argv, sink)
 	if err != nil {
 		return nil, sshRunFailure(host.Name, "start bridge", err, sink.tail())
@@ -775,36 +1126,42 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	stream := &stdioReadWriter{in: stdio.Stdin(), out: stdio.Stdout()}
 	monitor := newLinkMonitor(stream)
 	transport := appwire.NewStreamTransport(monitor)
-	client := appwire.NewClient(transport)
 	ch := &Channel{
 		host:      host,
 		facts:     facts,
 		stdio:     stdio,
 		transport: transport,
-		client:    client,
 		lost:      make(chan struct{}),
 		done:      make(chan struct{}),
 		stopped:   make(chan struct{}),
 	}
 	// A short read (EOF/error) is the link-down edge. Wire it before the read
-	// loop starts so no early drop is missed.
+	// loop starts so no early drop is missed. The client reads through a wrapper
+	// that reports codec-level receive errors too, because the byte-level monitor
+	// cannot see a frame the codec rejects after a successful read.
 	monitor.onErr = ch.markLost
+	client := appwire.NewClient(&lossWatchingTransport{Transport: transport, onErr: ch.markLost})
+	ch.client = client
 	// The client read loop must outlive this call's ctx; it ends when the
 	// transport is closed (Channel.Close or the link dying).
 	client.Start(m.baseCtx)
 
-	initCtx := ctx
-	cancel := func() {}
-	if _, ok := ctx.Deadline(); !ok {
-		initCtx, cancel = context.WithTimeout(ctx, m.opts.initTimeout())
-	}
+	// Bound the handshake by initTimeout, never by the caller's or the attempt's
+	// deadline: both Ensure and reconnectOnce hand attach a context that always
+	// carries the attempt limit (default 70s), so the old deadline check meant a
+	// hung Initialize ran to that limit instead of stopping at initTimeout
+	// (default 30s). WithTimeout keeps whichever deadline is earlier.
+	initCtx, cancel := context.WithTimeout(ctx, m.opts.initTimeout())
 	defer cancel()
 
 	if _, err := client.Initialize(initCtx, appwire.InitializeParams{
 		ProtocolVersion: appwire.ProtocolVersion,
 		ClientInfo:      appwire.ClientInfo{Name: m.opts.clientName(), Version: m.opts.clientVersion()},
 	}); err != nil {
-		reapBridge(transport, stdio)
+		// Reap synchronously before reading the sink: os/exec copies the child's
+		// stderr from its own goroutine and Wait returns only once that copy is
+		// done, so a classification cannot read a partial diagnostic.
+		_ = reapBridge(transport, stdio)
 		if m.baseCtx.Err() != nil {
 			// Close landed while the handshake was in flight. The canceled base
 			// context, not a transport fault, is why this channel is unusable.
@@ -813,36 +1170,77 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 		if _, isMismatch := errors.AsType[appwire.ProtocolVersionMismatchError](err); isMismatch {
 			return nil, fmt.Errorf("%w: host %q: %w", ErrProtocolIncompatible, host.Name, err)
 		}
-		if isAuthFailure(sink.tail()) {
-			return nil, fmt.Errorf("%w: host %q: %w: %s", ErrSSHAuth, host.Name, err, sink.tail())
-		}
+		// A started ssh ran a remote command, so neither its stderr (which the
+		// remote command's own output shares) nor its exit status can prove the
+		// refusal is ssh's own: ssh forwards the remote command's status unchanged,
+		// including 255. Stay retryable, matching the one-shot preflight path
+		// (isSSHAuthFailure); only a failure to spawn ssh is unambiguous, and the
+		// Start-error branch above already classifies that one.
 		return nil, fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
 	}
 
 	if m.baseCtx.Err() != nil {
-		reapBridge(transport, stdio)
+		_ = reapBridge(transport, stdio)
 		return nil, ErrManagerClosed
 	}
 
 	go func() {
 		_ = stdio.Wait()
-		close(ch.stopped)
+		// Retire the channel's liveness before announcing the reaping. A
+		// consumer that has observed the child's exit (stopped) — or that
+		// decides liveness without consulting stopped at all — must never find
+		// the already-exited process still offered by ClientIfAttached or
+		// installedLiveChannel, so lost is closed before stopped.
 		ch.markLost()
+		close(ch.stopped)
+		if h := m.opts.afterChildExit; h != nil {
+			h(host.Name, ch)
+		}
 	}()
 	return ch, nil
 }
 
-// reapBridge tears down a bridge that never became a channel. The synchronous
-// Wait is load-bearing: os/exec copies the child's stderr into the diagnostic
-// sink from its own goroutine and returns from Wait only once that copy has
-// finished, so a failure cannot be classified off the sink before the child is
-// reaped. It also closes the stream, which releases the pipes the child held.
-func reapBridge(transport *appwire.StreamTransport, stdio Stdio) {
+// reapBridge tears down a bridge that never became a channel, and returns the
+// child's own wait error so the caller can read ssh's exit status. The
+// synchronous Wait is load-bearing: os/exec copies the child's stderr into the
+// diagnostic sink from its own goroutine and returns from Wait only once that
+// copy has finished, so a failure cannot be classified off the sink before the
+// child is reaped. It also closes the stream, which releases the pipes the child
+// held.
+func reapBridge(transport *appwire.StreamTransport, stdio Stdio) error {
 	if transport != nil {
 		_ = transport.Close()
 	}
 	_ = stdio.Kill()
-	_ = stdio.Wait()
+	return stdio.Wait()
+}
+
+// lossWatchingTransport reports every receive error as the channel's link-down
+// edge. linkMonitor only sees read-level failures, so a frame the codec rejects
+// after a successful read — malformed JSON, a bad length, an overflow — would
+// otherwise leave the manager holding a channel whose reader is gone. It does not
+// forward appwire.Pinger, deliberately: keepalive stays ssh's own ServerAlive*.
+//
+// Close is a link-down edge too. The client closes the transport itself on a
+// notification overflow (client.go's ErrNotificationOverflow path), which never
+// surfaces as a Recv error, so without this the manager would keep offering a
+// channel whose reader is gone and no supervisor would reconnect.
+type lossWatchingTransport struct {
+	appwire.Transport
+	onErr func()
+}
+
+func (t *lossWatchingTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	msg, err := t.Transport.Recv(ctx)
+	if err != nil {
+		t.onErr()
+	}
+	return msg, err
+}
+
+func (t *lossWatchingTransport) Close() error {
+	t.onErr()
+	return t.Transport.Close()
 }
 
 // supervise waits for host's channel to drop, then reconnects with bounded
@@ -852,15 +1250,23 @@ func reapBridge(transport *appwire.StreamTransport, stdio Stdio) {
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	select {
 	case <-ch.lost:
-	case <-m.baseCtx.Done():
+	case <-ctx.Done():
 		return
 	}
 
+	if m.opts.beforeSuperviseGate != nil {
+		m.opts.beforeSuperviseGate(host.Name, ch)
+	}
 	lock.Lock()
-	if m.baseCtx.Err() != nil || ch.isClosed() || m.currentChannel(host.Name) != ch {
+	// Ownership, not liveness, decides whether this supervisor still has work: the
+	// manager closing ends it, and a replaced channel means the replacement's
+	// supervisor owns the host now. A channel that was closed while still mapped is
+	// still ours to reconnect — Ensure may have retired a dropped one, and the host
+	// must not be left unsupervised because of that.
+	if ctx.Err() != nil || m.currentChannel(host.Name) != ch {
 		lock.Unlock()
 		return
 	}
@@ -873,53 +1279,190 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	lock.Unlock()
 	_ = ch.Close()
 
-	delay := m.opts.backoffBase()
+	// BackoffMax bounds every reconnect delay, the first one included: a caller
+	// that configures a maximum below the base must not have its first retry wait
+	// longer than the bound it asked for.
+	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
 	for {
-		if err := m.opts.waitSleep(m.baseCtx, m.jitterFor(delay)); err != nil {
-			// Every transition is emitted under the lock, so a concurrent Ensure
-			// cannot interleave its Preflighting with this Disconnected.
-			lock.Lock()
-			m.stateEvent(host.Name, StateDisconnected)
-			lock.Unlock()
+		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
+			// A canceled loop no longer owns the host, so it announces nothing.
+			// stopSupervisor stopped it because the host reached a terminal
+			// outcome — announced by the caller that stopped it, and possibly
+			// followed by a replacement's Attached — and Close canceled the base
+			// context, whose terminal event is the Detached it emits while tearing
+			// the channel down (a supervisor on a canceled manager "returns
+			// without emitting one", as Close's pairing comment states). Emitting a
+			// Disconnected of its own would contradict that announcement or arrive
+			// after the replacement's Attached.
 			return
 		}
-		if !m.reconnectOnce(host, lock) {
+		if !m.reconnectOnce(ctx, host, lock) {
 			return
 		}
 		delay = nextBackoff(delay, m.opts.backoffMax())
 	}
 }
 
+// startSupervise launches the reconnect loop that owns host's channel and
+// reports whether it started. The supervisor gets its own context, derived from
+// baseCtx, so a terminal failure can end it even while it waits out a backoff.
+//
+// The registration happens under m.mu, together with the closed check: Go
+// increments supervisorsWG before it returns, so once Close has set closed and
+// released the lock no new supervisor can join the group, and every supervisor
+// that did join is observed by Close's Wait.
+//
+// Every live loop stays registered as its own entry: a replacement attach adds a
+// loop rather than overwriting the host's slot, so stopSupervisor can end a
+// predecessor still parked in backoff instead of leaking it.
+func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) bool {
+	ctx, cancel := context.WithCancel(m.baseCtx)
+	loop := &supervisorLoop{cancel: cancel}
+	m.mu.Lock()
+	if m.closed {
+		// Close already ran. A supervisor started now would only race its Wait, and
+		// the caller reaps the channel it could not supervise instead.
+		m.mu.Unlock()
+		cancel()
+		return false
+	}
+	if m.supervisors[host.Name] == nil {
+		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
+	}
+	m.supervisors[host.Name][loop] = struct{}{}
+	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
+	// group observes the fully-finished loop.
+	m.supervisorsWG.Go(func() {
+		// Deregister and release this loop's context child when it ends. Without the
+		// deregistration a replaced loop's handle would stay in the host's set for
+		// good — a leak that grows by one with each reconnect — and its WithCancel
+		// child would stay registered with baseCtx until Close.
+		defer func() {
+			m.mu.Lock()
+			if set := m.supervisors[host.Name]; set != nil {
+				delete(set, loop)
+				if len(set) == 0 {
+					delete(m.supervisors, host.Name)
+				}
+			}
+			m.mu.Unlock()
+			cancel()
+			// Announce the exit only after the gate is released, so a test that
+			// waits on it can assert on the supervisor's final state.
+			if m.opts.superviseExited != nil {
+				m.opts.superviseExited(host.Name)
+			}
+		}()
+		m.supervise(ctx, host, ch, lock)
+	})
+	m.mu.Unlock()
+	return true
+}
+
+// supervisorLoop identifies one live supervise goroutine. A cancel func is not a
+// valid map key, so loops are keyed by this handle.
+type supervisorLoop struct {
+	cancel context.CancelFunc
+}
+
+// stopSupervisor ends every reconnect loop host still has, if any. Without it a
+// terminal failure announced by Ensure would leave the supervisor that retired
+// its own channel still looping, to repeat the same terminal outcome — a second
+// EventFailed for a host consumers were already told was finished — or, for a
+// terminal class the next attempt happens to pass, to announce an Attached after
+// that Failed. Cancelling all of them, not just the most recent, is what reaches
+// a predecessor parked in backoff after a replacement attach registered over it.
+func (m *Manager) stopSupervisor(name string) {
+	m.mu.Lock()
+	loops := m.supervisors[name]
+	delete(m.supervisors, name)
+	m.mu.Unlock()
+	for loop := range loops {
+		loop.cancel()
+	}
+}
+
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sync.Mutex) bool {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if m.baseCtx.Err() != nil {
-		m.stateEvent(host.Name, StateDisconnected)
+	if ctx.Err() != nil {
+		// A canceled loop no longer owns the host; the canceller (a terminal
+		// Ensure, a terminal reconnect, or Close's Detached) owns the terminal
+		// announcement. Emit nothing, exactly as supervise's backoff path does.
 		return false
 	}
-	if m.liveChannel(host.Name) != nil {
-		// Another Ensure attached while we slept; its supervisor owns the host.
+	if m.currentChannel(host.Name) != nil {
+		// Any mapped channel means another supervisor owns this host: one whose link
+		// has dropped is still owned, because its own supervisor is reconnecting.
+		// Keying on liveness here let two supervisors attach for one host, and the
+		// loser's channel was clobbered without ever being detached.
 		return false
 	}
-	nch, err := m.ensureOnce(m.baseCtx, host, false)
+	nch, err := m.ensureOnce(ctx, host, false)
 	if err == nil {
+		if nch.isLost() || nch.isClosed() {
+			// The link died between the handshake and this publish. Announcing it
+			// would install a dead channel and leak the old registration, so reap
+			// it and take another turn through the backoff.
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateReconnecting)
+			return true
+		}
 		if !m.publishChannel(host.Name, nch) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
 			_ = nch.Close()
 			m.stateEvent(host.Name, StateDisconnected)
 			return false
 		}
-		m.attachEvent(host.Name, StateAttached)
-		go m.supervise(host, nch, lock)
+		if m.opts.afterPublish != nil {
+			m.opts.afterPublish(host.Name, nch)
+		}
+		if nch.isLost() || nch.isClosed() {
+			// The link dropped between the pre-publish check and the announcement.
+			// Announcing it would install an unusable channel and leak the source a
+			// consumer builds from the Attached, so give the slot back, reap it, and
+			// take another turn through the backoff. This supervisor owns the host,
+			// so clearing the slot does not orphan it.
+			m.clearChannel(host.Name)
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateReconnecting)
+			return true
+		}
+		m.attachEvent(host.Name, nch, StateAttached)
+		if !m.startSupervise(host, nch, lock) {
+			// Close set its flag before supervision began: pair the Attached and
+			// reap the channel, which nothing will ever reconnect.
+			m.detachEvent(host.Name, StateDisconnected)
+			m.clearChannel(host.Name)
+			_ = nch.Close()
+			return false
+		}
 		return false
 	}
+	// Close canceling the attempt surfaces a preflight that was in flight as a
+	// retryable transport failure. The canceled base context, not the host, is
+	// why: map it to ErrManagerClosed before the terminal check, exactly as Ensure
+	// does, so shutdown does not emit a spurious StateReconnecting and send the
+	// supervisor around one more loop iteration.
+	if m.baseCtx.Err() != nil && !isTerminal(err) {
+		err = ErrManagerClosed
+	}
 	if isTerminal(err) {
-		m.failedEvent(host.Name, err)
+		// Close canceling the attempt is not a host failure: during shutdown a
+		// consumer must not receive an EventFailed for it. The mapping to
+		// ErrManagerClosed above covers only the retryable transport shape, so a
+		// terminal fault found concurrently with the shutdown — a protocol
+		// mismatch, an unparseable preflight — must be suppressed directly here,
+		// exactly as Ensure's own baseCtx.Err() path suppresses it.
+		if m.baseCtx.Err() == nil {
+			m.failedEvent(host.Name, err)
+		}
 		m.stateEvent(host.Name, StateDisconnected)
+		m.stopSupervisor(host.Name)
 		return false
 	}
 	m.stateEvent(host.Name, StateReconnecting)
@@ -943,18 +1486,20 @@ func nextBackoff(delay, limit time.Duration) time.Duration {
 }
 
 // isTerminal reports whether err ends the reconnect loop instead of being
-// retried. Auth failures and every contract violation are terminal, matching
-// spec 04's "Error handling".
+// retried. Every contract violation is terminal, matching spec 04's "Error
+// handling". An authentication-shaped failure is deliberately not: ssh forwards
+// a remote command's stderr and exit status, so the refusal cannot be attributed
+// to ssh, and retrying is the safe side of that ambiguity (see ErrSSHAuth).
 func isTerminal(err error) bool {
 	switch {
 	case errors.Is(err, ErrProtocolIncompatible),
 		errors.Is(err, ErrUnsupportedHost),
 		errors.Is(err, ErrLaunchContract),
 		errors.Is(err, ErrVersionMismatch),
-		errors.Is(err, ErrSSHAuth),
 		errors.Is(err, ErrHostNotFound),
 		errors.Is(err, ErrHostAddr),
-		errors.Is(err, ErrPreflightDecode):
+		errors.Is(err, ErrPreflightDecode),
+		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
 		return false
@@ -970,6 +1515,41 @@ func (m *Manager) hostLock(name string) *sync.Mutex {
 		m.locks[name] = lock
 	}
 	return lock
+}
+
+// lockHostCtx acquires the per-host gate, giving up when ctx is done. The host
+// lock itself is a plain sync.Mutex: Close and the reconnect supervisors take it
+// without a context and must not be made to fail, so a canceled waiter cannot be
+// woken out of Lock directly. This helper parks a goroutine on Lock instead and,
+// when the caller gives up first, has that goroutine hand the lock straight back
+// once it acquires it — the gate is never left held by a caller that returned.
+func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Fast path: an uncontended acquire needs neither a goroutine nor a select.
+	if mu.TryLock() {
+		return nil
+	}
+	acquired := make(chan struct{})
+	abandon := make(chan struct{})
+	go func() {
+		mu.Lock()
+		// The unbuffered send completes only if the caller is still waiting; once
+		// it has given up, nothing will receive, so release the lock here.
+		select {
+		case acquired <- struct{}{}:
+		case <-abandon:
+			mu.Unlock()
+		}
+	}()
+	select {
+	case <-acquired:
+		return nil
+	case <-ctx.Done():
+		close(abandon)
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) currentChannel(name string) *Channel {
@@ -1008,6 +1588,21 @@ func (m *Manager) isClosed() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.closed
+}
+
+// beginEnsure registers an in-flight Ensure as a caller goroutine Close must
+// wait for, unless Close already ran. The Add happens under the same mutex that
+// sets closed — the ordering startSupervise uses — so Close's Wait cannot miss
+// this call: once Close has released the lock no new Ensure can register, and
+// every Ensure that registered is counted.
+func (m *Manager) beginEnsure() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.ensureWG.Add(1)
+	return true
 }
 
 func (m *Manager) clearChannel(name string) {
@@ -1076,6 +1671,18 @@ func (m *Manager) clearPendingRestart(name string) {
 	delete(m.pendingRestarts, name)
 }
 
+// restoreChannel re-maps ch as name's channel unless Close already ran, giving
+// the slot back to a channel whose supervisor is still blocked on the host lock.
+// It reports whether the slot was restored.
+func (m *Manager) restoreChannel(name string, ch *Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false
+	}
+	m.chans[name] = ch
+	return true
+}
 func (m *Manager) logf(format string, args ...any) {
 	if m.opts.Logger != nil {
 		m.opts.Logger(format, args...)
@@ -1093,12 +1700,34 @@ func (m *Manager) stateEvent(name string, s State) {
 	m.emit(Event{Host: name, Kind: EventState, State: s})
 }
 
-func (m *Manager) attachEvent(name string, s State) {
+func (m *Manager) attachEvent(name string, ch *Channel, s State) {
+	// Record the outstanding Attached before the callback runs: Close has to see
+	// it as soon as a consumer does, so it can pair the events.
+	m.mu.Lock()
+	m.announced[name] = ch
+	m.mu.Unlock()
 	m.emit(Event{Host: name, Kind: EventAttached, State: s})
 }
 
 func (m *Manager) detachEvent(name string, s State) {
+	m.mu.Lock()
+	delete(m.announced, name)
+	m.mu.Unlock()
 	m.emit(Event{Host: name, Kind: EventDetached, State: s})
+}
+
+// claimAnnounced clears and reports whether ch is the channel whose Attached has
+// no matching Detached yet. Close uses it so a channel it tears down after its
+// Detached was already emitted (a replacement retired as Close raced it) is not
+// announced as detached twice.
+func (m *Manager) claimAnnounced(name string, ch *Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.announced[name] != ch {
+		return false
+	}
+	delete(m.announced, name)
+	return true
 }
 
 func (m *Manager) failedEvent(name string, err error) {
@@ -1207,11 +1836,12 @@ func (s *stdioReadWriter) Close() error {
 	errOut := s.out.Close()
 	// These pipes are closed from two directions — Channel.Close and the child
 	// exiting on its own — so an already-closed pipe is expected, not a teardown
-	// failure worth reporting to Manager.Close's caller.
-	if errIn != nil && !errors.Is(errIn, os.ErrClosed) {
+	// failure worth reporting to Manager.Close's caller. os.File reports a repeat
+	// close as os.ErrClosed; a pipe reports io.ErrClosedPipe.
+	if errIn != nil && !errors.Is(errIn, os.ErrClosed) && !errors.Is(errIn, io.ErrClosedPipe) {
 		return errIn
 	}
-	if errOut != nil && !errors.Is(errOut, os.ErrClosed) {
+	if errOut != nil && !errors.Is(errOut, os.ErrClosed) && !errors.Is(errOut, io.ErrClosedPipe) {
 		return errOut
 	}
 	return nil
@@ -1238,5 +1868,16 @@ func (l *linkMonitor) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (l *linkMonitor) Write(p []byte) (int, error) { return l.rw.Write(p) }
-func (l *linkMonitor) Close() error                { return l.rw.Close() }
+func (l *linkMonitor) Write(p []byte) (int, error) {
+	n, err := l.rw.Write(p)
+	if err != nil || n != len(p) {
+		// The send-side peer of Read's EOF: a write that failed — or put only part
+		// of a frame on the wire — desynchronizes the stream and leaves every later
+		// request broken. Without this signal a Send failure left isLost false, and
+		// liveChannel kept handing out a channel whose writes all fail.
+		l.once.Do(l.onErr)
+	}
+	return n, err
+}
+
+func (l *linkMonitor) Close() error { return l.rw.Close() }

@@ -169,13 +169,18 @@ func TestParseLaunchCheck(t *testing.T) {
 	if _, err := parseLaunchCheck([]byte(`{"version":"dev"}`)); !errors.Is(err, ErrPreflightDecode) {
 		t.Fatalf("missing protocol err = %v, want ErrPreflightDecode", err)
 	}
-	// A contract with a protocol but no version leaves version auto-match
-	// unverifiable, so it must be refused rather than accepted.
-	if _, err := parseLaunchCheck([]byte(`{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}`)); !errors.Is(err, ErrPreflightDecode) {
-		t.Fatalf("missing version err = %v, want ErrPreflightDecode", err)
-	}
-	if _, err := parseLaunchCheck([]byte(`{"protocol":"evener-appwire-v5","version":"  "}`)); !errors.Is(err, ErrPreflightDecode) {
-		t.Fatalf("blank version err = %v, want ErrPreflightDecode", err)
+	// The launch contract always reports a build version (buildinfo.Version(), or
+	// "dev"). An empty one is a broken contract, not a version that merely differs:
+	// reading it as a mismatch would send the host into a deploy whose identity was
+	// never established.
+	for _, out := range []string{
+		`{"protocol":"evener-appwire-v5"}`,
+		`{"protocol":"evener-appwire-v5","version":""}`,
+		`{"protocol":"evener-appwire-v5","version":"   "}`,
+	} {
+		if _, err := parseLaunchCheck([]byte(out)); !errors.Is(err, ErrPreflightDecode) {
+			t.Fatalf("parseLaunchCheck(%s) err = %v, want ErrPreflightDecode", out, err)
+		}
 	}
 }
 
@@ -197,16 +202,84 @@ func TestIsProtocolMismatchOutput(t *testing.T) {
 func TestIsAuthFailure(t *testing.T) {
 	auth := []string{
 		"bob@host: Permission denied (publickey).",
+		"jesse@jesse-paradise-park: Permission denied (publickey,password,keyboard-interactive).",
 		"Host key verification failed.",
-		"Authentication failed.",
 		"no mutual signature algorithm",
+		"Too many authentication failures",
 	}
 	for _, s := range auth {
 		if !isAuthFailure(s) {
 			t.Errorf("isAuthFailure(%q) = false, want true", s)
 		}
 	}
-	if isAuthFailure("Connection timed out") {
-		t.Error("timeout classified as auth failure")
+	// The remote command's own failures arrive on the same stream, so a bare
+	// "Permission denied" must not be read as ssh refusing the key.
+	notAuth := []string{
+		"Connection timed out",
+		"Permission denied",
+		"sh: /usr/local/bin/evener: Permission denied",
+		"Authentication failed",
+	}
+	for _, s := range notAuth {
+		if isAuthFailure(s) {
+			t.Errorf("isAuthFailure(%q) = true, want false", s)
+		}
+	}
+}
+
+// A failed Run keeps ssh's diagnostics and the remote command's stderr on the
+// same stream, and ssh forwards the remote command's exit status unchanged —
+// including 255, the status ssh(1) uses for its own failures. Neither signal can
+// separate the two, so a completed Run that carries an auth marker stays
+// retryable; only a failure to start ssh, which never ran a remote command, can
+// be attributed to ssh at all — and that class is not terminal either (see
+// ErrSSHAuth).
+func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
+	const marker = "bob@alpha.example: Permission denied (publickey).\n"
+	sshExit := exitStatus(t, 255)
+	remoteExit := exitStatus(t, 1)
+	cases := []struct {
+		name string
+		err  error
+		diag string
+		want error
+	}{
+		{
+			// ssh itself exits 255, but the remote command's own status is forwarded
+			// unchanged, so 255 alone cannot prove the refusal is ssh's.
+			name: "a completed ssh run exiting 255 with the marker stays retryable",
+			err:  &RunError{Stderr: []byte(marker), Err: sshExit},
+			diag: marker,
+			want: ErrSSHStart,
+		},
+		{
+			name: "the remote command's own exit with the marker stays retryable",
+			err:  &RunError{Stderr: []byte(marker), Err: remoteExit},
+			diag: marker,
+			want: ErrSSHStart,
+		},
+		{
+			name: "ssh exit 255 without the marker stays retryable",
+			err:  &RunError{Stderr: []byte("ssh: connect to host alpha port 22: refused\n"), Err: sshExit},
+			diag: "ssh: connect to host alpha port 22: refused",
+			want: ErrSSHStart,
+		},
+		{
+			// A failed Start never spawned ssh, so no remote command ran and the
+			// marker is necessarily ssh's own: the one attributable case. It stays
+			// retryable because a real spawn failure carries no diagnostic, so an
+			// authentication refusal ordinarily lands in ErrSSHStart.
+			name: "a failed Start never ran a remote command, so the marker decides",
+			err:  errors.New("fork/exec ssh: no such file or directory"),
+			diag: marker,
+			want: ErrSSHAuth,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sshRunFailure("alpha", "preflight", tc.err, tc.diag); !errors.Is(err, tc.want) {
+				t.Fatalf("sshRunFailure = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

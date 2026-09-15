@@ -56,6 +56,16 @@ test("defaults to type=text", () => {
   expect(screen.getByRole("textbox").getAttribute("type")).toBe("text");
 });
 
+test("forwards credential validation and autocomplete without changing defaults", () => {
+  const { rerender } = render(<Input value="" onChange={() => {}} required autoComplete="off" />);
+  const input = screen.getByRole("textbox") as HTMLInputElement;
+  expect(input.required).toBe(true);
+  expect(input.autocomplete).toBe("off");
+  rerender(<Input value="" onChange={() => {}} />);
+  expect(input.required).toBe(false);
+  expect(input.getAttribute("autocomplete")).toBeNull();
+});
+
 test("an explicit type overrides the text-type default", () => {
   // password inputs have no textbox role - query the input directly
   const { container } = render(<Input value="" onChange={() => {}} type="password" />);

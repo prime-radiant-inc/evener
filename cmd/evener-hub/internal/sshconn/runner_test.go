@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,7 @@ func TestChannelArgv(t *testing.T) {
 	got := channelArgv(opts, host)
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
@@ -78,6 +80,7 @@ func TestChannelArgvDefaultsAndEmptyPath(t *testing.T) {
 	got := channelArgv(Options{}, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
@@ -127,6 +130,7 @@ func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
 	got := channelArgv(Options{}, host)
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
@@ -214,6 +218,30 @@ func TestExecStdioKillAfterExitIsNotAnError(t *testing.T) {
 	}
 }
 
+// A preflight answer is a few hundred bytes. A command that floods the controller
+// must be refused rather than buffered without bound.
+func TestExecRunnerRunRejectsOversizedOutput(t *testing.T) {
+	r := execRunner{}
+	want := 3 * runOutputLimit
+	out, err := r.Run(context.Background(), []string{"sh", "-c", "yes a | head -c " + strconv.Itoa(want)}, nil)
+	if err == nil {
+		t.Fatalf("Run accepted %d bytes of output", len(out))
+	}
+	var rf *RunError
+	if !errors.As(err, &rf) {
+		t.Fatalf("err = %v, want *RunError", err)
+	}
+	if !strings.Contains(rf.Err.Error(), "limit") {
+		t.Fatalf("the error does not name the limit: %v", rf.Err)
+	}
+	if len(rf.Stdout) != runOutputLimit {
+		t.Fatalf("captured stdout = %d bytes, want the %d byte cap", len(rf.Stdout), runOutputLimit)
+	}
+	if len(out) > 2*runOutputLimit {
+		t.Fatalf("captured %d bytes across both streams, want at most the two caps", len(out))
+	}
+}
+
 // A registry entry is host-owned config, but it must never be able to smuggle an
 // ssh option: "-oProxyCommand=..." would run a command on the controller.
 func TestSSHDestGuardsOptionInjection(t *testing.T) {
@@ -267,6 +295,18 @@ func TestSSHSecondsClampsToMinimumOne(t *testing.T) {
 	}
 	if got := sshSeconds(10 * time.Second); got != "10" {
 		t.Fatalf("sshSeconds(10s) = %q, want 10", got)
+	}
+}
+
+// ServerAliveCountMax is a unitless count, not a duration. Rendering it through
+// seconds arithmetic overflowed for a large configured value, because
+// count*time.Second exceeds the Duration range; render it directly.
+func TestServerAliveCountMaxRendersAsUnitlessCount(t *testing.T) {
+	const huge = 1 << 40 // huge*time.Second overflows int64
+	got := sshBaseArgv(Options{ServerAliveCountMax: huge})
+	want := "ServerAliveCountMax=" + strconv.Itoa(huge)
+	if !slices.Contains(got, want) {
+		t.Fatalf("sshBaseArgv = %v, want it to contain %q", got, want)
 	}
 }
 

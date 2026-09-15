@@ -1,13 +1,49 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
+import { FakeClient } from "../../../protocol/testing/fakeClient";
+import { connectionStore } from "../../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import type { ModelCatalog } from "../../../widgets";
+import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
+import * as connectDialogChunk from "../../spawn/connectDialogChunk";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
 
-afterEach(cleanup);
+// The connect dialog is a separate chunk, so a rejected import() is a real
+// failure mode (hub restart mid-load, deploy that replaced the hashed file).
+// The spy replaces only native module evaluation, exactly like
+// SpawnChunk.test.tsx's own recipe for the same chunk.
+const realLoadConnectDialog = connectDialogChunk.loadConnectDialog;
+const loadConnectDialog = vi.spyOn(connectDialogChunk, "loadConnectDialog");
+
+const CHUNK_ERROR = "Failed to fetch dynamically imported module: /webassets/ConnectProviderDialog-a1b2c3.js";
+
+function StubConnectDialog({ onClose }: { onClose(): void; onConnected(name?: string): void }) {
+  return (
+    <div role="dialog" aria-label="stub connect dialog">
+      <p>connect dialog mounted</p>
+      <button type="button" onClick={onClose}>
+        Close stub
+      </button>
+    </div>
+  );
+}
+
+beforeEach(() => {
+  loadConnectDialog.mockReset();
+  loadConnectDialog.mockImplementation(realLoadConnectDialog);
+  resetConnectDialogChunkForTests();
+});
+
+afterEach(() => {
+  cleanup();
+  loadConnectDialog.mockReset();
+  loadConnectDialog.mockImplementation(realLoadConnectDialog);
+  resetConnectDialogChunkForTests();
+});
 
 function catalog(): ModelCatalog {
   return {
@@ -342,4 +378,124 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
   } finally {
     restoreViewport();
   }
+});
+
+test("connect another provider refreshes the actual instance catalog without switching on cancel", async () => {
+  resetCredentialsStoreForTests();
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [
+      {
+        name: "team-local",
+        providerId: "ollama",
+        protocol: "openai-chat",
+        auth: "none",
+        implicit: false,
+        isDefault: false,
+        activeSource: "none",
+        hasStoredOAuth: false,
+        credentialRequired: false,
+      },
+    ],
+    availableProviders: [],
+  }));
+  fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  connectionStore.getState().connect(fake);
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async () => catalog());
+  const onPick = vi.fn();
+  renderTrigger({ loadCatalog, onPick });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  await user.keyboard("{Escape}");
+  expect(onPick).not.toHaveBeenCalled();
+  expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  await user.click(await screen.findByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  loadCatalog.mockResolvedValue({
+    models: [{ provider: "team-local", model: "served", displayName: "Team served" }],
+    recent: [],
+  });
+  const loadsBefore = loadCatalog.mock.calls.length;
+  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  const option = await screen.findByRole("option", { name: /Team served/ });
+  expect(loadCatalog.mock.calls.length).toBeGreaterThan(loadsBefore);
+  expect(onPick).not.toHaveBeenCalled();
+  await user.click(option);
+  expect(onPick).toHaveBeenCalledWith({ provider: "team-local", model: "served", displayName: "Team served" });
+  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
+});
+
+test("a rejected connect-dialog chunk stays inside the dialog's boundary and retries over a cache-busted URL", async () => {
+  const user = userEvent.setup();
+  vi.mocked(loadConnectDialog)
+    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockResolvedValueOnce({
+      ConnectProviderDialog: StubConnectDialog,
+    } as never);
+  renderTrigger();
+
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+
+  // The rejected import is contained: the trigger survives, the failure names
+  // itself, and a retry is offered - instead of unwinding through the session
+  // chrome with no recovery path.
+  expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
+  expect(await screen.findByText(CHUNK_ERROR)).toBeTruthy();
+  expect(screen.getByTestId("trigger")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  // Second call carries the cache-busting flag: a same-URL retry would replay
+  // Chrome's retained module failure.
+  expect(vi.mocked(loadConnectDialog).mock.calls).toEqual([[false], [true]]);
+});
+
+test("a successful retry on one mounted surface reaches the other", async () => {
+  const user = userEvent.setup();
+  vi.mocked(loadConnectDialog)
+    .mockRejectedValueOnce(new Error(CHUNK_ERROR))
+    .mockResolvedValueOnce({
+      ConnectProviderDialog: StubConnectDialog,
+    } as never);
+  render(
+    <>
+      <ModelSwitchTrigger
+        label="a"
+        value="a"
+        loadCatalog={vi.fn(async () => catalog())}
+        onPick={vi.fn()}
+        data-testid="trigger-a"
+        valueTestId="value-a"
+      />
+      <ModelSwitchTrigger
+        label="b"
+        value="b"
+        loadCatalog={vi.fn(async () => catalog())}
+        onPick={vi.fn()}
+        data-testid="trigger-b"
+        valueTestId="value-b"
+      />
+    </>,
+  );
+
+  // The first surface hits the failure and recovers through its retry.
+  await user.click(screen.getByTestId("trigger-a"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByText("Couldn't load the connect dialog")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Close stub" }));
+
+  // The second surface was mounted the whole time: it must adopt the payload
+  // the retry published, not re-render the rejected one it captured at mount.
+  await user.click(screen.getByTestId("trigger-b"));
+  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  expect(await screen.findByText("connect dialog mounted")).toBeTruthy();
+  expect(screen.queryByText("Couldn't load the connect dialog")).toBeNull();
 });

@@ -2,7 +2,7 @@ import type { ActivityTree } from "./activityData";
 import { type ActivityDelegateRow, type ActivityJobRow, indexActivityEntities } from "./activityRows";
 import type { ItemModel, TurnModel } from "./model";
 import type { EvenerDelegateInfo } from "./types.gen";
-import { foldWatchSummaries, type WatchSummary } from "./watchRows";
+import { compareTranscriptPosition, foldWatchSummaries, type WatchSummary } from "./watchRows";
 
 export interface OpenTarget {
   ref: string;
@@ -151,15 +151,20 @@ export function watchItems(turns: TurnModel[]): ItemModel[] {
 }
 
 export function watchFoldKey(turns: TurnModel[]): string {
+  // Canonical order, not caller order: the fold orders these snapshots by
+  // transcript position, so the key must too — otherwise a page arriving out of
+  // order rebuilds the view for identical content.
   return JSON.stringify(
-    watchItems(turns).map((item) => [
-      item.position?.entry ?? null,
-      item.position?.item ?? null,
-      item.argumentsJSON ?? null,
-      item.output ?? null,
-      item.error ?? null,
-      item.status ?? null,
-      item.raw === undefined ? null : JSON.stringify(item.raw),
-    ]),
+    [...watchItems(turns)]
+      .sort(compareTranscriptPosition)
+      .map((item) => [
+        item.position?.entry ?? null,
+        item.position?.item ?? null,
+        item.argumentsJSON ?? null,
+        item.output ?? null,
+        item.error ?? null,
+        item.status ?? null,
+        item.raw === undefined ? null : JSON.stringify(item.raw),
+      ]),
   );
 }

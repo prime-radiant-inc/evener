@@ -1,5 +1,7 @@
 // Package sshconn owns the controller hub's SSH channels to remote hosts that
-// run their own hub, per docs/superpowers/specs/2026-09-14-multi-host-04-ssh-connection-manager.md.
+// run their own hub. The [[hosts]] entries it connects to are defined in
+// cmd/evener-hub/config.go (HostConfig), and the failure classes it reports are
+// named in errors.go.
 //
 // It is the only place in the hub that runs ssh. For one configured host it:
 //
