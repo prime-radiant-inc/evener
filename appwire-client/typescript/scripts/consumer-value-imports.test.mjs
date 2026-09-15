@@ -7,10 +7,32 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import { CONSUMER_TREES } from "../../../scripts/sdk/source-files.mjs";
-import { consumerPackageUsage, packageSpecifiers, packageValuesIn, parse } from "./consumer-value-imports.mjs";
+import {
+  consumerPackageUsage,
+  packageSpecifiers,
+  packageValuesIn,
+  parse,
+  rootSurface,
+} from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
+
+test("rootSurface derives the value and type exports from index.ts so the surface cannot drift", () => {
+  const index = [
+    'export type { Foo, Bar } from "./a";',
+    'export { doThing, entityKindOf } from "./a";',
+    'export { buildWatchRows, watchGloss } from "./watchRows";',
+    'export type * from "./types.gen";',
+    'export { NAMES } from "./types.gen";',
+    'export { mix, type OnlyType } from "./b";',
+  ].join("\n");
+  const { values, types } = rootSurface(parse("index.ts", index));
+  // Includes the exports the hand-written list had drifted from -- entityKindOf,
+  // buildWatchRows, the watch helpers -- and never a type as a value.
+  expect(values).toEqual(["NAMES", "buildWatchRows", "doThing", "entityKindOf", "mix", "watchGloss"].sort());
+  expect(types).toEqual(["Bar", "Foo", "OnlyType"].sort());
+});
 
 test("packageSpecifiers derives the published specifiers from exports, dropping the testing alias", () => {
   const manifest = {

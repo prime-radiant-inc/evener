@@ -2,9 +2,8 @@
 // @evener/appwire-client for the native bundle: Metro reads neither the
 // tsconfig paths nor the package's exports map. Nothing in CI bundles the app
 // (#1244), so until that gate lands this is what holds the mapping.
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 // The config is CommonJS and calls expo's getDefaultConfig at load, so it is
@@ -42,16 +41,19 @@ describe("metro.config.js resolves the AppWire package by name", () => {
 
   it("resolves a .tsx subpath, not only .ts", () => {
     // The package ships only .ts today; a .tsx module (a widget, say) must
-    // resolve too, since the resolver probes the shared extension list. Prove
-    // it against a temporary one rather than adding a real module for the test.
-    const probe = fileURLToPath(new URL("../../appwire-client/typescript/__metroProbe.tsx", import.meta.url));
-    writeFileSync(probe, "export const Probe = null;\n");
+    // resolve too, since the resolver probes the shared extension list. Stub
+    // the existence check rather than writing into the package tree, so an
+    // interrupted run leaves nothing untracked. metro.config.js captured the
+    // same fs singleton this require returns, so the stub reaches its probe.
+    const fs = createRequire(import.meta.url)("node:fs");
+    const realExistsSync = fs.existsSync;
+    fs.existsSync = (candidate: string) => candidate.endsWith("__probe.tsx") || realExistsSync(candidate);
     try {
-      const resolved = resolve("@evener/appwire-client/__metroProbe");
+      const resolved = resolve("@evener/appwire-client/__probe");
       expect(resolved).toMatchObject({ type: "sourceFile" });
-      expect(resolved.filePath.endsWith("__metroProbe.tsx")).toBe(true);
+      expect(resolved.filePath.endsWith("__probe.tsx")).toBe(true);
     } finally {
-      rmSync(probe, { force: true });
+      fs.existsSync = realExistsSync;
     }
   });
 

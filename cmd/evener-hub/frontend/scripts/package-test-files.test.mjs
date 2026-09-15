@@ -197,6 +197,19 @@ test("describeTestingImportsOutsideTests flags a production file importing testi
   assert.deepEqual(offenders, ["  cmd/evener-hub/frontend/src/shell/App.tsx: imports @evener/appwire-client/testing/fakeClient"]);
 });
 
+test("describeTestingImportsOutsideTests judges dev-support by src/dev, not an absolute /dev/ prefix", () => {
+  // A checkout under a directory called dev/ must not make every file
+  // dev-support: the rule is the repo-relative src/dev/ segment.
+  const devRoot = path.join("/home/dev/checkout");
+  const file = path.join(devRoot, "cmd/evener-hub/frontend/src/shell/App.tsx");
+  const message = describeTestingImportsOutsideTests(
+    [file],
+    () => 'import { FakeClient } from "@evener/appwire-client/testing/fakeClient";\n',
+    devRoot,
+  );
+  assert.match(message, /App\.tsx: imports @evener\/appwire-client\/testing\/fakeClient/);
+});
+
 test("describeAppImports does not fire on a comment that merely names the app path", () => {
   const files = [path.join(dir, "a.ts")];
   const sources = {

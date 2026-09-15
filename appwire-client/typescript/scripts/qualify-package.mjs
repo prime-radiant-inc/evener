@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerPackageUsage } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, parse, rootSurface } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,145 +41,13 @@ async function qualify() {
     .map((file) => file.slice(0, -3));
   assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
   assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
-  // Every runtime export of the package root. The root's generated consumer
-  // programs are built from this one list, so an export the entry point stops
-  // providing fails here instead of in somebody's consumer. Whether each
-  // shipped MODULE is reachable at all is the reachability check below.
-  const rootValues = [
-    "AppwireClient",
-    "APPWIRE_PROTOCOL_VERSION",
-    "ConnectionClosedError",
-    "RequestTimeoutError",
-    "WireError",
-    "ClientNotReadyError",
-    "GENERIC_ERROR_MESSAGE",
-    "HUB_UNREACHABLE_MESSAGE",
-    "errorKind",
-    "errorText",
-    "friendlyErrorMessage",
-    "friendlyLaunchErrorMessage",
-    "isHubLaunchError",
-    "isStaleCursorError",
-    "mutationErrorData",
-    "sessionActionError",
-    "sessionActionHeadline",
-    "rpcURLFromLocation",
-    "composeAskAnswers",
-    "parseAskUserQuestions",
-    "answeredAskUserSuffix",
-    "liveAskQuestions",
-    "reconcileBatches",
-    "translateAttachmentMarkers",
-    "buildInput",
-    "buildComposerInput",
-    "canonicalSkillNames",
-    "METHOD_NAMES",
-    "NOTIFICATION_NAMES",
-    "STEERING_KINDS",
-    "THREAD_ITEM_EVENT_KINDS",
-    "isFailedJobOutcome",
-    "isFailedDelegateOutcome",
-    "isActivityFailure",
-    "isTurnContainer",
-    "parseActivityTree",
-    "activityNodeID",
-    "activityDelegateBranch",
-    "activityDelegateDiagnostics",
-    "delegateHasActiveWork",
-    "defaultExpandedIDs",
-    "reconcileActivityState",
-    "ActivityList",
-    "fenceRootSession",
-    "graftContinuationTree",
-    "foldRowID",
-    "jobIsFailed",
-    "activityDelegateState",
-    "buildActivityRows",
-    "hasItemFailure",
-    "hasErrorText",
-    "hasFailureStatus",
-    "isNonZeroExit",
-    "isInProgressStatus",
-    "parseJobLogTail",
-    "SYSTEM_PRELUDE_TURN_ID",
-    "pendingTextJoined",
-    "imageSessionRouteForSession",
-    "hydrateThread",
-    "collectAuthoritativeMutationIds",
-    "prependOlderTurns",
-    "mergeOlderItemPage",
-    "resolvePendingEscalation",
-    "notificationRoutingKey",
-    "notificationTargetsThread",
-    "applyNotification",
-    "deriveSendQueueAvailability",
-    "isActionUnavailable",
-    "isThreadNotFound",
-    "stableDelegateDisplayStatus",
-    "canReadSharedNotes",
-    "DOC_FILE_MAX_BYTES",
-    "DocFileError",
-    "docFileRawURL",
-    "docImageURL",
-    "decideSubmitRoute",
-    "decideSteerRoute",
-    "isTurnActive",
-    "formatTokenCount",
-    "formatDurationMs",
-    "formatCharCount",
-    "formatClockTime",
-    "formatClockTimeSeconds",
-    "formatElapsed",
-    "firstLine",
-    "splitMandate",
-    "plainQuoteLine",
-    "clip",
-    "clipJobID",
-    "tailSlice",
-    "tailFold",
-    "formatToolDuration",
-    "formatByteCount",
-    "lineCount",
-    "parseArgs",
-    "parseJSONObject",
-    "trailingBracketFooter",
-    "str",
-    "slashCommandInvocation",
-    "visibleCatalogCommands",
-    "evaluateSlashLabel",
-    "filterSlashMenuItems",
-    "mergeSlashCommands",
-    "parseSlashToken",
-    "spliceSlashCommand",
-  ];
-  // One exported type per shipped module that declares any, so the declaration
-  // check covers each module's packed .d.ts and not just its runtime half.
-  const rootTypes = [
-    "AppwireClientOptions",
-    "AppwireClientLike",
-    "WebSocketLike",
-    "AskAnswerItem",
-    "AskUserQuestion",
-    "AskQuestionRef",
-    "AskBatch",
-    "MarkerAttachment",
-    "InputAttachment",
-    "ActivityNodeLike",
-    "ActivityTree",
-    "ActivityState",
-    "ActivityRow",
-    "ItemFailureSignals",
-    "JobLogTail",
-    "ThreadModel",
-    "NotificationRoutingKey",
-    "SendQueueAvailability",
-    "StableDelegateState",
-    "DocFileContent",
-    "SubmitRoute",
-    "SteerRoute",
-    "SlashToken",
-    "SlashMenuItem",
-  ];
+  // The root's runtime values and exported types, derived from index.ts so
+  // the qualification surface cannot drift from what the entry point exports;
+  // an export added there is qualified without editing this file. The smoke
+  // CALLS below stay hand-written -- they are behaviour probes, not a surface.
+  const { values: rootValues, types: rootTypes } = rootSurface(
+    parse("index.ts", readFileSync(join(packageDir, "index.ts"), "utf8")),
+  );
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.

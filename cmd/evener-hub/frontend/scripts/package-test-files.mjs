@@ -115,12 +115,17 @@ export function describeCwdRelativeReads(files, read, dir) {
 // that build the guard harnesses and previews may import it -- the set AGENTS.md
 // names. Judged by path so a production consumer is caught wherever it sits.
 const TESTING_SUBPATH = "@evener/appwire-client/testing/";
-export function mayImportTesting(file) {
-  const base = path.basename(file);
+// `relativePath` is the repo-relative path, so a checkout that happens to sit
+// under a directory called dev/ does not turn every file into dev-support --
+// the segment that counts is `src/dev/`, and __tests__ is matched as a path
+// segment, not anywhere in an absolute prefix.
+export function mayImportTesting(relativePath) {
+  const base = path.basename(relativePath);
+  const segments = relativePath.split(/[/\\]/);
   return (
     isTestFile(base) ||
-    /[/\\]__tests__[/\\]/.test(file) ||
-    /[/\\]dev[/\\]/.test(file) ||
+    segments.includes("__tests__") ||
+    segments.slice(0, -1).some((segment, index) => segment === "dev" && segments[index - 1] === "src") ||
     /TestUtils\.[cm]?[jt]sx?$/.test(base)
   );
 }
@@ -128,7 +133,7 @@ export function mayImportTesting(file) {
 export function describeTestingImportsOutsideTests(files, read, dir) {
   const offenders = [];
   for (const file of files) {
-    if (mayImportTesting(file)) continue;
+    if (mayImportTesting(path.relative(dir, file))) continue;
     const text = read(file);
     if (!text.includes(TESTING_SUBPATH)) continue;
     for (const site of moduleSpecifierSites(ts, parseSource(ts, file, text))) {

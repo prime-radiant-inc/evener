@@ -35,6 +35,23 @@ export function parse(file, text) {
   return parseSource(ts, file, text);
 }
 
+// The package root's runtime values and exported types, read off index.ts so
+// the qualification surface cannot drift from what the entry point exports.
+// index.ts keeps values in `export {}` and types in `export type {}`, so the
+// statement's (or member's) type-only flag is the split. A `export type * from`
+// names no binding here -- those types come from the file it re-exports -- and
+// is not enumerable from index.ts alone, exactly as the hand-written surface
+// never listed them.
+export function rootSurface(indexSource) {
+  const values = new Set();
+  const types = new Set();
+  for (const site of moduleSpecifierSites(ts, indexSource)) {
+    if (site.kind !== "export-from") continue;
+    for (const binding of site.bindings) (site.typeOnly || binding.typeOnly ? types : values).add(binding.imported);
+  }
+  return { values: [...values].sort(), types: [...types].sort() };
+}
+
 // The runtime values a source file takes from each of this package's published
 // specifiers, as a Map of specifier to the EXPORTED names it names (the left
 // half of `X as Y`, since that is what the package has to provide).
