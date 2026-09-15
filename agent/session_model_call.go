@@ -537,19 +537,20 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 		}
 		return req, nil
 	}
+	target := s.resolvedRequestTarget()
 	req = s.applyResponsesContinuationShadowEstimate(req)
 	if req.ContinuationDiagnostic == "continuation_shadow_estimate_unavailable" {
 		req.HistoryMode = llm.HistoryModeFullHistory
 		req.PreviousResponseID = ""
 		req.ConversationID = ""
 		req.Continuation = nil
-		return responsesContinuationWithInputEstimate(req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil
 	}
 
 	plan, err := s.client.PlanResponsesContinuation(ctx, req)
 	if err != nil {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil
 	}
 	support := llm.ResponsesContinuationSupportFor(registry, plan.EndpointFamily)
 	decision := llm.DecideResponsesContinuationForRequest(
@@ -559,7 +560,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	)
 	if decision.HistoryMode != llm.HistoryModeResponsesDelta {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil
 	}
 	if !plan.ContinuationStorageAllowed &&
 		support.StorageShapeProven &&
@@ -573,10 +574,10 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !plan.ContinuationStorageAllowed {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil
 	}
 	if s.responsesContinuationDisabledForPlan(req, plan, stream) {
-		return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
+		return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
 	}
 
 	reservation := reserveResponsesContinuationHistoryBase(historyTurns)
@@ -586,7 +587,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 	}
 	if !historyCurrent {
 		req.HistoryMode = llm.HistoryModeFullHistory
-		return responsesContinuationWithInputEstimate(req), nil
+		return responsesContinuationWithInputEstimate(target, req), nil
 	}
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
@@ -608,13 +609,13 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			StoragePolicyLabel:      plan.StoragePolicyLabel,
 			StorageScopeFingerprint: plan.StorageScopeFingerprint,
 		}
-		return responsesContinuationWithInputEstimate(req), fullHistory
+		return responsesContinuationWithInputEstimate(target, req), fullHistory
 	}
 
-	return responsesContinuationFullHistoryRequestForPlan(req, plan), nil
+	return responsesContinuationFullHistoryRequestForPlan(target, req, plan), nil
 }
 
-func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
+func responsesContinuationFullHistoryRequestForPlan(res registry.Resolved, req llm.Request, plan llm.ResponsesContinuationPlan) llm.Request {
 	req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 	req.HistoryMode = llm.HistoryModeFullHistory
 	req.Continuation = &llm.ContinuationMetadata{
@@ -624,7 +625,7 @@ func responsesContinuationFullHistoryRequestForPlan(req llm.Request, plan llm.Re
 		StoragePolicyLabel:      plan.StoragePolicyLabel,
 		StorageScopeFingerprint: plan.StorageScopeFingerprint,
 	}
-	return responsesContinuationWithInputEstimate(req)
+	return responsesContinuationWithInputEstimate(res, req)
 }
 
 func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.Request {
@@ -642,25 +643,38 @@ func (s *Session) applyResponsesContinuationShadowEstimate(req llm.Request) llm.
 	if tokens > req.FullHistoryInputTokensEstimate {
 		req.FullHistoryInputTokensEstimate = tokens
 	}
-	return responsesContinuationWithInputEstimate(req)
+	return responsesContinuationWithInputEstimate(s.resolvedRequestTarget(), req)
 }
 
 func (s *Session) estimateResponsesContinuationShadow(req llm.Request) (int, bool) {
 	if s.cfg.testOnly.responsesContinuationShadowEstimateFunc != nil {
 		return s.cfg.testOnly.responsesContinuationShadowEstimateFunc(req)
 	}
-	count := llm.EstimateInputTokens(req)
+	count := llm.EstimateInputTokensForResolved(s.resolvedRequestTarget(), req)
 	return count.Tokens, count.Tokens > 0
 }
 
-func responsesContinuationWithInputEstimate(req llm.Request) llm.Request {
-	req.InputTokensEstimate = llm.EstimateInputTokens(req).Tokens
+// resolvedRequestTarget returns the resolved registry row of the profile that
+// will dispatch the request. The continuation estimates must bill the adapter
+// the target selects — thinking text is replayed by some adapters and dropped by
+// others — and only the resolved row knows which: a gateway instance's row
+// carries the protocol and reasoning capabilities, while its model name carries
+// no marker for the name rule to read.
+func (s *Session) resolvedRequestTarget() registry.Resolved {
+	if s.profile == nil {
+		return registry.Resolved{}
+	}
+	return s.profile.Resolved()
+}
+
+func responsesContinuationWithInputEstimate(res registry.Resolved, req llm.Request) llm.Request {
+	req.InputTokensEstimate = llm.EstimateInputTokensForResolved(res, req).Tokens
 	return req
 }
 
-func responsesContinuationFullHistoryWithInputEstimate(req llm.Request) llm.Request {
+func responsesContinuationFullHistoryWithInputEstimate(res registry.Resolved, req llm.Request) llm.Request {
 	req.FullHistoryInputTokensEstimate = 0
-	req = responsesContinuationWithInputEstimate(req)
+	req = responsesContinuationWithInputEstimate(res, req)
 	req.FullHistoryInputTokensEstimate = req.InputTokensEstimate
 	return req
 }
@@ -1187,7 +1201,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	// one would dispatch a message-less round instead of declining.
 	if err != nil && len(fullHistory) > 0 && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
-		retryReq := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
+		retryReq := responsesContinuationFullHistoryFallbackRequest(profile.Resolved(), req, fullHistory)
 		var budget llm.TokenBudget
 		retryReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(profile, retryReq)
 		if budgetErr == nil {
@@ -1255,7 +1269,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq, ok := responsesContinuationModelFallbackRequest(req, fullHistory)
+			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fullHistory)
 			if !ok {
 				break
 			}
@@ -1269,7 +1283,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
-			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbReq)
+			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			var budget llm.TokenBudget
 			fbReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(fbProfile, fbReq)
 			if budgetErr == nil {
@@ -1364,7 +1378,7 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 // responsesContinuationFullHistoryFallbackRequest rebuilds the delta request as
 // the full history the round kept for it, for the one retry a rejected anchor
 // earns.
-func responsesContinuationFullHistoryFallbackRequest(req llm.Request, fullHistory []llm.Message) llm.Request {
+func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req llm.Request, fullHistory []llm.Message) llm.Request {
 	fallbackReq := req
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistoryFallback
 	fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)
@@ -1373,14 +1387,14 @@ func responsesContinuationFullHistoryFallbackRequest(req llm.Request, fullHistor
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(fallbackReq)
+	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq)
 	return fallbackReq
 }
 
 // responsesContinuationModelFallbackRequest un-anchors a request for a
 // different model. A continuation delta can be relabeled as full history only
 // when the round retained that full history; otherwise it refuses construction.
-func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
+func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
 	if req.HistoryMode == llm.HistoryModeResponsesDelta && len(fullHistory) == 0 {
 		return llm.Request{}, false
 	}
@@ -1394,7 +1408,7 @@ func responsesContinuationModelFallbackRequest(req llm.Request, fullHistory []ll
 	fallbackReq.PreviousResponseID = ""
 	fallbackReq.ConversationID = ""
 	fallbackReq.Continuation = nil
-	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(fallbackReq)
+	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq)
 	return fallbackReq, true
 }
 
