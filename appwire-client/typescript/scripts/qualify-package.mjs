@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerPackageUsage, parse, rootSurface } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, rootSurface } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -45,9 +45,7 @@ async function qualify() {
   // the qualification surface cannot drift from what the entry point exports;
   // an export added there is qualified without editing this file. The smoke
   // CALLS below stay hand-written -- they are behaviour probes, not a surface.
-  const { values: rootValues, types: rootTypes } = rootSurface(
-    parse("index.ts", readFileSync(join(packageDir, "index.ts"), "utf8")),
-  );
+  const { values: rootValues, types: rootTypes } = rootSurface(join(packageDir, "index.ts"));
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.

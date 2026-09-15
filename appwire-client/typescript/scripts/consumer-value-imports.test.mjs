@@ -18,20 +18,35 @@ import {
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
 
-test("rootSurface derives the value and type exports from index.ts so the surface cannot drift", () => {
-  const index = [
-    'export type { Foo, Bar } from "./a";',
-    'export { doThing, entityKindOf } from "./a";',
-    'export { buildWatchRows, watchGloss } from "./watchRows";',
-    'export type * from "./types.gen";',
-    'export { NAMES } from "./types.gen";',
-    'export { mix, type OnlyType } from "./b";',
-  ].join("\n");
-  const { values, types } = rootSurface(parse("index.ts", index));
-  // Includes the exports the hand-written list had drifted from -- entityKindOf,
-  // buildWatchRows, the watch helpers -- and never a type as a value.
-  expect(values).toEqual(["NAMES", "buildWatchRows", "doThing", "entityKindOf", "mix", "watchGloss"].sort());
-  expect(types).toEqual(["Bar", "Foo", "OnlyType"].sort());
+test("rootSurface follows value and type star re-exports so the surface cannot drift", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "evener-root-surface-"));
+  try {
+    writeFileSync(
+      path.join(root, "index.ts"),
+      [
+        'export { doThing } from "./named";',
+        'export type { Foo } from "./named";',
+        'export { mix, type OnlyType } from "./named";',
+        'export type * from "./types.gen";',
+        'export * from "./widgets";',
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(path.join(root, "named.ts"), "export function doThing() {}\nexport type Foo = number;\n");
+    writeFileSync(
+      path.join(root, "types.gen.ts"),
+      "export interface Thread {\n  id: string;\n}\nexport const METHOD_NAMES = [];\n",
+    );
+    writeFileSync(path.join(root, "widgets.ts"), "export const Widget = 1;\nexport type WidgetProps = object;\n");
+    const { values, types } = rootSurface(path.join(root, "index.ts"));
+    // Thread is reachable only through `export type *`, Widget only through the
+    // value star, and an inline `type OnlyType` is a type. METHOD_NAMES is a
+    // value under a TYPE star, so it is neither a type nor a re-exported value.
+    expect(types).toEqual(["Foo", "OnlyType", "Thread", "WidgetProps"]);
+    expect(values).toEqual(["Widget", "doThing", "mix"].sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("packageSpecifiers derives the published specifiers from exports, dropping the testing alias", () => {

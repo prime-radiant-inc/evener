@@ -14,6 +14,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
+import { resolveSourceFile } from "../../../scripts/sdk/resolve-source.mjs";
 import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../scripts/sdk/source-files.mjs";
 
 // The published specifiers, from package.json's own exports rather than
@@ -35,20 +36,61 @@ export function parse(file, text) {
   return parseSource(ts, file, text);
 }
 
-// The package root's runtime values and exported types, read off index.ts so
-// the qualification surface cannot drift from what the entry point exports.
-// index.ts keeps values in `export {}` and types in `export type {}`, so the
-// statement's (or member's) type-only flag is the split. A `export type * from`
-// names no binding here -- those types come from the file it re-exports -- and
-// is not enumerable from index.ts alone, exactly as the hand-written surface
-// never listed them.
-export function rootSurface(indexSource) {
-  const values = new Set();
-  const types = new Set();
-  for (const site of moduleSpecifierSites(ts, indexSource)) {
-    if (site.kind !== "export-from") continue;
-    for (const binding of site.bindings) (site.typeOnly || binding.typeOnly ? types : values).add(binding.imported);
+// The value and type names a module exports, following its re-exports into the
+// modules they name: `export *` re-exports both values and types, `export type
+// *` the types only. So the type reachable only through
+// `export type * from "./types.gen"` -- Thread and every other generated
+// protocol type -- is in the surface, and a value reachable only through a
+// value star is too. The rewriter's export collector follows the same stars;
+// this one keeps the value/type split the qualification needs. Memoised per
+// file, and the entry is set before recursing so a re-export cycle terminates.
+const PACKAGE_SOURCE_EXTENSIONS = [".ts", ".tsx"];
+function moduleSurface(file, readFile, cache) {
+  const cached = cache.get(file);
+  if (cached) return cached;
+  const surface = { values: new Set(), types: new Set() };
+  cache.set(file, surface);
+  const source = parseSource(ts, file, readFile(file));
+  for (const statement of source.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      const clause = statement.exportClause;
+      if (clause && ts.isNamedExports(clause)) {
+        for (const element of clause.elements) {
+          (statement.isTypeOnly || element.isTypeOnly ? surface.types : surface.values).add(element.name.text);
+        }
+      } else if (clause && ts.isNamespaceExport(clause)) {
+        surface.values.add(clause.name.text);
+      } else if (statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
+        const target = resolveSourceFile(file, statement.moduleSpecifier.text, PACKAGE_SOURCE_EXTENSIONS);
+        if (target) {
+          const inner = moduleSurface(target, readFile, cache);
+          for (const name of inner.types) surface.types.add(name);
+          if (!statement.isTypeOnly) for (const name of inner.values) surface.values.add(name);
+        }
+      }
+      continue;
+    }
+    const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+    if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
+    if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
+      if (statement.name) surface.types.add(statement.name.text);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) surface.values.add(declaration.name.text);
+      }
+    } else if (statement.name && ts.isIdentifier(statement.name)) {
+      surface.values.add(statement.name.text);
+    }
   }
+  return surface;
+}
+
+// The package root's runtime values and exported types, read off index.ts (and
+// the modules it re-exports) so the qualification surface cannot drift from
+// what the entry point exposes: an export added anywhere the root re-exports is
+// qualified without editing anything here.
+export function rootSurface(indexFile, readFile = (file) => readFileSync(file, "utf8")) {
+  const { values, types } = moduleSurface(indexFile, readFile, new Map());
   return { values: [...values].sort(), types: [...types].sort() };
 }
 
