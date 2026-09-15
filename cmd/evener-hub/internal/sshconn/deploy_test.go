@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -154,5 +155,47 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 	want := "cat > /home/dev/.local/bin/evener.tmp && chmod +x /home/dev/.local/bin/evener.tmp && mv /home/dev/.local/bin/evener.tmp /home/dev/.local/bin/evener"
 	if !strings.Contains(pushJoined, want) {
 		t.Fatalf("push command = %q, want it to contain %q", pushJoined, want)
+	}
+}
+
+// TestDeployQuotesRemotePaths proves a registry-configured evener_path with a
+// space or shell metacharacter is quoted in every deploy command, so it neither
+// breaks the command nor injects additional remote commands.
+func TestDeployQuotesRemotePaths(t *testing.T) {
+	const target = "/opt/my evener/bin/evener;rm"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
+	var testDirRemote, pushRemote string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d"):
+			testDirRemote = joined
+			return nil, nil
+		case strings.Contains(joined, "cat >"):
+			pushRemote = joined
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			return os.WriteFile(out, []byte("x"), 0o755)
+		},
+	})
+
+	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellQuote(dir)) {
+		t.Fatalf("test -d does not quote the path with a space: %q", testDirRemote)
+	}
+	tmp := shellQuote(target + deployTempSuffix)
+	wantPush := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", tmp, tmp, tmp, shellQuote(target))
+	if !strings.Contains(pushRemote, wantPush) {
+		t.Fatalf("push does not quote the paths:\n got %q\nwant it to contain %q", pushRemote, wantPush)
 	}
 }

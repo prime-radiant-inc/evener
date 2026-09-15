@@ -68,11 +68,11 @@ type supervisor struct {
 func (s supervisor) restartRemote() string {
 	switch s.kind {
 	case supervisorLaunchd:
-		return "launchctl kickstart -k gui/$(id -u)/" + s.label
+		return "launchctl kickstart -k gui/$(id -u)/" + shellQuote(s.label)
 	case supervisorSystemd:
-		return "systemctl restart " + s.label
+		return "systemctl restart " + shellQuote(s.label)
 	case supervisorSystemdUser:
-		return "systemctl --user restart " + s.label
+		return "systemctl --user restart " + shellQuote(s.label)
 	default:
 		return ""
 	}
@@ -202,24 +202,28 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 		return err
 	}
 
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+pid+" -ww -o command"), nil)
+	// `-o command=` (trailing `=`) suppresses the `COMMAND` header line, so the
+	// recovered command line is the process's argv, not the header followed by
+	// it. Real GNU/BSD ps emit the header without the trailing `=`, which is what
+	// made the old invocation relaunch as `nohup COMMAND`.
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+shellQuote(pid)+" -ww -o command="), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q ps pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
 	}
-	cmdline := strings.TrimSpace(string(out))
+	cmdline := stripPSHeader(string(out))
 	if cmdline == "" {
 		return fmt.Errorf("%w: host %q could not recover argv for pid %s", ErrRestart, host.Name, pid)
 	}
 
 	logPath := ""
-	if lout, lerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+pid+" -a -d 1,2"), nil); lerr == nil {
+	if lout, lerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+shellQuote(pid)+" -a -d 1,2"), nil); lerr == nil {
 		logPath, _ = parseLogPath(lout)
 	}
 
 	// Stop the old hub and wait for its port to clear before starting a new
 	// one; relaunching into the gap races hub.lock (docs/evener-hub-remote-
 	// operations.md:363-377).
-	kout, kerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill "+pid), nil)
+	kout, kerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill "+shellQuote(pid)), nil)
 	if kerr != nil {
 		return fmt.Errorf("%w: host %q could not stop hub pid %s: %w: %s", ErrRestart, host.Name, pid, kerr, tail(kout))
 	}
@@ -318,11 +322,35 @@ func parseHealthVersion(out []byte) (string, bool) {
 // relaunchCommand builds the detached remote relaunch. It appends to the
 // recovered log so the hub's history is preserved (docs/evener-hub-remote-
 // operations.md:388-394); with no recovered log the output is discarded.
+//
+// The recovered command line is passed to `sh -c` as a single quoted word: the
+// text came back from `ps` as a shell command line, so it must be re-parsed as
+// one, but it is host-derived and must not be allowed to inject into the outer
+// shell that starts the relaunch. The log path is quoted for the same reason.
 func relaunchCommand(cmdline, logPath string) string {
 	if logPath != "" {
-		return "nohup " + cmdline + " >>" + logPath + " 2>&1 </dev/null &"
+		return "nohup sh -c " + shellQuote(cmdline) + " >>" + shellQuote(logPath) + " 2>&1 </dev/null &"
 	}
-	return "nohup " + cmdline + " </dev/null >/dev/null 2>&1 &"
+	return "nohup sh -c " + shellQuote(cmdline) + " </dev/null >/dev/null 2>&1 &"
+}
+
+// stripPSHeader drops a leading `ps` header line so header-bearing output (a ps
+// that ignores `-o command=`, or a BSD variant spelling it differently) never
+// becomes part of the relaunched argv. The invocation already suppresses the
+// header; this is the defensive half of the fix.
+func stripPSHeader(out string) string {
+	trimmed := strings.TrimSpace(out)
+	first, rest, ok := strings.Cut(trimmed, "\n")
+	if !ok {
+		if trimmed == "COMMAND" {
+			return ""
+		}
+		return trimmed
+	}
+	if strings.TrimSpace(first) == "COMMAND" {
+		return strings.TrimSpace(rest)
+	}
+	return trimmed
 }
 
 // parseLogPath extracts the regular-file destination shared by fd 1 and fd 2

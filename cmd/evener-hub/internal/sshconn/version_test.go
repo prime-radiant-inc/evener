@@ -83,10 +83,10 @@ func TestParseLogPath(t *testing.T) {
 
 func TestRelaunchCommand(t *testing.T) {
 	cmd := "/opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener"
-	if got, want := relaunchCommand(cmd, "/home/dev/evener-hub.log"), "nohup "+cmd+" >>/home/dev/evener-hub.log 2>&1 </dev/null &"; got != want {
+	if got, want := relaunchCommand(cmd, "/home/dev/evener-hub.log"), "nohup sh -c '"+cmd+"' >>/home/dev/evener-hub.log 2>&1 </dev/null &"; got != want {
 		t.Fatalf("relaunchCommand with log:\n got %q\nwant %q", got, want)
 	}
-	if got, want := relaunchCommand(cmd, ""), "nohup "+cmd+" </dev/null >/dev/null 2>&1 &"; got != want {
+	if got, want := relaunchCommand(cmd, ""), "nohup sh -c '"+cmd+"' </dev/null >/dev/null 2>&1 &"; got != want {
 		t.Fatalf("relaunchCommand without log:\n got %q\nwant %q", got, want)
 	}
 }
@@ -296,7 +296,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 	if err := m.restartBare(context.Background(), host); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
-	wantRemote := "nohup /opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener >>/home/dev/evener-hub.log 2>&1 </dev/null &"
+	wantRemote := "nohup sh -c '/opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener' >>/home/dev/evener-hub.log 2>&1 </dev/null &"
 	want := rawCommandArgv(m.opts, host, wantRemote)
 	if !equalArgv(relaunchArgv, want) {
 		t.Fatalf("relaunch argv:\n got %v\nwant %v", relaunchArgv, want)
@@ -316,6 +316,155 @@ func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 	}
 	if got := len(fr.recordedRuns()); got != 1 {
 		t.Fatalf("Run calls = %d, want 1 (pid discovery only)", got)
+	}
+}
+
+// TestRestartBarePSInvocationSuppressesHeader proves the bare-process relaunch
+// asks ps for the headerless form (`-o command=`). Without the trailing `=`,
+// real GNU/BSD ps prepend a `COMMAND` line that becomes part of the relaunched
+// argv, so the relaunch runs `nohup COMMAND` and discards the real command.
+func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	killed := false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host); err != nil {
+		t.Fatalf("restartBare: %v", err)
+	}
+	var psArgv []string
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "-ww -o ") {
+			psArgv = argv
+		}
+	}
+	if len(psArgv) == 0 {
+		t.Fatal("no ps invocation recorded")
+	}
+	if !strings.Contains(strings.Join(psArgv, " "), "-o command=") {
+		t.Fatalf("ps invocation %v does not request the headerless form (trailing =)", psArgv)
+	}
+}
+
+// TestRestartBareStripsLeadingPSHeader proves the defensive half: even if ps
+// emits a leading COMMAND line, it must not be folded into the relaunched argv.
+func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	clean := "/opt/evener/bin/evener hub -addr 0.0.0.0:9180"
+	killed := false
+	var relaunchArgv []string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("COMMAND\n" + clean + "\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunchArgv = append([]string(nil), argv...)
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host); err != nil {
+		t.Fatalf("restartBare: %v", err)
+	}
+	want := rawCommandArgv(m.opts, host, relaunchCommand(clean, ""))
+	if !equalArgv(relaunchArgv, want) {
+		t.Fatalf("relaunch argv kept the ps header:\n got %v\nwant %v", relaunchArgv, want)
+	}
+}
+
+// TestRestartBareQuotesRecoveredLogPath proves a log path carrying shell
+// metacharacters is quoted in the relaunch, so it cannot inject a second
+// command into the shell that starts the new hub.
+func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	const logPath = "/home/dev/evener-hub.log;rm"
+	killed := false
+	var relaunchArgv []string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return []byte("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n" +
+				"evener 4242 dev 1w REG 1,2 1 2 " + logPath + "\n" +
+				"evener 4242 dev 2w REG 1,2 1 2 " + logPath + "\n"), nil
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunchArgv = append([]string(nil), argv...)
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host); err != nil {
+		t.Fatalf("restartBare: %v", err)
+	}
+	// The remote command is one ssh argument; join it so the assertion reads the
+	// remote shell string the host will run.
+	var remote string
+	for _, a := range relaunchArgv {
+		if strings.HasPrefix(a, "nohup ") {
+			remote = a
+		}
+	}
+	if remote == "" {
+		t.Fatalf("no relaunch recorded in %v", relaunchArgv)
+	}
+	if !strings.Contains(remote, ">>"+shellQuote(logPath)) {
+		t.Fatalf("relaunch does not quote the recovered log path: %q", remote)
 	}
 }
 

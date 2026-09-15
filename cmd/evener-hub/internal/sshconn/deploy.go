@@ -122,7 +122,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		dir := path.Dir(p)
-		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+dir), nil)
+		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellQuote(dir)), nil)
 		if err != nil {
 			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
@@ -146,7 +146,7 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 // Runner.Run stdin keeps argv[0] == "ssh".
 func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target string, data io.Reader) error {
 	tmp := target + deployTempSuffix
-	remote := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", tmp, tmp, tmp, target)
+	remote := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", shellQuote(tmp), shellQuote(tmp), shellQuote(tmp), shellQuote(target))
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), data)
 	if err != nil {
 		return fmt.Errorf("%w: host %q push %s: %w: %s", ErrDeploy, host.Name, target, err, tail(out))
