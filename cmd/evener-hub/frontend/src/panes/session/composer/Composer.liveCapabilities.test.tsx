@@ -33,7 +33,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -159,16 +159,34 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
 // user's message, then the status — with the capability set the daemon stamps
 // on it at its notification egress. `capabilities: undefined` is the same
 // sequence from a source that state-gates nothing.
+function turnStartedFrame(turnId: string): AnyNotification {
+  return {
+    method: "turn/started",
+    params: {
+      threadId: `thr_${REF}`,
+      ref: REF,
+      turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
+    },
+  };
+}
+
+function turnCompletedFrame(turnId: string): AnyNotification {
+  return {
+    method: "turn/completed",
+    params: { threadId: `thr_${REF}`, ref: REF, turn: { id: turnId, status: "completed", itemsView: "" } },
+  };
+}
+
+function statusActiveFrame(capabilities?: ThreadCapabilities): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
+  };
+}
+
 function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCapabilities): void {
   act(() => {
-    fake.emitNotification({
-      method: "turn/started",
-      params: {
-        threadId: `thr_${REF}`,
-        ref: REF,
-        turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
-      },
-    });
+    fake.emitNotification(turnStartedFrame(turnId));
     fake.emitNotification({
       method: "item/completed",
       params: {
@@ -178,10 +196,7 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
         item: { type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
       },
     });
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
-    });
+    fake.emitNotification(statusActiveFrame(capabilities));
   });
 }
 
@@ -479,38 +494,18 @@ test("the follow-up to a session that ended mid-turn can be sent", async () => {
 // blink out at that boundary, because the skill guard's turn-end barrier reads
 // exactly that button and the daemon is still mid-input.
 function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnId: string): void {
-  act(() => {
-    fake.emitNotification({
-      method: "turn/completed",
-      params: {
-        threadId: `thr_${REF}`,
-        ref: REF,
-        turn: { id: endedTurnId, status: "completed", itemsView: "" },
-      },
+  const frames: Array<[string, AnyNotification]> = [
+    ["turn/completed of the previous turn", turnCompletedFrame(endedTurnId)],
+    ["turn/started of the next turn", turnStartedFrame(nextTurnId)],
+    ["the status frame", statusActiveFrame(daemonCapabilities(true))],
+  ];
+  for (const [step, frame] of frames) {
+    act(() => {
+      fake.emitNotification(frame);
     });
-  });
-  expect(screen.queryByTestId("composer-steer"), "Steer after turn/completed of the previous turn").not.toBeNull();
-  expect(screen.queryByTestId("composer-stop"), "Stop after turn/completed of the previous turn").not.toBeNull();
-  act(() => {
-    fake.emitNotification({
-      method: "turn/started",
-      params: {
-        threadId: `thr_${REF}`,
-        ref: REF,
-        turn: { id: nextTurnId, status: "inProgress", itemsView: "full", startedAt: 6000 },
-      },
-    });
-  });
-  expect(screen.queryByTestId("composer-steer"), "Steer after turn/started of the next turn").not.toBeNull();
-  expect(screen.queryByTestId("composer-stop"), "Stop after turn/started of the next turn").not.toBeNull();
-  act(() => {
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities: daemonCapabilities(true) },
-    });
-  });
-  expect(screen.queryByTestId("composer-steer"), "Steer after the status frame").not.toBeNull();
-  expect(screen.queryByTestId("composer-stop"), "Stop after the status frame").not.toBeNull();
+    expect(screen.queryByTestId("composer-steer"), `Steer after ${step}`).not.toBeNull();
+    expect(screen.queryByTestId("composer-stop"), `Stop after ${step}`).not.toBeNull();
+  }
 }
 
 // The click follows the same rule as the button. Between the two turn frames
@@ -531,10 +526,7 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   await type("go left");
 
   act(() => {
-    fake.emitNotification({
-      method: "turn/completed",
-      params: { threadId: `thr_${REF}`, ref: REF, turn: { id: "turn_5", status: "completed", itemsView: "" } },
-    });
+    fake.emitNotification(turnCompletedFrame("turn_5"));
   });
   expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
 

@@ -671,7 +671,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 
 	// Now the Stop, in the window the samples above prove was open: the wire
 	// says active, which is the whole of isTurnActive, so the composer is
-	// showing the button (and publishes an id for the transcript row). The request is session-scoped -- it
+	// showing the button. The request is session-scoped -- it
 	// names no turn, because appwire v3 removed expectedTurnId from every
 	// control mutation -- so the only thing that can refuse it is the daemon's
 	// own "is this session quiesced" precondition, and turn 2 being claimed is

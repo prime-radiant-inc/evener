@@ -579,68 +579,52 @@ test("/steer sends turn/steer while the session is active with no open turn row 
   await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
 });
 
-// The handler applies the same rule the menu does: a busy session on a
-// harness that advertises no steer (or no queue) is refused here, never sent
-// a request the daemon answers Unavailable.
-test("/steer on a busy session whose harness advertises no steer is blocked and sends nothing", () => {
-  const fake = connectFake();
-  focusSession("ref_a");
-  seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, steer: false } });
-  const c = cmd("steer");
-  if (c.args?.kind !== "free") throw new Error("expected free args");
-  const result = c.args.run(runContext(), "go left");
-  expect(isBlocked(result)).toBe(true);
-  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(false);
-});
-
-test("/queue on a busy session whose harness advertises no queue is blocked and sends nothing", () => {
-  const fake = connectFake();
-  focusSession("ref_a");
-  seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, queue: false } });
-  const q = cmd("queue");
-  if (q.args?.kind !== "free") throw new Error("expected free args");
-  const result = q.args.run(runContext(), "later");
-  expect(isBlocked(result)).toBe(true);
-  expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(false);
-});
+// The handler applies the same rule the menu does (Command.available, from
+// submitRouting.ts sessionControls): a busy session on a harness that
+// advertises no steer (or no queue) is refused here, never sent a request the
+// daemon answers Unavailable.
+test.each([
+  ["steer", "turn/steer", { steer: false }],
+  ["queue", "turn/queue", { queue: false }],
+] as const)(
+  "/%s on a busy session whose harness lacks the capability is blocked and sends nothing",
+  (id, method, missing) => {
+    const fake = connectFake();
+    focusSession("ref_a");
+    seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, ...missing } });
+    const c = cmd(id);
+    if (c.args?.kind !== "free") throw new Error("expected free args");
+    const result = c.args.run(runContext(), "go left");
+    expect(isBlocked(result)).toBe(true);
+    expect(blockedMessage(result)).toBe(`${id} failed: ${UNAVAILABLE_REASON}`);
+    expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  },
+);
 
 // The hub advertises steer as harness support (it no longer folds the active
 // status in), so an idle steering harness carries steer:true. The menu's
 // available set must equal the handler's rule: /steer needs a running turn,
-// /drain-as-steer needs a running turn or a queue a Stop parked (idle with
-// depth > 0), the same canDrainQueue the composer and queue strip read.
-test("on an idle steering harness the menu lists /steer unavailable and /drain-as-steer only with a parked queue", () => {
-  focusSession("ref_a");
-  seedModel("ref_a", {
-    status: { type: "idle" },
-    activeTurnId: undefined,
-    capabilities: CAPS,
-    queue: { revision: 0, depth: 0 },
-  });
-  let byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
-  expect(byId.get("steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
-  expect(byId.get("drain-as-steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
-
-  seedModel("ref_a", {
-    status: { type: "idle" },
-    activeTurnId: undefined,
-    capabilities: CAPS,
-    queue: { revision: 0, depth: 1 },
-  });
-  byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
-  expect(byId.get("steer")?.unavailableReason).toBe(UNAVAILABLE_REASON);
-  expect(byId.get("drain-as-steer")?.unavailableReason).toBeUndefined();
-
-  seedModel("ref_a", {
-    status: { type: "active" },
-    activeTurnId: "t1",
-    capabilities: CAPS,
-    queue: { revision: 0, depth: 0 },
-  });
-  byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
-  expect(byId.get("steer")?.unavailableReason).toBeUndefined();
-  expect(byId.get("drain-as-steer")?.unavailableReason).toBeUndefined();
-});
+// /drain-as-steer a running turn or a queue a Stop parked (idle with depth >
+// 0), the same sessionControls the composer and queue strip read.
+test.each([
+  ["idle", 0, UNAVAILABLE_REASON, UNAVAILABLE_REASON],
+  ["idle", 1, UNAVAILABLE_REASON, undefined],
+  ["active", 0, undefined, undefined],
+] as const)(
+  "at status %s with queue depth %d the menu marks /steer %s and /drain-as-steer %s",
+  (statusType, depth, steer, drain) => {
+    focusSession("ref_a");
+    seedModel("ref_a", {
+      status: { type: statusType },
+      activeTurnId: statusType === "active" ? "t1" : undefined,
+      capabilities: CAPS,
+      queue: { revision: 0, depth },
+    });
+    const byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
+    expect(byId.get("steer")?.unavailableReason).toBe(steer);
+    expect(byId.get("drain-as-steer")?.unavailableReason).toBe(drain);
+  },
+);
 
 test("/queue and /drain-as-steer each block with their own no-active-turn message", () => {
   focusSession("ref_a");

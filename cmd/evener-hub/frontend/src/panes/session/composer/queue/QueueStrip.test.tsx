@@ -140,6 +140,19 @@ async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<vo
   await refreshPendingTurnsProjection("ref_a");
 }
 
+// applied registers a fake handler for a mutation that answers with an
+// applied receipt, the response every accepted control mutation carries.
+function applied(fake: FakeClient, method: string): void {
+  fake.on(method, (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+}
+
 function renderStrip(props: ReturnType<typeof defaultProps>) {
   return render(
     <>
@@ -1235,22 +1248,8 @@ describe("drain-as-steer affordance", () => {
         queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
       },
     });
-    fake.on("turn/drainAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
-    fake.on("turn/promoteQueuedAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
+    applied(fake, "turn/drainAsSteer");
+    applied(fake, "turn/promoteQueuedAsSteer");
     renderStrip(defaultProps({ getComposerText: () => ({ text: "", hasPending: false }) }));
 
     expect(await screen.findByText("queued")).toBeTruthy();
@@ -1273,24 +1272,6 @@ describe("drain-as-steer affordance", () => {
       const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
       expect(call?.params).toMatchObject({ ref: "ref_a" });
     });
-  });
-
-  test("a parked queue on a harness that cannot steer offers no steering affordance", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      status: { type: "idle" },
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...CAPABILITIES, steer: false, send: true, queue: false },
-        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    renderStrip(defaultProps());
-
-    expect(await screen.findByText("queued")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
-    expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
-    expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
@@ -1330,50 +1311,34 @@ describe("drain-as-steer affordance", () => {
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
   });
 
-  // The strip's steering affordances share the composer's Steer gate (the
-  // daemon's steer capability beside an active status): a harness that
-  // advertises no steer draws no "Steer queue now" and no live "Steer now",
-  // and nothing here sends a drain or promote it would answer Unavailable.
-  test("a queued session whose harness advertises no steer offers no steering affordance and sends no drain", async () => {
-    const fake = connectFakeClient();
-    await hydrate(fake, "ref_a", {
-      evener: {
-        ref: "ref_a",
-        capabilities: { ...CAPABILITIES, steer: false },
-        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
-      },
-    });
-    fake.on("turn/drainAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
-    fake.on("turn/promoteQueuedAsSteer", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-    }));
-    renderStrip(defaultProps());
+  // The strip's steering affordances share the composer's gate (submitRouting.ts
+  // sessionControls): a harness that advertises no steer draws no "Steer queue
+  // now" and a disabled "Steer now" -- running or parked by Stop -- and nothing
+  // here sends a drain or promote it would answer Unavailable. Edit and remove
+  // stay available: only steering needs the capability.
+  test.each(["active", "idle"])(
+    "a %s session whose harness advertises no steer offers no steering affordance",
+    async (statusType) => {
+      const fake = connectFakeClient();
+      await hydrate(fake, "ref_a", {
+        status: { type: statusType },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...CAPABILITIES, steer: false },
+          queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        },
+      });
+      renderStrip(defaultProps());
 
-    expect(await screen.findByText("queued")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
-    const steerNow = screen.getByRole("button", { name: "Steer now" });
-    expect(isDisabled(steerNow)).toBe(true);
-    await act(async () => {
-      fireEvent.click(steerNow);
-      await flushPendingTurnsProjectionForTests();
-    });
-    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
-    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
-    // Edit and remove stay available: only steering needs the capability.
-    expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
-  });
+      expect(await screen.findByText("queued")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+      expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
+      expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
+      expect(
+        fake.calls.filter((c) => c.method === "turn/drainAsSteer" || c.method === "turn/promoteQueuedAsSteer"),
+      ).toHaveLength(0);
+    },
+  );
 
   test("a lost drain response never produces a timeout warning or reload instruction", async () => {
     const fake = connectFakeClient();

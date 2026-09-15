@@ -11,7 +11,8 @@ import {
   STEER_UNAVAILABLE,
   sessionControls,
 } from "./submitRouting";
-import type { AnyNotification, Thread } from "./types.gen";
+import { wireThread } from "./testing/notifications";
+import type { AnyNotification } from "./types.gen";
 
 // --- decideSubmitRoute: send vs queue vs no-op --------------------------
 // parity-m5-composer.md §A: submit is a no-op when the composer is empty of
@@ -108,40 +109,11 @@ test.each(["idle", "awaiting", "ended", "closed", "notLoaded", "restartRequired"
 // own WebSocket message and the client folds them one at a time, so the
 // predicate is evaluated between the two turn frames. Issue #1330.
 function activeThread(): ThreadModel {
-  const thread: Thread = {
-    id: "thr_t",
-    sessionId: "sess_t",
-    preview: "test",
-    ephemeral: false,
-    modelProvider: "anthropic/claude-sonnet-4-5",
-    createdAt: 1000,
-    updatedAt: 1000,
+  const thread = wireThread("ref_t", {
     status: { type: "active" },
-    cwd: "/tmp/project",
-    cliVersion: "1.0.0",
-    source: "evener",
-    evener: {
-      ref: "ref_t",
-      capabilities: {
-        send: false,
-        steer: true,
-        interrupt: true,
-        compact: true,
-        clear: false,
-        forkFromTurn: false,
-        shutdown: true,
-        changeModel: true,
-        changeVisionModel: true,
-        queue: true,
-        goal: true,
-        sharedNotes: true,
-        rename: true,
-      },
-      queue: { revision: 0 },
-      activeTurnId: "turn_1",
-    },
     turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
-  };
+  });
+  thread.evener.activeTurnId = "turn_1";
   return hydrateThread({ thread }, "ref_t", 1000);
 }
 
