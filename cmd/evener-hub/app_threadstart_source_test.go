@@ -23,7 +23,9 @@ func (s *recordingStartSource) StartThread(_ context.Context, params appwire.Thr
 }
 
 // TestHubThreadStartRoutesExplicitSource covers the explicit Source precedence:
-// a named source receives thread/start, even when Harness would route elsewhere.
+// a named source receives thread/start, even when Harness would route elsewhere,
+// and receives the normalized Source the hub resolved rather than the verbatim
+// padded field.
 func TestHubThreadStartRoutesExplicitSource(t *testing.T) {
 	sources := appsource.NewRegistry()
 	source := &recordingStartSource{scriptedAppSource: &scriptedAppSource{id: "remote-a"}}
@@ -40,8 +42,8 @@ func TestHubThreadStartRoutesExplicitSource(t *testing.T) {
 	if resp.Thread.ID != "spawned-remote-a" {
 		t.Fatalf("thread = %+v, want the remote source's thread", resp.Thread)
 	}
-	if got := source.gotParams.Source; got != "  remote-a  " {
-		t.Fatalf("forwarded params.Source = %q, want the caller's verbatim value", got)
+	if got := source.gotParams.Source; got != "remote-a" {
+		t.Fatalf("forwarded params.Source = %q, want the trimmed routing value", got)
 	}
 }
 

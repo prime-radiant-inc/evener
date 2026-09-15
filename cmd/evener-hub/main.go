@@ -411,8 +411,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("validate hosts: %w", err)
 	}
+	// sshStateInvalidatedNavigation is late-bound: the sshconn manager is
+	// constructed before the WebServer it must invalidate, and it is only ever
+	// invoked once the background loops start attaching hosts.
+	var sshStateInvalidatedNavigation func()
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		OnEvent: hubSSHStateInvalidation(func() {
+			if sshStateInvalidatedNavigation != nil {
+				sshStateInvalidatedNavigation()
+			}
+		}),
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -499,6 +508,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	// A connection-state transition flips sshconn.Manager.Attached, which is the
+	// online signal every remote row's liveness and the manifest's
+	// sources[].online are derived from. Roster/PastIndex/remoteCache hooks do not
+	// observe it on their own: the remote cache only refreshes on its ~30s tick and
+	// only invalidates when its contents changed, and a detached host whose last
+	// list already failed changes nothing there. Without this the fleet view can
+	// keep reporting a host online after it dropped, or keep its rows metas-only
+	// after it reconnected.
+	sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
 	if pinSections != nil {
 		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	}
@@ -631,6 +649,22 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 		})
 	}
 	return entries
+}
+
+// hubSSHStateInvalidation adapts an sshconn lifecycle hook to navigation
+// invalidation, calling invalidate only on the transitions that change
+// Manager.Attached: an attach, a detach, or a terminal attach failure.
+// Intermediate EventState transitions (preflighting, attaching, reconnecting)
+// never change the attached answer, so they do not force a rebuild.
+func hubSSHStateInvalidation(invalidate func()) func(sshconn.Event) {
+	return func(ev sshconn.Event) {
+		switch ev.Kind {
+		case sshconn.EventAttached, sshconn.EventDetached, sshconn.EventFailed:
+			if invalidate != nil {
+				invalidate()
+			}
+		}
+	}
 }
 
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {

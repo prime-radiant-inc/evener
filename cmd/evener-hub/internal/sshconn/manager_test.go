@@ -216,9 +216,15 @@ func TestManagerAttached(t *testing.T) {
 		t.Fatal("never-ensured host reported attached")
 	}
 	ch := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
-	m.setChannel("alpha", ch)
+	m.publishChannel("alpha", ch)
 	if !m.Attached("alpha") {
 		t.Fatal("live channel not reported attached")
+	}
+	// A dropped link is unusable before the supervisor clears it: markLost closes
+	// lost (child exit or monitor error) while done stays open.
+	ch.markLost()
+	if m.Attached("alpha") {
+		t.Fatal("link-lost channel reported attached")
 	}
 	if err := ch.Close(); err != nil {
 		t.Fatalf("close channel: %v", err)

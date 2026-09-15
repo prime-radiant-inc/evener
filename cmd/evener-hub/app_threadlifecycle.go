@@ -51,6 +51,12 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	sourceID := strings.TrimSpace(params.Source)
+	// Forward the normalized routing value, not the verbatim field the lookup
+	// trimmed: a source must not observe surrounding whitespace the hub already
+	// stripped to resolve it. A harness-routed start leaves Source empty, as the
+	// caller sent it, because the harness is the routing field in that case.
+	forward := params
+	forward.Source = sourceID
 	if sourceID == "" {
 		sourceID = launchSourceID(params)
 	}
@@ -59,7 +65,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if !ok || source == nil {
 			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 		}
-		return source.StartThread(ctx, params)
+		return source.StartThread(ctx, forward)
 	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
