@@ -5,7 +5,7 @@ import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../st
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { NotesPanelBody } from "./NotesPanel";
+import { hasNoteText, NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
 
 const CLASS = {
@@ -97,8 +97,8 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   // summary must agree with what expanding will actually show.
   const humanNote = canWrite ? (draftState?.text ?? model.humanNote) : model.humanNote;
 
-  const hasHumanNote = humanNote.trim() !== "";
-  const hasAgentNote = model.agentNote.trim() !== "";
+  const hasHumanNote = hasNoteText(humanNote);
+  const hasAgentNote = hasNoteText(model.agentNote);
   const hasUrls = model.sessionUrls.length > 0;
 
   let sourceIconKind: "person" | "skill" | "globe" | null = null;

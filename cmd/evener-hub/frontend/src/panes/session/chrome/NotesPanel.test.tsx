@@ -535,6 +535,15 @@ test("ended-empty session shows inert text with no editor", () => {
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
 });
 
+test("a whitespace-only note reads as empty in the read-only body, matching the summary", () => {
+  openPanel(testModel({ status: { type: "ended" }, humanNote: "   ", agentNote: "  " }));
+  // The collapsed bar judges emptiness by trimmed text; the expanded body
+  // must agree, or expanding an "Add a note…" bar shows blank paragraphs.
+  expect(screen.queryByTestId("shared-notes-human")).toBeNull();
+  expect(screen.queryByTestId("shared-notes-agent")).toBeNull();
+  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
+});
+
 // --- rule 3: live shows the always-visible editor -----------------------------
 
 test("live session with notes shows editor, agent note and remove", () => {
