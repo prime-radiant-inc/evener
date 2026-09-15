@@ -33,19 +33,19 @@ import {
   sourceLabel,
   strArrayField,
   strField,
-  watchDeliveryInstants,
   type WatchDisplayState,
   type WatchEntityView,
+  type WatchRow,
+  type WatchSummary,
+  watchDeliveryInstants,
+  watchDisplayState,
   watchFacts,
   watchFoldKey,
   watchIsScheduled,
   watchItems,
   watchMeta,
   watchName,
-  type WatchRow,
   watchRowID,
-  type WatchSummary,
-  watchDisplayState,
 } from "./index";
 
 type EntityLinkPublicTypes =
