@@ -1,0 +1,42 @@
+.editor {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--ink-hi);
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.editor:focus-visible {
+  outline: var(--focus-ring);
+}
+
+.editor[data-empty="true"]::before {
+  position: absolute;
+  color: var(--ink-low);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.skill {
+  display: inline;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-chip);
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+  box-decoration-break: clone;
+}
+
+.skill:global(.ProseMirror-selectednode) {
+  outline: var(--focus-ring);
+}
