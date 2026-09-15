@@ -52,8 +52,17 @@ trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
 # config has to be added here, which is the point.
 # Only mobile-native/vitest.config.mts is inside the swept trees today; the
 # frontend's vite and browser-guard configs sit beside src/, not in it.
+#
+# Every extension Metro and Vite resolve, not only the TypeScript ones. A
+# JavaScript module in these trees imports the package the same way a
+# TypeScript one does and bundles the same, so sweeping .ts/.tsx/.mts alone
+# left mobile-native's .js files -- and any .jsx, .cjs or .mjs added later --
+# free to name it by path. The list is the resolvers' list rather than the
+# extensions that happen to exist today: the file this gate exists to catch is
+# one nobody has written yet.
 sources=(
-	--include='*.ts' --include='*.tsx' --include='*.mts'
+	--include='*.ts' --include='*.tsx' --include='*.mts' --include='*.cts'
+	--include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs'
 	--exclude='vite.config.ts' --exclude='vitest.config.mts' --exclude='metro.config.js'
 	--exclude-dir=node_modules
 )

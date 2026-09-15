@@ -33,7 +33,11 @@ const DOC_CONTENT_SUBPATH = `${PACKAGE_NAME}/docContent`;
 const TESTING_PREFIX = `${PACKAGE_NAME}/testing/`;
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".git", "ios", "android", "__snapshots__"]);
-const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts"]);
+// Every extension the bundlers resolve, so the sweep reads the same files the
+// grep gate does. A JavaScript module reaches the package by the same relative
+// path a TypeScript one does; the target it lands on is still TypeScript, which
+// is what resolveSpecifier below probes for.
+const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
 // TypeScript always comes from this checkout's frontend, never from --root: a
 // fixture tree has no dependency tree of its own.

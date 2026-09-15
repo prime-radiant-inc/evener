@@ -312,6 +312,46 @@ func TestPackageImportPathsCheckExemptsOnlyTheResolverConfigsThatExist(t *testin
 	}
 }
 
+// Metro and Vite resolve JavaScript beside TypeScript, so a .js module in
+// these trees reaches the package by path exactly as a .ts one does and
+// bundles the same. The sweep's --include list named only the TypeScript
+// extensions, which left every one of these invisible to it.
+func TestPackageImportPathsCheckSweepsEveryExtensionTheBundlersResolve(t *testing.T) {
+	for _, file := range []string{
+		"mobile-native/src/legacyScreen.js",
+		"mobile-native/src/legacyScreen.jsx",
+		"mobile-native/scripts/seed.cjs",
+		"mobile-native/scripts/seed.mjs",
+		"mobile/src/legacyState.cts",
+		"cmd/evener-hub/frontend/src/legacyBridge.js",
+	} {
+		t.Run(file, func(t *testing.T) {
+			files := cleanPackageImportTree()
+			files[file] = "import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
+			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+			if passed {
+				t.Fatalf("the gate never read %s, so a path import there is free:\n%s", file, output)
+			}
+			if !strings.Contains(output, filepath.Base(file)) {
+				t.Fatalf("the gate named no offending file; wanted %s in:\n%s", file, output)
+			}
+		})
+	}
+}
+
+// Widening the sweep to JavaScript brings metro.config.js inside it. Mapping
+// the package name onto its path is the whole job of a resolver config, so the
+// exemption has to still hold for the one file the wider sweep newly reaches.
+func TestPackageImportPathsCheckStillExemptsTheJavaScriptResolverConfig(t *testing.T) {
+	files := cleanPackageImportTree()
+	files["mobile-native/metro.config.js"] =
+		"const appwire = require(\"../appwire-client/typescript/index.ts\");\nmodule.exports = appwire;\n"
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if !passed {
+		t.Fatalf("the gate faulted the resolver config for naming the path it exists to map:\n%s", output)
+	}
+}
+
 // The sweep reads module LOADERS. An earlier pattern accepted any identifier
 // before a parenthesis, which made an ordinary call carrying the package path
 // -- reading a fixture file, building a URL -- a failure of a gate about

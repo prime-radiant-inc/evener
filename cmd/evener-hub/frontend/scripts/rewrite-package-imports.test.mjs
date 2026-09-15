@@ -23,10 +23,12 @@ function fixture(files) {
   const written = {
     "appwire-client/typescript/index.ts":
       'export { errorText } from "./errors";\nexport { alpha, beta, Thing } from "./model";\n',
-    "appwire-client/typescript/errors.ts": "export function errorText() {\n  return '';\n}\nexport function internalOnly() {}\n",
+    "appwire-client/typescript/errors.ts":
+      "export function errorText() {\n  return '';\n}\nexport function internalOnly() {}\n",
     // Thing is a class so one import can take it as a type and another as a
     // value, which is how the same local name arrives spelled two ways.
-    "appwire-client/typescript/model.ts": "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
+    "appwire-client/typescript/model.ts":
+      "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
     "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
     ...files,
   };
@@ -86,7 +88,8 @@ test("the mobile-native/scripts tools are rewritten like every other consumer", 
   // They were carved out while the premise held that tsx reads no tsconfig
   // paths. It reads mobile-native/tsconfig.json, which simply had none.
   const root = fixture({
-    "mobile-native/scripts/check-hub.mts": 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
+    "mobile-native/scripts/check-hub.mts":
+      'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
   });
   try {
     assert.equal(rewrite(root).status, 0);
@@ -228,10 +231,7 @@ test("a whole-module site naming the package root is rewritten to the package na
     try {
       const run = rewrite(root);
       assert.equal(run.status, 0, `${specifier}: ${run.output}`);
-      assert.match(
-        readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
-        /from "@evener\/appwire-client";/,
-      );
+      assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /from "@evener\/appwire-client";/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -343,6 +343,25 @@ test("a comment above a removed duplicate goes with it", () => {
     assert.doesNotMatch(after, /about the second import/);
     assert.match(after, /\/\/ about the code below, which stays\nexport const used/);
     assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The bundlers resolve JavaScript beside TypeScript, so a .js consumer reaches
+// the package by the same relative path a .ts one does. The sweep walked only
+// the TypeScript extensions, which left such a file behind on every run.
+test("a JavaScript consumer is swept like a TypeScript one", () => {
+  const root = fixture({
+    "mobile-native/src/legacyScreen.js":
+      'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n',
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    assert.match(
+      readFileSync(path.join(root, "mobile-native/src/legacyScreen.js"), "utf8"),
+      /from "@evener\/appwire-client"/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
