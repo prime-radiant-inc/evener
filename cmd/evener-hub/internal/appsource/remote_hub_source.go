@@ -25,10 +25,11 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // "local:<thread>" namespace.
 //
 // This is component 05a: the read path (ID, ListThreads, ReadThread, ListTurns,
-// ListModels) plus registration. Subscription fan-out (05b), turn/thread
-// lifecycle mutations and mutation-unknown mapping (05c), and the capability
-// probe (05d) are staged; their interface methods exist and fail loudly until
-// then.
+// ListModels) plus registration, and component 05b: SubscribeThread and the
+// per-host notification fan-out that routes remote notifications to the
+// controller relays watching each remote thread. Turn/thread lifecycle
+// mutations and mutation-unknown mapping (05c) and the capability probe (05d)
+// are staged; their interface methods exist and fail loudly until then.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -159,6 +160,14 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	remote := params
 	remote.Ref = ref.String()
 	remote.ThreadID = ref.ThreadID
+	// The remote client is shared by every controller relay for this host, so
+	// controller-level replacement semantics must never reach it: the remote
+	// hub's replaceSubscription read scopes the whole connection to this one
+	// thread, silently dropping every other remote thread's subscription while
+	// their local routing entries stayed live. Replacement is a controller-side
+	// concept — app_relay.go applies it to the controller's own subscriptions —
+	// and SubscribeThread clears the flag for the same reason.
+	remote.ReplaceSubscription = false
 	var out appwire.ThreadReadResponse
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return appwire.ThreadReadResponse{}, err
