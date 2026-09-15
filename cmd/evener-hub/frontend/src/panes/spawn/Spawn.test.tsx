@@ -35,7 +35,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
-import { resetSpawnDraftsForTests, spawnDraftsStore } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -6067,6 +6067,71 @@ test("a local host choice omits source from the thread/start request", async () 
   await settled();
 
   await user.type(promptField(), "stay local");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
+// The hub keeps offline sources in the manifest (only the online flag flips),
+// so a host chosen while online stays present in the draft but must no longer
+// be submittable once it goes offline - otherwise thread/start is rejected
+// with "spawn source is not available".
+test("a host that goes offline while a draft names it falls back to local", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/offline-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+  });
+
+  // The option is still listed (disabled) but the effective choice is local.
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "no longer reachable");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
+// The other fallback: a draft naming a host that has left the manifest
+// entirely (removed while the draft lived). The picker shows local and the
+// wire omits source rather than launching the unknown host.
+test("a draft naming a host removed from the manifest shows local and omits source", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/removed-target");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/removed-target");
+  await act(async () => {
+    setDraftField(draft, "source", "decommissioned");
+  });
+
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "host is gone");
   await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
 
