@@ -1,7 +1,8 @@
 import {
-  type ActivityBranchState,
+  type ActivityDelegateBranch,
   type ActivitySessionNode,
   type ActivityTree,
+  activityDelegateBranch,
   activityNodeID,
   parseActivityTree,
 } from "./activityData";
@@ -19,9 +20,13 @@ export interface ActivityState {
   unsupported: boolean;
   ended: boolean;
 }
-export interface ActivityBranch extends ActivityBranchState {
+export interface ActivityBranch extends ActivityDelegateBranch {
   id: string;
   label: string;
+  // Only the root's branch carries diagnostics: the root has no row, so what
+  // the daemon could not read of its journals is the footer's to say. A
+  // delegate's own and its child's are the row's (activityDelegateDiagnostics).
+  diagnostics?: string[];
 }
 
 /** Own activity requests and retained results for one hub/session lifetime. */
@@ -64,18 +69,34 @@ export class ActivityList {
   }
   branches = (): ActivityBranch[] => {
     const branches: ActivityBranch[] = [];
-    const append = (id: string, label: string, branch: ActivityBranchState) => {
+    const append = (id: string, label: string, branch: ActivityDelegateBranch) => {
       if (branch.error || branch.truncated || branch.continuation) branches.push({ id, label, ...branch });
     };
-    const visit = (node: ActivitySessionNode) => {
-      append(activityNodeID(node), node.label, node.branch);
+    // One owner per token. A delegate row answers for the child session it
+    // rendered -- activityDelegateBranch reads that child's branch as well as
+    // the delegate's own -- so appending the child as a row of its own would
+    // repeat the same continuation under a second id: a duplicate "Load more"
+    // whose session-keyed id no delegate graft matches, or a second,
+    // un-actionable copy of a row the delegate already reports. Only the root
+    // speaks for itself; every other session is reached through a delegate.
+    const visitDelegates = (node: ActivitySessionNode) => {
       for (const entry of node.entries)
         if (entry.kind === "delegate") {
-          append(activityNodeID(entry), entry.delegate.description ?? entry.delegate.childRef, entry.delegate.branch);
-          if (entry.delegate.child) visit(entry.delegate.child);
+          append(
+            activityNodeID(entry),
+            entry.delegate.description ?? entry.delegate.childRef,
+            activityDelegateBranch(entry.delegate),
+          );
+          if (entry.delegate.child) visitDelegates(entry.delegate.child);
         }
     };
-    if (this.state.tree) visit(this.state.tree.root);
+    const root = this.state.tree?.root;
+    if (root) {
+      if (root.diagnostics?.length)
+        branches.push({ id: activityNodeID(root), label: root.label, ...root.branch, diagnostics: root.diagnostics });
+      else append(activityNodeID(root), root.label, root.branch);
+      visitDelegates(root);
+    }
     return branches;
   };
   start() {

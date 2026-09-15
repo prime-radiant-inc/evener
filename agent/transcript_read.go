@@ -197,6 +197,12 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 // Durable reload-reminder turns are reconciled the same way: the reminder turn
 // IS its handoff's admission, so a handoff whose reminder already landed must
 // be consumed here rather than delivered a second time after the restart.
+//
+// Durable delivery-notification turns are reconciled here too, for the same
+// reason (see reconcileSkillDeliveryNotifications): prepareSkillDelivery
+// records its notification before it mutates or removes the matching
+// obligation, so a failed metadata save leaves the snapshot holding a
+// transition the transcript already committed.
 func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *schema.SkillLifecycleSnapshot, sessionID string) {
 	if snapshot == nil {
 		return
@@ -259,6 +265,70 @@ func reconcileSkillCompactionReceipts(entries []transcript.Entry, snapshot *sche
 		}
 		snapshot.PendingHandoffs = kept
 	}
+	reconcileSkillDeliveryNotifications(entries, snapshot, sessionID)
+}
+
+// reconcileSkillDeliveryNotifications applies the typed delivery outcomes the
+// durable transcript already records to the snapshot's pending obligations. It
+// is the delivery half of the same crash / failed-save reconciliation as the
+// compaction receipts above: prepareSkillDelivery appends its notification turn
+// through the durable transcript door BEFORE it finalizes or identity-corrects
+// the matching obligation in the live snapshot, so a snapshot staler than the
+// transcript must adopt the transition the durable turn records. A failed
+// outcome finalizes its obligation — the explanation turn is its delivery — and
+// a delivered outcome adopts the corrected identity the turn carries, so the
+// next dispatch revalidates against the bytes it actually delivered instead of
+// re-deriving a second change notice. Without this a restart re-processed the
+// same missing or changed skill and appended the same notification twice.
+//
+// Outcomes from another session are ignored. Invocation identities are unique
+// per invocation within a session, so a matching outcome can only describe the
+// same obligation; every unrelated pending obligation is left untouched. The
+// LAST outcome recorded for an identity wins, because the transcript is
+// chronological: a later carrier (a retry that finally reloaded the repaired
+// source) supersedes an earlier failure notice for the same invocation, while
+// an earlier pending carrier never erases the notification that follows it.
+func reconcileSkillDeliveryNotifications(entries []transcript.Entry, snapshot *schema.SkillLifecycleSnapshot, sessionID string) {
+	if snapshot == nil || len(snapshot.Obligations) == 0 {
+		return
+	}
+	byInvocation := make(map[string]schema.SkillActivationOutcome)
+	for _, entry := range entries {
+		state := entry.Turn.SkillState
+		if state == nil {
+			continue
+		}
+		for _, outcome := range state.Outcomes {
+			if outcome.InvocationID == "" {
+				continue
+			}
+			if outcome.SessionID != "" && outcome.SessionID != sessionID {
+				continue
+			}
+			byInvocation[outcome.InvocationID] = outcome
+		}
+	}
+	if len(byInvocation) == 0 {
+		return
+	}
+	kept := snapshot.Obligations[:0]
+	for _, obligation := range snapshot.Obligations {
+		outcome, ok := byInvocation[obligation.InvocationID]
+		if !ok {
+			kept = append(kept, obligation)
+			continue
+		}
+		switch outcome.Status {
+		case "failed":
+			continue
+		case "delivered":
+			if outcome.Identity.Name != "" {
+				obligation.Identity = outcome.Identity
+			}
+		}
+		kept = append(kept, obligation)
+	}
+	snapshot.Obligations = kept
 }
 
 // applySkillCompactionReceipt advances a stale snapshot by one newer typed

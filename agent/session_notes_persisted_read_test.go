@@ -223,3 +223,48 @@ func TestReadPersistedHumanNoteAcceptsAnEscapedKey(t *testing.T) {
 		t.Fatalf("light read = (%q, %v, %v), want the escaped-key note", note, present, err)
 	}
 }
+
+// An escaped string in the journal is not a reason to walk it: the fast path must
+// survive documents whose payloads contain \n, \" or \u003c escapes, which is
+// most real journals. A keyless document that is broken after the key position
+// reads as absent while the fast path applies, and errors once the walk runs
+// (roborev's eleventh round).
+func TestReadPersistedHumanNoteKeepsFastPathForEscapedJournals(t *testing.T) {
+	sessionID := identifier.MustNewSessionID()
+	stateDir := t.TempDir()
+	const broken = `{"version":1,"accepted_turns":0,"journal":{"m1":"line1\nline2 \"quoted\" \u003ctag\u003e"`
+	writeMutationSnapshotFile(t, stateDir, sessionID, broken)
+
+	note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+	if err != nil {
+		t.Fatalf("escaped keyless journal = (%q, %v, %v), want an absence, not a walk error", note, present, err)
+	}
+	if present || note != "" {
+		t.Fatalf("escaped keyless journal = (%q, %v), want absent", note, present)
+	}
+}
+
+// The same shape as the benchmark above, with escapes in the journal: this is the
+// case the fast path has to keep.
+func BenchmarkReadPersistedHumanNoteAbsentWithEscapes(b *testing.B) {
+	var payload strings.Builder
+	payload.WriteString(`{"version":1,"accepted_turns":0,"journal":{`)
+	for i := range 2000 {
+		if i > 0 {
+			payload.WriteString(",")
+		}
+		fmt.Fprintf(&payload, `"m%05d":"line1\nline2 \"quoted\" \u003ctag\u003e %s"`, i, strings.Repeat("x", 120))
+	}
+	payload.WriteString(`}}`)
+	data := payload.String()
+	sessionID := identifier.MustNewSessionID()
+	stateDir := b.TempDir()
+	writeMutationSnapshotFile(b, stateDir, sessionID, data)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		note, present, err := ReadPersistedHumanNote(stateDir, sessionID)
+		if err != nil || present || note != "" {
+			b.Fatalf("light read = (%q, %v, %v), want absent", note, present, err)
+		}
+	}
+}

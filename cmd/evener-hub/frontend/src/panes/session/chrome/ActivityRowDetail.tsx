@@ -4,8 +4,10 @@
 // for shell jobs with output - the tail of the job's log. Pure presentation
 // except the one output-tail fetch; ActivityTree owns the detailID state and
 // passes the row plus its ticking `now` straight through.
+
+import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useState } from "react";
-import { type ActivityDelegateRow, type ActivityJobRow, activityDelegateState } from "../../../protocol/activityRows";
+import { activityDelegateDiagnostics } from "../../../protocol/activityData";
 import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
@@ -210,11 +212,12 @@ export function ActivityRowDetail({
       <span className={CLASS.detailMeta}>{metaText(row, now)}</span>
       {delegate && <span className={CLASS.detailMeta}>Delegate {delegate.delegateId} · send · stop · status</span>}
       {delegate?.parentWatchGranted && <span className={CLASS.detailMeta}>Watch enabled</span>}
-      {delegate?.diagnostics?.map((diagnostic) => (
-        <span className={CLASS.detailMeta} key={diagnostic}>
-          {diagnostic}
-        </span>
-      ))}
+      {delegate &&
+        activityDelegateDiagnostics(delegate).map((diagnostic) => (
+          <span className={CLASS.detailMeta} key={diagnostic}>
+            {diagnostic}
+          </span>
+        ))}
       {delegate?.warnings?.map((warning) => (
         <span className={CLASS.detailMeta} key={warning}>
           {warning}

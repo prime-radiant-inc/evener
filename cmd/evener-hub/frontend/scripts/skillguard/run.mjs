@@ -49,6 +49,15 @@ const CHILD_EXIT_GRACE_MS = 2_000;
 const SKILL_NAME = "pkg:probe";
 const SKILL_TOKEN = "probe";
 const SKILL_MENU_ROW = "/pkg:probe";
+// What composerState reports for the one selected skill chip.
+const SKILL_CHIPS = [`${SKILL_NAME}\u00d7`];
+
+// The payload a send is expected to carry. Most of this guard's sends go out
+// with the skill chip attached and nothing staged, so that is the default and
+// a site that differs says so.
+function draft(text, { chips = SKILL_CHIPS, tiles = 0 } = {}) {
+  return { text, chips, tiles };
+}
 const CHIP_REMOVE_PREFIX = "Remove skill pkg:probe";
 const REPLY_TEXT = "skillguard turn complete";
 const PROSE = {
@@ -217,15 +226,181 @@ export class Driver {
 
   // ---- native input ----
 
-  async typeText(text) {
-    for (const char of text) {
-      await this.send("Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: char,
-        text: char,
-        unmodifiedText: char,
-      });
-      await this.send("Input.dispatchKeyEvent", { type: "keyUp", key: char });
+  // One composer's own reading of itself: the value, the selection that decides
+  // where the next edit lands, and whether it is the focused element. Resolved
+  // from the session's own composer rather than from document.activeElement --
+  // two composers are mounted, and reading "whatever has focus" would answer
+  // about the wrong session the moment focus moved.
+  composerEditStateExpr(ref) {
+    return `(() => {
+      const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
+      const ta = root && root.querySelector("textarea");
+      if (!ta) return null;
+      return {
+        value: ta.value,
+        start: ta.selectionStart ?? ta.value.length,
+        end: ta.selectionEnd ?? ta.value.length,
+        focused: document.activeElement === ta,
+      }; })()`;
+  }
+
+  // settleComposer waits until one session's textarea stops changing under it,
+  // and returns the state it settled on. Two reads 80ms apart that agree is
+  // the signal that the last render has landed; it is not a promise that no
+  // further one is coming, which is why every caller re-checks afterwards.
+  // Focus is part of that state: a focus change during the wait is a change.
+  async settleComposer(ref, { timeoutMs = 5000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let previous = null;
+    for (;;) {
+      const now = await evaluate(this.send, this.composerEditStateExpr(ref));
+      if (!now) throw new Error(`settleComposer(${ref}): no composer textarea`);
+      const key = JSON.stringify(now);
+      if (key === previous) return now;
+      previous = key;
+      if (Date.now() > deadline) {
+        throw new Error(`settleComposer(${ref}): composer still changing after ${timeoutMs}ms (${key})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+  }
+
+  // typeText inserts text at one session's composer selection through the DOM.
+  //
+  // The composer's textarea is React-controlled, so a store update that
+  // re-renders it -- a drain committing, a turn clearing the draft -- will
+  // overwrite an edit that lands in the same tick. Three things answer that:
+  //
+  //   - the edit waits for that composer to settle, which removes the common
+  //     case of typing into one that is still re-rendering;
+  //   - the edit is a compare-and-swap against the value it settled on, so a
+  //     change arriving in the window after the settle declines the write
+  //     instead of overwriting it with content computed from a value the
+  //     composer no longer holds;
+  //   - the result is read back from a SETTLED read rather than from the same
+  //     evaluate that wrote it, so a render landing just after the write is
+  //     seen rather than missed.
+  //
+  // Every read and every write names the session's own composer, and refuses
+  // to touch it unless it is the focused element. Resolving
+  // document.activeElement instead would put the draft into whichever composer
+  // had focus at that instant, and with two mounted and both usually empty the
+  // compare-and-swap would not notice.
+  //
+  // The retry budget covers the swap and the post-write verification. A settle
+  // that never settles, a composer that is not there, or focus that has moved
+  // away fails outright: retrying a textarea that will not stop changing, or
+  // that the scenario is no longer typing into, only delays the same verdict
+  // with a worse message.
+  //
+  // What the retry does depends on what it finds, and the difference matters:
+  // once the text is in, the repair is the CARET alone. Recomputing an
+  // insertion from a base that already contains the text would type it twice.
+  async typeText(ref, text, { attempts = 4 } = {}) {
+    const selector = JSON.stringify(this.composerSelector(ref));
+    // Resolve, insist on focus, then act -- in one evaluate, so nothing moves
+    // between the check and the write.
+    const act = (body) => `(() => {
+      const root = document.querySelector(${selector});
+      const ta = root && root.querySelector("textarea");
+      if (!ta) return { error: "no composer textarea" };
+      if (document.activeElement !== ta) return { error: "composer is not the focused element" };
+      ${body} })()`;
+    // The typed run sitting where it was inserted is the question every retry
+    // turns on -- not equality with the value we wrote. An app that normalizes
+    // or pads its own draft after accepting ours has taken the text; only a
+    // value where the run is absent has not.
+    const runPresent = (state, at) => state.value.slice(at, at + text.length) === text;
+
+    let target = null;
+    for (let attempt = 1; ; attempt++) {
+      const settled = await this.settleComposer(ref);
+      if (!settled.focused) throw new Error(`typeText(${ref}): composer is not the focused element`);
+      let reason;
+      if (target && runPresent(settled, target.before.start)) {
+        // The text is in. Whatever else the value now holds is the app's, and
+        // the later payload assertions judge it; the repair here is the caret
+        // alone. Recomputing an insertion from a base that already contains
+        // the run would type it twice.
+        if (settled.start === target.caretWant && settled.end === target.caretWant) return;
+        const moved = await evaluate(
+          this.send,
+          act(`ta.selectionStart = ta.selectionEnd = ${target.caretWant};
+          return { placed: true };`),
+        );
+        if (!moved || moved.error) {
+          throw new Error(`typeText(${ref}): ${moved ? moved.error : "no result from the page (navigated or disconnected?)"}`);
+        }
+        const after = await this.settleComposer(ref);
+        if (runPresent(after, target.before.start) && after.start === target.caretWant && after.end === target.caretWant) {
+          return;
+        }
+        reason = `the caret would not stay at ${target.caretWant} (composer holds ${JSON.stringify(after.value)}, caret ${after.start}-${after.end})`;
+      } else {
+        // Where to insert from. A value back at the snapshot we typed into is
+        // a REVERT: re-apply the remembered result at the remembered
+        // selection, since the caret that came back with it is not where the
+        // scenario was typing. Anything else is a concurrent edit, and the
+        // insertion is recomputed from what the composer holds now.
+        let base;
+        let next;
+        let caretWant;
+        if (target && settled.value === target.before.value) {
+          base = target.before;
+          next = target.next;
+          caretWant = target.caretWant;
+        } else {
+          base = { value: settled.value, start: settled.start, end: settled.end };
+          next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
+          caretWant = base.start + text.length;
+          target = { before: base, next, caretWant };
+        }
+        // The swap compares the VALUE only. A render that resets the selection
+        // without touching the text is the exact failure this guard hit, and
+        // recomputing the insertion point from a caret that render moved would
+        // type in the wrong place; the remembered selection is the one the
+        // scenario meant.
+        const applied = await evaluate(
+          this.send,
+          act(`if (ta.value !== ${JSON.stringify(base.value)}) return { swapped: false, value: ta.value };
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+          setter.call(ta, ${JSON.stringify(next)});
+          ta.selectionStart = ta.selectionEnd = ${caretWant};
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          return { swapped: true };`),
+        );
+        // A null comes back when the evaluate itself could not run -- a
+        // navigation between the send and the reply, or a CDP error -- and
+        // reading .swapped off it would report a TypeError from this line
+        // instead of that.
+        if (!applied || applied.error) {
+          throw new Error(`typeText(${ref}): ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
+        }
+        if (!applied.swapped) {
+          // The target is REMEMBERED across a decline. A swap can be declined
+          // because a render landed after the write as easily as before it,
+          // and forgetting here sent the next attempt past the presence check
+          // and into a recompute from a base that already held the run --
+          // typing it twice. Every attempt asks "is the run where I put it?"
+          // first; the target is replaced only when that says no and the value
+          // is not the snapshot either, which is a genuine concurrent edit.
+          reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
+        } else {
+          const after = await this.settleComposer(ref);
+          // The caret decides where the NEXT insert lands, so it is as much
+          // part of the edit as the text is.
+          if (runPresent(after, base.start)) {
+            if (after.start === caretWant && after.end === caretWant) return;
+            reason = `a render moved the caret to ${after.start}-${after.end}, expected ${caretWant}`;
+          } else {
+            reason = `a render landed on the edit (holds ${JSON.stringify(after.value)}, expected the text at ${base.start})`;
+          }
+        }
+      }
+      if (attempt >= attempts) {
+        throw new Error(`typeText(${ref}): ${reason} after ${attempts} attempts`);
+      }
+      console.error(`skillguard: ${ref}: ${reason}; retrying (attempt ${attempt + 1}/${attempts})`);
     }
   }
 
@@ -244,7 +419,27 @@ export class Driver {
     if (selected !== true) throw new Error(`selectAll: composer textarea for ${ref} did not select its draft`);
   }
 
-  async press(key, modifiers = 0) {
+  // press sends a real key to one session's composer. The CDP event goes to
+  // whatever the page has focused, which is not necessarily the textarea this
+  // scenario is driving, so focus is put back on that composer first -- in the
+  // page, immediately before the key, rather than trusted from whatever ran
+  // last. A Backspace delivered to the wrong element deletes the wrong draft.
+  async press(ref, key, modifiers = 0) {
+    const focused = await evaluate(
+      this.send,
+      `(() => {
+        const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
+        const ta = root && root.querySelector("textarea");
+        if (!ta) return { error: "no composer textarea" };
+        const already = document.activeElement === ta;
+        if (!already) ta.focus();
+        return { restored: !already, focused: document.activeElement === ta }; })()`,
+    );
+    if (!focused || focused.error) {
+      throw new Error(`press(${ref}, ${key}): ${focused ? focused.error : "no result from the page (navigated or disconnected?)"}`);
+    }
+    if (!focused.focused) throw new Error(`press(${ref}, ${key}): the composer would not take focus`);
+    if (focused.restored) console.error(`skillguard: ${ref}: focus was elsewhere before ${key}; restored it`);
     const codes = {
       Enter: { code: "Enter", keyCode: 13 },
       Tab: { code: "Tab", keyCode: 9 },
@@ -365,15 +560,16 @@ export class Driver {
     return evaluate(this.send, this.composerStateExpr(ref));
   }
 
-  // railRowsExpr returns the expression the rail readiness wait evaluates.
-  // minRows turns it into a genuine predicate: the expression yields null until
-  // the rail holds at least that many rows, so waitPage actually blocks instead
-  // of returning an immediate (and always-truthy) { rows: [] }. The default 0
-  // preserves the always-{ rows } shape dumpState's evaluator relies on.
-  railRowsExpr(minRows = 0) {
+  // The rail element mounts before the hub's session list arrives, and waitPage
+  // resolves on any non-null value -- so returning a bare rows object made the
+  // caller's count check race the first render: the check saw an empty rail,
+  // and the failure dump caught both rows present moments later. atLeast makes
+  // the wait resolve only once that many rows are on screen. Callers that want
+  // a snapshot whatever the count (the failure dump) leave it at 0.
+  railRowsExpr({ atLeast = 0 } = {}) {
     return `(() => {
       const rows = [...document.querySelectorAll("[data-session-ref]")].map((el) => ({ ref: el.dataset.sessionRef, text: el.textContent.slice(0, 80) }));
-      return rows.length >= ${minRows} ? { rows } : null;
+      return rows.length >= ${atLeast} ? { rows } : null;
     })()`;
   }
 
@@ -519,7 +715,7 @@ export class Driver {
     // Type the completion token as its own trailing token (a leading space —
     // a mid-word slash never opens the menu); the inline slash menu opens
     // with real matches.
-    await this.typeText(` /${SKILL_TOKEN}`);
+    await this.typeText(ref, ` /${SKILL_TOKEN}`);
     await this.waitPage(
       `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']"); if (!menu) return null;
         return [...menu.querySelectorAll("button")].some((b) => b.textContent.includes(${JSON.stringify(SKILL_MENU_ROW)})) ? true : null; })()`,
@@ -552,7 +748,7 @@ export class Driver {
     // that made it a token is still in the text; delete it with a real
     // Backspace so the composer holds exactly the prose every later
     // assertion compares against.
-    await this.press("Backspace");
+    await this.press(ref, "Backspace");
     await this.waitPage(
       `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
         const ta = root && root.querySelector("textarea"); return ta && !ta.value.endsWith(" ") ? true : null; })()`,
@@ -578,12 +774,48 @@ export class Driver {
     return labels[0].label;
   }
 
-  async clickSubmit(ref) {
-    await this.clickComposerAction(ref, "composer-submit");
+  // Every action that SENDS the composer's draft states the draft it means to
+  // send, and the composer is held to it first. A draft that arrived
+  // corrupted used to be discovered much later, as a wait timing out on a
+  // transcript line that could not appear; named here, the failure says which
+  // characters are wrong and stops at the action that would have carried it.
+  //
+  // THREE actions send it, not two. Submit and steer are the obvious pair.
+  // The queue strip's "Steer queue now" is the third: turn/drainAsSteer
+  // "atomically appends the composer's current text/attachments (if any) to
+  // the input queue, then drains the whole queue into the active turn as one
+  // steering message" (stores/threads.ts:157), so a stray draft rides along
+  // with rows the scenario meant to send alone. Only "Edit message" sends
+  // nothing -- it returns a row TO the composer.
+  // The whole payload, not just the prose: a send carries the composer's text,
+  // its skill chips and its staged attachments, so an unexpected chip or a
+  // stray tile is as wrong as a scrambled character and was as invisible.
+  // placeholder, submitDisabled and steerVisible are not compared -- they
+  // describe the control, not what it sends.
+  async assertComposerDraft(ref, action, expect) {
+    if (!expect || typeof expect.text !== "string" || !Array.isArray(expect.chips) || typeof expect.tiles !== "number") {
+      throw new Error(`${action}(${ref}): pass the {text, chips, tiles} this action means to send`);
+    }
+    const state = await this.composerState(ref);
+    if (!state) throw new Error(`${action}(${ref}): no composer to send from`);
+    const sent = { text: state.text, chips: state.chips, tiles: state.tiles };
+    const want = { text: expect.text, chips: expect.chips, tiles: expect.tiles };
+    if (JSON.stringify(sent) !== JSON.stringify(want)) {
+      throw new Error(`${action}(${ref}): composer holds ${JSON.stringify(sent)}, expected ${JSON.stringify(want)}`);
+    }
   }
 
-  async clickSteer(ref) {
-    await this.clickComposerAction(ref, "composer-steer");
+  async sendComposerDraft(ref, testId, action, expect) {
+    await this.assertComposerDraft(ref, action, expect);
+    await this.clickComposerAction(ref, testId);
+  }
+
+  async clickSubmit(ref, expect) {
+    await this.sendComposerDraft(ref, "composer-submit", "clickSubmit", expect);
+  }
+
+  async clickSteer(ref, expect) {
+    await this.sendComposerDraft(ref, "composer-steer", "clickSteer", expect);
   }
 
   // A composer action click is lost when a re-render lands between the mouse
@@ -769,7 +1001,10 @@ async function runScenarios(driver) {
     timeoutMs: 30000,
     label: "app shell (rail brand)",
   });
-  const rows = await driver.waitPage(driver.railRowsExpr(2), { timeoutMs: 30000, label: "rail rows" });
+  const rows = await driver.waitPage(driver.railRowsExpr({ atLeast: 2 }), {
+    timeoutMs: 30000,
+    label: "two live sessions in the rail",
+  });
   check(rows.rows.length >= 2, `expected two live sessions in the rail, found ${rows.rows.length}`);
   // The control path targets helper alpha's OWN daemon, and rail order is not
   // start order: pin each session to the ref the Go owner derived from the
@@ -786,7 +1021,7 @@ async function runScenarios(driver) {
   await driver.openSession(driver.sessionA);
   driver.milestone("composer-mounted", { ref: driver.sessionA });
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.canonical);
+  await driver.typeText(driver.sessionA, PROSE.canonical);
   await driver.selectSkillChip(driver.sessionA);
   let state = await driver.composerState(driver.sessionA);
   check(state.chips.length === 1 && state.chips[0].includes(SKILL_NAME), `chip missing after selection: ${JSON.stringify(state)}`);
@@ -817,7 +1052,7 @@ async function runScenarios(driver) {
   // so every turn/start submit in the choreography is barriered by
   // construction (see waitForTurnIdle).
   await driver.waitForTurnIdle(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.canonical));
   const durable = await evaluate(driver.send, driver.durableRecordsExpr()).catch(() => ({}));
   driver.milestone("durable-mutation", durable);
   await driver.waitForComposerCleared(driver.sessionA);
@@ -827,7 +1062,7 @@ async function runScenarios(driver) {
 
   // ---- scenario: draft thread-switch / remount ----
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.draft);
+  await driver.typeText(driver.sessionA, PROSE.draft);
   await driver.selectSkillChip(driver.sessionA);
   driver.milestone("draft-staged", await driver.composerState(driver.sessionA));
   await driver.openSession(driver.sessionB);
@@ -842,7 +1077,7 @@ async function runScenarios(driver) {
   // Clear the draft for the next scenario: select all + remove the chip.
   await driver.focusComposer(driver.sessionA);
   await driver.selectAll(driver.sessionA);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionA, "Backspace");
   await driver.removeSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
   check(state.text === "" && state.chips.length === 0, `draft not cleared: ${JSON.stringify(state)}`);
@@ -855,8 +1090,8 @@ async function runScenarios(driver) {
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.queueTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.typeText(driver.sessionA, PROSE.queueTurn);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.queueTurn, { chips: [] }));
   // The daemon's ACK clears the composer; wait for it before typing again —
   // clearIfUnchanged deliberately keeps a draft that was edited before the
   // ACK landed, so typing too early would strand the queue prose.
@@ -864,9 +1099,9 @@ async function runScenarios(driver) {
   await driver.waitForActiveTurn(driver.sessionA);
   driver.milestone("hold-turn-started", { prose: PROSE.queueTurn });
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.queue1);
+  await driver.typeText(driver.sessionA, PROSE.queue1);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.queue1));
   let queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue1)})) ? strip : null; })()`,
     { label: "queue strip with first pass" },
@@ -892,9 +1127,9 @@ async function runScenarios(driver) {
   });
   driver.milestone("queue-returned", await driver.composerState(driver.sessionA));
   await driver.selectAll(driver.sessionA);
-  await driver.typeText(PROSE.queue2);
+  await driver.typeText(driver.sessionA, PROSE.queue2);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.queue2));
   queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.queue2)})) ? strip : null; })()`,
     { label: "queue strip with second pass" },
@@ -911,6 +1146,12 @@ async function runScenarios(driver) {
   // finish; the queue strip empties once the daemon has folded the queue into
   // the running turn. The click is effect-verified and retried — a lost
   // click here strands the whole choreography behind a held turn.
+  //
+  // It also sends whatever the composer holds, appended to the queue, so this
+  // scenario's "the queue drained" assertions are only about the queue while
+  // the composer is empty. Held to that here rather than discovered as an
+  // extra steering message in the provider requests.
+  await driver.assertComposerDraft(driver.sessionA, "drainAsSteer", draft("", { chips: [] }));
   await driver.clickQueueStripControl({
     locate: () => driver.clickByText("Steer queue now"),
     effectExpr: `(() => { const strip = ${driver.queueStripExpr()}; return strip === null || strip.rows.length === 0 ? true : null; })()`,
@@ -938,8 +1179,8 @@ async function runScenariosPart2(driver) {
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.steerTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.typeText(driver.sessionA, PROSE.steerTurn);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.steerTurn, { chips: [] }));
   // Wait for the ACK's composer clear before typing the steer prose (same
   // clearIfUnchanged race as the queue scenario's hold turn).
   await driver.waitForComposerCleared(driver.sessionA);
@@ -954,9 +1195,9 @@ async function runScenariosPart2(driver) {
   );
   driver.milestone("steer-turn-started", { prose: PROSE.steerTurn });
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.steer);
+  await driver.typeText(driver.sessionA, PROSE.steer);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSteer(driver.sessionA);
+  await driver.clickSteer(driver.sessionA, draft(PROSE.steer));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
   const steerBaseline = await driver.replyBaseline();
@@ -985,7 +1226,7 @@ async function runScenariosPart2(driver) {
     { timeoutMs: 30000, label: "attachment decoded (no longer processing)" },
   );
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.attachment);
+  await driver.typeText(driver.sessionA, PROSE.attachment);
   await driver.selectSkillChip(driver.sessionA);
   await driver.removeSkillChip(driver.sessionA);
   await driver.selectSkillChip(driver.sessionA);
@@ -994,7 +1235,7 @@ async function runScenariosPart2(driver) {
   check(attachState.text.includes("[image 1]"), `attachment anchor missing: ${JSON.stringify(attachState.text)}`);
   driver.milestone("attachment-preserved", attachState);
   const attachBaseline = await driver.replyBaseline();
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(attachState.text, { chips: attachState.chips, tiles: attachState.tiles }));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("attachment-submitted", {
     prose: PROSE.attachment,
@@ -1005,7 +1246,7 @@ async function runScenariosPart2(driver) {
   // ---- scenario: capability loss ----
   await driver.openSession(driver.sessionB);
   await driver.focusComposer(driver.sessionB);
-  await driver.typeText(PROSE.capabilityLoss);
+  await driver.typeText(driver.sessionB, PROSE.capabilityLoss);
   await driver.selectSkillChip(driver.sessionB);
   const staged = await driver.composerState(driver.sessionB);
   driver.milestone("caploss-staged", staged);
@@ -1018,7 +1259,7 @@ async function runScenariosPart2(driver) {
   );
   driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
   await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB);
+  await driver.clickSubmit(driver.sessionB, draft(PROSE.capabilityLoss));
   // The refusal keeps the draft: text and chips stay, and NOTHING durable is
   // written for this mutation.
   const refused = await driver.composerState(driver.sessionB);
@@ -1030,7 +1271,7 @@ async function runScenariosPart2(driver) {
   // Clean the staged draft so later IndexedDB reads stay unambiguous.
   await driver.focusComposer(driver.sessionB);
   await driver.selectAll(driver.sessionB);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionB, "Backspace");
   await driver.removeSkillChip(driver.sessionB);
   // The refusal toast renders OVER the composer card and swallows clicks
   // aimed at its buttons; wait for it to dismiss before any later scenario
@@ -1046,17 +1287,17 @@ async function runScenariosPart2(driver) {
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.failTurn);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.typeText(driver.sessionA, PROSE.failTurn);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.failTurn, { chips: [] }));
   // Wait for the ACK's composer clear before typing the failing claim (same
   // clearIfUnchanged race as every other held turn-start).
   await driver.waitForComposerCleared(driver.sessionA);
   await driver.waitForActiveTurn(driver.sessionA);
   driver.milestone("fail-turn-started", { prose: PROSE.failTurn });
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.fail);
+  await driver.typeText(driver.sessionA, PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   const queue = await driver.waitPage(
     `(() => { const strip = ${driver.queueStripExpr()}; return strip && strip.rows.some((row) => row.text.includes(${JSON.stringify(PROSE.fail)})) ? strip : null; })()`,
     { label: "queue strip with failing request" },
@@ -1077,10 +1318,10 @@ async function runScenariosPart2(driver) {
   // keeps every fresh turn/start barriered by construction.
   await driver.waitForTurnIdle(driver.sessionA);
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.fail);
+  await driver.typeText(driver.sessionA, PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
   const retryBaseline = await driver.replyBaseline();
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   await driver.waitForComposerCleared(driver.sessionA);
   await driver.waitForReply(REPLY_TEXT, retryBaseline);
   driver.milestone("fail-retried", { prose: PROSE.fail });
@@ -1091,9 +1332,9 @@ async function runScenariosPart2(driver) {
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.delay);
+  await driver.typeText(driver.sessionA, PROSE.delay);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.delay));
   // The submit was ACCEPTED — the composer clears at the daemon's ACK; wait
   // for it so the newer-draft typing below starts from an empty composer.
   await driver.waitForComposerCleared(driver.sessionA);
@@ -1105,7 +1346,7 @@ async function runScenariosPart2(driver) {
   // notification that arrives when the held turn finally completes must not
   // clobber this newer draft nor resurrect its removed chip.
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(` ${PROSE.delayExtra}`);
+  await driver.typeText(driver.sessionA, ` ${PROSE.delayExtra}`);
   await driver.selectSkillChip(driver.sessionA);
   const editedState = await driver.composerState(driver.sessionA);
   check(editedState.text.includes(PROSE.delayExtra), `newer draft lost the typed edit: ${JSON.stringify(editedState)}`);
@@ -1120,7 +1361,7 @@ async function runScenariosPart2(driver) {
   driver.milestone("delay-commit-kept", keptState);
   await driver.focusComposer(driver.sessionA);
   await driver.selectAll(driver.sessionA);
-  await driver.press("Backspace");
+  await driver.press(driver.sessionA, "Backspace");
 
   // ---- scenario: transport loss + recovery ----
   // Turn-end barrier: the offline submit must persist as a turn/start
@@ -1129,9 +1370,9 @@ async function runScenariosPart2(driver) {
   const netBaseline = await driver.replyBaseline();
   await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await driver.focusComposer(driver.sessionA);
-  await driver.typeText(PROSE.transport);
+  await driver.typeText(driver.sessionA, PROSE.transport);
   await driver.selectSkillChip(driver.sessionA);
-  await driver.clickSubmit(driver.sessionA);
+  await driver.clickSubmit(driver.sessionA, draft(PROSE.transport));
   // With the transport stalled the mutation cannot be acknowledged, but the
   // durable outbox has already persisted it — input text AND skill item — so
   // nothing is lost. (A RECOVERY row only ever appears for failed or orphaned

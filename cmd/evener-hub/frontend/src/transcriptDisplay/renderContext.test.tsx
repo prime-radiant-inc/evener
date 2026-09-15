@@ -1,3 +1,4 @@
+import type { EntityView } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../protocol/model";
@@ -94,6 +95,34 @@ test("keeps provider context identity across projection objects with equal seman
   );
   expect(observedContext).not.toBe(firstContextValue);
   expect(screen.getByTestId("context-probe").getAttribute("data-config")).toBe("activity");
+});
+
+test("carries the entity map and keys context identity on the map identity", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  const entities = new Map<string, EntityView>();
+  const { rerender } = render(
+    <TranscriptRenderProvider config={config} entities={entities}>
+      <ContextProbe />
+    </TranscriptRenderProvider>,
+  );
+  const firstContextValue = observedContext;
+  expect(firstContextValue?.entities).toBe(entities);
+
+  rerender(
+    <TranscriptRenderProvider config={{ ...config }} entities={entities}>
+      <ContextProbe />
+    </TranscriptRenderProvider>,
+  );
+  expect(observedContext).toBe(firstContextValue);
+
+  const replacement = new Map(entities);
+  rerender(
+    <TranscriptRenderProvider config={config} entities={replacement}>
+      <ContextProbe />
+    </TranscriptRenderProvider>,
+  );
+  expect(observedContext).not.toBe(firstContextValue);
+  expect(observedContext?.entities).toBe(replacement);
 });
 
 function DisclosureProbe({ id }: { id: string }) {
