@@ -178,6 +178,68 @@ func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
 	}
 }
 
+// ssh joins the remote argv and hands the result to the remote login shell, so a
+// value with a space would split into two arguments and a metacharacter would be
+// executed there. Ordinary words keep their documented, unquoted form.
+func TestQuoteRemoteWord(t *testing.T) {
+	cases := map[string]string{
+		"":                       "''",
+		"evener":                 "evener",
+		"/opt/evener/bin/evener": "/opt/evener/bin/evener",
+		"--stdio":                "--stdio",
+		"evener-appwire-v5":      "evener-appwire-v5",
+		"127.0.0.1:9180":         "127.0.0.1:9180",
+		"~/bin/evener":           "~/bin/evener",
+		"/home/dev/My Evener":    "'/home/dev/My Evener'",
+		"a;b":                    "'a;b'",
+		"$(id)":                  "'$(id)'",
+		"`id`":                   "'`id`'",
+		"it's":                   `'it'\''s'`,
+		"a\tb":                   "'a\tb'",
+	}
+	for in, want := range cases {
+		if got := quoteRemoteWord(in); got != want {
+			t.Errorf("quoteRemoteWord(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestChannelArgvQuotesHostValues(t *testing.T) {
+	host := hostreg.Host{
+		Name:       "alpha",
+		SSH:        "alpha.example",
+		EvenerPath: "/home/dev/My Evener/evener",
+		ConfigPath: "/etc/My Config/hub.toml",
+		Addr:       "127.0.0.1:9180",
+	}
+	argv := channelArgv(Options{}, host)
+	for _, want := range []string{"'/home/dev/My Evener/evener'", "'/etc/My Config/hub.toml'"} {
+		if !slices.Contains(argv, want) {
+			t.Fatalf("argv %v missing the quoted word %q", argv, want)
+		}
+	}
+	for _, word := range argv {
+		if strings.ContainsRune(word, ' ') && (!strings.HasPrefix(word, "'") || !strings.HasSuffix(word, "'")) {
+			t.Fatalf("word %q would split in the remote shell: %v", word, argv)
+		}
+	}
+}
+
+// A dropped link reaps the ssh child, and Manager.Close then kills an already
+// finished process: that is a normal teardown, not an error to report.
+func TestExecStdioKillAfterExitIsNotAnError(t *testing.T) {
+	stdio, err := (execRunner{}).Start(context.Background(), []string{"sh", "-c", "exit 0"}, io.Discard)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := stdio.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if err := stdio.Kill(); err != nil {
+		t.Fatalf("Kill after the child exited = %v, want nil", err)
+	}
+}
+
 // A registry entry is host-owned config, but it must never be able to smuggle an
 // ssh option: "-oProxyCommand=..." would run a command on the controller.
 func TestSSHDestGuardsOptionInjection(t *testing.T) {

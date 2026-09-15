@@ -254,8 +254,21 @@ func isAuthFailure(stderr string) bool {
 // transport failure and stays retryable (ErrSSHStart). diag is carried either
 // way, because it names the cause.
 func sshRunFailure(hostName, what string, err error, diag string) error {
-	if isAuthFailure(diag) {
+	if isAuthFailure(sshDiagnostic(err, diag)) {
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHAuth, hostName, what, err, diag)
 	}
 	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
+}
+
+// sshDiagnostic narrows a failure to what ssh itself reported. The remote
+// command's own stdout can contain the same words — "Permission denied" from a
+// binary the host will not execute — and reading that as an authentication
+// refusal would end the reconnect loop permanently for a problem that is not
+// authentication. A runner that reports no separated stream falls back to the
+// combined diagnostic.
+func sshDiagnostic(err error, combined string) string {
+	if rf, ok := errors.AsType[*RunError](err); ok {
+		return string(rf.Stderr)
+	}
+	return combined
 }

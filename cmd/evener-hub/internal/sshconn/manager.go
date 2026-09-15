@@ -261,6 +261,13 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	lock.Lock()
 
 	if ch := m.liveChannel(name); ch != nil {
+		// Close may have run since the lookup above; a channel it already tore
+		// down is not usable, and reporting it as such is the honest answer.
+		if m.isClosed() || ch.isClosed() {
+			lock.Unlock()
+			_ = ch.Close()
+			return nil, ErrManagerClosed
+		}
 		lock.Unlock()
 		return ch, nil
 	}
@@ -269,7 +276,16 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// supervisor must still find the channel mapped so it can run the reconnect
 	// loop. Only a successful publish retires it.
 	stale := m.currentChannel(name)
-	ch, err := m.ensureOnce(ctx, host)
+	// Bound the first attach when the caller set no deadline of its own: without
+	// it, a hung remote command holds this host's lock for good, exactly as it
+	// would on the reconnect path (attemptLimit).
+	attachCtx := ctx
+	cancel := func() {}
+	if _, ok := ctx.Deadline(); !ok {
+		attachCtx, cancel = context.WithTimeout(ctx, m.opts.attemptLimit())
+	}
+	ch, err := m.ensureOnce(attachCtx, host)
+	cancel()
 	if err != nil {
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
@@ -282,21 +298,29 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 		_ = ch.Close()
 		return nil, ErrManagerClosed
 	}
-	lock.Unlock()
-
-	if m.isClosed() {
-		// Close landed between publishing and announcing. The channel is already
-		// unusable, so report the terminal state instead of announcing it.
-		_ = ch.Close()
-		return nil, ErrManagerClosed
-	}
-	// Retire the replaced channel outside the lock: Channel.Close blocks on the
-	// ssh child's exit, and the supervisor does the same for its own channel.
+	// Announce under the lock, as reconnectOnce does. That is what orders the
+	// retired channel's Detached before this Attached, and it keeps a concurrent
+	// Ensure or supervisor from interleaving its own transitions with them.
 	if stale != nil {
-		_ = stale.Close()
+		m.detachEvent(name, StateReconnecting)
 	}
 	m.attachEvent(name, StateAttached)
 	go m.supervise(host, ch, lock)
+	lock.Unlock()
+
+	// The state is settled; then comes the slow part. Close may have run while
+	// the lock was held and closed every channel it could see, so re-check
+	// before claiming success. A window between this check and the caller's use
+	// is inherent: Close is terminal for the Manager.
+	if m.isClosed() || ch.isClosed() {
+		_ = ch.Close()
+		return nil, ErrManagerClosed
+	}
+	if stale != nil {
+		// Retire the replaced channel without the lock: Channel.Close blocks on
+		// the ssh child's exit.
+		_ = stale.Close()
+	}
 	return ch, nil
 }
 
@@ -311,15 +335,26 @@ func (m *Manager) Close() error {
 	}
 	m.closed = true
 	m.cancel()
-	chans := make([]*Channel, 0, len(m.chans))
-	for _, ch := range m.chans {
-		chans = append(chans, ch)
+	type entry struct {
+		name string
+		ch   *Channel
+	}
+	chans := make([]entry, 0, len(m.chans))
+	for name, ch := range m.chans {
+		chans = append(chans, entry{name: name, ch: ch})
 	}
 	m.mu.Unlock()
 
 	var first error
-	for _, ch := range chans {
-		if err := ch.Close(); err != nil && first == nil {
+	for _, e := range chans {
+		// Serialize with Ensure and this host's supervisor: both hold the host
+		// lock while they inspect or publish its channel, so a channel cannot be
+		// announced as usable after its teardown has begun.
+		lock := m.hostLock(e.name)
+		lock.Lock()
+		err := e.ch.Close()
+		lock.Unlock()
+		if err != nil && first == nil {
 			first = err
 		}
 	}
@@ -469,13 +504,16 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	delay := m.opts.backoffBase()
 	for {
 		if err := m.opts.waitSleep(m.baseCtx, m.jitterFor(delay)); err != nil {
+			// Every transition is emitted under the lock, so a concurrent Ensure
+			// cannot interleave its Preflighting with this Disconnected.
+			lock.Lock()
 			m.stateEvent(host.Name, StateDisconnected)
+			lock.Unlock()
 			return
 		}
 		if !m.reconnectOnce(host, lock) {
 			return
 		}
-		m.stateEvent(host.Name, StateReconnecting)
 		delay = nextBackoff(delay, m.opts.backoffMax())
 	}
 }
@@ -514,6 +552,7 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 		m.stateEvent(host.Name, StateDisconnected)
 		return false
 	}
+	m.stateEvent(host.Name, StateReconnecting)
 	return true
 }
 
@@ -665,8 +704,13 @@ func (c *Channel) Preflight() Preflight {
 	return pf
 }
 
-// Host returns the registry entry this channel was built from.
-func (c *Channel) Host() hostreg.Host { return c.host }
+// Host returns the registry entry this channel was built from. The value owns
+// its slice, mirroring Preflight and hostreg's own copies.
+func (c *Channel) Host() hostreg.Host {
+	h := c.host
+	h.Roots = slices.Clone(c.host.Roots)
+	return h
+}
 
 // Close kills the ssh child and closes the stream. It is idempotent and
 // terminal.
@@ -729,10 +773,16 @@ func (s *stdioReadWriter) Write(p []byte) (int, error) { return s.in.Write(p) }
 func (s *stdioReadWriter) Close() error {
 	errIn := s.in.Close()
 	errOut := s.out.Close()
-	if errIn != nil {
+	// These pipes are closed from two directions — Channel.Close and the child
+	// exiting on its own — so an already-closed pipe is expected, not a teardown
+	// failure worth reporting to Manager.Close's caller.
+	if errIn != nil && !errors.Is(errIn, os.ErrClosed) {
 		return errIn
 	}
-	return errOut
+	if errOut != nil && !errors.Is(errOut, os.ErrClosed) {
+		return errOut
+	}
+	return nil
 }
 
 // linkMonitor signals the first read error/EOF on the stream, which is the

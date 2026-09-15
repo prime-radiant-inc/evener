@@ -641,7 +641,8 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 			fail := authFail
 			mu.Unlock()
 			if fail {
-				return []byte("bob@alpha.example: Permission denied (publickey).\n"), errors.New("exit status 255")
+				auth := "bob@alpha.example: Permission denied (publickey).\n"
+				return []byte(auth), &RunError{Stderr: []byte(auth), Err: errors.New("exit status 255")}
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -679,6 +680,183 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 	mu.Unlock()
 	if got != 1 {
 		t.Fatalf("Start calls = %d, want 1 (an auth refusal must not re-attach)", got)
+	}
+}
+
+// A replacement channel must be announced only after its predecessor's Detached:
+// a consumer that installs and removes sources by these events would otherwise
+// leak the old registration.
+func TestEnsureAnnouncesDetachForRetiredChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	events := make(chan Event, 256)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// Freeze the dropped channel's supervisor behind the host lock and queue
+	// Ensure first, so Ensure is the one that retires the stale channel.
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = m.Ensure(context.Background(), "alpha")
+	}()
+	time.Sleep(10 * time.Millisecond)
+	ch1.markLost()
+	time.Sleep(10 * time.Millisecond)
+	lock.Unlock()
+	<-done
+
+	var kinds []EventKind
+	for {
+		select {
+		case ev := <-events:
+			kinds = append(kinds, ev.Kind)
+			continue
+		default:
+		}
+		break
+	}
+	detaches, firstDetach, lastAttach := 0, -1, -1
+	for i, k := range kinds {
+		switch k {
+		case EventDetached:
+			detaches++
+			if firstDetach < 0 {
+				firstDetach = i
+			}
+		case EventAttached:
+			lastAttach = i
+		}
+	}
+	if detaches != 1 {
+		t.Fatalf("detach events for the retired channel = %d, want exactly 1: %v", detaches, kinds)
+	}
+	if lastAttach < firstDetach {
+		t.Fatalf("replacement announced before the retired channel was detached: %v", kinds)
+	}
+}
+
+// OnEvent documents that callbacks run with the per-host lock held; that is what
+// orders a Detached before the Attached that follows it. A callback that finds
+// the lock free means the guarantee is gone.
+func TestAttachEventIsEmittedUnderTheHostLock(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+
+	var mu sync.Mutex
+	checked, unlocked := 0, 0
+	var m *Manager
+	m = newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventAttached {
+				return
+			}
+			lock := m.hostLock(ev.Host)
+			acquired := lock.TryLock()
+			if acquired {
+				lock.Unlock()
+			}
+			mu.Lock()
+			checked++
+			if acquired {
+				unlocked++
+			}
+			mu.Unlock()
+		},
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if checked == 0 {
+		t.Fatal("no attach event observed")
+	}
+	if unlocked != 0 {
+		t.Fatalf("%d of %d attach events were emitted without the host lock", unlocked, checked)
+	}
+}
+
+// A remote program's own "Permission denied" must not read as an ssh auth
+// refusal: that would end the reconnect loop for good over a problem that is not
+// authentication.
+func TestRemoteProgramPermissionDeniedIsNotAuthFailure(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			if strings.HasSuffix(strings.Join(argv, " "), "uname -s") {
+				denied := "Permission denied\n"
+				return []byte(denied), &RunError{Stdout: []byte(denied), Err: errors.New("exit status 1")}
+			}
+			return cannedRun(nil)(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	_, err := m.Ensure(context.Background(), "alpha")
+	if errors.Is(err, ErrSSHAuth) {
+		t.Fatalf("a remote program's stdout was read as an ssh auth refusal: %v", err)
+	}
+	if !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("err = %v, want retryable ErrSSHStart", err)
+	}
+}
+
+// The first attach is bounded too: a hung remote command must not hold the host
+// lock only because the caller passed a deadline-less context.
+func TestInitialPreflightIsBounded(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{attemptTimeout: 20 * time.Millisecond})
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Ensure succeeded against a hung host")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure never gave up: the initial preflight is unbounded")
+	}
+}
+
+// Host hands out the registry entry; a caller mutating it must not reach back
+// into the channel's own state.
+func TestHostIsIndependentCopy(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Roots: []string{"/srv/evener"}}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	got := ch.Host()
+	if len(got.Roots) == 0 {
+		t.Fatal("no roots to mutate")
+	}
+	got.Roots[0] = "tampered"
+	if ch.Host().Roots[0] != "/srv/evener" {
+		t.Fatal("Host() shares its Roots backing array")
 	}
 }
 
