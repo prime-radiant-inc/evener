@@ -176,6 +176,12 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "scp-like query token", in: "git@github.com:owner/repo.git?token=supersecret", want: "git@github.com:owner/repo.git"},
 		{name: "scp-like fragment token", in: "git@github.com:owner/repo.git#token=supersecret", want: "git@github.com:owner/repo.git"},
 		{name: "local path unchanged", in: "/srv/git/repo.git", want: "/srv/git/repo.git"},
+		// A scheme with no authority cannot be parsed for which part is a
+		// credential, so it fails closed. Neither shape is renderable by the
+		// frontend's parser (it needs `user@host:path` or an authority).
+		{name: "opaque scheme with token", in: "https:token@github.com/owner/repo.git", want: ""},
+		{name: "opaque file scheme", in: "file:/srv/git/repo.git", want: ""},
+		{name: "bare host scp-like", in: "github.com:owner/repo.git", want: ""},
 		{name: "empty", in: "   ", want: ""},
 		{name: "unparseable scheme fails closed", in: "https://a b@github.com/o/r.git", want: ""},
 	} {

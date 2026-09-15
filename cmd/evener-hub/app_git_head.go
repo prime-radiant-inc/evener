@@ -69,6 +69,14 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 func sanitizeGitRemote(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
+		// A scheme with no authority (https:token@host/path) is a shape this
+		// function cannot parse: there is no way to tell which part of it is a
+		// credential, so it fails closed exactly like an unparseable scheme
+		// URL. Nothing renderable is lost - the frontend's parser only
+		// recognizes `user@host:path` or a scheme URL with an authority.
+		if hasOpaqueScheme(trimmed) {
+			return ""
+		}
 		// A query or fragment is not part of a git remote address, and a
 		// `?token=...` there would otherwise cross AppWire untouched: the
 		// scheme-less branch cannot rely on url.Parse to drop it.
@@ -87,6 +95,28 @@ func sanitizeGitRemote(raw string) string {
 	parsed.Fragment = ""
 	parsed.RawFragment = ""
 	return parsed.String()
+}
+
+// hasOpaqueScheme reports whether value starts with a URL scheme (RFC 3986:
+// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":") and so names a URL whose
+// authority this package never got to parse - the caller sees a scheme-less
+// string only because the "//" is missing. A scp-like remote's `user@host:`
+// prefix cannot match: '@' and ':' are not scheme characters.
+func hasOpaqueScheme(value string) bool {
+	colon := strings.IndexByte(value, ':')
+	if colon <= 0 {
+		return false
+	}
+	for i := 0; i < colon; i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // resolveGitHead returns the current branch name or, in detached HEAD state,

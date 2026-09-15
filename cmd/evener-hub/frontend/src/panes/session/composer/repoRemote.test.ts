@@ -80,6 +80,15 @@ test("drops a query or fragment that could carry a token", () => {
   expect(parseRepoRemote("?token=supersecret")).toBeNull();
 });
 
+// An opaque scheme form (`https:token@host/path`, no `//`) is neither a scheme
+// URL the parser can read nor something it should trust. The hub rejects it
+// outright; the parser's own reconstruction must not carry the token either.
+test("never carries a credential from an opaque scheme form into the repo url", () => {
+  const remote = parseRepoRemote("https:supersecret@github.com/owner/repo.git");
+  expect(remote?.repoUrl).toBe("https://github.com/owner/repo");
+  expect(remote?.repoUrl).not.toContain("supersecret");
+});
+
 // Anything not a known forge's repo page yields null: the caller then shows the
 // branch unlinked rather than guessing a URL shape.
 test("returns null for unknown hosts, local paths and non-remotes", () => {
