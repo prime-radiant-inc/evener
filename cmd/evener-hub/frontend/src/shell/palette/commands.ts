@@ -155,6 +155,7 @@ export const UNAVAILABLE_REASON = "not available right now";
 function controlsFor(model: ThreadModel) {
   return sessionControls(model.status.type, model.capabilities, model.queue?.depth ?? 0);
 }
+const stopAvailable = (model: ThreadModel) => controlsFor(model).reason.stop;
 const steerAvailable = (model: ThreadModel) => controlsFor(model).reason.steer;
 const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;
 const drainAvailable = (model: ThreadModel) => controlsFor(model).reason.drain;
@@ -380,17 +381,12 @@ export function buildCommands(): Command[] {
       keywords: ["cancel", "stop"],
       scope: "session",
       capability: "interrupt",
-      // No status gate, for the same reason /model has no busy gate
-      // below: only the daemon knows. turn/interrupt names no turn (appwire v3)
-      // and its precondition is the session's own quiescence, so answering "is
-      // a turn in flight" here can only refuse a Stop the daemon would have
-      // taken. activeTurnId is missing in states the wire really reaches -- a
-      // session holding queued work reports active with no turn running (kata
-      // vewa/5gdv).
-      run: (ctx) => {
-        if (!ctx.sessionRef) return blocked("interrupt failed: no session");
-        return threadsStore.getState().interrupt(ctx.sessionRef);
-      },
+      // Stop's rule is sessionControls' (the status, never activeTurnId: a
+      // session holding queued work reports active with no turn running, kata
+      // vewa/5gdv, and the id is cleared between turn/completed and
+      // turn/started of an inline turn boundary).
+      available: stopAvailable,
+      run: (ctx) => runWhenAvailable(ctx, "interrupt", stopAvailable, (ref) => threadsStore.getState().interrupt(ref)),
     },
     {
       id: "clear",
@@ -731,12 +727,16 @@ function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedC
   if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
     return { ...command, unavailableReason: UNAVAILABLE_REASON };
   }
-  if (!capability || !model) return command;
-  if (!model.capabilities[capability]) return { ...command, unavailableReason: UNAVAILABLE_REASON };
-  // The command's own state rule (Command.available), so the menu's available
-  // set equals what runWhenAvailable accepts.
-  if (command.available?.(model) !== undefined) return { ...command, unavailableReason: UNAVAILABLE_REASON };
-  return command;
+  if (!model) return command;
+  // A command with its own rule (Command.available, from sessionControls) is
+  // decided by it alone, so the menu's available set equals what
+  // runWhenAvailable accepts; the raw capability flag is read only for the
+  // commands whose action the hub gates on nothing but that flag.
+  if (command.available) {
+    return command.available(model) === undefined ? command : { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
+  if (!capability || model.capabilities[capability]) return command;
+  return { ...command, unavailableReason: UNAVAILABLE_REASON };
 }
 
 export interface FilteredCommands {

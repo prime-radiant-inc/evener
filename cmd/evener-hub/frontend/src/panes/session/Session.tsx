@@ -23,6 +23,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { ThreadModel } from "../../protocol/model";
+import { sessionControls } from "../../protocol/submitRouting";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
@@ -511,7 +512,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
-              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !sessionControls(model.status.type, model.capabilities, model.queue?.depth ?? 0).send && (
+                <SessionChrome ref={ref} placement="menu" discoverActivity />
+              )}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}

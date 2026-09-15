@@ -808,7 +808,12 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Read here rather than inside the handlers below, which close over `model`
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
-  const canSendWhenEnded = model.capabilities.send;
+  const queueDepth = model.queue?.depth ?? 0;
+  // What this session may be asked to do now: one derivation for every control
+  // surface, with the rationale (status alone, never activeTurnId; capability
+  // is the harness's) in appwire-client/typescript/submitRouting.ts.
+  const controls = sessionControls(model.status.type, model.capabilities, queueDepth);
+  const canSendWhenEnded = controls.send;
   // The target's skillInput capability, same narrowing rule: submission is
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
@@ -857,14 +862,9 @@ export function Composer({ ref, focused }: ComposerProps) {
     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
       : tableAvailability;
-  const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
-  // What this session may be asked to do now: one derivation for every control
-  // surface, with the rationale (status alone, never activeTurnId; capability
-  // is the harness's) in appwire-client/typescript/submitRouting.ts.
-  const controls = sessionControls(model.status.type, model.capabilities, queueDepth);
   const showStop = controls.stop;
   const showSteer = controls.steer;
   // The one state kata 5gdv is about, described by the only code that can see

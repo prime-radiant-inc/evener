@@ -93,6 +93,7 @@ export function decideSteerRoute(opts: {
 // reason carries, for each false action, why: the harness's capability
 // (STEER_UNAVAILABLE and its siblings) or the status (NO_ACTIVE_TURN).
 export const NO_ACTIVE_TURN = "no active turn";
+export const TURN_RUNNING = "a turn is running";
 export const STEER_UNAVAILABLE = "Steer is not available for this session";
 export const STOP_UNAVAILABLE = "Stop is not available for this session";
 export const QUEUE_UNAVAILABLE = "Queue is not available for this session";
@@ -135,7 +136,7 @@ export function sessionControls(
     controls.reason.drain = capabilities.steer === true && !active && !parked ? NO_ACTIVE_TURN : STEER_UNAVAILABLE;
   }
   if (!controls.queue) controls.reason.queue = capabilities.queue === true ? NO_ACTIVE_TURN : QUEUE_UNAVAILABLE;
-  if (!controls.send) controls.reason.send = capabilities.send === true ? "a turn is running" : SEND_UNAVAILABLE;
+  if (!controls.send) controls.reason.send = capabilities.send === true ? TURN_RUNNING : SEND_UNAVAILABLE;
   return controls;
 }
 
