@@ -151,7 +151,21 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 	defer func() {
 		s.subMu.Lock()
 		delete(s.drains, client)
+		var orphaned []*remoteHubHostSubscription
+		for sub := range s.hostSubs {
+			if sub.client == client {
+				delete(s.hostSubs, sub)
+				orphaned = append(orphaned, sub)
+			}
+		}
 		s.subMu.Unlock()
+		// Closing out here (never from the consumer's context watcher) keeps
+		// drainLoop the channel's only closer as well as its only sender, so a
+		// send can never race a close. The consumer sees the close and
+		// re-subscribes against the next client.
+		for _, sub := range orphaned {
+			close(sub.out)
+		}
 	}()
 	for {
 		notification, ok := <-client.Notifications()
@@ -168,6 +182,9 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // Blocking rather than dropping is deliberate: a dropped turn/completed is
 // exactly the failure this component exists to prevent.
 func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
+	// Host-level consumers see every notification; the admin fan-out filters
+	// to the config methods it owns. Thread routing below is unchanged.
+	s.publishHostNotification(notification)
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
 		return

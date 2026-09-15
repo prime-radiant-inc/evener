@@ -384,6 +384,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
+	// Component 07a: the remote-admin proxy and its host-tagged config
+	// notification fan-out. The fan-out runs for the life of the hub process,
+	// like the other background workers; nothing here reads or writes a
+	// credential.
+	registerHostAdminHandlers(context.Background(), server, cfg, sources)
 	return server
 }
 
