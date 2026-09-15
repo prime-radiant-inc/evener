@@ -360,11 +360,24 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // payload-agnostic anyway (nothing reads those fields), so a debounced
 // evener/instance/list refetch is the only option, exactly like
 // evener/navigation/invalidated's own "just refetch" contract.
+//
+// A credential change made ON a remote host does not arrive as the unwrapped
+// evener/auth/updated above: the hub's host-notification fan-out re-emits that
+// host's own evener/auth/updated to this browser wrapped in
+// evener/host/notification tagged with the host
+// (cmd/evener-hub/app_host_admin.go's remoteHostConfigNotifications/relayHostNotifications).
+// It is reconciled against the host's OWN partition, never the controller's:
+// fetch() and the top-level fields are controller-only, so a remote change
+// debounces a fetchHost(host) instead.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
 let unsubscribeNotifications: (() => void) | undefined;
 let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+// hostRefetchTimers debounces each remote host's own refetch independently. One
+// shared timer would collapse a burst from two hosts into a load of whichever
+// arrived last, leaving the other host's partition stale.
+const hostRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function scheduleRefetch(): void {
   clearTimeout(refetchTimer);
@@ -381,8 +394,44 @@ function scheduleRefetch(): void {
   }, REFETCH_DEBOUNCE_MS);
 }
 
+// scheduleHostRefetch debounces a remote host's own listing reload so a
+// credential/model change on that host refreshes `hosts[host]` -- and, through
+// it, the spawn form's provider verdict and catalog -- without touching the
+// controller's fields. Mirrors scheduleRefetch's own swallow: fetchHost's
+// requireClient() throws outside its try/catch by design, and a rare
+// disconnect-during-the-debounce race must not surface as an unhandled
+// rejection on a call nothing awaits.
+function scheduleHostRefetch(host: string): void {
+  clearTimeout(hostRefetchTimers.get(host));
+  hostRefetchTimers.set(
+    host,
+    setTimeout(() => {
+      hostRefetchTimers.delete(host);
+      credentialsStore
+        .getState()
+        .fetchHost(host)
+        .catch(() => {});
+    }, REFETCH_DEBOUNCE_MS),
+  );
+}
+
+function clearHostRefetchTimers(): void {
+  for (const timer of hostRefetchTimers.values()) clearTimeout(timer);
+  hostRefetchTimers.clear();
+}
+
 function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/auth/updated") scheduleRefetch();
+  if (n.method === "evener/auth/updated") {
+    scheduleRefetch();
+    return;
+  }
+  // The host fan-out only re-emits the allow-listed host-owned config
+  // notifications (app_host_admin.go:189-195); of those, this store's own
+  // wire-truth list is the instance listing, so only a wrapped
+  // evener/auth/updated is actionable here.
+  if (n.method === "evener/host/notification" && n.params.method === "evener/auth/updated") {
+    scheduleHostRefetch(n.params.host);
+  }
 }
 
 function attachNotifications(client: AppwireClientLike | null): void {
@@ -390,6 +439,7 @@ function attachNotifications(client: AppwireClientLike | null): void {
   unsubscribeNotifications?.();
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
+  clearHostRefetchTimers();
   wiredClient = client;
   unsubscribeNotifications = client?.onNotification(handleNotification);
 }
@@ -408,6 +458,7 @@ connectionStore.subscribe((state, previous) => {
     credentialsStore.setState((current) => ({ loading: false, hosts: clearHostLoading(current.hosts) }));
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
+    clearHostRefetchTimers();
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
@@ -457,5 +508,6 @@ export function resetCredentialsStoreForTests(): void {
   wiredClient = null;
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
+  clearHostRefetchTimers();
   credentialsStore.setState({ ...emptyListState(), hosts: {}, loading: false, error: null });
 }
