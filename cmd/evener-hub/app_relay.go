@@ -552,6 +552,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				delivery   appsource.RelayDelivery
 				routingKey string
 				routing    relayNotificationRouting
+				// served names the routes a retained daemon-gone delivery has
+				// already reached; the replay after a pending route binds
+				// serves only the rest.
+				served map[string]bool
 			}
 			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
 			// routeChangeWait is the wake-up a parked frame waits on.
@@ -699,10 +703,40 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				acknowledge(delivery)
 			}
+			routesPending := func() bool {
+				relayMu.Lock()
+				defer relayMu.Unlock()
+				return handle.pendingRoutes != 0 && !handle.stopping
+			}
+			// serveDaemonGone publishes a daemon-gone delivery to every current
+			// route it has not reached yet. It reports whether a route is
+			// still being bound, in which case the delivery stays retained so
+			// that route hears it too once bound: the announcement is
+			// addressed to every subscriber of the daemon, including one whose
+			// subscription is mid-flight.
+			serveDaemonGone := func(pending *pendingRelayDelivery) bool {
+				targets, _ := lookupTargets("", relayNotificationUntargeted)
+				for _, target := range targets {
+					if pending.served[target.relayKey] {
+						continue
+					}
+					pending.served[target.relayKey] = true
+					publishTarget(pending.delivery, target)
+				}
+				return routesPending()
+			}
 			processPending := func() {
 				captureRouteChange()
 				kept := pendingDeliveries[:0]
 				for _, pending := range pendingDeliveries {
+					if pending.delivery.DaemonGone {
+						if serveDaemonGone(&pending) {
+							kept = append(kept, pending)
+							continue
+						}
+						acknowledge(pending.delivery)
+						continue
+					}
 					targets, wait := lookupTargets(pending.routingKey, pending.routing)
 					if wait {
 						kept = append(kept, pending)
@@ -722,6 +756,18 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			acceptDelivery := func(delivery appsource.RelayDelivery) {
 				captureRouteChange()
+				if delivery.DaemonGone {
+					pending := pendingRelayDelivery{delivery: delivery, routing: relayNotificationUntargeted, served: map[string]bool{}}
+					if serveDaemonGone(&pending) {
+						pendingDeliveries = append(pendingDeliveries, pending)
+						if delivery.Proceed != nil {
+							delivery.Proceed()
+						}
+						return
+					}
+					acknowledge(delivery)
+					return
+				}
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
 				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
 					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})

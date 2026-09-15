@@ -588,6 +588,109 @@ func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry
 	return subscribedHub{runDir: runDir, roster: roster, client: client}
 }
 
+// The daemon-gone announcement is addressed to every subscriber of the
+// daemon, including one whose subscription is mid-flight: a route being bound
+// while the announcement fans out must still hear it once bound.
+func TestHubRelayDaemonGoneReachesARouteBoundDuringTheFanOut(t *testing.T) {
+	const (
+		rootRef  = "local:midflight-root"
+		childRef = "local:midflight-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	childReadEntered, releaseChildRead := make(chan struct{}), make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			if params.Ref == childRef {
+				close(childReadEntered)
+				<-releaseChildRead
+			}
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	<-childReadEntered
+
+	// The daemon is announced gone while the child's route is being bound.
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+		Acknowledge:  func() { close(acknowledged) },
+		Proceed:      func() {},
+	}
+	expectRelayResync(t, root.Notifications(), "midflight-root", rootRef)
+	select {
+	case <-acknowledged:
+		t.Fatal("the announcement was acknowledged while a route was still being bound")
+	default:
+	}
+
+	close(releaseChildRead)
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitRelayResync(t, child.Notifications(), "midflight-child", childRef, 5*time.Second)
+	select {
+	case <-acknowledged:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the announcement was never acknowledged once every route had heard it")
+	}
+}
+
+// A hub built without a roster has no local daemons to list, and says so: it
+// registers no local source, so a local ref is refused as "source not found"
+// rather than resolved against a source that quietly lists nothing.
+func TestHubSourceRegistryWithoutRosterHasNoLocalSource(t *testing.T) {
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: t.TempDir()})
+	if _, ok := sources.Source("local"); ok {
+		t.Fatal("a roster-less hub registered a local source")
+	}
+	if _, err := sourceForThread(sources, "local:anything", ""); err == nil {
+		t.Fatal("a local ref resolved on a hub with no roster")
+	}
+}
+
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-delivery",

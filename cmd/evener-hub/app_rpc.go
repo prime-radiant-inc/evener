@@ -21,22 +21,22 @@ import (
 )
 
 // newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
-// wires a roster (main.go); without one the local source lists nothing.
+// wires a roster (main.go). Without one there is no local source at all, so a
+// lookup of a local ref fails as "source not found" rather than finding a
+// source that lists nothing.
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
 	roster := cfg.Roster
-	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		if roster != nil {
-			return localDaemonEntriesFromRoster(roster.List())
-		}
-		return nil
-	}, http.DefaultClient)
-	if roster != nil {
-		// A daemon that leaves for good is announced by the roster, the one
-		// place that sees its process or its file go; the relay tells that
-		// daemon's subscribers to re-read.
-		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry) })
+	if roster == nil {
+		return registry
 	}
+	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return localDaemonEntriesFromRoster(roster.List())
+	}, http.DefaultClient)
+	// A daemon that leaves for good is announced by the roster, the one place
+	// that sees its process or its file go; the relay tells that daemon's
+	// subscribers to re-read.
+	roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry) })
 	registry.Add(local)
 	return registry
 }

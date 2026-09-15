@@ -680,7 +680,11 @@ func (r *Roster) refresh() error {
 		fp = rosterFingerprint(bySess)
 	}
 	r.publishedGen = generation
-	prevBySess := r.bySess
+	// Departures are measured against the publication immediately before
+	// this one, taken here under the lock: two refreshes that overlapped
+	// each snapshot the same earlier state, and would both announce one
+	// session gone.
+	prevBySess, prevUnconfirmed := r.bySess, r.unconfirmed
 	r.bySess = bySess
 	r.byPID = byPID
 	ownershipChanged := r.ownershipErr != nil || !slices.Equal(r.unconfirmed, unconfirmed)
@@ -695,7 +699,7 @@ func (r *Roster) refresh() error {
 		}
 	}
 	sort.Strings(statusChanges)
-	gone := sessionsGone(prevBySess, previousUnconfirmed, bySess, unconfirmed)
+	gone := sessionsGone(prevBySess, prevUnconfirmed, bySess, unconfirmed)
 	onStatusChange := r.onStatusChange
 	onSessionGone := r.onSessionGone
 	onChange := r.onChange

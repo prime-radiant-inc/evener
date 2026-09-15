@@ -651,7 +651,7 @@ func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durable
 			return "", fmt.Errorf("close retained daemon ownership: %w", err)
 		}
 		if liveTarget != "" && liveTarget != target.SessionID {
-			return "", errors.New("multiple live daemons claim different target.SessionID sessions")
+			return "", errors.New("multiple live daemons claim different current sessions")
 		}
 		liveTarget = target.SessionID
 	}

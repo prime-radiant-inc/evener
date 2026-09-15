@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -1840,5 +1841,74 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 	roster.Refresh()
 	if !slices.Contains(announced, "01GONE") {
 		t.Fatalf("a vanished unresolved claim was not announced gone: %v", announced)
+	}
+}
+
+// heldProber blocks each probe of the gated session until released, in call
+// order, so two refreshes can be held open together; every other session
+// fails its probe.
+type heldProber struct {
+	gated   string
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *heldProber) Probe(entry rendezvous.Entry) ProbeResult {
+	if entry.SessionID != p.gated {
+		return ProbeResult{}
+	}
+	p.started <- struct{}{}
+	<-p.release
+	return ProbeResult{SessionID: p.gated, Status: appwire.ThreadStatusIdle, OK: true}
+}
+
+// Two refreshes that overlap each start from the same earlier snapshot; the
+// departure of a session must be announced by whichever publishes first, and
+// by the other not at all.
+func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
+	dir := t.TempDir()
+	parked := rendezvous.Entry{PID: 1001, SessionID: "01PARKED", ThreadID: "01PARKED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	steady := rendezvous.Entry{PID: 1002, SessionID: "01STEADY", ThreadID: "01STEADY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	writeRendezvous(t, dir, parked)
+	writeRendezvous(t, dir, steady)
+	prober := &heldProber{gated: "01STEADY", started: make(chan struct{}, 2), release: make(chan struct{})}
+	roster := NewRoster(dir, prober)
+	roster.SetProcessAlive(func(int) bool { return true })
+	var mu sync.Mutex
+	var announced []string
+	roster.SetOnSessionGone(func(gone LiveEntry) {
+		mu.Lock()
+		defer mu.Unlock()
+		announced = append(announced, gone.SessionID)
+	})
+	// First publication: the steady daemon confirmed, the other parked
+	// unresolved (its probe missed, its process answers).
+	initial := make(chan struct{})
+	go func() { roster.Refresh(); close(initial) }()
+	<-prober.started
+	prober.release <- struct{}{}
+	<-initial
+	if len(roster.UnconfirmedEntries()) != 1 {
+		t.Fatalf("unconfirmed = %+v, want the parked claim", roster.UnconfirmedEntries())
+	}
+
+	// The parked claim's file goes. Two refreshes start before either
+	// publishes, then publish in order.
+	if err := os.Remove(filepath.Join(dir, "1001.json")); err != nil {
+		t.Fatal(err)
+	}
+	first, second := make(chan struct{}), make(chan struct{})
+	go func() { roster.Refresh(); close(first) }()
+	<-prober.started
+	go func() { roster.Refresh(); close(second) }()
+	<-prober.started
+	prober.release <- struct{}{}
+	<-first
+	prober.release <- struct{}{}
+	<-second
+	mu.Lock()
+	defer mu.Unlock()
+	if len(announced) != 1 || announced[0] != "01PARKED" {
+		t.Fatalf("overlapping refreshes announced %v, want the departure once", announced)
 	}
 }
