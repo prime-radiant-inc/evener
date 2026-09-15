@@ -44,10 +44,12 @@ func (s *RemoteHubSource) toRemoteRef(rawRef, threadID string) (appwire.Ref, err
 // "whatever sources the remote hub has": this source must still ask the remote
 // for its own "local" source alone. Left unfiltered, the remote would also
 // return threads from ITS OWN nested remote sources, whose refs live in another
-// hub's namespace and cannot be represented here; fromRemoteThread refuses such
-// a ref, so one nested thread would fail the whole response and lose every
-// thread from this host. sourceAllowedForList gates whether this source is
-// called at all; within the call the answer is always exactly "local".
+// hub's namespace and cannot be represented here. fromRemoteThread refuses such
+// a ref and translateOut drops that unaddressable row, so an unfiltered forward
+// would quietly omit threads the controller can never route to; asking only for
+// "local" keeps the response to the threads this source can represent.
+// sourceAllowedForList gates whether this source is called at all; within the
+// call the answer is always exactly "local".
 func remapRemoteSourceIDs(sourceID string, ids []string) []string {
 	if len(ids) == 0 {
 		return []string{remoteHubNamespace}
@@ -148,13 +150,22 @@ func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
 func (s *RemoteHubSource) translateOut(out any) error {
 	switch response := out.(type) {
 	case *appwire.ThreadListResponse:
+		// Translate rows independently: a row from a nested remote hub carries a
+		// non-local ref this controller cannot address, and that one row must not
+		// discard the valid local rows returned alongside it. The unrepresentable
+		// row is skipped; every representable row is translated and retained.
+		if len(response.Data) == 0 {
+			break
+		}
+		translated := make([]appwire.Thread, 0, len(response.Data))
 		for index := range response.Data {
 			thread, err := s.fromRemoteThread(response.Data[index])
 			if err != nil {
-				return err
+				continue
 			}
-			response.Data[index] = thread
+			translated = append(translated, thread)
 		}
+		response.Data = translated
 	case *appwire.ThreadReadResponse:
 		thread, err := s.fromRemoteThread(response.Thread)
 		if err != nil {

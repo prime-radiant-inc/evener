@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // RemoteHubClientFunc returns an attached, initialized AppWire client for the
@@ -113,6 +115,17 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	// The production connector (sshManager.Ensure) reports a bridge that could
+	// not be spawned or handshaken as sshconn.ErrSSHStart, wrapping an
+	// *exec.ExitError or plain stderr text that carries none of the
+	// transport-shaped strings below. It is retryable — the remote host is
+	// merely unreachable right now — so it must become SessionUnavailable for
+	// the auto-resume gate. The terminal sshconn classes (ErrSSHAuth,
+	// ErrHostNotFound, ErrProtocolIncompatible, …) fall through to `return err`
+	// untouched: retrying them cannot succeed.
+	if errors.Is(err, sshconn.ErrSSHStart) {
+		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
@@ -145,6 +158,16 @@ func remoteHubTransportText(lower string) bool {
 }
 
 func (s *RemoteHubSource) ListThreads(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	// A non-empty filter that does not name this source excludes it: answer
+	// empty without forwarding. remapRemoteSourceIDs on its own maps such a
+	// filter to an empty slice, and SourceIDs is `omitempty` on the wire, so the
+	// omitted slice would ask the remote hub for ALL of its sources — the
+	// opposite of what the caller requested. The hub's thread/list fan-out
+	// (sourceAllowedForList) already skips this source in that case; the source
+	// method must not depend on its caller for its own filter contract.
+	if len(params.SourceIDs) > 0 && !slices.Contains(params.SourceIDs, s.id) {
+		return appwire.ThreadListResponse{}, nil
+	}
 	remote := params
 	remote.SourceIDs = remapRemoteSourceIDs(s.id, params.SourceIDs)
 	var out appwire.ThreadListResponse

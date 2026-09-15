@@ -185,3 +185,63 @@ func TestRemoteHubListThreadsDefaultRestrictsToLocalSource(t *testing.T) {
 		t.Fatalf("forwarded sourceIds = %v, want [local]", forwarded.SourceIDs)
 	}
 }
+
+// TestRemoteHubListThreadsExcludingFilterReturnsEmpty pins that a non-empty
+// SourceIDs filter which does not name this source yields no threads and never
+// reaches the remote hub. remapRemoteSourceIDs alone would map such a filter to
+// an empty slice, and ThreadListParams.SourceIDs is `omitempty` on the wire, so
+// the empty slice would be omitted and ask the remote for ALL of its sources —
+// the opposite of what the caller requested. The hub's thread/list fan-out
+// (sourceAllowedForList) is the only thing that currently stops that, so the
+// source method must honor its own contract rather than rely on its caller.
+func TestRemoteHubListThreadsExcludingFilterReturnsEmpty(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadList {
+			return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+			}}}}
+		}
+		return scriptedReply{result: map[string]any{}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"other"}})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("Data = %+v, want no threads for a filter that excludes this source", resp.Data)
+	}
+	for _, call := range calls() {
+		if call.method == appwire.MethodThreadList {
+			t.Fatalf("a filter excluding this source was forwarded to the remote hub: %+v", calls())
+		}
+	}
+}
+
+// TestRemoteHubListThreadsKeepsValidRowsWhenRowUnrepresentable pins that a
+// thread/list response carrying one row from a nested remote hub — a ref this
+// source cannot represent in the controller namespace — does not discard the
+// valid local rows translated alongside it. The nested row is skipped; every
+// representable row is still returned.
+func TestRemoteHubListThreadsKeepsValidRowsWhenRowUnrepresentable(t *testing.T) {
+	localThread := appwire.Thread{ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"}}
+	nestedThread := appwire.Thread{ID: "N", Source: "nested", Evener: appwire.EvenerThread{Ref: "nested:N"}}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{nestedThread, localThread}}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"host"}})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("Data = %+v, want only the representable local row", resp.Data)
+	}
+	if resp.Data[0].ID != "S" || resp.Data[0].Source != "host" || resp.Data[0].Evener.Ref != "host:S" {
+		t.Fatalf("row = %+v, want the translated local thread", resp.Data[0])
+	}
+}
