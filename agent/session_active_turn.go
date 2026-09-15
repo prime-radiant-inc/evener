@@ -345,10 +345,8 @@ func (s *Session) scheduleRunningTurnReleaseRetry(turnID string) {
 		// The name is free again, and nothing else will notice: whatever stood
 		// down for it is waiting out a backoff of its own -- as long as
 		// turnNameStoreRetryMaxDelay -- with no way to learn that the answer
-		// changed early. The steering table read the stale name as a turn in
-		// flight and left every steer alone (turnInFlight); now that it is
-		// gone, the table runs again and the wake carries what it held back.
-		s.reconcileClientSteering(steeringReconcileInputs{inFlight: s.turnInFlight()})
+		// changed early. The steering carrier's claim refused the taken slot
+		// too (steeringCarrierRailOpen); the wake carries what it held back.
 		s.wakeForPendingSteering()
 		s.notify()
 	})

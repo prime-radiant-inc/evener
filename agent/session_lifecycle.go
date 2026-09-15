@@ -1435,12 +1435,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
 		goalKicked := s.settleGoalOnIdle()
-		// Rule B: the input is over and no turn is in flight, so a claimed
-		// steer that was not this input's to touch -- a carrier's double
-		// failure left it -- comes back through the table now (row 8 returns
-		// it and re-arms the retry). Before armAwaitingAtSettle, so a
-		// returned steer counts as runnable work.
-		s.reconcileClientSteering(steeringReconcileInputs{})
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
 		if !s.sessionEndEmitted {
@@ -2579,16 +2573,12 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
 	s.injectDrainedSteering()
-	if s.steeringCarrierUndelivered(turnID) {
-		// The steer this turn exists to carry is still pending: its durable
-		// append failed and consumeSteeringMessage returned the claim (the
-		// writer is still usable, so the entry went back to accepted). A
+	if s.carrierSteerStillQueued(turnID) {
+		// The steer this turn exists to carry is still pending: its
+		// transcript append failed and it is back in the queue, accepted. A
 		// model request now would carry nothing, and a clean completion
 		// would let the drain ladder claim the same steer again, and again.
-		// Fail the turn already announced above and stand down; the steer
-		// is back in the queue, and the table that put it there
-		// (reconcileClientSteering, from consumeSteeringMessage's failure
-		// path) armed the retry or parked it.
+		// Fail the turn already announced above and stand down.
 		s.emitTurnFailure(errorDataFromError(fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)))
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return false

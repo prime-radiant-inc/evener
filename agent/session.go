@@ -413,7 +413,16 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue    []steeringMessage
+	steeringQueue []steeringMessage
+	// steeringInFlight holds the client steers popSteeringHead has taken out of
+	// steeringQueue whose incorporation the store has not yet recorded
+	// (consumeSteeringMessage finalizes it after the transcript append lands).
+	// The store keeps such a steer accepted until then, so
+	// reflectDurableClientSteering must not put it back in the queue. The value
+	// is true once the transcript append landed and only the store's
+	// incorporation write failed: delivered, and finalized by the next Stop
+	// or restore (reconcileClientSteering). Guarded by mu.
+	steeringInFlight map[string]bool
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 
@@ -857,11 +866,7 @@ type Session struct {
 	// steering append failed: every later injection point of the same input
 	// (tool rounds, the drain ladder's carrier claim) stands down, and the
 	// carrier retry owns the next attempt. Cleared when an input starts.
-	steeringDrainRefused bool
-	// steeringClaimants maps a claimed steer to the active turn popSteeringHead
-	// claimed it under, so the steering table can tell the running turn's own
-	// append from a stale claim an earlier turn left (row 5 vs 5').
-	steeringClaimants         map[string]string
+	steeringDrainRefused      bool
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry

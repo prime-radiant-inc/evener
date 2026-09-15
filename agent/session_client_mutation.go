@@ -595,7 +595,7 @@ func (s *Session) InterruptClientMutation(
 		// an idle session's Stop is refused), so this never clears one today;
 		// restore is where a hold persisted by the old unconditional write is
 		// released.
-		snapshot.SteeringHeld = snapshotHasPendingUserSteering(snapshot, target)
+		snapshot.SteeringHeld = snapshotHasPendingUserSteering(snapshot)
 		return nil
 	})
 	if err != nil {
@@ -640,12 +640,12 @@ func (s *Session) InterruptClientMutation(
 		s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
 		return interruptResponseFromRecord(current, appwire.MutationDispositionApplied)
 	}
-	// Sampled before the update, never inside it: the transcript question
-	// takes s.mu, which the store serializer must not wait on. cancelAndWait
-	// has returned, so no turn of this session is in flight.
-	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
+	// Sampled before the update, never inside it: the in-flight set is under
+	// s.mu, which the store serializer must not wait on. cancelAndWait has
+	// returned, so no turn of this session is appending.
+	recordedIDs, recorded := s.recordedSteeringAwaitingMark()
 	if err := s.clientMutations.update(lookup.Lease, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
-		if err := finalizeClientMutationInterrupt(snapshot, s.ID(), steering); err != nil {
+		if err := finalizeClientMutationInterrupt(snapshot, s.ID(), recorded); err != nil {
 			return err
 		}
 		terminal, ok := snapshot.Journal[record.ClientMutationID]
@@ -663,9 +663,7 @@ func (s *Session) InterruptClientMutation(
 		return appwire.TurnInterruptResponse{}, err
 	}
 	s.clientMutations.clearInterruptCallbackCompleted(params.ClientMutationID)
-	// The finalization may have returned a steer to the queue (the table's
-	// rows 7 and 8, parked); the runtime queue mirrors the store.
-	s.reflectDurableClientSteering()
+	s.steeringMarked(recordedIDs)
 	// No queued-input wake here, deliberately: the hold above parks the queue
 	// until the user asks for something to run, so a kick would find nothing
 	// claimable. The steering wake stays; a Stop with pending steering still
@@ -691,16 +689,15 @@ func interruptResponseFromRecord(
 }
 
 // finalizeClientMutationInterrupt settles the fence a Stop left: every user
-// turn naming the cancelled turn is retired as interrupted, and the client
-// steering is reconciled first through the one table that decides its fate
-// (reconcileClientSteering, with stopping set): a steer the cancelled turn
-// never recorded -- a carrier claim it landed on before the carrier took it,
-// or an append that failed under it -- goes back to the queue parked, the way
-// a queued message a Stop returns is (wms7), and a steer whose append landed
-// but whose incorporation write did not is incorporated. Steering entries are
-// therefore never retired here; steering carries the fence's inputs sampled
-// by the caller.
-func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, steering steeringReconcileInputs) error {
+// turn naming the cancelled turn is retired as interrupted, and pending client
+// steering goes through reconcileClientSteering with stopping set: a steer the
+// transcript holds (recorded, the caller's sample of the in-flight set) is
+// finalized, and every other is parked, the way a queued message a Stop
+// returns is (wms7) -- a steer the cancelled turn never recorded, whether a
+// carrier claim it landed on before the carrier drained it or an append that
+// failed under it, is still accepted in the store and waits for the user's
+// next run. Steering entries are never retired here.
+func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, recorded func(string) bool) error {
 	fence := snapshot.InterruptFence
 	if fence == nil {
 		return nil
@@ -709,8 +706,7 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 	if !ok {
 		return fmt.Errorf("interrupt fence %q has no journal record", fence.ClientMutationID)
 	}
-	steering.stopping = true
-	reconcileClientSteering(snapshot, steering)
+	reconcileClientSteering(snapshot, recorded, true)
 	for id, pending := range snapshot.PendingExecutions {
 		if pending.TurnID != fence.ExpectedTurnID {
 			continue
@@ -769,11 +765,13 @@ func (s *Session) recoverClientMutationInterrupt() error {
 	if s.clientMutations.snapshot().InterruptFence == nil {
 		return nil
 	}
-	steering := steeringReconcileInputs{recorded: s.recordedClientSteering(), stopping: true}
+	recordedIDs, recorded := s.recordedSteeringAwaitingMark()
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		return finalizeClientMutationInterrupt(snapshot, s.ID(), steering)
+		return finalizeClientMutationInterrupt(snapshot, s.ID(), recorded)
 	})
-	s.reflectDurableClientSteering()
+	if err == nil {
+		s.steeringMarked(recordedIDs)
+	}
 	return err
 }
 

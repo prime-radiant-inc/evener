@@ -97,25 +97,28 @@ func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]st
 	return ids, nil
 }
 
-// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending execution
-// names. A running turn does not survive the process that ran it: an id left
-// behind by an ungraceful exit has nothing that can ever settle it, and
-// AcceptClientMutationStart's "turn is already active" precondition would
-// then reject every later turn/start for the life of the session. An id a
-// pending execution still names is a different thing — that turn/start is
-// reclaimed and re-run by restore, and it needs its compare-and-commit
-// target intact. NextTurnSequence is deliberately untouched: ids stay
-// monotonic across restarts.
+// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending turn/start
+// or turn/queue names. A running turn does not survive the process that ran
+// it: an id left behind by an ungraceful exit has nothing that can ever settle
+// it, and AcceptClientMutationStart's "turn is already active" precondition
+// would then reject every later turn/start for the life of the session. An id
+// a pending user turn still names is a different thing — that turn/start is
+// reclaimed and re-run by restore, and it needs its compare-and-commit target
+// intact. NextTurnSequence is deliberately untouched: ids stay monotonic
+// across restarts.
 //
-// An id a pending STEER names is not this sweep's to keep or drop: that is a
-// steering-carrier claim the process died under, and reconcileClientSteering
-// (run by restoreDurableClientMutationQueues) releases it (#1342).
+// An id a pending STEER names is a steering-carrier claim the process died
+// under (claimSteeringCarrierTurn publishes the steer's reserved id before the
+// carrier opens). Nothing re-runs a carrier by its id -- the steer is still
+// pending and the next claim takes it afresh -- so the slot is released like
+// any other orphan (#1342).
 func forgetRunningTurnNoOneOwns(snapshot *clientMutationSnapshot) {
 	if snapshot.ActiveTurnID == "" {
 		return
 	}
 	for _, pending := range snapshot.PendingExecutions {
-		if pending.TurnID == snapshot.ActiveTurnID {
+		if pending.TurnID == snapshot.ActiveTurnID &&
+			(pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart) {
 			return
 		}
 	}

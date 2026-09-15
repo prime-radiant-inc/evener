@@ -916,12 +916,19 @@ func (s *Session) drainSteering() []steeringMessage {
 	return out
 }
 
-// popSteeringHead removes and returns the next steering message, persisting the
-// shrunk queue before returning. The second result is false when the queue is
-// empty. It mirrors popQueueHead (input queue): injectDrainedSteering consumes
-// the steering batch one message at a time so the persisted queue shrinks as
-// each message is durably recorded, bounding a mid-drain crash's loss to the
-// single in-flight message rather than the whole batch.
+// popSteeringHead removes and returns the next steering message. The second
+// result is false when the queue is empty. Daemon steering persists the shrunk
+// queue before returning, mirroring popQueueHead (input queue):
+// injectDrainedSteering consumes the steering batch one message at a time so
+// the persisted queue shrinks as each message is durably recorded, bounding a
+// mid-drain crash's loss to the single in-flight message rather than the whole
+// batch.
+//
+// A client steer writes nothing here: the store keeps it accepted until its
+// transcript append lands and consumeSteeringMessage finalizes it, so the
+// transcript is the only record of whether it was delivered. Between the pop
+// and that finalization the steer is in flight (steeringInFlight), which is
+// what keeps reflectDurableClientSteering from putting it back in the queue.
 func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
@@ -932,39 +939,53 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	}
 	entry := s.steeringQueue[0]
 	s.steeringQueue = s.steeringQueue[1:]
-	s.mu.Unlock()
 	if entry.ClientMutationID != "" {
-		var claimant string
-		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
-			if !ok {
-				return fmt.Errorf("client steering %q is not pending", entry.ClientMutationID)
-			}
-			pending.ExecutionState = "claimed"
-			snapshot.PendingExecutions[entry.ClientMutationID] = pending
-			record := snapshot.Journal[entry.ClientMutationID]
-			record.ExecutionState = "claimed"
-			snapshot.Journal[entry.ClientMutationID] = record
-			// The turn this claim belongs to, for the steering table's row 5.
-			claimant = snapshot.ActiveTurnID
-			return nil
-		}); err != nil {
-			s.mu.Lock()
-			s.steeringQueue = append([]steeringMessage{entry}, s.steeringQueue...)
-			s.mu.Unlock()
-			// A refused store write, not a benign race: the steer is back in
-			// the queue accepted and this turn will not take it again (rule L),
-			// so the carrier retry owns the next attempt.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v; the steering retry claims again", err)})
-			s.latchSteeringDrainRefused()
-			s.scheduleSteeringCarrierRetry()
-			return steeringMessage{}, false
+		if s.steeringInFlight == nil {
+			s.steeringInFlight = map[string]bool{}
 		}
-		s.recordSteeringClaimant(entry.ClientMutationID, claimant)
+		s.steeringInFlight[entry.ClientMutationID] = false
+		s.mu.Unlock()
 		return entry, true
 	}
+	s.mu.Unlock()
 	s.persistQueuesSnapshot()
 	return entry, true
+}
+
+// steeringLanded ends a client steer's in-flight window: it is either
+// incorporated (gone from the store) or, when its append failed, still
+// accepted there, and the reflect that follows puts an accepted steer back in
+// the queue at its place in the order.
+func (s *Session) steeringLanded(clientMutationID string) {
+	s.mu.Lock()
+	delete(s.steeringInFlight, clientMutationID)
+	s.mu.Unlock()
+	s.reflectDurableClientSteering()
+}
+
+// steeringMarked ends the in-flight window of steers a Stop's finalization
+// just marked incorporated (recordedSteeringAwaitingMark's sample).
+func (s *Session) steeringMarked(ids []string) {
+	for _, id := range ids {
+		s.steeringLanded(id)
+	}
+}
+
+// recordedSteeringAwaitingMark samples, under s.mu, the in-flight steers whose
+// transcript append landed but whose incorporation write the store refused,
+// and returns the question over that sample for reconcileClientSteering.
+// Taken before a store mutate, never inside one.
+func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(string) bool) {
+	set := map[string]struct{}{}
+	s.mu.Lock()
+	for id, landed := range s.steeringInFlight {
+		if landed {
+			set[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	s.mu.Unlock()
+	return ids, func(id string) bool { _, ok := set[id]; return ok }
 }
 
 // injectDrainedSteering drains any pending steering messages at a turn
@@ -1061,28 +1082,30 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
-			// The steer this turn claimed did not land. The table decides what
-			// happens to it (reconcileClientSteering rows 7 and 8: back to the
-			// queue, parked if a Stop or hold owns the next run, else the
-			// carrier retry is re-armed); a refused store write re-arms the
-			// same retry. This turn is the caller, not a turn in flight.
+			// The steer did not land. The store never left accepted, so ending
+			// its in-flight window puts it back in the queue for the next turn
+			// that drains steering.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.latchSteeringDrainRefused()
-			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
+			s.steeringLanded(msg.ClientMutationID)
+			s.scheduleSteeringCarrierRetry()
 			return false
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
-			// Recorded but not incorporated: the steer would sit claimed,
-			// absent from the queue, with nothing to retry it. Row 6 finalizes
-			// a recorded steer; run the table now (this turn is the caller),
-			// and a store still refusing re-arms the retry from there.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; reconciling", err)})
-			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
+			// Recorded, so delivered: the transcript holds the steer and the
+			// model reads it. Only the store's incorporation mark is missing;
+			// the steer stays in flight, marked recorded, so no reflect
+			// re-queues it, and the next Stop or restore finalizes it
+			// (reconcileClientSteering).
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
+			s.mu.Lock()
+			s.steeringInFlight[msg.ClientMutationID] = true
+			s.mu.Unlock()
 		} else {
 			// Incorporated: whatever carried it, the steer is in the transcript
 			// and the store agrees, so a carrier retry episode that may have
 			// been running for it is over.
-			s.forgetSteeringClaimant(msg.ClientMutationID)
+			s.steeringLanded(msg.ClientMutationID)
 			s.clearSteeringCarrierRetry()
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))

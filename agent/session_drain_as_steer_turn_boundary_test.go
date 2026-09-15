@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -604,70 +605,6 @@ func TestSteeringCarrierFailureIsNotRetriedByALaterTurnOfTheSameInput(t *testing
 	}
 }
 
-// TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite is review
-// round 2's second finding on #1329. consumeSteeringMessage appends the steer
-// to the transcript and then writes its incorporation to the mutation store;
-// when that second write fails the entry stays claimed, and a carrier that
-// read "still pending" as "undelivered" failed its turn over a steer the
-// model was about to read. Only a steer back to accepted is undelivered.
-func TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// After the claim, the carrier's store writes are popSteeringHead's
-		// claimed-mark and then finalizeIncorporatedSteering's; fail the
-		// second, after the transcript append that precedes it succeeded.
-		writes := 0
-		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-			writes++
-			if writes == 2 {
-				return errors.New("injected: incorporation write failed")
-			}
-			return nil
-		}
-	})))
-
-	var mu sync.Mutex
-	var seen []events.SessionEvent
-	drained := make(chan struct{})
-	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
-		mu.Lock()
-		seen = append(seen, ev)
-		mu.Unlock()
-	}, func() { close(drained) })
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-
-	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	// Round 7: a failed incorporation write is reconciled through the table
-	// at once (row 6: recorded, so finalize again), and the fault is
-	// one-shot, so the steer is incorporated before the input ends rather
-	// than left durably claimed with nothing to retry it.
-	if pending, still := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; still {
-		t.Fatalf("the steer reads %q after the input, want incorporated: a failed incorporation write left it claimed, absent from the queue, with no retry", pending.ExecutionState)
-	}
-	requests := adapter.Requests()
-	if len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
-		t.Fatalf("provider requests = %d carrying the steer=%v, want the carrier to run its model call over the recorded steer", len(requests), len(requests) == 2 && requestContainsText(requests[1], "second pass"))
-	}
-	s.Close()
-	<-drained
-	mu.Lock()
-	openings, failures, end := inputBoundary(seen, carrier)
-	transitions := boundaryTransitions(seen)
-	mu.Unlock()
-	if openings != 1 || failures != 0 || !strings.HasPrefix(end, "input_complete:") {
-		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier, no failure, a clean completion (transitions: %s)",
-			openings, failures, end, strings.Join(transitions, " "))
-	}
-}
-
 // TestSteeringCarrierAppendFailureReArmsTheWake is review round 3's first
 // finding on #1329. A carrier whose steer could not be recorded returns it to
 // the queue and ends the input idle; the retry was "the next wake's", but
@@ -865,71 +802,6 @@ func TestRestoreReleasesACarrierClaimThatNeverRan(t *testing.T) {
 	}
 }
 
-// TestSteeringCarrierKeepsTheSteerReachableWhenTheClaimReturnFailsToo is
-// review round 4's Medium on #1329. The append fails, and returning the
-// claim fails as well: the steer sits claimed in the store, which no wake
-// materializes, and a carrier that read "claimed" as recorded went on to
-// its model request without it. The carrier now confirms the steer is in
-// the transcript before treating a claimed entry as delivered, and the
-// retry recovers a claimed steer the transcript does not hold.
-func TestSteeringCarrierKeepsTheSteerReachableWhenTheClaimReturnFailsToo(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// After the claim: popSteeringHead's claimed-mark lands, the append
-		// is refused below, and the claim's return is the second store
-		// write -- refused too.
-		writes := 0
-		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-			writes++
-			if writes == 2 {
-				return errors.New("injected: claim return refused")
-			}
-			return nil
-		}
-	})))
-	fs := attachSteerRefusingFS(t, s, "second pass")
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	wakes := countingUserInputWake(s)
-
-	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := len(adapter.Requests()); got != 1 {
-		t.Fatalf("provider requests = %d, want 1: the carrier made a model request without the steer it exists to carry", got)
-	}
-	// The double failure left the steer claimed and invisible inside the
-	// input; the input's settle runs the table with no turn in flight (rule
-	// B), which returns it to the queue and re-arms the retry.
-	if state := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"].ExecutionState; state != "accepted" {
-		t.Fatalf("the steer reads %q after the input, want accepted (returned at the settle)", state)
-	}
-	if !s.hasPendingUserSteering() {
-		t.Fatal("the returned steer has no in-memory copy")
-	}
-	drainWakes(wakes)
-
-	// Storage recovers (the store fault above fires on its second write
-	// only); the retry must still be able to reach the steer.
-	fs.marker = []byte("<<nothing carries this marker>>")
-	select {
-	case <-wakes:
-	// TRIPWIRE: the first backoff is 250ms; only a retry never armed, or one that cannot see the steer, gets here.
-	case <-time.After(5 * time.Second):
-		t.Fatal("no wake reached the claimed steer: it is invisible to the retry")
-	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
-		t.Fatalf("the retry: ran=%v err=%v, want it to carry the recovered steer", ran, err)
-	}
-	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
-		t.Fatalf("the retry made %d request(s) in total and did not carry the steer", len(requests))
-	}
-}
-
 // TestAnyRecordedSteerResetsTheCarrierRetryBudget is review round 4's Low on
 // #1329: the backoff was cleared only when a carrier turn recorded its
 // steer. A user turn draining the same steer left the spent attempt on the
@@ -970,158 +842,6 @@ func TestAnyRecordedSteerResetsTheCarrierRetryBudget(t *testing.T) {
 	}
 	if got := carrierRetryAttempts(s); got != 0 {
 		t.Fatalf("carrier retry attempts = %d after the steer was recorded by the user's turn, want 0: the next carrier episode would inherit a spent budget", got)
-	}
-}
-
-// ---- review round 5: the undelivered-steer table ----
-
-// TestStopWithFailedAppendAndFailedReturnParksTheSteer is round 5's High: a
-// Stop crossing a carrier whose append fails AND whose claim return fails
-// found the steer claimed under the cancelled turn's id, and the retirement
-// path discarded it -- gone from the store, the queue and the transcript.
-func TestStopWithFailedAppendAndFailedReturnParksTheSteer(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	processDone := make(chan struct{})
-	interruptDone := make(chan error, 1)
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// popSteeringHead's claimed-mark is the first store write after the
-		// claim; the claim's return after the refused append is the second.
-		writes := 0
-		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-			writes++
-			if writes == 2 {
-				return errors.New("injected: claim return refused")
-			}
-			return nil
-		}
-	})))
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	fs := attachSteerRefusingFS(t, s, "second pass")
-	var stopOnce sync.Once
-	fs.onRefuse = func() {
-		stopOnce.Do(func() {
-			cancelled := make(chan struct{})
-			go func() {
-				_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
-					ClientMutationID: "stop-over-double-failure",
-				}, func() {
-					cancel()
-					close(cancelled)
-					<-processDone
-				})
-				interruptDone <- err
-			}()
-			<-cancelled
-		})
-	}
-
-	_, done := drainMidHeldLeg(ctx, t, s, adapter)
-	close(adapter.release)
-	awaitInput(t, done)
-	close(processDone)
-	if err := <-interruptDone; err != nil {
-		t.Fatalf("InterruptClientMutation: %v", err)
-	}
-
-	snapshot := s.clientMutations.snapshot()
-	pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]
-	if !ok {
-		t.Fatalf("the steer was discarded by the Stop's finalization (journal=%+v); the user's Applied message is gone from store, queue and transcript", snapshot.Journal["cm-drain-mid-leg"].ExecutionState)
-	}
-	if pending.ExecutionState != "accepted" || !snapshot.SteeringHeld {
-		t.Fatalf("the steer reads %q held=%v, want accepted and parked", pending.ExecutionState, snapshot.SteeringHeld)
-	}
-	if !s.hasPendingUserSteering() {
-		t.Fatal("the parked steer has no in-memory copy")
-	}
-}
-
-// TestRetryLeavesAnInFlightAppendAlone is round 5's first Medium: the retry
-// timer firing while a turn has claimed a steer and is appending it returned
-// that steer to accepted and re-materialized it, so the turn's own finalize
-// then left a stale head in the in-memory queue that popSteeringHead could
-// never pop ("not pending"), blocking every steer behind it.
-func TestRetryLeavesAnInFlightAppendAlone(t *testing.T) {
-	s := newQueuePersistTestSession(t, t.TempDir())
-	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	runningStartTurn(t, s, "running-turn", "do the thing")
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-in-flight",
-		Input:            []appwire.InputItem{{Type: "text", Text: "mid-append"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	// The turn is running and has popped the steer: claimed, append in flight.
-	s.mu.Lock()
-	s.state = SessionProcessing
-	s.mu.Unlock()
-	if _, ok := s.popSteeringHead(); !ok {
-		t.Fatal("popSteeringHead claimed nothing; this test is not in the window it means to be")
-	}
-
-	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
-	s.clock = clk
-	s.scheduleSteeringCarrierRetry()
-	// The retry fires on virtual time; Drain returns once its callback --
-	// the reconciliation -- has run to completion.
-	clk.Advance(jobNotificationRetryInitialDelay)
-	clk.Drain()
-
-	if state := s.clientMutations.snapshot().PendingExecutions["steer-in-flight"].ExecutionState; state != "claimed" {
-		t.Fatalf("the retry returned an in-flight steer to %q; the turn appending it will finalize a record the queue no longer agrees with", state)
-	}
-	if s.hasPendingUserSteering() {
-		t.Fatal("the retry re-materialized an in-flight steer into the queue: a stale head the turn's finalize leaves behind")
-	}
-}
-
-// TestFailedRecoveryReArmsTheRetry is round 5's second Medium: recovering a
-// claimed steer whose store write fails was warned about and forgotten; the
-// steer stayed claimed and invisible until a restart.
-func TestFailedRecoveryReArmsTheRetry(t *testing.T) {
-	s := newQueuePersistTestSession(t, t.TempDir())
-	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-unrecoverable",
-		Input:            []appwire.InputItem{{Type: "text", Text: "recover me"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	// Claimed, never appended, no turn running: the recovery case.
-	if _, ok := s.popSteeringHead(); !ok {
-		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
-	}
-	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-		return errors.New("injected: store refuses every write")
-	}
-
-	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
-	s.clock = clk
-	s.scheduleSteeringCarrierRetry()
-	// The retry fires on virtual time; Drain returns once its callback -- the
-	// reconciliation whose write fails -- has run to completion.
-	clk.Advance(jobNotificationRetryInitialDelay)
-	clk.Drain()
-
-	s.steeringRetryMu.Lock()
-	attempts := s.steeringCarrierRetry.attempts
-	s.steeringRetryMu.Unlock()
-	if attempts < 2 {
-		t.Fatalf("carrier retry attempts = %d after a recovery whose write failed, want it re-armed (>= 2): the steer stays claimed and invisible otherwise", attempts)
 	}
 }
 
@@ -1189,18 +909,16 @@ func TestFailedCarrierClaimReArmsTheRetryButAHeldRailDoesNot(t *testing.T) {
 // ---- review round 6: rows the table was missing ----
 
 // recordSteerWithFailedIncorporation takes the steer at the head of the queue
-// through popSteeringHead and consumeSteeringMessage with the store refusing
-// the incorporation write: the transcript holds the steer, the store still
-// reads claimed. The fault is one-shot.
+// and consumes it with a store that refuses the incorporation write: the
+// transcript append lands, the store keeps the steer accepted, and the steer
+// stays in flight in memory. This is the state a process dies in between the
+// append and the mark, which restore finalizes from the transcript.
 func recordSteerWithFailedIncorporation(t *testing.T, s *Session, clientMutationID string) {
 	t.Helper()
 	msg, ok := s.popSteeringHead()
 	if !ok || msg.ClientMutationID != clientMutationID {
-		t.Fatalf("popSteeringHead claimed %q (ok=%v), want %q", msg.ClientMutationID, ok, clientMutationID)
+		t.Fatalf("popSteeringHead took %q (ok=%v), want %q", msg.ClientMutationID, ok, clientMutationID)
 	}
-	// The store refuses every write until consumeSteeringMessage returns: the
-	// incorporation write, and the table's immediate row-6 re-run of it. The
-	// steer is recorded, and durably still claimed.
 	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
 		return errors.New("injected: incorporation write refused")
 	}
@@ -1209,11 +927,19 @@ func recordSteerWithFailedIncorporation(t *testing.T, s *Session, clientMutation
 	if !recorded {
 		t.Fatal("consumeSteeringMessage reported the append failed; this test wants it recorded")
 	}
-	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "claimed" {
-		t.Fatalf("the recorded steer reads %q, want claimed (the fault did not land on the incorporation write)", state)
+	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "accepted" {
+		t.Fatalf("the steer reads %q, want accepted: the fault did not land on the incorporation write", state)
 	}
-	if !s.steeringRecorded(clientMutationID) {
-		t.Fatal("the transcript does not hold the steer; this test is not in the state it means to be")
+	s.mu.Lock()
+	inTranscript := slices.ContainsFunc(s.history, func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnSteering && turn.ClientMutationID == clientMutationID
+	})
+	s.mu.Unlock()
+	if !inTranscript {
+		t.Fatal("the transcript does not hold the steer; this test wants it recorded")
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("a recorded steer was re-queued: the in-flight window did not cover the failed incorporation write")
 	}
 }
 
@@ -1415,107 +1141,10 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 
 // ---- review round 7: paths still deciding outside the table ----
 
-// newScriptedSteeringSession is newQueuePersistTestSession with a model that
-// answers, for scenarios that run a real turn.
-func newScriptedSteeringSession(t *testing.T, dir string) *Session {
-	t.Helper()
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(6, "ok")})
-	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(s.Close)
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	return s
-}
-
 func carrierRetryAttempts(s *Session) int {
 	s.steeringRetryMu.Lock()
 	defer s.steeringRetryMu.Unlock()
 	return s.steeringCarrierRetry.attempts
-}
-
-// TestUnrelatedTurnEndsWithAClaimedSteerReconciled is round 7's High: a steer
-// left claimed and invisible by a carrier whose append and claim return both
-// failed was preserved by row 5 as long as ANY turn was running, and nothing
-// after that turn ran the table again, so it never came back. The input's
-// settle now runs the table with no turn in flight.
-func TestUnrelatedTurnEndsWithAClaimedSteerReconciled(t *testing.T) {
-	s := newScriptedSteeringSession(t, t.TempDir())
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-left-claimed",
-		Input:            []appwire.InputItem{{Type: "text", Text: "left claimed"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	// The carrier's double failure, in its end state: claimed in the store,
-	// gone from the queue, the carrier's claim handed back.
-	carrier, ok := s.claimSteeringCarrierTurn()
-	if !ok {
-		t.Fatal("the steer could not claim a carrier turn; this test is not in the state it means to be")
-	}
-	if _, ok := s.popSteeringHead(); !ok {
-		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
-	}
-	s.releaseRunningTurnID(carrier)
-	if s.hasPendingUserSteering() {
-		t.Fatal("the claimed steer is still in the queue; this test is not in the state it means to be")
-	}
-
-	if _, err := s.ProcessInput(context.Background(), "an unrelated message", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	if state := s.clientMutations.snapshot().PendingExecutions["steer-left-claimed"].ExecutionState; state != "accepted" {
-		t.Fatalf("the steer reads %q after the unrelated turn, want accepted: row 5 preserved it for a turn that was not its own, and nothing ran the table afterwards", state)
-	}
-	if !s.hasPendingUserSteering() {
-		t.Fatal("the returned steer has no in-memory copy")
-	}
-	if got := carrierRetryAttempts(s); got != 1 {
-		t.Fatalf("carrier retry attempts = %d after the unrelated turn, want 1: the returned steer needs the retry to run it", got)
-	}
-}
-
-// TestRefusedPopClaimArmsTheRetry is round 7's second Medium: popSteeringHead
-// restored the entry and warned when the store refused its claimed-mark; the
-// carrier then failed its turn with the steer accepted and nothing armed.
-func TestRefusedPopClaimArmsTheRetry(t *testing.T) {
-	adapter := newHeldLegAdapter()
-	var s *Session
-	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
-		// The first store write after the claim is popSteeringHead's
-		// claimed-mark.
-		writes := 0
-		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-			writes++
-			if writes == 1 {
-				return errors.New("injected: claim write refused")
-			}
-			return nil
-		}
-	})))
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
-	close(adapter.release)
-	if err := awaitInput(t, done); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	if got := len(adapter.Requests()); got != 1 {
-		t.Fatalf("provider requests = %d, want 1: the carrier must not run its model call without the steer", got)
-	}
-	if state := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"].ExecutionState; state != "accepted" {
-		t.Fatalf("the steer reads %q, want accepted", state)
-	}
-	if got := carrierRetryAttempts(s); got != 1 {
-		t.Fatalf("carrier retry attempts = %d after the store refused the pop's claim, want 1: the carrier exited with the steer accepted and no wake", got)
-	}
 }
 
 // TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput is round 7's
@@ -1550,94 +1179,5 @@ func TestFailedDrainIsNotRetriedByALaterToolRoundOfTheSameInput(t *testing.T) {
 	}
 	if got := carrierRetryAttempts(s); got != 1 {
 		t.Fatalf("carrier retry attempts = %d after one input with a tool round, want 1: the tool round drained the refused steer again before the backoff", got)
-	}
-}
-
-// TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim is round 7's High, at the
-// moment the reviewer named: the retry fires while an unrelated turn runs, and
-// a steer an earlier carrier left claimed (its append and its claim return
-// both refused) is not that turn's to append. Row 5 preserved it for any turn
-// in flight; the table now preserves only the running turn's own claims.
-func TestRetryDuringAnUnrelatedTurnReturnsAStaleClaim(t *testing.T) {
-	s := newQueuePersistTestSession(t, t.TempDir())
-	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-left-claimed",
-		Input:            []appwire.InputItem{{Type: "text", Text: "left claimed"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	// The stale claim, in its end state: claimed in the store, gone from the
-	// queue, no turn running when it was left.
-	if _, ok := s.popSteeringHead(); !ok {
-		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
-	}
-	// An unrelated turn is now the one in flight.
-	runningStartTurn(t, s, "running-turn", "do the thing")
-	s.mu.Lock()
-	s.state = SessionProcessing
-	s.mu.Unlock()
-
-	clk := agenttest.NewFakeClockAt(time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
-	s.clock = clk
-	s.scheduleSteeringCarrierRetry()
-	clk.Advance(jobNotificationRetryInitialDelay)
-	clk.Drain()
-
-	if state := s.clientMutations.snapshot().PendingExecutions["steer-left-claimed"].ExecutionState; state != "accepted" {
-		t.Fatalf("the steer reads %q while an unrelated turn runs, want accepted: row 5 preserved a claim that was not the running turn's", state)
-	}
-	if !s.hasPendingUserSteering() {
-		t.Fatal("the returned steer has no in-memory copy: the running turn's next drain cannot carry it")
-	}
-	if got := carrierRetryAttempts(s); got != 2 {
-		t.Fatalf("carrier retry attempts = %d, want 2: the returned steer re-armed the retry", got)
-	}
-}
-
-// TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething: rule B runs
-// the table at every input's settle, so a table that changed nothing must
-// cost no durable write.
-func TestReconcileWritesTheStoreOnlyWhenTheTableChangedSomething(t *testing.T) {
-	s := newQueuePersistTestSession(t, t.TempDir())
-	defer s.Close()
-	serveSession(t, s)
-	if err := s.ensureClientMutationStore(); err != nil {
-		t.Fatalf("ensureClientMutationStore: %v", err)
-	}
-	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-		ClientMutationID: "steer-accepted",
-		Input:            []appwire.InputItem{{Type: "text", Text: "runnable"}},
-	}); err != nil {
-		t.Fatalf("steer: %v", err)
-	}
-	writes := 0
-	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-		writes++
-		return nil
-	}
-	s.reconcileClientSteering(steeringReconcileInputs{})
-	if writes != 0 {
-		t.Fatalf("store writes = %d for a table that changed nothing (row 4), want 0", writes)
-	}
-	// A stale claim with no turn in flight is row 8: one write returns it.
-	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
-	if _, ok := s.popSteeringHead(); !ok {
-		t.Fatal("popSteeringHead claimed nothing; this test is not in the state it means to be")
-	}
-	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
-		writes++
-		return nil
-	}
-	s.reconcileClientSteering(steeringReconcileInputs{})
-	if writes != 1 {
-		t.Fatalf("store writes = %d for a table that returned a steer (row 8), want 1", writes)
-	}
-	if state := s.clientMutations.snapshot().PendingExecutions["steer-accepted"].ExecutionState; state != "accepted" {
-		t.Fatalf("the steer reads %q, want accepted", state)
 	}
 }
