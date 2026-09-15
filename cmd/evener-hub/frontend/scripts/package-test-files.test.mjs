@@ -219,6 +219,20 @@ test("describeCwdRelativeReads accepts a read resolved against the module's own 
   );
 });
 
+test("describeCwdRelativeReads still flags a cwd read in a file that elsewhere uses import.meta.url", () => {
+  const file = path.join(dir, "a.ts");
+  const source = [
+    'import { readFileSync } from "node:fs";',
+    'import { fileURLToPath } from "node:url";',
+    'const ok = fileURLToPath(new URL("../testdata/ok.json", import.meta.url));',
+    'const bad = readFileSync(join("..", "testdata", "bad.json"), "utf8");',
+    "",
+  ].join("\n");
+  const message = describeCwdRelativeReads([file], () => source, dir);
+  assert.match(message, /a\.ts:4: const bad/);
+  assert.doesNotMatch(message, /ok\.json/);
+});
+
 test("describeCwdRelativeReads ignores ordinary relative imports beside an absolute read", () => {
   const file = path.join(dir, "a.ts");
   const source = [

@@ -44,9 +44,9 @@ const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
 // resolvable against the tarball.
 const NAMES_NO_VALUE_KINDS = new Set(["export-namespace-from"]);
 
-export function packageValuesIn(source, file, problems) {
+function valuesFromSites(sites, file, problems) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
-  for (const site of moduleSpecifierSites(ts, source)) {
+  for (const site of sites) {
     const names = bySpecifier.get(site.text);
     if (!names) continue;
     if (site.typeOnly) continue;
@@ -60,6 +60,10 @@ export function packageValuesIn(source, file, problems) {
     }
   }
   return bySpecifier;
+}
+
+export function packageValuesIn(source, file, problems) {
+  return valuesFromSites(moduleSpecifierSites(ts, source), file, problems);
 }
 
 // Tests are not shipped and are not consumers of the tarball, so isTestFile
@@ -82,12 +86,14 @@ export function consumerPackageUsage(repoRoot) {
   const problems = [];
   for (const tree of CONSUMER_TREES) {
     for (const file of consumerSources(join(repoRoot, tree))) {
-      const source = parse(file, readFileSync(file, "utf8"));
-      for (const site of moduleSpecifierSites(ts, source)) {
+      // Sites once per file, for both questions: whether the module is reached
+      // and which values it names.
+      const sites = moduleSpecifierSites(ts, parse(file, readFileSync(file, "utf8")));
+      for (const site of sites) {
         const entry = usage.get(site.text);
         if (entry) entry.used = true;
       }
-      const found = packageValuesIn(source, relative(repoRoot, file), problems);
+      const found = valuesFromSites(sites, relative(repoRoot, file), problems);
       for (const [specifier, names] of found) {
         for (const name of names) usage.get(specifier).values.add(name);
       }

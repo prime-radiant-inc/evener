@@ -1,14 +1,14 @@
 // One relative-specifier resolver for the repo's node-side tooling.
 //
 // Shared because the interesting part is a rule that is easy to get wrong and
-// fails loudly one caller at a time: `existsSync` is true for a directory, so
-// a bare `./helpers` resolves to the directory itself, the `index` candidate
-// below never runs, and the caller reads a directory as a file (EISDIR). The
+// fails loudly one caller at a time: only a FILE resolves, so a bare
+// `./helpers` naming a directory falls through to the `index` candidate rather
+// than resolving to the directory and being read as a file (EISDIR). The
 // extension list is a parameter because the callers probe different ones --
 // the SDK rewriter only ever resolves TypeScript, the package-test gate also
 // reaches .mjs tooling -- and widening either one to match the other would
 // change what it resolves.
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
 
 // Returns the file `specifier` names when read from `fromFile`, or null.
@@ -23,7 +23,11 @@ export function resolveSourceFile(fromFile, specifier, extensions) {
     ...extensions.map((extension) => path.join(base, `index${extension}`)),
   ];
   for (const candidate of candidates) {
-    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+    // One stat, not an existsSync guarding it: statSync throws for a path that
+    // is not there, which is the same answer as "not a file" here.
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {}
   }
   return null;
 }

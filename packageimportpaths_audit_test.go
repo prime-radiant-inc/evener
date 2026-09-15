@@ -84,74 +84,39 @@ func TestPackageImportPathsCheckPassesACleanTree(t *testing.T) {
 	}
 }
 
-// Each case is one path shape or quote style the gate has to catch. The gate
-// is a substring grep over quoted literals, so what varies here is the path
-// and the quote, not the import syntax around it -- that is the whole point of
-// dropping the parser.
+// Every path shape and quote style the gate has to catch, each in its own file
+// so one gate run over one tree checks the whole set. The gate is a substring
+// grep over quoted literals, so what varies is the path and the quote, not the
+// import syntax around it -- that is the whole point of dropping the parser.
 func TestPackageImportPathsCheckRejectsEveryPathSpelling(t *testing.T) {
-	for _, testCase := range []struct {
-		name    string
+	cases := []struct {
 		path    string
 		line    string
 		expects string
 	}{
-		{
-			name:    "relative import of the package directory",
-			path:    "mobile/src/state.ts",
-			line:    "import type { WireError } from \"../../appwire-client/typescript/errors\";\n",
-			expects: "by path",
-		},
-		{
-			name:    "the old relative protocol specifier inside the web tree",
-			path:    "cmd/evener-hub/frontend/src/app.ts",
-			line:    "import type { WireError } from \"./protocol/errors\";\n",
-			expects: "by path",
-		},
-		{
-			name:    "the directory the package moved out of",
-			path:    "mobile-native/scripts/check-hub.mts",
-			line:    "import type { W } from \"../../cmd/evener-hub/frontend/src/protocol/transport\";\n",
-			expects: "no longer exists",
-		},
-		{
-			name:    "a backtick specifier",
-			path:    "cmd/evener-hub/frontend/src/app.ts",
-			line:    "const reducer = await import(`../../protocol/reducer`);\n",
-			expects: "by path",
-		},
-		{
-			name:    "a single-quoted specifier",
-			path:    "cmd/evener-hub/frontend/src/app.ts",
-			line:    "import { errorText } from '../../protocol/errors';\n",
-			expects: "by path",
-		},
-		{
-			name:    "the package directory with no trailing slash",
-			path:    "mobile-native/src/screen.tsx",
-			line:    "import { AppwireClient } from \"../../appwire-client/typescript\";\n",
-			expects: "by path",
-		},
-		{
-			name:    "the seam directory itself, with the quote right after it",
-			path:    "cmd/evener-hub/frontend/src/app.ts",
-			line:    "import { errorText } from \"../protocol\";\n",
-			expects: "by path",
-		},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			files := cleanPackageImportTree()
-			files[testCase.path] = testCase.line
-			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
-			if passed {
-				t.Fatalf("the gate passed a tree containing %s\n  %s", testCase.path, testCase.line)
-			}
-			if !strings.Contains(output, testCase.expects) {
-				t.Fatalf("the gate failed for the wrong reason; wanted %q in:\n%s", testCase.expects, output)
-			}
-			if !strings.Contains(output, testCase.path) {
-				t.Fatalf("the gate named no offending file; wanted %q in:\n%s", testCase.path, output)
-			}
-		})
+		{"mobile/src/relativeDir.ts", "import type { WireError } from \"../../appwire-client/typescript/errors\";\n", "by path"},
+		{"cmd/evener-hub/frontend/src/oldProtocol.ts", "import type { WireError } from \"./protocol/errors\";\n", "by path"},
+		{"mobile-native/scripts/movedOut.mts", "import type { W } from \"../../cmd/evener-hub/frontend/src/protocol/transport\";\n", "no longer exists"},
+		{"cmd/evener-hub/frontend/src/backtick.ts", "const reducer = await import(`../../protocol/reducer`);\n", "by path"},
+		{"cmd/evener-hub/frontend/src/singleQuote.ts", "import { errorText } from '../../protocol/errors';\n", "by path"},
+		{"mobile-native/src/noTrailingSlash.tsx", "import { AppwireClient } from \"../../appwire-client/typescript\";\n", "by path"},
+		{"cmd/evener-hub/frontend/src/seamDirItself.ts", "import { errorText } from \"../protocol\";\n", "by path"},
+	}
+	files := cleanPackageImportTree()
+	for _, c := range cases {
+		files[c.path] = c.line
+	}
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate passed a tree of path spellings:\n%s", output)
+	}
+	for _, c := range cases {
+		if !strings.Contains(output, c.path) {
+			t.Fatalf("the gate named no offender for %s:\n%s", c.path, output)
+		}
+		if !strings.Contains(output, c.expects) {
+			t.Fatalf("the gate never produced %q (expected for %s):\n%s", c.expects, c.path, output)
+		}
 	}
 }
 
@@ -192,6 +157,7 @@ func TestPackageImportPathsCheckIgnoresProtocolThatIsNotTheSeam(t *testing.T) {
 func TestPackageImportPathsCheckRefusesAMissingTree(t *testing.T) {
 	for _, missing := range []string{"cmd/evener-hub/frontend/src", "mobile-native", "mobile/src"} {
 		t.Run(missing, func(t *testing.T) {
+			t.Parallel()
 			files := cleanPackageImportTree()
 			for path := range files {
 				if strings.HasPrefix(path, missing+"/") {
@@ -214,6 +180,7 @@ func TestPackageImportPathsCheckRefusesAMissingTree(t *testing.T) {
 func TestPackageImportPathsCheckRefusesAnUnusableRoot(t *testing.T) {
 	for name, root := range map[string]string{"empty": "", "missing": filepath.Join(t.TempDir(), "absent")} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			passed, output := runPackageImportCheck(t, root)
 			if passed {
 				t.Fatalf("the gate passed with a %s --root:\n%s", name, output)
@@ -259,25 +226,26 @@ func TestPackageImportPathsCheckExemptsOnlyTheResolverConfigsThatExist(t *testin
 // bundles the same. The sweep's --include list named only the TypeScript
 // extensions, which left every one of these invisible to it.
 func TestPackageImportPathsCheckSweepsEveryExtensionTheBundlersResolve(t *testing.T) {
-	for _, file := range []string{
+	extensionFiles := []string{
 		"mobile-native/src/legacyScreen.js",
 		"mobile-native/src/legacyScreen.jsx",
 		"mobile-native/scripts/seed.cjs",
 		"mobile-native/scripts/seed.mjs",
 		"mobile/src/legacyState.cts",
 		"cmd/evener-hub/frontend/src/legacyBridge.js",
-	} {
-		t.Run(file, func(t *testing.T) {
-			files := cleanPackageImportTree()
-			files[file] = "import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
-			passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
-			if passed {
-				t.Fatalf("the gate never read %s, so a path import there is free:\n%s", file, output)
-			}
-			if !strings.Contains(output, filepath.Base(file)) {
-				t.Fatalf("the gate named no offending file; wanted %s in:\n%s", file, output)
-			}
-		})
+	}
+	files := cleanPackageImportTree()
+	for _, file := range extensionFiles {
+		files[file] = "import { errorText } from \"../appwire-client/typescript/errors\";\nvoid errorText;\n"
+	}
+	passed, output := runPackageImportCheck(t, packageImportFixture(t, files))
+	if passed {
+		t.Fatalf("the gate passed a tree with path imports across every extension:\n%s", output)
+	}
+	for _, file := range extensionFiles {
+		if !strings.Contains(output, filepath.Base(file)) {
+			t.Fatalf("the gate never read %s, so a path import there is free:\n%s", file, output)
+		}
 	}
 }
 

@@ -40,20 +40,23 @@ export function sourceFilesOnDisk(dir) {
 
 // A package module that reads from disk has to resolve the path against its own
 // location, because the package is consumed from wherever the consumer happens
-// to run and the process's working directory is not its own. The rule is scoped
-// to lines that actually build a filesystem path - an ordinary `../sibling`
-// import is not one - and a file that says `import.meta.url` has already
-// answered the question. testing/hubWireFixtures.ts read
+// to run and the process's working directory is not its own. The hazard is one
+// shape: a filesystem call whose LEADING argument is a relative path literal,
+// which is what anchors it to the working directory -- `join("..", …)`,
+// `readFileSync("../x")`. A call anchored to a base identifier
+// (`resolve(packageDir, "..")`, `new URL("../x", import.meta.url)`) resolves
+// against that base, not the cwd, and an ordinary `from "../x"` import names no
+// such call; neither matches, so each read is judged by its own argument rather
+// than by anything else in the file. testing/hubWireFixtures.ts read
 // `join("..", "testdata", "authwire", "responses.json")` against the frontend's
 // CWD; it lives in the app now, which is the other way to satisfy this.
-const FS_PATH_CALL =
-  /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(/;
-const MODULE_SPECIFIER = /^\s*(?:import\b|export\b[^=]*\bfrom\b|.*\brequire\s*\()/;
-const RELATIVE_PATH_LITERAL = /["'](?:\.{1,2}["'/]|[^"']*\btestdata\b)/;
+const CWD_RELATIVE_READ =
+  /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(\s*["'`](?:\.\.?["'`/]|[^"'`]*\btestdata\b)/;
 
 // Whether the file loads node's fs by any form -- an import, a require, a
 // dynamic import -- read off the AST so all three count, where matching text
-// once let the other forms through.
+// once let the other forms through. `path.join` for a non-fs purpose in a file
+// that never touches fs is not this rule's business.
 const importsFs = (source) =>
   moduleSpecifierSites(ts, source).some((site) => /^(?:node:)?fs(?:\/promises)?$/.test(site.text));
 
@@ -62,12 +65,8 @@ export function describeCwdRelativeReads(files, read, dir) {
   for (const file of files) {
     const source = read(file);
     if (!importsFs(parseSource(ts, file, source))) continue;
-    if (source.includes("import.meta.url")) continue;
     source.split("\n").forEach((line, index) => {
-      if (MODULE_SPECIFIER.test(line)) return;
-      if (!FS_PATH_CALL.test(line)) return;
-      if (!RELATIVE_PATH_LITERAL.test(line)) return;
-      offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
+      if (CWD_RELATIVE_READ.test(line)) offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
     });
   }
   if (offenders.length === 0) return "";
@@ -340,17 +339,25 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`vitest list failed (exit ${listed.status}):\n${listed.stderr ?? ""}`);
     process.exit(1);
   }
-  const readFile = (file) => readFileSync(file, "utf8");
+  // One read per file across every check, and one walk of the package tree:
+  // the test files are the source files that are tests, not a second sweep.
+  const fileCache = new Map();
+  const readFile = (file) => {
+    let text = fileCache.get(file);
+    if (text === undefined) {
+      text = readFileSync(file, "utf8");
+      fileCache.set(file, text);
+    }
+    return text;
+  };
   const viteAliases = aliasesFrom(readFileSync(path.join(frontend, "vite.config.ts"), "utf8"));
   const packageSources = sourceFilesOnDisk(packageDir);
+  const onDisk = packageSources.filter((file) => isTestFile(path.basename(file)));
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
     describeAliasOrder(viteAliases),
-    describeUnaliasedImports(
-      reachableBareImports(testFilesOnDisk(packageDir), readFile, resolvePackageImport, packageDir),
-      viteAliases,
-    ),
+    describeUnaliasedImports(reachableBareImports(onDisk, readFile, resolvePackageImport, packageDir), viteAliases),
   ]) {
     if (problem) {
       console.error(problem);
@@ -358,7 +365,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
   }
 
-  const onDisk = testFilesOnDisk(packageDir);
   const problem = describeDifference(onDisk, collectedUnder(listed.stdout, frontend, packageDir), packageDir);
   if (problem) {
     console.error(problem);

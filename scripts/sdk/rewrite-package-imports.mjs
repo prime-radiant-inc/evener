@@ -104,8 +104,19 @@ function parse(file) {
 }
 
 // Names a module exports, by parsing it. Handles the two forms index.ts uses:
-// explicit named exports, and `export type * from "./types.gen"`.
-function exportedNames(file, seen = new Set()) {
+// explicit named exports, and `export type * from "./types.gen"`. Memoised per
+// module: the root and docContent are read once each, and a testing module a
+// dozen imports name is parsed once for all of them.
+const exportsCache = new Map();
+function exportedNames(file) {
+  let names = exportsCache.get(file);
+  if (!names) {
+    names = collectExports(file, new Set());
+    exportsCache.set(file, names);
+  }
+  return names;
+}
+function collectExports(file, seen) {
   const names = new Set();
   if (seen.has(file)) return names;
   seen.add(file);
@@ -129,7 +140,7 @@ function exportedNames(file, seen = new Set()) {
       if (!statement.moduleSpecifier) continue;
       const target = resolveSourceFile(file, statement.moduleSpecifier.text, PACKAGE_SOURCE_EXTENSIONS);
       if (!target) continue;
-      for (const name of exportedNames(target, seen)) names.add(name);
+      for (const name of collectExports(target, seen)) names.add(name);
       continue;
     }
     const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) ?? [] : [];
@@ -218,7 +229,10 @@ function mergeDuplicateImports(file, text, conflicts) {
     // the member shapes are not hand-parsed a second time. A named import's
     // specifier node sits directly under its ImportDeclaration; an inline
     // `import("x").Name` is also kind import-named but its parent is not one.
-    if (site.kind !== "import-named" || !site.text.startsWith(PACKAGE_NAME)) continue;
+    // Exactly the package or one of its subpaths, not a sibling whose name it
+    // is a prefix of (@evener/appwire-client-extra).
+    if (site.kind !== "import-named") continue;
+    if (site.text !== PACKAGE_NAME && !site.text.startsWith(`${PACKAGE_NAME}/`)) continue;
     const statement = site.node.parent;
     if (!ts.isImportDeclaration(statement)) continue;
     const key = `${site.text}\t${site.typeOnly ? "type" : "value"}`;
@@ -301,12 +315,16 @@ function main() {
   // the package -- so the tree this runs against has to be the one the last
   // run left, not a half-migrated mix of both.
   const pending = new Map();
+  // Each file's text, read once here and reused by the merge pass, so no file
+  // is read twice across the two sweeps.
+  const texts = new Map();
   let statementsRewritten = 0;
 
   for (const tree of layout.trees) {
     for (const file of treeSourceFiles(tree.dir, layout)) {
       const original = readFileSync(file, "utf8");
-      const source = parse(file);
+      texts.set(file, original);
+      const source = parseSource(ts, file, original);
       const edits = [];
       for (const site of moduleSpecifierSites(ts, source)) {
         const specifier = site.text;
@@ -392,13 +410,16 @@ function main() {
   if (!checkOnly) {
     const conflicts = [];
     let mergedFiles = 0;
-    for (const tree of layout.trees) {
-      for (const file of treeSourceFiles(tree.dir, layout)) {
-        const merged = mergeDuplicateImports(file, pending.get(file) ?? readFileSync(file, "utf8"), conflicts);
-        if (merged === null) continue;
-        pending.set(file, merged);
-        mergedFiles += 1;
-      }
+    // Only a file this run edited, or one that already names the package at
+    // least twice, can hold duplicate imports to merge. The rest are neither
+    // re-read (their text is in hand) nor parsed.
+    for (const [file, original] of texts) {
+      const text = pending.get(file) ?? original;
+      if (!pending.has(file) && text.split(PACKAGE_NAME).length - 1 < 2) continue;
+      const merged = mergeDuplicateImports(file, text, conflicts);
+      if (merged === null) continue;
+      pending.set(file, merged);
+      mergedFiles += 1;
     }
     if (conflicts.length > 0) {
       console.error(`${conflicts.length} import(s) cannot be merged; nothing was written:`);
