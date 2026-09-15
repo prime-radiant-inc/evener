@@ -1465,15 +1465,13 @@ function measure() {
   // capability only in steer mode (see CAPABILITIES), so Composer renders
   // Stop and Send, plus Steer in that mode. These are the actual controls it
   // must render at every width. The card alone is not a controls check: each
-  // control is measured below.
-  const controlTestIds = [
-    "composer-attach",
-    "composer-stop",
-    "composer-submit",
-    ...(steerMode ? ["composer-steer"] : []),
-  ];
+  // control is measured below. Steer is measured in both modes and expected
+  // only in steer mode, so a Steer drawn for a harness that advertises no
+  // steer fails the guard the same way a missing Stop does.
+  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
+    expected: testId !== "composer-steer" || steerMode,
     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
   }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
@@ -1505,10 +1503,11 @@ function measure() {
     box.right <= composerCardBox.right + 1 &&
     box.top >= composerCardBox.top - 1 &&
     box.bottom <= composerCardBox.bottom + 1;
-  const controls = composeControls.map(({ testId, element }) => {
+  const controls = composeControls.map(({ testId, expected, element }) => {
     const box = element?.getBoundingClientRect();
     return {
       testId,
+      expected,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1517,6 +1516,7 @@ function measure() {
   });
   const controlsDoNotOverlap = controls.every((control, index) =>
     controls.slice(index + 1).every((other) => {
+      if (!control.expected || !other.expected) return true;
       if (!control.box || !other.box) return false;
       return (
         control.box.right <= other.box.left + 1 ||
@@ -1584,8 +1584,10 @@ function measure() {
     currentWork: {
       found: visible(currentWork),
       composerCardFound: visible(composerCard),
-      controlsFound: controls.every((control) => control.present),
-      controlsContained: controls.every((control) => control.containedInCard && control.containedInPane),
+      controlsFound: controls.every((control) => control.present === control.expected),
+      controlsContained: controls.every(
+        (control) => !control.expected || (control.containedInCard && control.containedInPane),
+      ),
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
       sharedPaneWithoutOverflow:
