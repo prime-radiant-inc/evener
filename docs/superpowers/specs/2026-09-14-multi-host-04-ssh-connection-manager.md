@@ -243,10 +243,14 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   custom layout through the bridge while the manager probes and restarts the
   *default* address — a silent split-brain, not a clean failure — which is
   exactly the finding this rule closes. An entry that sets neither uses the
-  documented host defaults on both sides
-  (`~/.config/evener/hub.toml`-class resolution and `127.0.0.1:9180`), and the
-  manager then refuses a restart it cannot match to the configured address (§5)
-  rather than restarting whatever holds the default port. **Implementation
+  documented default address on the manager's side, but the bridge still reads
+  the host's own `hub.toml` (component 02: `--addr`, else its `hub.toml addr`,
+  else `127.0.0.1:9180`), so a host whose config names a non-default address
+  **must** set both fields. Absent `addr`, the manager uses `127.0.0.1:9180`
+  and refuses a restart it cannot match to the configured address (§5) rather
+  than restarting whatever holds the default port; it cannot read the host's
+  file to detect the mismatch before probing, which is why the operator sets
+  `addr` for a custom-address host. **Implementation
   status:** the shipped `hostreg` stores `ConfigPath` and `Addr` as independent
   optional fields and `channelArgv` passes whichever is present. The
   restart/health path now consumes the per-host `addr` through `Manager.hostAddr`
@@ -468,9 +472,12 @@ Run over non-interactive SSH (no login shell, no TTY):
   probe. `Manager.hostAddr` (`version.go`) returns the per-host `Addr` when set,
   else the manager-wide `Options.HubAddr`, else `127.0.0.1:9180`, and the
   restart, port probe, and `/api/health` probe all read it, so the manager no
-  longer probes or restarts a custom-addressed hub at the default port. Absent
-  the pair, both sides use the documented defaults and a restart the manager
-  cannot match to the configured address is refused (§5) rather than guessed.
+  longer probes or restarts a custom-addressed hub at the default port **when
+  the entry sets `addr`**. Absent the pair, the bridge still reads the host's
+  own `hub.toml` (component 02) while the manager falls back to
+  `127.0.0.1:9180`, so a host whose config names a non-default address must set
+  both; a restart the manager cannot match to the configured address is refused
+  (§5) rather than guessed.
   **Implementation status:** `Manager.hostAddr` and its use on the
   restart/health path are implemented on the 04b component branch
   (`multi-host-pr04b-deploy-restart`), **pending merge, not on `main`**; the
@@ -657,15 +664,21 @@ deploy landed.
   `version` checked against the deployed identity. Consequences to state
   plainly:
 
-  - the host must have a working HTTP client (`curl`); record it as a
-    precondition. With no `curl`, the fallback is the AppWire identity read over
-    the attach bridge — `evener/settings/overview`, whose `SettingsHubOverview`
-    carries `Version`, `Commit`, and `BuildChannel` — which reports *which build*
-    the live process runs; a mismatch there is decisive that the restart did not
-    take, and it does not change the version-equality rule. (`appwire.ServerInfo`
-    carries only `Name`/`Version`, where `Version` is the static `"0.1.0"` hub
-    constant, so it must never be used for this comparison.) There is no
-    `evener hub health` subcommand today.
+  - the host must have a working HTTP client (`curl`) — a **hard
+    prerequisite**, not a preference. The health probe runs *before* the attach
+    bridge exists (this component's order: probe → deploy/restart →
+    `waitHealthy` → `Runner.Start hub attach`; §"Data flow"), so an AppWire read
+    over the attach bridge cannot substitute for it — with no `curl` there is no
+    bridge to read `evener/settings/overview` from. A probe that cannot run is a
+    **failed verification**, never an assumed success and never a fallback
+    (§"Error handling"); `ensureOnce`/`waitHealthy` surface the failure and
+    invent no restart. The earlier "with no `curl`, fall back to
+    `evener/settings/overview`" description was unreachable and is superseded.
+    (That read — `SettingsHubOverview` with `Version`, `Commit`, `BuildChannel`
+    — remains the right probe for a *future* explicit health surface; it is not
+    reachable on this path. `appwire.ServerInfo` carries only `Name`/`Version`,
+    where `Version` is the static `"0.1.0"` hub constant, so it must never be
+    used for this comparison.) There is no `evener hub health` subcommand today.
   - **Implementation status:** this is the shipped 04b contract
     (`multi-host-pr04b-deploy-restart`, **pending merge, not on `main`**):
     `ensureOnce` probes the running version to drive the restart,

@@ -86,11 +86,24 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
   sets exactly one of them with a named sentinel (component 04, §"Address,
   config path, token"). Setting only one is a split-brain: the bridge attaches
   to the custom config's address while the manager probes/restarts the default
-  address (or the reverse) after the binary has already been replaced. Absent
-  both, the host's documented defaults apply
-  (`~/.config/evener/hub.toml`-class resolution and `127.0.0.1:9180`), and
-  component 04 refuses a restart it cannot match to the configured address
-  rather than guessing. **Implementation status:** the shipped `hostreg.Host`
+  address (or the reverse) after the binary has already been replaced.
+  **Setting neither is only safe on the documented default.** Component 02
+  resolves the bridge's address as `--addr`, else the host's own `hub.toml`
+  `addr`, else `127.0.0.1:9180` — so the bridge's "default" is whatever the
+  host's config names, which may be custom. The manager does not read that file
+  (component 04, §"Address, config path" — "not probed") and its own fallback is
+  the literal `127.0.0.1:9180`. An entry that sets neither therefore asserts the
+  host hub uses the documented default address; a host whose `hub.toml` (its
+  default `~/.config` file included) names a **non-default** listen address
+  **must** set both `config_path` and `addr`, or the manager probes and restarts
+  the default address — which on the host belongs to nothing this entry
+  describes and could be an unrelated hub bound there. Absent `addr`, the
+  manager uses `127.0.0.1:9180` and refuses a restart its identity checks cannot
+  match (component 04, §"Address, config path, token"; §5)
+  rather than restarting whatever holds the default port. Because
+  `validateHostConfigs` runs on the controller and cannot see the host's file,
+  this half is an operator contract, not a load-time check. **Implementation
+  status:** the shipped `hostreg.Host`
   carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and `channelArgv`
   passes whichever is present; the paired validation is the implementing PR's
   requirement, not a present fact.

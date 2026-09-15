@@ -290,7 +290,10 @@ would silently change which credential is in force. Remote resolution order is
 `apiKey/set` is used, never `apiKey/clear`, and no whole-file replace exists.
 "Don't clobber" means no write at all unless the remote resolves from the file
 layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
-`adc`, or `env:<VAR>` credential is never shadowed by a pushed key.
+`adc`, or `env:<VAR>` credential is never shadowed by a pushed key **at check
+time** — the classification is made from the `evener/auth/status` response, so
+this is the policy the pusher applies, not a guarantee. The check is not atomic;
+see the stated limitation immediately below.
 
 **The no-clobber check is not atomic — a stated limitation.** As specified, the
 policy is check-then-act across two independent proxy RPCs: the pusher reads

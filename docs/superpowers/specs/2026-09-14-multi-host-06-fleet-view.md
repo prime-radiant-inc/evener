@@ -191,7 +191,7 @@ only `local`, so the fan-out currently degenerates to one source.
   skip — only a source named in `SourceIDs` turns an error into a response
   error (`app_threadlist.go`).
 - **Background snapshot**: `refreshRemoteThreadSnapshot`
-  (`web_api_tree.go`) walks every non-local source, backfills
+  (`web_api_tree.go`) walks the remote sources, backfills
   `thread.Source`/`thread.Evener.Ref`, records per-source completeness and
   conflict IDs, and stores into `hubcore.RemoteThreadCache`
   (`internal/hubcore/remotecache.go`). The refresher runs on a 30s
@@ -199,9 +199,43 @@ only `local`, so the fan-out currently degenerates to one source.
   `main.go`; cache changes invalidate navigation
   (`main.go`). Last-known-good per-source results are retained on transient
   errors (`web_api_tree.go`).
+  **The walk must be non-dialing.** Component 05 resolves *every* source call
+  through `sshManager.Ensure` (component 05, §"Method-coverage analysis"), so
+  a walk over every configured source would open an SSH channel to each host
+  within one 30s tick — eager attachment that contradicts component 04's lazy
+  manager and the attachment-based `Online` above. The refresh therefore lists
+  only sources that are **already attached**: it gates on the source's
+  `Online()`/`Manager.Attached` state and skips an unattached host without
+  calling into it. An unattached host contributes no fresh rows but keeps the
+  last-known-good rows the cache already holds; a never-attached host has none,
+  which is correct — nothing has asked for its sessions yet. The synchronous
+  fallback walk (`remoteThreadFetch` when no cache is configured) obeys the same
+  gate. **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
+  (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate; the
+  gate is the implementing PR's requirement, not a present fact.
 - **Tree ingestion**: `navigationSnapshotInputs` folds cached remote threads
   into the same `metas`/`live` inputs as local sessions
   (`web_api_tree.go`).
+  **Project identity must be host-qualified.** The projector keys projects by
+  working-directory path alone (`hubcore.ResolveProjectMap` →
+  `projects[path]`, `hubcore/tree.go`) and resolves a path with
+  `identifier.ResolveProject`, which uses `localResolver` against the
+  **controller's** filesystem (`identifier/project.go`). Folding remote rows in
+  unchanged therefore (a) collapses two hosts that share a path (say
+  `/srv/app`) onto one project entry — `selectNavigationProjects`
+  (`web_api_tree.go`) keeps the sort-first candidate and flags a spurious
+  conflict, mixing the hosts' sessions — and (b) resolves a host path against
+  the controller's disk, naming the wrong project or none, including for a host
+  *past* session (a `metas`-only row, for which `resolveProjectMap` ignores any
+  carried project and calls `ResolveProject` locally). Remote rows must
+  therefore be grouped by **(source/host, project identity)**, using the
+  identity the remote hub already reports on the row (`Thread.ProjectID` /
+  `Thread.ProjectPath`, carried into `LiveEntry.Project` by
+  `appThreadTreeEntries`), never by resolving the host path against the
+  controller's filesystem. Every grouping/project key that can see a remote row
+  carries the row's `ref.SourceID`, so identical paths on separate hosts stay
+  separate projects. The group-id consumers (project favorites, archive keys)
+  inherit the host qualification.
 - **Manifest source list**: `apiTreeSources`
   (`web_api_tree.go`) is consumed by `navigation_service.go` and
   projected via `navigationSources` into `NavigationManifest.Sources`
@@ -390,6 +424,15 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     flips, driven by an `EventAttached`/`EventDetached` through the wired
     `OnEvent`, makes the next manifest read reflect the new flag **before** any
     background refresh tick. The callback does not re-enter `Ensure`.
+  - Refresh stays lazy: a stub source whose `Online()` is false is **not**
+    called by the background refresh (assert its `ListThreads` is never
+    invoked), and a source that reports attached is; the check proves the walk
+    never dials an unattached host.
+  - Host-qualified projects: two remote sources whose threads share a working
+    directory (same path, different hosts) produce two distinct project entries
+    with distinct identities, neither resolved from a local path; a remote
+    path that exists on the controller's filesystem does not adopt the
+    controller's project identity.
   - Source cap: a manifest built from 63 hosts + `local` validates; 64 hosts +
     `local` (65 entries) is the over-limit case component 03's
     `ErrTooManyHosts` prevents from being configured.
@@ -432,6 +475,11 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
 7. At most 63 remote hosts can be configured: a 64th is refused at config load
    (`ErrTooManyHosts`), so the manifest's 64-source cap (including `local`) can
    never be exceeded by configuration.
+8. Two hosts whose sessions share a working-directory path appear as two
+   distinct projects (host-qualified identity), and no remote row's project is
+   resolved against the controller's filesystem; the refresh attaches no host
+   that was not already attached (assert no `Ensure`/`ListThreads` on an
+   unattached source).
 
 ## PR size estimate (LOC)
 

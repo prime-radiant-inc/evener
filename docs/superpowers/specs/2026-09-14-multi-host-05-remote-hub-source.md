@@ -474,6 +474,18 @@ the source itself holds is not that client but the *resolver*:
 `SubscribeThread` needs, which is why subscription is a fan-out rather than a
 second connection.
 
+**A background/snapshot caller must not force attachment.** Because the
+resolver *is* `Ensure`, merely listing an unattached source dials it. Component
+06's 30s background snapshot (`refreshRemoteThreadSnapshot`) therefore gates on
+the source's attachment state (`Online()`/`Manager.Attached`) and skips an
+unattached host rather than calling `ListThreads` on it; only a request that
+genuinely targets the host reaches `Ensure`. Without this gate the ticker would
+eagerly attach every configured host, contradicting the lazy manager
+(component 04, §"Channel lifecycle states") and the attachment-based `Online`
+(component 06, §"Read contract"). **Implementation status:** this gate is the
+implementing PR's requirement; the shipped `refreshRemoteThreadSnapshot`
+(`web_api_tree.go`) has no attachment gate.
+
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
 hub's `thread/unsubscribe` (`appwire/types.go`, a `ScopeBoth` method,
