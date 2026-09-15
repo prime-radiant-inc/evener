@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -661,5 +662,135 @@ func TestRemoteItemPagingBoundsRetainedCandidates(t *testing.T) {
 		t.Fatal("a cursor older than the bounded retained window was still served")
 	} else {
 		requireInverseStale(t, err)
+	}
+}
+
+// itemPageWithItemPositions builds one item-mode turn fragment carrying the
+// given explicit (entry, item) positions, so a page can begin mid-entry.
+func itemPageWithItemPositions(cursor string, positions ...appwire.ThreadItemPosition) appwire.ThreadTurnsListResponse {
+	items := make([]appwire.ThreadItem, 0, len(positions))
+	for _, position := range positions {
+		pos := position
+		items = append(items, appwire.ThreadItem{
+			Type:          "text",
+			ID:            fmt.Sprintf("item-%d-%d", position.Entry, position.Item),
+			TranscriptKey: fmt.Sprintf("key-%d-%d", position.Entry, position.Item),
+			Position:      &pos,
+		})
+	}
+	return appwire.ThreadTurnsListResponse{
+		Data:       []appwire.Turn{{ID: "turn-1", Items: items}},
+		NextCursor: cursor,
+	}
+}
+
+// A single entry can project several items, so a forward page whose first item
+// is at a non-zero item index of the next entry leaves the earlier items of that
+// entry (and any later items of the previous entry) unobserved. It is therefore
+// not contiguous with the retained newest item and must rotate the incarnation
+// instead of being unioned into a holed window. Regression guard for
+// remotePositionsAdjacent treating any (entry+1) as the successor.
+func TestRemoteHubSourceRejectsForwardPageBeginningMidEntry(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: itemPageWithItemPositions(remoteItemCursor(t, 10), appwire.ThreadItemPosition{Entry: 10})}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	// Entry 11 is observed from item 5 onward: items 0..4 of entry 11 were never
+	// returned, so the page does not abut the retained newest item (10, 0).
+	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithItemPositions("", appwire.ThreadItemPosition{Entry: 11, Item: 5}, appwire.ThreadItemPosition{Entry: 11, Item: 6}).Data},
+		OlderCursor: remoteItemCursor(t, 11),
+	})
+	if err != nil {
+		t.Fatalf("grown read: %v", err)
+	}
+	if grown.Identity == first.Identity {
+		t.Fatalf("non-abutting forward page kept identity %+v, want a fresh incarnation", grown.Identity)
+	}
+}
+
+// A remote page that alone exceeds the retained window bound must not be kept
+// wholesale: the rotated window keeps only the newest candidates that fit, so
+// the documented bound holds even for one oversized page.
+func TestRemoteItemPagingTrimsOversizedRotatedPage(t *testing.T) {
+	oversized := remoteItemPagingCandidateCapacity + 25
+	entries := make([]uint64, oversized)
+	for index := range entries {
+		entries[index] = uint64(index + 1)
+	}
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, uint64(oversized)), entries...)}
+	})
+
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
+	if !ok {
+		t.Fatal("no retained paging state")
+	}
+	if len(state.candidates) != remoteItemPagingCandidateCapacity {
+		t.Fatalf("retained candidates = %d, want the bound %d", len(state.candidates), remoteItemPagingCandidateCapacity)
+	}
+	if got := state.candidates[len(state.candidates)-1].Position.Entry; got != uint64(oversized) {
+		t.Fatalf("retained newest entry = %d, want %d (the newest page item)", got, oversized)
+	}
+	if remoteItemCandidatesBytes(state.candidates) > remoteItemPagingByteCapacity {
+		t.Fatalf("retained window bytes = %d, want <= %d", remoteItemCandidatesBytes(state.candidates), remoteItemPagingByteCapacity)
+	}
+}
+
+// The byte bound is enforced on a single page too: the newest candidates that
+// fit the budget are retained, and the newest candidate is kept even when it
+// alone exceeds the budget so the window is never emptied.
+func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
+	const itemBytes = 2 << 20
+	page := itemPageWithLargeText(remoteItemCursor(t, 6), 5, itemBytes)
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: page}
+	})
+
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
+	if !ok {
+		t.Fatal("no retained paging state")
+	}
+	if got := remoteItemCandidatesBytes(state.candidates); got > remoteItemPagingByteCapacity {
+		t.Fatalf("retained window bytes = %d, want <= %d", got, remoteItemPagingByteCapacity)
+	}
+	if len(state.candidates) != 4 {
+		t.Fatalf("retained candidates = %d, want the newest 4 that fit the byte budget", len(state.candidates))
+	}
+	if got := state.candidates[len(state.candidates)-1].Position.Entry; got != 5 {
+		t.Fatalf("retained newest entry = %d, want 5", got)
+	}
+}
+
+// itemPageWithLargeText builds one item-mode page of count items whose payload
+// is size bytes each, so a single page can exceed the byte bound.
+func itemPageWithLargeText(cursor string, count, size int) appwire.ThreadTurnsListResponse {
+	items := make([]appwire.ThreadItem, 0, count)
+	for index := range count {
+		items = append(items, appwire.ThreadItem{
+			Type:          "text",
+			ID:            fmt.Sprintf("item-%d", index),
+			TranscriptKey: fmt.Sprintf("key-%d", index),
+			Position:      &appwire.ThreadItemPosition{Entry: uint64(index + 1)},
+			Text:          strings.Repeat("x", size),
+		})
+	}
+	return appwire.ThreadTurnsListResponse{
+		Data:       []appwire.Turn{{ID: "turn-1", Items: items}},
+		NextCursor: cursor,
 	}
 }

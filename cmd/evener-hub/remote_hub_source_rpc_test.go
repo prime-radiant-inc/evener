@@ -514,15 +514,19 @@ func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
 	}
 }
 
-// A remote hub stamps its own /s/<session>/images/<sha> route before replying.
-// That route is only meaningful against the remote origin: if it reaches the
-// browser, the browser requests this hub's /s/... route for a session this hub
-// does not have, which 404s or, on a session-id collision, serves another
-// session's bytes. While the controller-side proxy is staged, the route must be
-// neutralized; external URLs still resolve directly and must survive.
+// A remote hub stamps its own origin-relative image routes before replying:
+// /s/<session>/images/<sha> for sha-addressed bytes and /doc/image?session=<...>
+// &path=<...> for file-backed output images. Such a route is only meaningful
+// against the remote origin: if it reaches the browser, the browser resolves it
+// against this hub's own origin for a session this hub does not have, which 404s
+// or, on a session-id collision, serves another session's bytes. While the
+// controller-side proxy is staged, every root-relative route must be
+// neutralized; external and data: URLs still resolve directly and must survive.
 func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 	sha := strings.Repeat("a", 64)
 	const external = "https://images.example.test/plot.png"
+	const docImage = "/doc/image?session=remote-session&path=shot.png"
+	const inline = "data:image/png;base64,iVBORw0KGgo="
 	remoteThread := appwire.Thread{
 		ID:        "t1",
 		SessionID: "t1",
@@ -542,10 +546,15 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 				OutputImages: []appwire.OutputImage{
 					{Source: "tool-result", SHA: sha, URL: "/s/remote-session/images/" + sha},
 					{Source: "external", URL: external},
+					{Source: "written-file", Path: "shot.png", URL: docImage},
+					{Source: "inline", URL: inline},
 				},
 				Images: []appwire.InputItem{{
 					Metadata: map[string]string{"sha": sha},
 					URL:      "/s/remote-session/images/" + sha,
+				}, {
+					Metadata: map[string]string{"sha": sha},
+					URL:      docImage,
 				}},
 			}},
 			Status: appwire.TurnStatusCompleted,
@@ -586,8 +595,8 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 		t.Fatalf("turns = %+v, want the single remote image item", resp.Thread.Turns)
 	}
 	item := resp.Thread.Turns[0].Items[0]
-	if len(item.OutputImages) != 2 {
-		t.Fatalf("output images = %+v, want both remote descriptors preserved", item.OutputImages)
+	if len(item.OutputImages) != 4 {
+		t.Fatalf("output images = %+v, want all remote descriptors preserved", item.OutputImages)
 	}
 	if got := item.OutputImages[0].URL; got != "" {
 		t.Fatalf("remote output image route = %q, want the controller-relative route neutralized", got)
@@ -598,8 +607,17 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 	if got := item.OutputImages[1].URL; got != external {
 		t.Fatalf("external output image URL = %q, want %q preserved", got, external)
 	}
-	if len(item.Images) != 1 || item.Images[0].URL != "" {
-		t.Fatalf("remote input image = %+v, want its controller-relative route neutralized", item.Images)
+	if got := item.OutputImages[2].URL; got != "" {
+		t.Fatalf("remote /doc/image URL = %q, want it neutralized (it would resolve against the controller origin)", got)
+	}
+	if got := item.OutputImages[2].Path; got != "shot.png" {
+		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the staged proxy", got)
+	}
+	if got := item.OutputImages[3].URL; got != inline {
+		t.Fatalf("data: output image URL = %q, want %q preserved", got, inline)
+	}
+	if len(item.Images) != 2 || item.Images[0].URL != "" || item.Images[1].URL != "" {
+		t.Fatalf("remote input images = %+v, want both controller-relative routes neutralized", item.Images)
 	}
 }
 
