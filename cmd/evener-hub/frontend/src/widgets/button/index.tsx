@@ -72,13 +72,21 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { variant = "primary", size = "md", icon, children, onClick, disabled = false, type = "button", ...rest },
   ref,
 ) {
+  // aria-disabled is a refusal, not a rendering hint: the control stays
+  // focusable (that is why it is not the native attribute - see the rest-spread
+  // docs above and button.module.css), so the browser still hands it the click.
+  // Refusing that click HERE is what makes a caller's guarded handler
+  // defense-in-depth rather than the only thing standing between a refused
+  // control and the action it refuses. JSX accepts both spellings of the
+  // attribute, so both are treated as the refusal.
+  const refused = rest["aria-disabled"] === true || rest["aria-disabled"] === "true";
   return (
     <button
       ref={ref}
       {...rest}
       type={type}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
-      onClick={onClick}
+      onClick={refused ? undefined : onClick}
       disabled={disabled}
     >
       {icon !== undefined && <span className={BASE_CLASS.icon}>{icon}</span>}

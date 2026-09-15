@@ -25,6 +25,7 @@
 
 import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
 import {
+  CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -34,8 +35,17 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, ConfirmDialog, Dialog, EmptyState, Loader, Skeleton, useToasts } from "../../../../widgets";
+import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
+import {
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  Loader,
+  Skeleton,
+  useFocusRehome,
+  useToasts,
+} from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
@@ -128,7 +138,16 @@ export function CredentialsSection({
   onInstanceRenamed,
   onInstanceRemoved,
 }: CredentialsSectionProps) {
-  const { instances, availableProviders, diagnostics, writesRefused, loading, error, fetch } = useCredentialsStore();
+  const {
+    instances,
+    availableProviders,
+    diagnostics,
+    writesRefused,
+    loading,
+    error,
+    fetch,
+    listingFromPreviousConnection,
+  } = useCredentialsStore();
   const [connecting, setConnecting] = useState(false);
   // The connector is a dynamic-only import (see connectDialogChunk.ts): loading
   // it through the shared hook keeps ConnectProviderDialog out of this module's
@@ -155,6 +174,30 @@ export function CredentialsSection({
   }
   const toast = useToasts();
 
+  // Any action this section issues can be refused by the store because the
+  // rows it would act on were read by a replaced connection
+  // (stores/credentials.ts's requireWritableClient). Every one of them answers
+  // the same way: say what changed - never in the store's own words, and never
+  // as a failure of the action the user asked for, which nothing was sent for -
+  // and ask for this connection's listing, whose arrival is what makes the
+  // action retryable. Answers true when it handled the refusal.
+  function recoverStaleListing(err: unknown): boolean {
+    if (!isStaleListingRefusal(err)) return false;
+    toast.push("warning", CONNECTION_REPLACED_ERROR);
+    void fetch().catch(() => {});
+    return true;
+  }
+
+  // A pending test was issued against the listing a replacement took away, so
+  // its answer describes rows of a connection that is gone. Until the new
+  // listing lands nothing else clears it: the row would sit in "Testing
+  // credentials…", and an answer arriving in that window would be shown as a
+  // result for rows this connection never read. The listing read that lands next
+  // is what makes a test runnable again.
+  useEffect(() => {
+    if (listingFromPreviousConnection) setCredentialTests({});
+  }, [listingFromPreviousConnection]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: instances is a deliberate trigger-only dependency; each refreshed list invalidates results from the prior provider configuration
   useEffect(() => {
     setCredentialTests({});
@@ -174,6 +217,7 @@ export function CredentialsSection({
     try {
       setOpenEditor(await startOAuthFlow(name));
     } catch (err) {
+      if (recoverStaleListing(err)) return;
       toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
     }
   }
@@ -184,6 +228,7 @@ export function CredentialsSection({
     try {
       await credentialsStore.getState().setDefault(name);
     } catch (err) {
+      if (recoverStaleListing(err)) return;
       toast.push("error", `Set default failed: ${friendlyErrorMessage(err)}`);
     }
   }
@@ -220,6 +265,13 @@ export function CredentialsSection({
     try {
       settle(await credentialsStore.getState().testCredentials(name, instanceFingerprint(name)));
     } catch (err) {
+      if (recoverStaleListing(err)) {
+        // The refusal is not a probe result: clear the pending test so the
+        // action returns to its idle label, ready for the retry once this
+        // connection's listing lands.
+        setCredentialTests((current) => ({ ...current, [name]: { version, pending: false } }));
+        return;
+      }
       if (isEndpointConflict(err)) {
         // The hub refused the asserted destination: the name moved since this
         // listing was read, so there is no honest test result to show. Clear
@@ -302,6 +354,7 @@ export function CredentialsSection({
       }
       setPendingConfirm(null);
     } catch (err) {
+      if (recoverStaleListing(err)) return;
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
       toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);
     } finally {
@@ -338,9 +391,16 @@ export function CredentialsSection({
   // here would restart that dialog's poll timer on every unrelated parent
   // re-render (see oauthDialogs.tsx's own comment on that effect).
   const closeEditor = useCallback(() => setOpenEditor(null), []);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // The pane swaps its rows out for a skeleton while a read is in flight and for
+  // the error banner when one fails, so any of those transitions - and any
+  // listing that no longer carries the focused row - can unmount the control
+  // holding the keyboard. The hook re-homes it to the pane's first control; a
+  // commit that removes nothing leaves focus where it was.
+  useFocusRehome(rootRef);
 
   return (
-    <div className={CLASS.root}>
+    <div className={CLASS.root} ref={rootRef}>
       <div className={CLASS.headerRow}>
         {/* Only the raw add-instance action authors providers.toml, so only it
             is gated by the write refusal. The guided connector stays reachable:

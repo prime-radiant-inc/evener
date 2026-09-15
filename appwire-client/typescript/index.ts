@@ -72,6 +72,7 @@ export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerI
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
+  CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
   FINGERPRINT_UNAVAILABLE_ERROR,

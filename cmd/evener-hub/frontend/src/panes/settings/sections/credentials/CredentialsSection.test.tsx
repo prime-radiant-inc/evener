@@ -1,5 +1,10 @@
 import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import {
+  CONNECTION_REPLACED_ERROR,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -177,6 +182,71 @@ describe("initial load", () => {
     await screen.findByText("work");
     expect(calls).toBe(1);
   });
+});
+
+// The pane keeps its rows mounted through a load, so the focused row survives a
+// refresh; a listing that no longer CARRIES it - a removal from this pane or
+// another client - unmounts the focused control instead. The browser drops
+// focus to <body> and the pane is not inside a focus scope, so nothing brought
+// it back: the next Tab started over at the top of the document.
+test("a listing that removes the focused row hands the keyboard back to the pane", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const workRow = await screen.findByRole("button", { name: /work/ });
+  workRow.focus();
+  expect(document.activeElement).toBe(workRow);
+
+  await act(async () => credentialsStore.setState({ instances: [PERSONAL] }));
+
+  expect(screen.queryByRole("button", { name: /work/ })).toBeNull(); // the row really did go
+  expect(document.activeElement).not.toBe(document.body);
+  expect(screen.getByRole("button", { name: "Connect provider" })).toBe(document.activeElement);
+});
+
+// Focus recovery is for focus that was TAKEN away, not for focus that was never
+// placed: a cold load (a deep link, a reload) has nothing focused, and moving the
+// keyboard into the pane's first control on mount would be the same defect in
+// reverse.
+test("a cold load of the pane does not move the keyboard", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  await screen.findByText("work");
+
+  expect(document.activeElement).toBe(document.body);
+});
+
+// The pane swaps its rows for the skeleton while a read is in flight, so a
+// refresh - not only a listing that loses a row - unmounts the control holding
+// the keyboard. That transition has to hand focus back to the pane as well.
+test("a refresh that swaps the rows for the skeleton keeps the keyboard in the pane", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const workRow = await screen.findByRole("button", { name: /work/ });
+  workRow.focus();
+  expect(document.activeElement).toBe(workRow);
+
+  const refresh = deferred<InstanceListResponse>();
+  fake.on("evener/instance/list", () => refresh.promise);
+  let inFlight!: Promise<boolean>;
+  await act(async () => {
+    inFlight = credentialsStore.getState().fetch();
+    await Promise.resolve();
+  });
+
+  // The row really is gone for the duration of the read; the keyboard is not on
+  // <body>.
+  expect(screen.queryByRole("button", { name: /work/ })).toBeNull();
+  expect(document.activeElement).not.toBe(document.body);
+  expect(screen.getByRole("button", { name: "Connect provider" })).toBe(document.activeElement);
+
+  await act(async () => {
+    refresh.resolve(LIST);
+    await inFlight;
+  });
+  expect(await screen.findByRole("button", { name: /work/ })).toBeTruthy();
 });
 
 describe("the detail sheet", () => {
@@ -591,6 +661,60 @@ describe("credential verification", () => {
   // no honest probe result to show. Report the changed connection, clear the
   // pending test, and re-read the listing so a retry asserts the destination
   // now on screen rather than the one the credential was aimed at.
+  // A pending test was issued against the listing a replacement took away: its
+  // answer describes rows of a connection that is gone, and until the new
+  // listing lands nothing else clears it - the row's own "Testing credentials…"
+  // state would sit there, and a late answer would be shown as a result for
+  // rows this connection never read.
+  test("a client replacement clears a pending credential test and drops its late answer", async () => {
+    const fake = connectFakeClient();
+    const pending = deferred<AuthTestResponse>();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/test", () => pending.promise);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+    expect(
+      (within(inspector).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+
+    // The connection is replaced and its own listing is held open, so the rows
+    // on screen are still the ones the pending test was issued against.
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const replacement = new FakeClient("ready");
+    replacement.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRestore = resolve;
+        }),
+    );
+    await act(async () => connectionStore.getState().connect(replacement));
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    // The pending test is released rather than left as this row's state...
+    await waitFor(() =>
+      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+
+    // ...and its answer, which describes the connection that is gone, is not
+    // shown as a result for the rows still on screen.
+    await act(async () => pending.resolve({ provider: "work", status: "success", message: "Credentials verified." }));
+    expect(screen.queryByText("Credentials verified.")).toBeNull();
+
+    await act(async () => finishRestore(LIST));
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+  });
+
   test("a refused assertion is reported as a changed connection and re-reads the listing", async () => {
     const fake = connectFakeClient();
     const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
@@ -626,6 +750,107 @@ describe("credential verification", () => {
     // A retry has to assert the destination now on screen, so the listing is
     // re-read after the refusal.
     await waitFor(() => expect(listCalls).toBeGreaterThan(callsBefore));
+  });
+});
+
+// The store refuses writes and probes issued from the previous connection's
+// listing (stores/credentials.ts's requireWritableClient): the rows on screen
+// name instances of a connection that is gone. Every section action that can
+// hit that refusal reports the change it is and asks for this connection's
+// listing - never as a failure of the action the user asked for, and never in
+// the store's own words.
+describe("actions refused while the held listing belongs to a replaced connection", () => {
+  /** Renders the section with a listing on screen, replaces the client (as a
+   * reconnect does), and leaves the store in the window the guard refuses in:
+   * the rows on screen were read by the connection that is gone and this one's
+   * listing has not been applied. The marker is set the way the store sets it
+   * on a replacement (stores/credentials.ts's connectionStore subscription);
+   * holding the read open cannot express this state here, because a read in
+   * flight swaps the section's rows for its skeleton. */
+  async function renderWithReplacedConnection(): Promise<{ replacement: FakeClient }> {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST);
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => LIST);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    await act(async () => connectionStore.getState().connect(replacement));
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await act(async () => credentialsStore.setState({ listingFromPreviousConnection: true }));
+    expect(screen.getByText("work")).toBeTruthy();
+    return { replacement };
+  }
+
+  test("a credential test is refused with the change, clears its pending state, and re-reads the listing", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    // No probe reached the replacement connection - the test was refused, not
+    // run against a destination this connection never read.
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    // The pending test clears, so the action does not sit in "Testing…".
+    await waitFor(() =>
+      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    // The refusal asked for this connection's own listing, and that read is
+    // what reopens the action.
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+
+    // The same action now goes out and is answered by this connection.
+    replacement.on("evener/auth/test", () => ({
+      provider: "work",
+      status: "success",
+      message: "Credentials verified.",
+    }));
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+    await waitFor(() => expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1));
+  });
+
+  test("make default is refused with the change, not reported as a failed action", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: /make default/i }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Set default failed/)).toBeNull();
+  });
+
+  test("starting a sign-in is refused with the change, not reported as a failed sign-in", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/start")).toHaveLength(0);
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/login/start")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Sign-in failed/)).toBeNull();
+  });
+
+  test("a confirm-gated removal is refused with the change, not reported as a failed removal", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
   });
 });
 
