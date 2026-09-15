@@ -363,6 +363,83 @@ func TestInheritedHistoryIsEscapedWithoutAJournalInReach(t *testing.T) {
 	}
 }
 
+// A restored fork's inherited prefix belongs to the parent's session, so the
+// child's journal must not decide it even when an id collides -- while the
+// session's own turns still consult that journal. meta.DivergenceTurn names where
+// the child's history diverges, so everything before it is inherited.
+func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.T) {
+	t.Parallel()
+	const sessionID = "01KRESTOFEPREFIXBOUND00000"
+	// The inherited turn's id collides with a child record that claims the note
+	// write; the child's own turn has its own note-origin record.
+	const inheritedID = "cm-collides"
+	const ownID = "cm-own"
+	const inheritedText = "run the inherited tests\x1b[31mwith red lines\x1b[0m"
+	const ownText = "run the child tests\x1b[31mwith red lines\x1b[0m"
+	stateDir := t.TempDir()
+
+	store, err := newClientMutationStore(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(func(snapshot *clientMutationSnapshot) error {
+		colliding := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, inheritedID, struct{ Note string }{Note: "a note this session never wrote"})
+		own := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, ownID, struct{ Note string }{Note: "own note"})
+		for _, req := range []clientMutationRequest{colliding, own} {
+			snapshot.Journal[req.ClientMutationID] = clientMutationRecord{
+				ClientMutationID:  req.ClientMutationID,
+				Method:            req.Method,
+				Payload:           req.Payload,
+				PayloadHash:       req.PayloadHash,
+				OperationState:    clientMutationOperationTerminal,
+				ExecutionState:    "incorporated",
+				ProjectionState:   appwire.MutationProjectionReflected,
+				AttemptGeneration: 1,
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		// The child diverged after its first turn: one inherited turn precedes it.
+		ParentSessionID: "01KPARENT0000000000000000",
+		DivergenceTurn:  2,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{
+			StateDir: stateDir,
+			resumeHistory: []schema.Turn{
+				{Kind: schema.TurnSteering, ClientMutationID: inheritedID, Message: llm.User(inheritedText)},
+				{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	got := modelBoundText(restored)
+	if !strings.Contains(got, inheritedText) {
+		t.Fatalf("inherited prefix was decided by the child journal: %q", got)
+	}
+	if strings.Contains(got, ownText) {
+		t.Fatalf("the session's own note-origin turn kept its controls: %q", got)
+	}
+}
+
 // A note record beside a steer is not evidence about that steer: the note write's
 // own record carries the note kind (or, when it changed nothing, a kindless
 // notes/human/set), and no rule reads it to classify another mutation's record, so

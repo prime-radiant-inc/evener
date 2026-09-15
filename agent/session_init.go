@@ -77,6 +77,26 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// escapeHistoryWithSessionProvenance escapes a restored history for the model
+// copy. Turns before the session's divergence point came from a parent, whose
+// journal this session does not hold -- and a child mutation may reuse a parent's
+// client mutation id -- so they are decided by their own kinds and the write-path
+// text shape alone; only the turns the session itself created consult the
+// provenance its journal persists. A compacted history that no longer starts at
+// the beginning keeps the kind-then-shape rule for its first turns, which is the
+// honest fallback (roborev's ninth round).
+func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
+	inherited := divergenceTurn - 1
+	if inherited <= 0 {
+		return escapeNotesHistoryTurns(history, origins)
+	}
+	if inherited >= len(history) {
+		return escapeNotesHistoryTurns(history, nil)
+	}
+	out := escapeNotesHistoryTurns(history[:inherited], nil)
+	return append(out, escapeNotesHistoryTurns(history[inherited:], origins)...)
+}
+
 // escapeInheritedHistory escapes a forked session's inherited prefix for the
 // model copy. No journal is in reach, and that is deliberate: the prefix belongs
 // to the parent's session, whose records the child's journal does not hold -- and
@@ -866,7 +886,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// history becomes model context. The projection record is read first, because
 	// it is compared against raw renders (see lastNotesProjection).
 	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
-	resumeHistory = escapeNotesHistoryTurns(resumeHistory, clientMutations.steeringOrigins())
+	// A fork's inherited prefix belongs to the parent's session, so only the
+	// session's own turns consult its journal (see
+	// escapeHistoryWithSessionProvenance).
+	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, meta.DivergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
