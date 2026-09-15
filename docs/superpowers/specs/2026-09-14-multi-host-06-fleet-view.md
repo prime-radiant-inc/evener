@@ -332,16 +332,40 @@ only `local`, so the fan-out currently degenerates to one source.
   unqualified shape today; the source field, store namespacing, and the
   non-local validation rule are the implementing PR's requirement, not a
   present fact.
-  **Migration of existing decisions.** The controller-side favorite and archive
-  stores are keyed by `(kind, id)` today, with no source column. On upgrade they
-  must be migrated by adding a `source` column and backfilling
-  `source = "local"` for every existing row, preserving the decision and its
-  kind/id, so no existing local favorite or archive is lost and a pre-migration
-  row keeps resolving to the local host; the migration is idempotent across
-  restarts (a re-run is a no-op and a half-applied migration completes on the
-  next start). New rows are written with their owning source. **Implementation
-  status:** neither the migration nor the source column exists today; this is
-  the implementing PR's requirement.
+  **Migration of existing decisions — the uniqueness keys must be rebuilt, not
+  just widened.** The controller-side favorite and archive stores are keyed by
+  `(kind, id)` today, with no source column: `favorite` declares
+  `PRIMARY KEY (kind, id)` and writes with `ON CONFLICT(kind, id)` and deletes
+  `WHERE kind = ? AND id = ?` (`cmd/evener-hub/internal/hubcore/favorite.go:47,79-80,98`),
+  and `archive` declares `PRIMARY KEY (kind, id)` and writes with
+  `ON CONFLICT(kind, id)` (`archive.go:64-69,103`). Adding and backfilling a
+  `source` column alone therefore **does not fix the collision**: the conflict
+  target and the primary key stay `(kind, id)`, so a remote row with the same
+  bare ID as a local one still matches the same key and overwrites it — the
+  backfilled `source` is the only differing column and the key does not see it.
+  On upgrade the migration must **rebuild each table with a composite primary
+  key** `(source, kind, id)` — SQLite cannot add a column to, or otherwise
+  alter, an existing primary key, so the migration creates the new table, copies
+  every legacy row with `source = "local"`, drops the old table, and renames
+  (`archive.go`'s `open`/schema setup is the seam) — and **every statement that
+  names the key moves with it**:
+    - the upsert conflict target (`ON CONFLICT(source, kind, id) DO UPDATE …`)
+      in `ArchiveStore.Set` and `favoriteSet`;
+    - lookups and deletes — `favorite`'s `DELETE … WHERE kind = ? AND id = ?`
+      and the `archive` delete — become `(source, kind, id)`;
+    - the readback: `SELECT kind, id, favorited` and the archive `Decisions`
+      scan must select `source` too and key their maps by `(source, kind, id)`,
+      so the tree and the navigation projection receive the owning source with
+      the decision (a bare-keyed map would re-collide on read even with a
+      composite table).
+  The migration preserves the decision and its kind/id, so no existing local
+  favorite or archive is lost and a pre-migration row keeps resolving to the
+  local host, and it stays idempotent across restarts (adding `source` and
+  backfilling `source = "local"` when absent; rebuilding only while the primary
+  key is still the bare `(kind, id)` form, so a re-run is a no-op and a
+  half-applied migration completes on the next start). New rows are written with
+  their owning source. **Implementation status:** neither the migration nor the
+  source column exists today; this is the implementing PR's requirement.
   **Session pin assignments must be source-qualified too.** Archive and favorite
   host qualification is not the only controller-side identity keyed by a bare
   session ID: pin sections and session-pin assignments are as well, with the same
@@ -365,12 +389,23 @@ only `local`, so the fan-out currently degenerates to one source.
   host's session, a bare/`local:` ref the local host) and reject an unknown
   source typed, and the projection matches a row's pin by its source-qualified
   key. `PinSection.ID`/name identity itself is controller-global and unchanged.
-  Existing `session_pin` rows are migrated by adding a `source` column and
-  backfilling `source = "local"` (idempotent, exactly as the favorite/archive
-  migration above) so no present local pin is lost. **Implementation status:**
-  the `session_pin` table, the pin handlers, and the projection maps are all
-  bare-ID keyed today; the source column and the source-aware resolver are the
-  implementing PR's requirement.
+  Existing `session_pin` rows are migrated the same way, and here too the
+  **rebuild is the substance**: `session_pin` declares
+  `PRIMARY KEY (session_id)` and assigns with `ON CONFLICT(session_id)`
+  (deletes `WHERE session_id = ?`, read back with
+  `SELECT session_id, section_id, assigned_at`; `pin_section.go:101-102,531,577,665-667`),
+  so a bare `source` column leaves the key, the conflict target, the delete, and
+  the readback all bare — two hosts' identical session IDs still overwrite one
+  another's assignment. The migration must rebuild `session_pin` with
+  `PRIMARY KEY (source, session_id)`, copy the legacy rows as
+  `source = "local"`, and update the assign/unpin upsert, the delete, the
+  per-section count join (`COUNT(p.session_id)`), and the projection readback
+  (`PinSectionBySession`/`PinAssignments`) to the `(source, session_id)` key, so
+  no present local pin is lost and a pin on `host:th_1` and a local `th_1` stay
+  distinct. **Implementation status:** the `session_pin` table, the pin
+  handlers, and the projection maps are all bare-ID keyed today; the composite
+  key, the table rebuild, and the source-aware resolver are the implementing
+  PR's requirement.
   **Project summaries must carry the owning source, and destructive
   local-project actions must be gated by it.** The project the rail renders has
   no host dimension today: the resolved model is `identifier.Project` =

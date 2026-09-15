@@ -339,14 +339,17 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   never auto-accepts a host key. Verification uses the invoking user's own
   `known_hosts` (plus any `UserKnownHostsFile` the user's `ssh_config` sets); an
   unknown or changed host key makes ssh exit nonzero under `BatchMode=yes` with
-  no interactive prompt. That is terminal and classified like the auth failure
-  above: a named error telling the operator to add the host key out of band
-  (e.g. `ssh-keyscan` or a first interactive `ssh`), never a retry loop and
-  never a silent downgrade. The capability token crosses only the encrypted SSH
-  transport precisely because the host identity is verified; a first attach to
-  an unknown host therefore fails with that actionable error rather than
-  hanging, and the remedy is documented instead of inviting
-  `StrictHostKeyChecking=no`.
+  no interactive prompt. Like the auth refusal above, that failure cannot be
+  **attributed** to ssh from a completed run — ssh forwards the remote command's
+  stderr and exit status — so it stays in the retryable class and is surfaced
+  with a named operator hint to add the host key out of band (e.g.
+  `ssh-keyscan` or a first interactive `ssh`); it is never a silent downgrade
+  and never `StrictHostKeyChecking=no`. (A failed `Start`, which never ran a
+  remote command, is the one attributable case.) The capability token crosses
+  only the encrypted SSH transport precisely because the host identity is
+  verified; a first attach to an unknown host therefore fails with that
+  actionable error rather than hanging, and the remedy is documented instead of
+  inviting `StrictHostKeyChecking=no`.
 - **Port, identity file, and jump hosts go through the user's `ssh_config`.**
   The argv pins the destination as `-- <dest>` (`dest` is a bare host or
   `user@host`, component 03), which deliberately makes `-p`/`-i`/`ProxyJump`
@@ -463,11 +466,16 @@ The manager is **lazy and event-publishing, not a registry owner**:
 - `Ensure`:
   1. if attached, return the live channel;
   2. `preflight` (§3, below);
-  3. version-match (§5);
-  4. `Start` the ssh bridge (`ssh ... hub attach --stdio`), wrap the child's
+  3. if preflight reports a **verified missing executable**, enter the
+     deploy/install path (§4) — a fresh host has no binary, and the installer
+     fallback is what creates the default run target — then **re-run preflight**
+     on the installed host before version-matching; an arbitrary SSH failure is
+     never an install trigger (§3);
+  4. version-match (§5);
+  5. `Start` the ssh bridge (`ssh ... hub attach --stdio`), wrap the child's
      stdin/stdout in `appwire.NewStreamTransport` (`appwire/stream_transport.go`),
      and build an `appwire.Client` over it.
-  5. `Initialize` with `ProtocolVersion: appwire.ProtocolVersion` and a
+  6. `Initialize` with `ProtocolVersion: appwire.ProtocolVersion` and a
      controller `ClientInfo`. `appwire.ProtocolVersionMismatchError`
      (`appwire/client.go`) here means the *running* hub speaks another protocol
      while the on-disk binary preflighted clean: restart the hub once and
@@ -591,6 +599,32 @@ Run over non-interactive SSH (no login shell, no TTY):
   controller knows where the host's `auth-token` and `hub.lock` live; it must not
   invent XDG values the host environment does not have.
 - **Existing version/protocol.** The `launch-check` call in §"Contract" above.
+- **Missing executable (explicit preflight result).** A fresh host has no
+  `evener` at `evener_path`/`run_path`, so the preflight `launch-check` call
+  fails for a reason that is *not* a transport failure, and the preflight must
+  report it as a defined result instead of a generic `ErrSSHStart`. The
+  result is recognized only when it is **verified**: ssh connected and
+  authenticated, the remote shell ran, and the failure is that specific
+  executable path not existing (the remote shell's own not-found status —
+  `127` — and its own "no such file or directory"/"not found" text for
+  `run_path`, with nothing else on the diagnostic stream indicating an
+  ssh-level or connection failure). Preflight records it (a
+  `Preflight.ExecutableMissing` fact, surfaced as the named
+  `ErrExecutableMissing` sentinel where an error is needed) and `Ensure`
+  routes it into the deploy/install path (§4), whose installer fallback
+  creates the default run target (`<home>/.local/bin/evener`); preflight then
+  **re-runs** against the installed binary before version-matching or
+  attaching. **Arbitrary SSH failures must not trigger installation:** a
+  failure to spawn ssh, a connection/auth refusal, a non-zero ssh status that
+  lacks the specific not-found marker for `run_path`, an unparseable or empty
+  answer, or a launch-contract/protocol refusal all stay in their own classes
+  (`ErrSSHStart`, `ErrSSHAuth`, `ErrPreflightDecode`, `ErrLaunchContract`) and
+  never run the installer, because an unreachable host would otherwise be
+  treated as an empty one and the deploy ladder would push a binary at a host
+  that never answered. **Implementation status:** the shipped 04a preflight
+  surfaces this as `ErrSSHStart` from the failed `launch-check` run
+  (`sshconn/preflight.go`), and the routed deploy/install branch is the 04b
+  requirement (keystone follow-up), not a present fact.
 - **Roots (probed).** Preflight resolves the host's config root and state root
   from the probed environment with the same chain the host binary uses
   (`resolveRoots`, `cmdutil.StateRootFromLookup`, `envvars/userdirs.ConfigRoot`)
@@ -971,8 +1005,14 @@ deploy landed.
   before any health check or restart. Only the **port** may vary; the earlier
   phrasing that the configured address "reaches a hub on a non-default port or a
   non-loopback bind" is superseded — a non-loopback bind is not a supported
-  target. The response is decoded as `hubapi.HealthResponse` and its `version`
-  checked against the deployed identity. Consequences to state plainly:
+  target. Accepting the wildcard spelling here and in component 03 is a
+  transport-scoping decision, **not** a promise that the host hub is
+  network-unreachable: it is accepted only because it normalizes to loopback for
+  the manager's own dial/probe, and the required network-facing protections for
+  a host hub actually bound wildcard are spelled out in component 03,
+  §"`addr` host validation, and the exposure contract it must not weaken". The
+  response is decoded as `hubapi.HealthResponse` and its `version` checked
+  against the deployed identity. Consequences to state plainly:
 
   - the host must have a working HTTP client (`curl`) — a **hard
     prerequisite**, not a preference. The health probe runs *before* the attach
@@ -1215,6 +1255,9 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                    →  Manager.Ensure(name)
                         ├─ Runner.Run: ssh <dest> launch-check --protocol … --json
                         │     → protocol? launch_flags? version? (preflight)
+                        ├─ verified missing executable? (fresh host)
+                        │     └─ deploy/install (installer fallback creates the
+                        │          default run target) → re-run preflight
                         ├─ protocol/version != controller?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
                         │     └─ restart host hub (identify → supervisor, else lsof/kill/nohup)
@@ -1234,21 +1277,53 @@ with the remote hub and its daemons still running.
 
 ## Error handling
 
-- **SSH connect/start failure** → `ErrSSHStart` wrapping the ssh stderr tail;
-  no channel is returned; retried under backoff (attaching) or surfaced once
-  (explicit `Ensure`).
-- **Non-interactive auth failure** (`BatchMode` refuses a password prompt) →
-  terminal, named error telling the operator to install a key/agent on the host;
-  never retried in a loop that would spam ssh.
-- **Failure diagnosis keeps ssh's stderr separate from the remote program's
-  output.** A failed one-shot `Runner.Run` reports a `*RunError` whose `Stdout`
-  and `Stderr` are distinct (`sshconn/runner.go`), and authentication is
-  classified **only** from ssh's own stderr (`isAuthFailure` on the started
-  child's diagnostic sink; `*RunError.Stderr` on a one-shot call). A remote
+- **SSH connect/start failure** → `ErrSSHStart` wrapping the diagnostic tail
+  (ssh's own diagnostics and, on a completed run, the remote command's stderr —
+  see the stream-merge rule below); no channel is returned; retried under
+  backoff (attaching) or surfaced once (explicit `Ensure`). A **verified
+  missing executable** is not this class: it is a defined preflight result that
+  routes to deploy/install (§3).
+- **Verified missing executable** → `ErrExecutableMissing` (a preflight
+  result, §3), routed to deploy/install and followed by a re-preflight;
+  **only** this verified case enters installation, so an unreachable host
+  (`ErrSSHStart`), an auth refusal, or an unparseable answer never deploys.
+  A deploy that then fails surfaces `ErrDeploy` (below); a re-preflight that
+  finds the binary still absent or the wrong build is a failed verification,
+  never an attach.
+- **Non-interactive auth failure is *not* terminal, because it cannot be
+  attributed to ssh.** ssh forwards the remote command's own stderr onto the
+  same stream as its diagnostics and forwards the remote command's exit status
+  unchanged — including 255, the single status ssh(1) uses for its own
+  failures — so a completed run's auth-shaped marker or 255 exit may equally be
+  the remote program's. The safe side of that ambiguity is to keep it retryable
+  (`ErrSSHStart`) under backoff rather than ending the reconnect loop for a host
+  that is merely unreachable or returning an application error. `ErrSSHAuth` is
+  the sentinel for the one attributable case — a failed `Start` that never
+  spawned a remote command, so a marker on the diagnostic stream is necessarily
+  ssh's own — and it is **not** terminal either (`isTerminal` excludes it,
+  `sshconn/manager.go`); in practice a real spawn failure carries no diagnostic,
+  so an unauthenticable host ordinarily lands in the retryable `ErrSSHStart`
+  class. An operator-facing hint to install a key/agent on the host may still be
+  surfaced alongside the class, but it does not make the error terminal.
+- **`RunError.Stderr` merges the two streams, and the contract states that
+  limitation.** A failed one-shot `Runner.Run` reports a `*RunError` whose
+  `Stdout` and `Stderr` are separate buffers (`sshconn/runner.go`), but `Stderr`
+  is **not** ssh's own diagnostics alone: ssh writes its diagnostics and the
+  remote command's stderr to the same stream, so an auth marker there cannot be
+  attributed to ssh. The classifier therefore attributes an auth marker to ssh
+  **only** when no remote command ran (no `*RunError`; `isSSHAuthFailure` /
+  `sshDiagnostic`, `sshconn/preflight.go`); a completed run — any exit status,
+  including 255 — stays retryable `ErrSSHStart`. This is why the contract is not
+  "auth failures are terminal": the merged channel cannot support that
+  classification, and the landed 04a path makes every completed command failure
+  retryable (component 04a, commit `0fc5587ac`; `sshconn/errors.go` documents
+  `ErrSSHAuth` as not terminal and never classified in production). A remote
   program that prints "Permission denied" on stdout or stderr for its own
-  reasons must not be read as an auth refusal, because `ErrSSHAuth` is terminal
-  and would stop the reconnect loop for a host that is merely returning an
-  application error.
+  reasons must not stop the reconnect loop. A truly terminal auth state is
+  available only if ssh's diagnostics are captured through a **separate
+  channel** (a diagnostic sink distinct from the remote command's stderr) so the
+  attribution is provable; until then the retryable contract stands (tracked as
+  a code follow-up in the keystone).
 - **Protocol mismatch** (`launch-check --protocol` refusal at `spawn.go`, or
   `appwire.ProtocolVersionMismatchError` at `client.go`) → **the auto-match
   trigger, not a terminal state**. A `launch-check` refusal means the on-disk
@@ -1506,6 +1581,16 @@ with the remote hub and its daemons still running.
     **not** sufficient. When neither form is available for the identified
     process the manager refuses with `ErrRestart` and emits no signal. This
     criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to end.
+21. A fresh host whose `run_path` does not exist is a **verified missing
+    executable** preflight result (`ErrExecutableMissing`), routed into
+    deploy/install — the installer fallback creates the default
+    `<home>/.local/bin/evener` — followed by a re-preflight before
+    version-match/attach; it is not surfaced as `ErrSSHStart` and does not
+    dead-end preflight. An unreachable host (`ErrSSHStart`), an auth-shaped
+    refusal, an unparseable/empty `launch-check` answer, and a
+    launch-contract/protocol refusal do **not** enter deploy/install — asserted
+    by a fake-runner table over the failed `launch-check` cases, where only the
+    verified not-found for `run_path` produces install argv.
 
 ## PR size estimate (LOC)
 

@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–17)
+## Tracked code follow-ups (rounds 7–18)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -414,3 +414,50 @@ exact scope. None is a present fact.
   loop guard. Component 05c clearing `Source` on forward is not sufficient by
   itself. Mirrors component-05 acceptance criterion 12 and its §"The receiving
   hub must reject a non-local resolution for a remote-originated `thread/start`".
+- **[04] verified-missing-executable install trigger (round 18)** — `sshconn`
+  must turn a *verified* missing `run_path` at preflight into a named result
+  (`Preflight.ExecutableMissing` / `ErrExecutableMissing`) and route it into
+  deploy/install — the installer fallback creates the default
+  `<home>/.local/bin/evener` — then **re-run preflight** before version-match
+  and attach, so a fresh host bootstraps instead of dead-ending as a retryable
+  `ErrSSHStart`. Only the verified not-found may start an install; an
+  unreachable host, an auth refusal, an unparseable/empty `launch-check`
+  answer, and a launch-contract/protocol refusal must never run the installer.
+  Scope: `cmd/evener-hub/internal/sshconn/preflight.go` (classify the not-found,
+  surface the result) and `sshconn/manager.go`/`ensureOnce` (the routed branch
+  and the re-preflight). Mirrors component-04 acceptance criterion 21.
+- **[04] ssh-diagnostic separation for a terminal auth state (round 18)** —
+  `RunError.Stderr` (`sshconn/runner.go`) merges ssh's own diagnostics with the
+  remote command's stderr, so an auth marker there cannot be attributed to ssh;
+  the landed 04a contract therefore keeps every completed command failure
+  retryable (`isSSHAuthFailure`/`sshDiagnostic`, `sshconn/preflight.go`;
+  `isTerminal`, `sshconn/manager.go`) and classifies `ErrSSHAuth` only for a
+  failed `Start`. A genuinely terminal auth state requires capturing ssh's
+  diagnostics through a **separate channel** distinct from the remote command's
+  stderr (and keeping the status unambiguous), after which `ErrSSHAuth` could be
+  made terminal. Scope: `sshconn/runner.go` (`RunError` and the runner's
+  diagnostic sink), `preflight.go`, `manager.go`. Until then the retryable
+  contract in component 04's §"Error handling" stands.
+- **[06] composite-key migration for favorite/archive/session_pin (round 18)** —
+  adding and backfilling a `source` column does not fix the local/remote ID
+  collision, because the primary keys stay bare: rebuild `favorite` and
+  `archive` with `PRIMARY KEY (source, kind, id)` and `session_pin` with
+  `PRIMARY KEY (source, session_id)` (create-new/copy-legacy-as-`"local"`/drop/
+  rename), and update every statement naming the key — the upsert conflict
+  targets, the deletes, the per-section count join, and the readback scans/maps
+  (key them `(source, kind, id)` / `(source, session_id)`, not bare). Scope:
+  `cmd/evener-hub/internal/hubcore/favorite.go`, `archive.go`,
+  `pin_section.go`; the handlers `app_archive.go`, `app_favorite.go`,
+  `app_pin_section.go`; and the projection `navigation_projection.go`. Mirrors
+  component-06 §"Migration of existing decisions — the uniqueness keys must be
+  rebuilt, not just widened" and its session-pin migration.
+- **[03] optional hard-loopback `addr` rejection (round 18, not adopted)** — the
+  adopted fix for the wildcard finding is the explicit exposure contract
+  (component 03, §"`addr` host validation, and the exposure contract it must not
+  weaken"), under which `0.0.0.0`/`::` are accepted only as spellings that
+  normalize to loopback for the manager's own dial/probe. A deployment that
+  wants a *hard* loopback guarantee must instead reject `0.0.0.0`/`::` in
+  `validateHostConfigs` **and** refuse to restart or attach a hub actually bound
+  wildcard, superseding component 04's restart-identity normalization (check 4)
+  and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
+  validation plus `sshconn/version.go` and `sshconn/preflight.go`.

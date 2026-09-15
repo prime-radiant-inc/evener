@@ -115,17 +115,45 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
   carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and `channelArgv`
   passes whichever is present; the paired validation is the implementing PR's
   requirement, not a present fact.
-  **`addr` must be a literal loopback or wildcard address.** The host hub's
-  listen address is consumed by component 04 as an SSH-side `curl` target
-  (health probe) and by the restart identity check, and the transport invariant
-  is loopback-only (design §2 "Transport"). `validateHostConfigs` must therefore reject an
-  `addr` whose host part is not `127.0.0.1`, `::1`, `localhost`, `0.0.0.0`, `::`,
-  or empty, with a named error, so a non-loopback value can never be passed to
-  the health check or restart (component 04, §"5. Version auto-match +
-  restart"). Only the
-  port varies between hosts. **Implementation status:** the shipped
-  `hostreg.Host.Addr` is stored unvalidated; this check is the implementing PR's
-  requirement.
+  **`addr` host validation, and the exposure contract it must not weaken.**
+  The host hub's listen address is consumed by component 04 as an SSH-side
+  `curl` target (health probe) and by the restart identity check, so an
+  unvalidated non-loopback value would let those paths reach an arbitrary
+  reachable host. `validateHostConfigs` must therefore reject an `addr` whose
+  host part is not `127.0.0.1`, `::1`, `localhost`, `0.0.0.0`, `::`, or empty,
+  with a named error, so a non-loopback value can never be passed to the health
+  check or restart (component 04, §"5. Version auto-match + restart"). Only the
+  host spelling (a loopback literal, or the wildcard that normalizes to it —
+  below) and the port vary between hosts.
+  **The wildcard spelling is a transport-scoping decision, not an exposure
+  grant.** Design §2's "No HTTP port exposed beyond the host's loopback"
+  describes what **this feature exposes**, and the feature exposes nothing
+  network-facing: the controller's only paths to the host hub are the SSH
+  channel and the two on-host loopback probes (component 04's `curl`, component
+  02's bridge dial), and this feature never binds, opens, or dials a
+  non-loopback address of its own. `0.0.0.0`/`::` are accepted because they
+  name the host's loopback address on every interface and are a common
+  pre-existing host binding; the manager normalizes the spelling to
+  `127.0.0.1`/`[::1]` for its own dial and probe (`loopbackAddr`, component 02)
+  and never uses the wildcard as a network address. Accepting the spelling does
+  **not** promise that the host hub is unreachable from the network — a hub
+  actually bound wildcard *is* an HTTP port exposed beyond loopback, and that
+  exposure is the host operator's own configuration, which this feature neither
+  creates nor requires. The operator contract where a host hub binds wildcard
+  is therefore explicit: (a) the hub's capability/auth token is still required
+  on every request, so the wildcard bind exposes an authenticated surface, not
+  an open one; (b) the host operator is responsible for a firewall or binding
+  that restricts that port to trusted networks, since the feature neither
+  configures nor verifies one; and (c) no controller-side path may ever use the
+  wildcard port — every controller→hub path is the SSH channel or an on-host
+  loopback probe, and the controller never dials the host's address directly.
+  A deployment that wants a **hard** loopback guarantee must instead reject
+  `0.0.0.0`/`::` outright and refuse to restart or attach a hub actually bound
+  wildcard; that stronger option supersedes component 04's restart identity
+  normalization and acceptance criterion 13 and is recorded as an optional
+  hardening in the keystone's code follow-ups, not adopted here.
+  **Implementation status:** the shipped `hostreg.Host.Addr` is stored
+  unvalidated; this check is the implementing PR's requirement.
 
 ### Go types
 
