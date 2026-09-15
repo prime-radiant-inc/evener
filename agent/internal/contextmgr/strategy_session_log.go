@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -62,11 +63,15 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 		return nil
 	}
 
-	estimatePressure := func() float64 {
-		return s.cm.EstimatePressure(*history, sysPromptChars)
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	estimatePressure := func() (float64, *provider.Profile) {
+		prof, lastTokens, measuredLen := s.cm.profileSnapshot()
+		return s.cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 	}
 
-	p := estimatePressure()
+	p, prof := estimatePressure()
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -91,7 +96,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 2: Thinking clearing.
@@ -107,7 +112,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
@@ -127,7 +132,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			s.cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 4: LLM summarization fallback.

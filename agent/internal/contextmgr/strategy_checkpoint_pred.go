@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -58,11 +59,15 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 		return nil
 	}
 
-	pressure := func() float64 {
-		return s.cm.EstimatePressure(*history, sysPromptChars)
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) {
+		prof, lastTokens, measuredLen := s.cm.profileSnapshot()
+		return s.cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 	}
 
-	p := pressure()
+	p, prof := pressure()
 	compacted := false
 
 	if p >= s.cm.ObservationMaskThreshold {
@@ -85,7 +90,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 2: Thinking clearing (same as compact).
@@ -101,7 +106,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
@@ -130,7 +135,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			s.cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 4: LLM summarization fallback (same as compact).

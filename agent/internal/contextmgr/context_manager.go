@@ -369,13 +369,19 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 // tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, history, sysPromptChars)
+}
+
+// pressureFromSnapshot is estimatePressure's core for callers that already hold a
+// (profile, measurement) snapshot. The compaction phases read pressure and their
+// before/after diagnostics from one snapshot apiece, so a concurrent SetProfile
+// cannot decide a layer by one model and describe it by another.
+func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) float64 {
 	cw := contextWindowOf(prof)
 	if cw <= 0 {
 		return 0
 	}
-
-	totalTokens := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
-	return float64(totalTokens) / float64(cw)
+	return float64(cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)) / float64(cw)
 }
 
 // contextWindowOf returns the profile's context window, or 0 when the manager
@@ -558,11 +564,15 @@ func (cm *Manager) MaybeCompact(
 		return
 	}
 
-	pressure := func() float64 {
-		return cm.estimatePressure(*history, sysPromptChars)
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) {
+		prof, lastTokens, measuredLen := cm.profileSnapshot()
+		return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 	}
 
-	p := pressure()
+	p, prof := pressure()
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -593,7 +603,7 @@ func (cm *Manager) MaybeCompact(
 			cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 2: LLM summarization at ≥90%.

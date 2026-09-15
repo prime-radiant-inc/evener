@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -60,11 +61,15 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 		return nil
 	}
 
-	pressure := func() float64 {
-		return s.cm.EstimatePressure(*history, sysPromptChars)
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) {
+		prof, lastTokens, measuredLen := s.cm.profileSnapshot()
+		return s.cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 	}
 
-	p := pressure()
+	p, prof := pressure()
 	compacted := false
 
 	if p >= s.cm.ObservationMaskThreshold {
@@ -89,7 +94,7 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 2: Deterministic checkpoint as fallback if masking wasn't enough.
