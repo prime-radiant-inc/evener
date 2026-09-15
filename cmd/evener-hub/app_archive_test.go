@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
@@ -147,6 +148,7 @@ func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
 		Archive:      store,
 		HubStateRoot: t.TempDir(),
 		Past:         hubcore.NewPastIndex(""),
+		RemoteHosts:  []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
 	})
 	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
 
@@ -195,6 +197,7 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 		RemoteThreadCache: cache,
 		HubStateRoot:      t.TempDir(),
 		Past:              hubcore.NewPastIndex(""),
+		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
 	})
 
 	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
@@ -220,5 +223,84 @@ func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "project ID does not match workingDir") {
 		t.Fatalf("error = %q, want the project/workingDir mismatch message", err)
+	}
+}
+
+// A non-local archive source must name a configured host. An unknown source
+// would persist a successful but permanently inert decision row that no read
+// path addresses.
+func TestHubArchiveSetAppWireRejectsUnknownSource(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:      store,
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
+	})
+	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
+
+	_, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetProject,
+		ID:       projectID,
+		Source:   "host-b",
+		Archived: true,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
+	}
+	if !strings.Contains(err.Error(), "unknown source") {
+		t.Fatalf("error = %q, want the unknown-source message", err)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 0 {
+		t.Fatalf("unknown source wrote a decision: %v", decisions)
+	}
+
+	// A whitespace variant still names the configured host: normalization trims
+	// it before validation and keying.
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetProject,
+		ID:       projectID,
+		Source:   "  host-a  ",
+		Archived: true,
+	}); err != nil {
+		t.Fatalf("archive with a padded configured source: %v", err)
+	}
+	decisions, err = store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: projectID, Source: "host-a"}] {
+		t.Fatalf("padded source did not normalize to host-a: %v", decisions)
+	}
+}
+
+// A session archive carries no source dimension: the session ID is already its
+// host-qualified ref, so a non-local source must be rejected instead of
+// silently writing an inert controller-key row.
+func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:      store,
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+		RemoteHosts:  []hostreg.Host{{Name: "host-a"}},
+	})
+	_, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "session-1",
+		Source:   "host-a",
+		Archived: true,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %v, want InvalidParams for a session source", err)
+	}
+	if !strings.Contains(err.Error(), "source is not supported for session archive") {
+		t.Fatalf("error = %q, want the session-source message", err)
 	}
 }

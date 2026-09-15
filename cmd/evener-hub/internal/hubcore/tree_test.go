@@ -134,6 +134,49 @@ func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
 	}
 }
 
+// A remote project's archive decision is stored under (source, project ID). The
+// tree must consult the owning source when it decides whether the project is
+// archived, or the decision is written but never read back and the archived
+// project keeps rendering in the active list.
+func TestBuildTreeReadsBackSourceQualifiedProjectArchive(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	const path = "/srv/remote/alpha"
+	projects := map[string]identifier.Project{path: {ID: "proj-alpha", CanonicalPath: path}}
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true}
+
+	remoteMeta := schema.SessionMeta{
+		ID:        "host-a:t1",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
+	}
+	tree := BuildTreeAtWithProjects([]schema.SessionMeta{remoteMeta}, nil, decisions, now, projects)
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 {
+		t.Fatalf("remote archived project: active=%d archived=%d, want the row moved to ArchivedProjects",
+			len(tree.Projects), len(tree.ArchivedProjects))
+	}
+	if archived := tree.ArchivedProjects[0]; !archived.IsArchived || archived.Key != "proj-alpha" {
+		t.Fatalf("archived project = %+v, want proj-alpha IsArchived", archived)
+	}
+	if sources := tree.ArchivedProjects[0].Sources; len(sources) != 1 || sources[0] != "host-a" {
+		t.Fatalf("archived project sources = %q, want [host-a]", sources)
+	}
+
+	// The controller's own project sharing the remote project's ID must not be
+	// archived by the remote host's decision: the source dimension keeps them
+	// distinct even though the project ID (and path) match.
+	localMeta := schema.SessionMeta{
+		ID:        "local-alpha",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
+	}
+	tree = BuildTreeAtWithProjects([]schema.SessionMeta{localMeta}, nil, decisions, now, projects)
+	if len(tree.Projects) != 1 || tree.Projects[0].IsArchived {
+		t.Fatalf("local project with the same ID: %+v, want it active and unaffected by host-a's decision", tree.Projects)
+	}
+}
+
 func initHubTestRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

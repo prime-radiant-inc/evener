@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -133,6 +134,34 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 	}
 }
 
+// A non-local favorite source must name a configured host; an unknown source
+// would write a successful but permanently inert favorite row.
+func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite:    favorites,
+		RemoteHosts: []hostreg.Host{{Name: "host-a"}},
+	}, nil, nil, nil)
+
+	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
+		Kind:      "project",
+		ID:        "p1",
+		Source:    "host-b",
+		Favorited: true,
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams || !strings.Contains(wire.Message, "unknown source") {
+		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
+	}
+	decisions, err := favorites.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 0 {
+		t.Fatalf("unknown source wrote a favorite: %v", decisions)
+	}
+}
+
 // Two hosts' projects that share an ID keep separate favorites; an explicit
 // "local" source addresses the controller's own project.
 func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
@@ -142,7 +171,10 @@ func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: favorites}, nil, navigation, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite:    favorites,
+		RemoteHosts: []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+	}, nil, navigation, nil)
 
 	for _, host := range []string{"host-a", "host-b"} {
 		if _, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
