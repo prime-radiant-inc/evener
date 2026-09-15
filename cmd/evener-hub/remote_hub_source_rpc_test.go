@@ -514,6 +514,95 @@ func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
 	}
 }
 
+// A remote hub stamps its own /s/<session>/images/<sha> route before replying.
+// That route is only meaningful against the remote origin: if it reaches the
+// browser, the browser requests this hub's /s/... route for a session this hub
+// does not have, which 404s or, on a session-id collision, serves another
+// session's bytes. While the controller-side proxy is staged, the route must be
+// neutralized; external URLs still resolve directly and must survive.
+func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	const external = "https://images.example.test/plot.png"
+	remoteThread := appwire.Thread{
+		ID:        "t1",
+		SessionID: "t1",
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID: "turn-1",
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "item-image",
+				TranscriptKey: "key-image",
+				Position:      &appwire.ThreadItemPosition{Entry: 0},
+				ToolName:      "shell",
+				CallID:        "call-image",
+				ArgumentsJSON: `{}`,
+				Status:        appwire.TurnStatusCompleted,
+				OutputImages: []appwire.OutputImage{
+					{Source: "tool-result", SHA: sha, URL: "/s/remote-session/images/" + sha},
+					{Source: "external", URL: external},
+				},
+				Images: []appwire.InputItem{{
+					Metadata: map[string]string{"sha": sha},
+					URL:      "/s/remote-session/images/" + sha,
+				}},
+			}},
+			Status: appwire.TurnStatusCompleted,
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: remoteThread}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns = %+v, want the single remote image item", resp.Thread.Turns)
+	}
+	item := resp.Thread.Turns[0].Items[0]
+	if len(item.OutputImages) != 2 {
+		t.Fatalf("output images = %+v, want both remote descriptors preserved", item.OutputImages)
+	}
+	if got := item.OutputImages[0].URL; got != "" {
+		t.Fatalf("remote output image route = %q, want the controller-relative route neutralized", got)
+	}
+	if got := item.OutputImages[0].SHA; got != sha {
+		t.Fatalf("output image sha = %q, want %q preserved for the staged proxy", got, sha)
+	}
+	if got := item.OutputImages[1].URL; got != external {
+		t.Fatalf("external output image URL = %q, want %q preserved", got, external)
+	}
+	if len(item.Images) != 1 || item.Images[0].URL != "" {
+		t.Fatalf("remote input image = %+v, want its controller-relative route neutralized", item.Images)
+	}
+}
+
 // A remote thread's CWD names the remote host's filesystem. When that path also
 // exists on the controller (a shared layout such as /home/<user>/<repo>), the
 // sidebar list must not resolve it locally and stamp a controller-local project
