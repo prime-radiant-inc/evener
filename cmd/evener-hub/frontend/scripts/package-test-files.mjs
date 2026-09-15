@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 import { isLoadedAtRuntime, moduleSpecifierSites, parseSource, walkImportGraph } from "../../../../scripts/sdk/module-specifiers.mjs";
 import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
-import { isTestFile, sourceFiles } from "../../../../scripts/sdk/source-files.mjs";
+import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../../scripts/sdk/source-files.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
@@ -43,15 +43,28 @@ export function sourceFilesOnDisk(dir) {
 // to run and the process's working directory is not its own. The hazard is one
 // shape: a filesystem call whose LEADING argument is a relative path literal,
 // which is what anchors it to the working directory -- `join("..", …)`,
-// `readFileSync("../x")`. A call anchored to a base identifier
-// (`resolve(packageDir, "..")`, `new URL("../x", import.meta.url)`) resolves
-// against that base, not the cwd, and an ordinary `from "../x"` import names no
-// such call; neither matches, so each read is judged by its own argument rather
-// than by anything else in the file. testing/hubWireFixtures.ts read
-// `join("..", "testdata", "authwire", "responses.json")` against the frontend's
+// `readFileSync("../x")`. Found on the AST rather than by line, so a call whose
+// argument is wrapped onto the next line is caught too. A call anchored to a
+// base identifier (`resolve(packageDir, "..")`, `new URL("../x",
+// import.meta.url)`) resolves against that base, not the cwd, and an ordinary
+// `from "../x"` import names no such call; neither matches. testing/
+// hubWireFixtures.ts read `join("..", "testdata", …)` against the frontend's
 // CWD; it lives in the app now, which is the other way to satisfy this.
-const CWD_RELATIVE_READ =
-  /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(\s*["'`](?:\.\.?["'`/]|[^"'`]*\btestdata\b)/;
+const FS_PATH_FUNCTIONS = new Set([
+  "join",
+  "resolve",
+  "readFileSync",
+  "readFile",
+  "readdirSync",
+  "readdir",
+  "existsSync",
+  "createReadStream",
+  "statSync",
+  "stat",
+  "openSync",
+  "open",
+]);
+const cwdRelativeLiteral = (text) => /^\.\.?(?:[/\\]|$)/.test(text) || /(?:^|[/\\])testdata(?:[/\\]|$)/.test(text);
 
 // Whether the file loads node's fs by any form -- an import, a require, a
 // dynamic import -- read off the AST so all three count, where matching text
@@ -63,11 +76,29 @@ const importsFs = (source) =>
 export function describeCwdRelativeReads(files, read, dir) {
   const offenders = [];
   for (const file of files) {
-    const source = read(file);
-    if (!importsFs(parseSource(ts, file, source))) continue;
-    source.split("\n").forEach((line, index) => {
-      if (CWD_RELATIVE_READ.test(line)) offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
-    });
+    const source = parseSource(ts, file, read(file));
+    if (!importsFs(source)) continue;
+    const lines = source.text.split("\n");
+    const seen = new Set();
+    const visit = (node) => {
+      if (ts.isCallExpression(node)) {
+        const callee = ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name.text
+          : ts.isIdentifier(node.expression)
+            ? node.expression.text
+            : null;
+        const first = node.arguments[0];
+        if (callee && FS_PATH_FUNCTIONS.has(callee) && first && ts.isStringLiteralLike(first) && cwdRelativeLiteral(first.text)) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line;
+          if (!seen.has(line)) {
+            seen.add(line);
+            offenders.push(`${path.relative(dir, file)}:${line + 1}: ${lines[line].trim()}`);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
   }
   if (offenders.length === 0) return "";
   return [
@@ -77,23 +108,70 @@ export function describeCwdRelativeReads(files, read, dir) {
   ].join("\n");
 }
 
-// The package is a standalone library: nothing in it may reach back into the
-// app. Two test files did, and moving them out is only half the fix - this is
-// the half that keeps it fixed. Read through the AST so every form counts -- a
-// from-import, a side-effect import, a require, a dynamic import -- and a
-// comment that merely names an app path does not, being no specifier at all.
-export function describeAppImports(files, read, dir) {
+// The `@evener/appwire-client/testing/` subpath is in-repo test support: it is
+// absent from the tarball, so a production module importing it would name
+// something no installed consumer can resolve, and would pull test fakes into
+// the shipped bundle if it could. Only test files and the dev-support files
+// that build the guard harnesses and previews may import it -- the set AGENTS.md
+// names. Judged by path so a production consumer is caught wherever it sits.
+const TESTING_SUBPATH = "@evener/appwire-client/testing/";
+export function mayImportTesting(file) {
+  const base = path.basename(file);
+  return (
+    isTestFile(base) ||
+    /[/\\]__tests__[/\\]/.test(file) ||
+    /[/\\]dev[/\\]/.test(file) ||
+    /TestUtils\.[cm]?[jt]sx?$/.test(base)
+  );
+}
+
+export function describeTestingImportsOutsideTests(files, read, dir) {
   const offenders = [];
   for (const file of files) {
-    for (const site of moduleSpecifierSites(ts, parseSource(ts, file, read(file)))) {
-      if (site.text.includes("cmd/evener-hub/")) offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
+    if (mayImportTesting(file)) continue;
+    const text = read(file);
+    if (!text.includes(TESTING_SUBPATH)) continue;
+    for (const site of moduleSpecifierSites(ts, parseSource(ts, file, text))) {
+      if (site.text.startsWith(TESTING_SUBPATH)) offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
     }
   }
   if (offenders.length === 0) return "";
   return [
-    "the AppWire package must not import from the app:",
+    "the AppWire testing/ subpath is in-repo test support; only test and dev-support files may import it:",
     ...offenders.map((line) => `  ${line}`),
-    "Move the file into cmd/evener-hub/frontend/src/, or restate the type it needs locally.",
+    "Move the use into a *.test.*, __tests__/, src/dev/ or *TestUtils.* file, or import from the package root.",
+  ].join("\n");
+}
+
+// The package is a standalone library: nothing in it may reach back into the
+// app -- nor into the mobile trees. Two test files reached into the app, and
+// moving them out is only half the fix; this is the half that keeps it fixed.
+// Read through the AST so every form counts -- a from-import, a side-effect
+// import, a require, a dynamic import -- and a comment naming a path does not,
+// being no specifier at all. A relative specifier is the offender when it
+// resolves into one of the consumer trees (the web src and the two mobile
+// trees); an import into shared repo tooling (scripts/sdk) is what the
+// package's own scripts legitimately do, and a bare specifier names a
+// dependency the alias check covers.
+export function describeAppImports(files, read, dir) {
+  const repoRoot = path.resolve(dir, "..", "..");
+  const consumerTrees = CONSUMER_TREES.map((tree) => path.join(repoRoot, tree));
+  const intoConsumerTree = (resolved) =>
+    consumerTrees.some((tree) => resolved === tree || resolved.startsWith(tree + path.sep));
+  const offenders = [];
+  for (const file of files) {
+    for (const site of moduleSpecifierSites(ts, parseSource(ts, file, read(file)))) {
+      if (!site.text.startsWith(".")) continue;
+      if (intoConsumerTree(path.resolve(path.dirname(file), site.text))) {
+        offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
+      }
+    }
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "the AppWire package must not import from the app or the mobile trees:",
+    ...offenders.map((line) => `  ${line}`),
+    "Move the file into the package, or restate the type it needs locally.",
   ].join("\n");
 }
 
@@ -348,11 +426,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const viteAliases = aliasesFrom(readFileSync(path.join(frontend, "vite.config.ts"), "utf8"));
   const packageSources = sourceFilesOnDisk(packageDir);
   const onDisk = packageSources.filter((file) => isTestFile(path.basename(file)));
+  // The consumer trees, for the testing/-subpath rule: a production module in
+  // the app or the mobile trees must not import in-repo test support.
+  const repoRoot = path.resolve(frontend, "..", "..", "..");
+  const consumerSources = CONSUMER_TREES.flatMap((tree) => sourceFiles(path.join(repoRoot, tree)));
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
     describeAliasOrder(viteAliases),
     describeUnaliasedImports(reachableBareImports(onDisk, readFile, resolvePackageImport, packageDir), viteAliases),
+    describeTestingImportsOutsideTests(consumerSources, readFile, repoRoot),
   ]) {
     if (problem) {
       console.error(problem);

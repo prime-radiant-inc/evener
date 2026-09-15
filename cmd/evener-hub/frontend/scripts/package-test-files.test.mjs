@@ -11,6 +11,7 @@ import {
   describeCwdRelativeReads,
   describeDifference,
   describeProofRun,
+  describeTestingImportsOutsideTests,
   firstAliasMatch,
   describeAliasOrder,
   describeUnaliasedImports,
@@ -148,9 +149,17 @@ test("describeAppImports names every line that reaches into the app", () => {
     [files[1]]: 'import type { T } from "../../cmd/evener-hub/frontend/src/shell/palette/commands";\n',
   };
   const message = describeAppImports(files, (file) => sources[file], dir);
-  assert.match(message, /must not import from the app/);
+  assert.match(message, /must not import from the app or the mobile trees/);
   assert.match(message, /a\.test\.ts: imports .*panes\/session\/Session/);
   assert.match(message, /b\.ts: imports .*shell\/palette\/commands/);
+});
+
+test("describeAppImports flags a relative import into the mobile trees, not only the app", () => {
+  const files = [path.join(dir, "a.test.ts")];
+  const sources = { [files[0]]: 'import { x } from "../../mobile/src/state";\n' };
+  const message = describeAppImports(files, (file) => sources[file], dir);
+  assert.match(message, /must not import from the app or the mobile trees/);
+  assert.match(message, /a\.test\.ts: imports .*mobile\/src\/state/);
 });
 
 test("describeAppImports catches a side-effect import, a require and a dynamic import", () => {
@@ -166,6 +175,26 @@ test("describeAppImports catches a side-effect import, a require and a dynamic i
   assert.match(message, /b\.ts: imports .*stores\/threads/);
   assert.match(message, /c\.ts: imports .*shell\/clientContext/);
   assert.match(message, /d\.ts: imports .*panes\/session\/Session/);
+});
+
+test("describeTestingImportsOutsideTests flags a production file importing testing/, exempts test and dev-support files", () => {
+  const src = path.join(dir, "cmd/evener-hub/frontend/src");
+  const testingImport = 'import { FakeClient } from "@evener/appwire-client/testing/fakeClient";\n';
+  const files = {
+    [path.join(src, "shell/App.tsx")]: testingImport,
+    [path.join(src, "shell/App.test.tsx")]: testingImport,
+    [path.join(src, "shell/__tests__/helper.ts")]: testingImport,
+    [path.join(src, "dev/harness-entry.tsx")]: testingImport,
+    [path.join(src, "shell/paletteTestUtils.tsx")]: testingImport,
+    [path.join(src, "shell/normal.tsx")]: 'import { AppwireClient } from "@evener/appwire-client";\n',
+  };
+  const message = describeTestingImportsOutsideTests(Object.keys(files), (file) => files[file], dir);
+  assert.match(message, /only test and dev-support files may import it/);
+  // Only App.tsx is an offender; the exempt files are never listed. Assert on
+  // the offender lines (the "imports" lines), since the help text itself names
+  // __tests__ and src/dev as the allowed locations.
+  const offenders = message.split("\n").filter((line) => line.includes("imports"));
+  assert.deepEqual(offenders, ["  cmd/evener-hub/frontend/src/shell/App.tsx: imports @evener/appwire-client/testing/fakeClient"]);
 });
 
 test("describeAppImports does not fire on a comment that merely names the app path", () => {
@@ -203,6 +232,15 @@ test("describeCwdRelativeReads names the working-directory read hubWireFixtures.
   const message = describeCwdRelativeReads([file], () => source, dir);
   assert.match(message, /must not read a path resolved against the working directory/);
   assert.match(message, /hubWireFixtures\.ts:3: const FIXTURE_PATH/);
+});
+
+test("describeCwdRelativeReads catches a call whose relative argument is wrapped onto the next line", () => {
+  const file = path.join(dir, "a.ts");
+  const source = ['import { readFileSync } from "node:fs";', "const text = readFileSync(", '  "../testdata/x.json",', ");", ""].join(
+    "\n",
+  );
+  const message = describeCwdRelativeReads([file], () => source, dir);
+  assert.match(message, /a\.ts:2: const text = readFileSync\(/);
 });
 
 test("describeCwdRelativeReads accepts a read resolved against the module's own URL", () => {

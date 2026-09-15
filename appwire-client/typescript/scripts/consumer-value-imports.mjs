@@ -11,11 +11,25 @@
 // something some consumer imports.
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
 import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../scripts/sdk/source-files.mjs";
 
-export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
+// The published specifiers, from package.json's own exports rather than
+// restated: each key is a subpath, "." the root. The in-repo testing/ alias is
+// deliberately absent from exports and is not one of these.
+export function packageSpecifiers(manifest) {
+  return Object.keys(manifest.exports)
+    .filter((subpath) => !subpath.startsWith("./testing"))
+    .map((subpath) => (subpath === "." ? manifest.name : `${manifest.name}${subpath.slice(1)}`));
+}
+
+// import.meta.dirname where the runtime sets it (Node and Vitest do), the
+// file-URL form only where it does not -- the frontend's Vitest imports this
+// module across the app boundary with a non-file import.meta.url.
+const packageDir = join(import.meta.dirname ?? fileURLToPath(new URL(".", import.meta.url)), "..");
+export const PACKAGE_SPECIFIERS = packageSpecifiers(JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")));
 
 export function parse(file, text) {
   return parseSource(ts, file, text);

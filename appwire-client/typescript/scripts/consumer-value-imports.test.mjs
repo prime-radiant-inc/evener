@@ -7,10 +7,18 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import { CONSUMER_TREES } from "../../../scripts/sdk/source-files.mjs";
-import { consumerPackageUsage, packageValuesIn, parse } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, packageSpecifiers, packageValuesIn, parse } from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
+
+test("packageSpecifiers derives the published specifiers from exports, dropping the testing alias", () => {
+  const manifest = {
+    name: "@evener/appwire-client",
+    exports: { ".": {}, "./docContent": {}, "./widgets": {}, "./testing/fakeClient": {} },
+  };
+  expect(packageSpecifiers(manifest)).toEqual([ROOT, DOC_CONTENT, "@evener/appwire-client/widgets"]);
+});
 
 function valuesIn(source) {
   return packageValuesIn(parse("fixture.ts", source), "fixture.ts", []);

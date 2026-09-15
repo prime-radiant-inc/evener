@@ -56,7 +56,9 @@ directory:
   subpath the package publishes, and
 - `@evener/appwire-client/testing/<module>` for the fakes and fixtures. That
   specifier is in-repo only — it is absent from `package.json` `exports` and
-  from the tarball — so it belongs in test files and nowhere else.
+  from the tarball — so it belongs in test and dev-support files and nowhere
+  else: `*.test.*`/`*.spec.*`, `__tests__/`, `src/dev/`, and `*TestUtils.*`.
+  `check-package-tests` fails a production file that imports it.
 
 The name resolves through `tsconfig` `paths`, the Vite and vitest configs, and
 Metro's `resolveRequest`; the frontend and `mobile-native` declare no npm

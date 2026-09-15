@@ -251,15 +251,19 @@ function mergeDuplicateImports(file, text, conflicts) {
       text: renderImport(members, first.specifier, first.typeOnly, indent),
     });
     for (const entry of rest) {
-      // Remove the statement and the comment above it (getFullStart reaches
-      // back over its leading trivia), by whole lines: getFullStart lands just
-      // after the previous statement, before that line's newline, so advance to
-      // the first line the trivia actually occupies and take the trailing
-      // newline too -- the line above keeps its terminator and no blank is left.
-      let start = entry.statement.getFullStart();
-      for (let scan = start; scan < text.length && /\s/.test(text[scan]); ) {
-        scan += 1;
-        if (text[scan - 1] === "\n") start = scan;
+      // Remove the duplicate by whole lines, from the start of its own line and
+      // absorbing standalone comment or blank lines directly above it -- a doc
+      // comment written for it goes with it. Stop at a line carrying code, so a
+      // trailing `// keep` on the statement above is not eaten. getFullStart
+      // would reach back over that trailing comment (it is this statement's
+      // leading trivia), which is the bug this avoids.
+      const statementStart = entry.statement.getStart(source);
+      let start = text.lastIndexOf("\n", statementStart - 1) + 1;
+      while (start > 0) {
+        const aboveStart = text.lastIndexOf("\n", start - 2) + 1;
+        const above = text.slice(aboveStart, start - 1).trim();
+        if (above !== "" && !above.startsWith("//")) break;
+        start = aboveStart;
       }
       let end = entry.statement.getEnd();
       if (text[end] === "\n") end += 1;

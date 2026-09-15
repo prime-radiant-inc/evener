@@ -13,6 +13,11 @@ config.resolver.nodeModulesPaths = [path.resolve(__dirname, "node_modules")];
 // here fails CI.
 const appwirePackage = path.join(root, "appwire-client", "typescript");
 const appwireName = "@evener/appwire-client";
+// The source extensions to probe for a package subpath, from the one shared
+// list scripts/sdk/source-files.env, so this resolver stays level with the
+// rewriter and the gate. A .tsx module (a widget, say) resolves like a .ts one.
+const sharedEnv = fs.readFileSync(path.join(root, "scripts", "sdk", "source-files.env"), "utf8");
+const sourceExtensions = (sharedEnv.match(/^extensions="([^"]*)"/m)?.[1] ?? "").split(/\s+/).filter(Boolean);
 // Shared headless sources use this app's React/Zustand installation. Keep
 // normal resolution inside native dependencies, including nested packages.
 config.resolver.resolveRequest = (context, name, platform) => {
@@ -28,15 +33,17 @@ config.resolver.resolveRequest = (context, name, platform) => {
 	// through tsconfig.check.json's paths, so a break in this branch passes
 	// both and would otherwise surface first on a device.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
-		const subpath = name.slice(appwireName.length).replace(/^\//, "");
-		const filePath = path.join(appwirePackage, `${subpath || "index"}.ts`);
-		// A subpath the package does not have falls through rather than
-		// resolving to a file that is not there: Metro's own "unable to
-		// resolve" names the specifier and the import stack, where a missing
-		// sourceFile surfaces later as a read error against a path the author
-		// never wrote.
-		if (fs.existsSync(filePath)) {
-			return { type: "sourceFile", filePath };
+		const subpath = name.slice(appwireName.length).replace(/^\//, "") || "index";
+		// The first extension that exists wins. A subpath the package does not
+		// have falls through rather than resolving to a file that is not there:
+		// Metro's own "unable to resolve" names the specifier and the import
+		// stack, where a missing sourceFile surfaces later as a read error
+		// against a path the author never wrote.
+		for (const extension of sourceExtensions) {
+			const filePath = path.join(appwirePackage, `${subpath}.${extension}`);
+			if (fs.existsSync(filePath)) {
+				return { type: "sourceFile", filePath };
+			}
 		}
 	}
 	const originModulePath =

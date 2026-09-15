@@ -41,18 +41,21 @@ export const CONSUMER_TREES = envList(env, "consumer_trees");
 // yields nothing, so a sweep over a tree a fixture omits is simply empty. Order
 // is unspecified: a caller that compares listings sorts. The one walker behind
 // the rewriter, the value-import derivation and the package-test gate.
-export function sourceFiles(dir, { skipDir = (name) => SKIPPED_DIRS.has(name), keep = () => true } = {}) {
+export function sourceFiles(dir, { skipDir = (name) => SKIPPED_DIRS.has(name), keep = () => true, readdir = readdirSync } = {}) {
   let entries;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
+    entries = readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    // A directory a fixture omits is simply empty; a permission error or any
+    // other fault is a real problem and must not read as an empty tree.
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return [];
+    throw error;
   }
   const found = [];
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!skipDir(entry.name, full)) found.push(...sourceFiles(full, { skipDir, keep }));
+      if (!skipDir(entry.name, full)) found.push(...sourceFiles(full, { skipDir, keep, readdir }));
     } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && keep(entry.name)) {
       found.push(full);
     }

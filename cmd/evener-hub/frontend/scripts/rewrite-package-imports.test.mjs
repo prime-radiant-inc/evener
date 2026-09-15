@@ -330,6 +330,25 @@ test("a comment above a removed duplicate goes with it", () => {
   }
 });
 
+test("a trailing comment on the statement above a removed duplicate survives", () => {
+  const root = fixture({
+    "mobile/src/state.ts": [
+      'import { errorText } from "../../appwire-client/typescript/errors"; // keep me',
+      'import { alpha } from "../../appwire-client/typescript/model";',
+      "export const used = [errorText, alpha];",
+      "",
+    ].join("\n"),
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    const after = readFileSync(path.join(root, "mobile/src/state.ts"), "utf8");
+    assert.match(after, /\/\/ keep me/);
+    assert.equal(after.match(/@evener\/appwire-client/g).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // The bundlers resolve JavaScript beside TypeScript, so a .js consumer reaches
 // the package by the same relative path a .ts one does. The sweep walked only
 // the TypeScript extensions, which left such a file behind on every run.
