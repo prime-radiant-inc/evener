@@ -78,6 +78,28 @@ type staticError struct{}
 
 func (*staticError) Error() string { return "persistent failure" }
 
+// waitCapture consumes one capture signal, failing the test if none arrives.
+func waitCapture(t *testing.T, captured <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-captured:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for capture: %s", label)
+	}
+}
+
+// waitTimer consumes one park timer, failing the test if none arrives.
+func waitTimer(t *testing.T, created <-chan *fakeNavigationTimer, label string) *fakeNavigationTimer {
+	t.Helper()
+	select {
+	case timer := <-created:
+		return timer
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for park: %s", label)
+		return nil
+	}
+}
+
 // The boundary branch must shorten its park to the retry deadline: with a 24h
 // boundary and retryAfter far shorter, a park that has a retry pending is the
 // retry window, not the boundary.
@@ -117,31 +139,13 @@ func TestNavigationBoundaryParkShortensToRetryDeadline(t *testing.T) {
 			return timer
 		}
 	})
-	waitCapture := func(label string) {
-		t.Helper()
-		select {
-		case <-source.captured:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for capture: %s", label)
-		}
-	}
-	waitTimer := func(label string) *fakeNavigationTimer {
-		t.Helper()
-		select {
-		case timer := <-created:
-			return timer
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for park: %s", label)
-			return nil
-		}
-	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go service.Start(ctx)
 
 	// The initial build succeeds and the loop parks on the full 24h boundary.
-	waitCapture("initial build")
-	boundaryPark := waitTimer("boundary park")
+	waitCapture(t, source.captured, "initial build")
+	boundaryPark := waitTimer(t, created, "boundary park")
 	if d := boundaryPark.delay; d < 24*time.Hour-time.Second {
 		t.Fatalf("initial park = %v, want the 24h boundary", d)
 	}
@@ -150,9 +154,9 @@ func TestNavigationBoundaryParkShortensToRetryDeadline(t *testing.T) {
 	// loop's follow-up rebuild then succeeds and parks again. That park must be
 	// the retry window - far below the boundary - because the retry is pending.
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
-	waitCapture("failed forced refresh")
-	waitCapture("follow-up rebuild")
-	retryPark := waitTimer("retry-deadline park")
+	waitCapture(t, source.captured, "failed forced refresh")
+	waitCapture(t, source.captured, "follow-up rebuild")
+	retryPark := waitTimer(t, created, "retry-deadline park")
 	if retryPark.delay > time.Second {
 		t.Fatalf("post-failure park = %v, want the retry window (~retryAfter 10ms), not the 24h boundary", retryPark.delay)
 	}
@@ -212,33 +216,15 @@ func TestNavigationRetryDeadlineWakeDoesNotStampTimeHint(t *testing.T) {
 			return timer
 		}
 	})
-	waitCapture := func(label string) {
-		t.Helper()
-		select {
-		case <-source.captured:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for capture: %s", label)
-		}
-	}
-	waitTimer := func(label string) *fakeNavigationTimer {
-		t.Helper()
-		select {
-		case timer := <-created:
-			return timer
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for park: %s", label)
-			return nil
-		}
-	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go service.Start(ctx)
-	waitCapture("initial build")
-	waitTimer("boundary park")
+	waitCapture(t, source.captured, "initial build")
+	waitTimer(t, created, "boundary park")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
-	waitCapture("failed forced refresh")
-	waitCapture("scheduler rebuild")
-	retryPark := waitTimer("retry-deadline park")
+	waitCapture(t, source.captured, "failed forced refresh")
+	waitCapture(t, source.captured, "scheduler rebuild")
+	retryPark := waitTimer(t, created, "retry-deadline park")
 	if retryPark.delay != time.Minute {
 		t.Fatalf("retry park delay = %v, want retryAfter (1m)", retryPark.delay)
 	}
@@ -248,7 +234,7 @@ func TestNavigationRetryDeadlineWakeDoesNotStampTimeHint(t *testing.T) {
 	now = base.Add(time.Minute + time.Second)
 	clockMu.Unlock()
 	retryPark.ch <- now
-	waitCapture("paced retry")
+	waitCapture(t, source.captured, "paced retry")
 	service.mu.Lock()
 	hint := service.pendingHint
 	service.mu.Unlock()

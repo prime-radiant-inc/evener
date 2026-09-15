@@ -255,8 +255,8 @@ test.each(["save", "refresh", "check", "result"])(
         }),
       ).toBeTruthy();
     await h.leave();
-    const checksBefore = countMethod(h.fake, "evener/auth/test");
-    const writesBefore = countCredentialWrites(h.fake);
+    const checksBefore = countCalls(h.fake, "evener/auth/test");
+    const writesBefore = countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS);
     await act(async () => {
       save.resolve(h.status);
       refresh.resolve(h.listing());
@@ -274,8 +274,8 @@ test.each(["save", "refresh", "check", "result"])(
     // removes the load-sensitive flake: the store's debounced listing read is
     // bookkeeping, not the background check this test is named for.
     await quiesceCalls(h.fake);
-    expect(countMethod(h.fake, "evener/auth/test")).toBe(checksBefore);
-    expect(countCredentialWrites(h.fake)).toBe(writesBefore);
+    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
     await h.back();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -286,12 +286,13 @@ test.each(["save", "refresh", "check", "result"])(
       "disabled",
       false,
     );
-    await quiesceCalls(h.fake);
-    expect(countMethod(h.fake, "evener/auth/test")).toBe(checksBefore);
-    expect(countCredentialWrites(h.fake)).toBe(writesBefore);
+    // The client is already settled above and Back issues no RPC, so this is a
+    // plain re-read rather than a second settle.
+    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
   },
-  // The quiesce waits run on real timers and cover the store's ~250ms debounce,
-  // so these cases need more than the 5s default.
+  // The settle window runs on real timers and covers the store's ~250ms
+  // debounce, so these cases need more than the 5s default.
   20000,
 );
 
@@ -639,12 +640,9 @@ async function focusSettlesInDialog(): Promise<void> {
  * invalidation: a background check and a credential write. */
 const CREDENTIAL_WRITE_METHODS = ["evener/auth/apiKey/set", "evener/auth/credentialJson/set"];
 
-function countMethod(fake: FakeClient, method: string): number {
-  return fake.calls.filter((call) => call.method === method).length;
-}
-
-function countCredentialWrites(fake: FakeClient): number {
-  return fake.calls.filter((call) => CREDENTIAL_WRITE_METHODS.includes(call.method)).length;
+/** How many calls the fake client recorded for any of methods. */
+function countCalls(fake: FakeClient, ...methods: string[]): number {
+  return fake.calls.filter((call) => methods.includes(call.method)).length;
 }
 
 /** Waits until the fake client has recorded no new call for a settle window, so
@@ -654,18 +652,24 @@ function countCredentialWrites(fake: FakeClient): number {
  * return before that read is recorded and claim a quiescence it never saw; a
  * response that wrongly continued past an invalidation issues its check in the
  * microtasks right after its deferred resolves, so it too has landed by then.
- * A client that never goes quiet is a failure, not a pass: settling is the
- * precondition every caller's assertion depends on. */
+ * Polls rather than sleeping a whole window up front, so a client that never
+ * goes quiet is still reported at the deadline instead of passing. */
 async function quiesceCalls(fake: FakeClient): Promise<void> {
   const settleMs = 400;
+  const pollMs = 50;
   const deadline = Date.now() + 3000;
   let seen = fake.calls.length;
+  let quietSince = Date.now();
   while (Date.now() < deadline) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, settleMs));
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     });
-    if (fake.calls.length === seen) return;
-    seen = fake.calls.length;
+    if (fake.calls.length !== seen) {
+      seen = fake.calls.length;
+      quietSince = Date.now();
+      continue;
+    }
+    if (Date.now() - quietSince >= settleMs) return;
   }
   throw new Error("the fake client never went quiet; a call kept arriving past the settle deadline");
 }
