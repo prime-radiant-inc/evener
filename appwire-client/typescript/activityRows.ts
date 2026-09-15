@@ -140,6 +140,92 @@ function entryIsFailed(entry: ActivityEntry): boolean {
   return state.failed;
 }
 
+export function jobRowFields(
+  job: ActivityJob,
+  parentRef: string,
+): Pick<ActivityJobRow, "job" | "live" | "transcriptRef" | "parentRef"> {
+  return {
+    job,
+    live: jobIsActive(job),
+    transcriptRef: job.transcriptRef,
+    parentRef,
+  };
+}
+
+export function delegateRowFields(
+  delegate: ActivityDelegate,
+  parentRef: string,
+): Pick<ActivityDelegateRow, "delegate" | "live" | "transcriptRef" | "parentRef"> {
+  return {
+    delegate,
+    live: activityDelegateState(delegate).active,
+    transcriptRef: delegate.childRef,
+    parentRef,
+  };
+}
+
+function activityEntryRow(
+  entry: ActivityEntry,
+  parentRef: string,
+  level: number,
+  parentID: string,
+  fromFold: boolean,
+): ActivityJobRow | ActivityDelegateRow {
+  const id = activityNodeID(entry);
+  const defaultDetailOpen = level === 1 && !fromFold;
+  if (entry.kind === "shell") {
+    const fields = jobRowFields(entry.job, parentRef);
+    return {
+      kind: "job",
+      id,
+      parentID,
+      level,
+      job: fields.job,
+      live: fields.live,
+      defaultDetailOpen,
+      transcriptRef: fields.transcriptRef,
+      parentRef: fields.parentRef,
+    };
+  }
+  const fields = delegateRowFields(entry.delegate, parentRef);
+  return {
+    kind: "delegate",
+    id,
+    parentID,
+    level,
+    delegate: fields.delegate,
+    live: fields.live,
+    defaultDetailOpen,
+    transcriptRef: fields.transcriptRef,
+    parentRef: fields.parentRef,
+  };
+}
+
+// Walks every loaded entry, ignoring fold/disclosure state, so an entity
+// resolves identically whether or not its fold is expanded.
+export function indexActivityEntities(tree: ActivityTree): Map<string, ActivityJobRow | ActivityDelegateRow> {
+  const index = new Map<string, ActivityJobRow | ActivityDelegateRow>();
+
+  function visitSession(session: ActivitySessionNode, parentRef: string, level: number, parentID?: string): void {
+    const entriesParentID = parentID ?? activityNodeID(session);
+    for (const entry of session.entries) {
+      // Mirror the panel's fold origin so an indexed row matches that entry
+      // when disclosed, without making index membership disclosure-dependent.
+      const panelWouldFoldEntry = !entryIsActive(entry);
+      const row = activityEntryRow(entry, parentRef, level, entriesParentID, panelWouldFoldEntry);
+      if (row.kind === "job") {
+        index.set(row.job.jobId, row);
+        continue;
+      }
+      index.set(row.delegate.delegateId, row);
+      if (row.delegate.child) visitSession(row.delegate.child, row.transcriptRef, level + 1, row.id);
+    }
+  }
+
+  visitSession(tree.root, tree.root.ref, 1);
+  return index;
+}
+
 export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet<string>): ActivityRow[] {
   const rows: ActivityRow[] = [];
 
@@ -150,34 +236,11 @@ export function buildActivityRows(tree: ActivityTree, expandedFolds: ReadonlySet
     parentID: string,
     fromFold: boolean,
   ): void {
-    if (entry.kind === "shell") {
-      rows.push({
-        kind: "job",
-        id: activityNodeID(entry),
-        parentID,
-        level,
-        job: entry.job,
-        live: jobIsActive(entry.job),
-        defaultDetailOpen: level === 1 && !fromFold,
-        transcriptRef: entry.job.transcriptRef,
-        parentRef: session.ref,
-      });
-      return;
+    const row = activityEntryRow(entry, session.ref, level, parentID, fromFold);
+    rows.push(row);
+    if (entry.kind === "delegate" && entry.delegate.child) {
+      visitSession(entry.delegate.child, level + 1, row.id);
     }
-    const delegate = entry.delegate;
-    const id = activityNodeID(entry);
-    rows.push({
-      kind: "delegate",
-      id,
-      parentID,
-      level,
-      delegate,
-      live: entryIsActive(entry),
-      defaultDetailOpen: level === 1 && !fromFold,
-      transcriptRef: delegate.childRef,
-      parentRef: session.ref,
-    });
-    if (delegate.child) visitSession(delegate.child, level + 1, id);
   }
 
   function visitSession(session: ActivitySessionNode, level: number, parentID?: string): void {

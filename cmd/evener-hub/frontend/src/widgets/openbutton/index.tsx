@@ -64,6 +64,8 @@ export interface OpenButtonProps {
   /** Forwards to the underlying control: activity-tree rows are their own
    * tab stop, so their nested open glyph takes -1 there. */
   tabIndex?: number;
+  /** Associates the button form with an external description element. */
+  describedBy?: string;
   /** An external target renders an <a> (new tab, no opener access) instead
    * of a <button> - the settings "open in editor" case. The anchor names
    * itself from its visible words and ignores onClick. */
@@ -72,7 +74,7 @@ export interface OpenButtonProps {
   word?: string;
 }
 
-export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: OpenButtonProps) {
+export function OpenButton({ label, onClick, tabIndex, describedBy, href, word = "open" }: OpenButtonProps) {
   if (href !== undefined) {
     return (
       <a
@@ -103,6 +105,7 @@ export function OpenButton({ label, onClick, tabIndex, href, word = "open" }: Op
         label={label ?? "Open"}
         title="Open"
         tabIndex={tabIndex}
+        aria-describedby={describedBy}
         icon={<OpenIcon />}
         variant="quiet"
         size="sm"

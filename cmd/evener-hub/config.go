@@ -30,11 +30,19 @@ type ProviderConfig struct {
 // destination passed to ssh (component 04), and User overrides its user.
 // EvenerPath and Roots are advisory inputs to components 04/05.
 type HostConfig struct {
-	Name       string   `toml:"name"`
-	SSH        string   `toml:"ssh"`
-	User       string   `toml:"user"`
-	EvenerPath string   `toml:"evener_path"`
-	Roots      []string `toml:"roots"`
+	Name string `toml:"name"`
+	SSH  string `toml:"ssh"`
+	User string `toml:"user"`
+	// EvenerPath is the host binary's absolute path, when it is not on PATH.
+	EvenerPath string `toml:"evener_path"`
+	// ConfigPath is the host hub's hub.toml, when it is not at the default
+	// location, so the bridge attaches with the host's own configuration.
+	ConfigPath string `toml:"config_path"`
+	// Addr is the host hub's listen address, when it is not the default. The
+	// manager needs it to restart the hub and to health-check it after a deploy,
+	// where a wrong default would probe or kill the wrong listener.
+	Addr  string   `toml:"addr"`
+	Roots []string `toml:"roots"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -153,24 +161,39 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-// validateHostConfigs validates the [[hosts]] list by building a throwaway
-// registry, so name grammar, duplicate names, reserved "local", the ".." rule,
-// ssh presence, the user/ssh-user conflict, and empty roots are all checked by
-// the single source of truth in hostreg. No host is registered anywhere: this
-// is pure validation.
+// validateHostConfigs normalizes and validates the [[hosts]] list by building a
+// throwaway registry, so name grammar, duplicate names, reserved "local", the
+// ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
+// checked by the single source of truth in hostreg. No host is registered
+// anywhere: this is pure validation.
+//
+// It rewrites hosts IN PLACE with the normalized values. hostreg trims before it
+// stores, so validating a copy would let ssh = "  m4.local  " pass here and then
+// reach consumers untrimmed — exactly the unresolvable-host hazard the registry
+// normalization exists to prevent.
 func validateHostConfigs(hosts []HostConfig) error {
 	if len(hosts) == 0 {
 		return nil
 	}
 	entries := make([]hostreg.Host, 0, len(hosts))
-	for _, h := range hosts {
-		entries = append(entries, hostreg.Host{
+	for i, h := range hosts {
+		entry := hostreg.Normalize(hostreg.Host{
 			Name:       h.Name,
 			SSH:        h.SSH,
 			User:       h.User,
 			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
 			Roots:      h.Roots,
 		})
+		hosts[i].SSH = entry.SSH
+		hosts[i].Name = entry.Name
+		hosts[i].User = entry.User
+		hosts[i].EvenerPath = entry.EvenerPath
+		hosts[i].ConfigPath = entry.ConfigPath
+		hosts[i].Addr = entry.Addr
+		hosts[i].Roots = entry.Roots
+		entries = append(entries, entry)
 	}
 	_, err := hostreg.New(entries)
 	return err

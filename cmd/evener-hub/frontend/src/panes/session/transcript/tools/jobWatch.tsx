@@ -13,14 +13,33 @@
 // watching vs ended varies per row; clear and terminal catch-up are quiet
 // one-liners — the summary line IS the rendering, expanded body empty.
 
+import {
+  asJsonObject,
+  boolField,
+  type ConditionSpec,
+  conditionSpec,
+  humanizeInterval,
+  humanizeSeconds,
+  type JsonObject,
+  normalizeRow,
+  numField,
+  parseConditionText,
+  sourceLabel,
+  strArrayField,
+  strField,
+  type WatchRow,
+  watchDisplayState,
+} from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { clip, clipJobID, parseArgs, str } from "../../../../protocol/toolCallText";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
+import { watchEventLabel } from "../watchEventLabel";
 import { HeadClippedOutputBody } from "./bodies";
 import styles from "./jobWatch.module.css";
 
@@ -57,83 +76,6 @@ const NOTE_CLAMP_LINES = 20;
 
 const NOTE_HEAD_CHARS = 48;
 
-type JsonObject = Record<string, unknown>;
-
-function asJsonObject(value: unknown): JsonObject | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as JsonObject) : undefined;
-}
-
-function strField(object: JsonObject, key: string): string | undefined {
-  const value = object[key];
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function numField(object: JsonObject, key: string): number | undefined {
-  const value = object[key];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function boolField(object: JsonObject, key: string): boolean {
-  return object[key] === true;
-}
-
-function strArrayField(object: JsonObject, key: string): string[] {
-  const value = object[key];
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry !== "");
-}
-
-// humanizeSeconds renders a caller-supplied duration in the units the model
-// asked in: sub-minute stays in seconds ("in 45s", fractional "in 1.5s" for
-// sub-second producer precision such as progress_interval_ms 1500);
-// whole minutes collapse ("in 5m", "in 1m"); leftover seconds are kept
-// ("in 1m30s", never a lossy "in 1m" — RoboRev PR #954); an hour or more
-// names hours and leftover minutes ("in 1h05m"). Rounding happens FIRST, so
-// a 60s carry can never surface ("in 1m60s" — combined RoboRev review):
-// the seconds path runs iff the rounded value is below 60, and the minute
-// path divides the rounded value, whose remainder is always below 60.
-// Zero/negative never reaches here (numField filters it) — the caller falls
-// back to the raw footer text instead of inventing one.
-export function humanizeSeconds(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) {
-    if (Number.isInteger(totalSeconds)) return `in ${rounded}s`;
-    return `in ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
-  }
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `in ${totalMinutes}m`
-      : `in ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `in ${hours}h` : `in ${hours}h${String(minutes).padStart(2, "0")}m`;
-}
-
-// humanizeInterval renders a caller-supplied cadence: sub-minute stays in
-// seconds ("every 45s", fractional "every 1.5s"), whole minutes collapse
-// ("every 2m"), leftover seconds are kept ("every 1m30s"); hours name hours
-// ("every 1h"). Same round-first carry contract as humanizeSeconds.
-export function humanizeInterval(totalSeconds: number): string {
-  const rounded = Math.round(totalSeconds);
-  if (rounded < 60) {
-    if (Number.isInteger(totalSeconds)) return `every ${rounded}s`;
-    return `every ${(Math.round(totalSeconds * 10) / 10).toString()}s`;
-  }
-  const totalMinutes = Math.floor(rounded / 60);
-  const leftoverSeconds = rounded % 60;
-  if (totalMinutes < 60) {
-    return leftoverSeconds === 0
-      ? `every ${totalMinutes}m`
-      : `every ${totalMinutes}m${String(leftoverSeconds).padStart(2, "0")}s`;
-  }
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return minutes === 0 ? `every ${hours}h` : `every ${hours}h${String(minutes).padStart(2, "0")}m`;
-}
-
 // A create result is a timer when it carries the timer's own fields
 // (after/repeat seconds plus the admitted note) and no trigger condition
 // (output_match, events, or event filter). Mirrors the producer:
@@ -156,70 +98,6 @@ function timerSpec(raw: JsonObject): TimerSpec | undefined {
   return { afterSeconds, repeatSeconds, note: strField(raw, "note") };
 }
 
-// A condition watch's trigger: the output pattern, the heartbeat cadence
-// (progress_interval_ms from the wire), the event list plus its every-Nth
-// throttle (RoboRev PR #954: `every: 3` fires on every third event, and
-// dropping it claims every event fires), and the event-filter shape
-// (assistant.tool errors on a delegate). Empty when the result names no
-// condition at all — a bare source watch the summary still names.
-interface ConditionSpec {
-  outputMatch?: string;
-  progressIntervalMS?: number;
-  events: string[];
-  every?: number;
-  filterToolName?: string;
-  filterStatus?: string;
-  // Any watch carries a note (backend #995), delivered as raw.note on the
-  // create result — not only timers. The create body renders it as a full
-  // section alongside the condition sentence.
-  note?: string;
-}
-
-function numArg(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
-}
-
-// everyArg reads the create-args throttle the way the backend stores it:
-// every==1 is the semantic default (fire on each occurrence), normalized to
-// unset everywhere downstream (normalizeWatchArgs), so the renderer treats
-// every<=1 as absent — otherwise the same watch reads throttled in create
-// but unthrottled in list/inspect. numArg's other callers keep raw numerics.
-function everyArg(value: unknown): number | undefined {
-  const n = numArg(value);
-  return n !== undefined && n > 1 ? n : undefined;
-}
-
-function conditionSpec(raw: JsonObject, args?: JsonObject): ConditionSpec | undefined {
-  const outputMatch = strField(raw, "output_match");
-  const progressIntervalMS = numField(raw, "progress_interval_ms");
-  const events = strArrayField(raw, "events");
-  // `every` rides the create ARGS (DefJobWatch), not the result state —
-  // read args first, falling back to the raw in case a producer echoes it.
-  // Both sides normalize every<=1 to unset (see everyArg); the Condition
-  // string itself never carries every:1 (the producer zeroes it before the
-  // summary renders), only model-written args can.
-  const every = (args ? everyArg(args.every) : undefined) ?? everyArg(raw.every);
-  const filter = asJsonObject(raw.event_filter);
-  const filterToolName = filter ? strField(filter, "tool_name") : undefined;
-  const filterStatus = filter ? strField(filter, "status") : undefined;
-  // The note rides raw.note on every create result (backend #995) — it is
-  // the watch's own prose, rendered as a full section, never folded into
-  // the condition sentence. A note alone still yields a spec: a valid watch
-  // may carry only a note and no trigger, and the create body renders the
-  // note section even without a trigger clause.
-  const note = strField(raw, "note");
-  if (
-    outputMatch === undefined &&
-    progressIntervalMS === undefined &&
-    events.length === 0 &&
-    !filter &&
-    note === undefined
-  ) {
-    return undefined;
-  }
-  return { outputMatch, progressIntervalMS, events, every, filterToolName, filterStatus, note };
-}
-
 // The heartbeat phrase a condition sentence ends with, if the watch carries
 // a progress cadence ("heartbeat every 2m"). Undefined when the watch has
 // no progress_interval_ms — the sentence simply has no cadence clause.
@@ -233,19 +111,6 @@ function heartbeatPhrase(spec: ConditionSpec): string | undefined {
 function cadenceSuffix(spec: ConditionSpec): string | undefined {
   if (spec.progressIntervalMS === undefined) return undefined;
   return `· ${humanizeInterval(spec.progressIntervalMS / 1000)}`;
-}
-
-function sourceLabel(source: string | undefined): string {
-  // The producer's self source is internal vocabulary (watchPublicSource):
-  // readers see "this session" (mockups 23-job-watch), never a bare "self".
-  return source === undefined || source === "self" ? "this session" : source;
-}
-
-// eventDisplayName renders one watched event kind in words. The producer's
-// wildcard "*" reads as "any event" everywhere — rows, summaries, sentences,
-// details — never as a bare "*" (combined RoboRev review).
-function eventDisplayName(name: string): string {
-  return name === "*" ? "any event" : name;
 }
 
 function noteHead(note: string): string {
@@ -394,7 +259,7 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   if (condition.outputMatch) clauses.push(`“${condition.outputMatch}”`);
   if (condition.events.length > 0) {
     const throttle = condition.every !== undefined ? ` (every ${condition.every})` : "";
-    clauses.push(`${condition.events.map(eventDisplayName).join(", ")}${throttle}`);
+    clauses.push(`${condition.events.map(watchEventLabel).join(", ")}${throttle}`);
   }
   if (condition.filterStatus || condition.filterToolName) {
     // An event-filter watch names the watched shape in words — both
@@ -429,209 +294,12 @@ function filterSummaryPhrase(condition: FilterPhrase): string {
   return condition.filterToolName ? `calls on ${condition.filterToolName}` : "matching events";
 }
 
-interface WatchRow {
-  id: string;
-  watching: boolean;
-  source?: string;
-  condition?: string;
-  // The structured note field beside the Condition string (verbatim even
-  // when the note contains delimiter-looking text). Preferred over the
-  // note: clause embedded in the Condition string.
-  note?: string;
-  endReason?: string;
-  deliveries?: number;
-}
-
-function normalizeRow(value: unknown): WatchRow | undefined {
-  const row = asJsonObject(value);
-  const id = row ? strField(row, "watch_id") : undefined;
-  if (!row || !id) return undefined;
-  const deliveries = typeof row.deliveries === "number" ? row.deliveries : undefined;
-  return {
-    id,
-    watching: row.watching === true,
-    source: strField(row, "source"),
-    condition: strField(row, "condition"),
-    note: strField(row, "note"),
-    endReason: strField(row, "end_reason"),
-    deliveries,
-  };
-}
-
-// A parsed inspect/list Condition string. The producer renders a watch
-// config's trigger as one "; "-joined line (watchConditionSummary,
-// agent/job_watch.go:2460-2494, filter grammar watchEventFilterSummary
-// :2497-2508): `output_match: …`; `after_seconds: N` / `repeat_seconds: N`
-// / `progress_interval_ms: N`; `note: …`; `events: [*]` or
-// `events: [a, b]` with optional `every N` and `where tool_name=X,
-// status=Y`. The reader parses that embedded grammar back — inventing
-// nothing. The note: clause is the fallback source for the note: the raw
-// also carries the note in its own structured field (verbatim, immune to
-// delimiter-looking text), which readers prefer; this parse covers stored
-// frames that predate it.
-interface ParsedCondition {
-  outputMatch?: string;
-  afterSeconds?: number;
-  repeatSeconds?: number;
-  progressIntervalMS?: number;
-  events: string[];
-  every?: number;
-  filterToolName?: string;
-  filterStatus?: string;
-  // The watch's own prose payload (backend #995: any watch carries one). The
-  // value is dot-all — notes are multiline prose, and patterns may also span
-  // lines — so all value patterns below use [\s\S], never dot.
-  note?: string;
-}
-
-function numAfter(value: string | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-// Split only on semicolons that introduce a recognized Condition field.
-// output_match is caller-supplied and unbounded, so a pattern may itself
-// contain ";" — splitting on every one truncates the pattern (RoboRev PR
-// #954 review 3). The heads below are the producer's exact grammar
-// (watchConditionSummary, agent/job_watch.go:2460-2494): "output_match: ",
-// "after_seconds: N" / "repeat_seconds: N" / "progress_interval_ms: N",
-// "note: ", "events: ...", joined with "; ". (A pattern literally containing
-// "; events: " stays ambiguous even to the producer's own join — the split
-// takes the field reading, matching what list/inspect show.)
-const CONDITION_PART_SPLIT = /;\s*(?=(?:output_match|after_seconds|repeat_seconds|progress_interval_ms|note|events):)/;
-
-// WATCH_MESSAGE_MAX_CHARS and WATCH_TRUNCATED_INDICATOR mirror the
-// producer's bounds (agent/job_watch.go): the Condition string embeds the
-// note via limitWatchText(cfg.note, watchMessageMaxChars), which truncates by
-// rune with a "\n[truncated]" indicator and performs no whitespace or line
-// folding — the embedding is otherwise the verbatim note value.
-const WATCH_MESSAGE_MAX_CHARS = 2048;
-const WATCH_TRUNCATED_INDICATOR = "\n[truncated]";
-
-// embeddedNoteCandidates lists the exact strings the producer may have
-// embedded as the note: clause for a structured note value: the value itself
-// (cfg.note is already bounded at storage, so this is the live case), plus
-// the limitWatchText truncation for oversized values from stored frames.
-function embeddedNoteCandidates(note: string): string[] {
-  const runes = Array.from(note);
-  if (runes.length <= WATCH_MESSAGE_MAX_CHARS) return [note];
-  const keep = WATCH_MESSAGE_MAX_CHARS - Array.from(WATCH_TRUNCATED_INDICATOR).length;
-  const truncated =
-    keep <= 0
-      ? runes.slice(0, WATCH_MESSAGE_MAX_CHARS).join("")
-      : runes.slice(0, keep).join("") + WATCH_TRUNCATED_INDICATOR;
-  return truncated === note ? [note] : [note, truncated];
-}
-
-// stripStructuredNoteClause removes the exact note: clause the producer
-// embedded in the flattened Condition string, keyed by the structured note
-// field's verbatim value. The note is free prose that may itself contain
-// delimiter-looking text ("; events: […]") which the head-based split below
-// would otherwise parse as real armed triggers. Only a clause-boundary match
-// is removed — the note: head at the string start or right after the "; "
-// join — and only one adjacent join separator goes with it, so neighboring
-// trigger clauses rejoin intact. Without a structured note (legacy stored
-// frames) the condition parses unchanged.
-function stripStructuredNoteClause(condition: string, note: string | undefined): string {
-  if (!note) return condition;
-  for (const value of embeddedNoteCandidates(note)) {
-    const needle = `note: ${value}`;
-    let index = condition.indexOf(needle);
-    while (index !== -1) {
-      const before = condition.slice(0, index);
-      if (index === 0 || /;\s*$/.test(before)) {
-        let start = index;
-        const leading = /;\s*$/.exec(before);
-        if (leading) start = leading.index;
-        let end = index + needle.length;
-        if (index === 0) {
-          const trailing = /^;\s*/.exec(condition.slice(end));
-          if (trailing) end += trailing[0].length;
-        }
-        return condition.slice(0, start) + condition.slice(end);
-      }
-      index = condition.indexOf(needle, index + 1);
-    }
-  }
-  return condition;
-}
-
-function parseConditionText(condition: string, note?: string): ParsedCondition {
-  const parsed: ParsedCondition = { events: [] };
-  // The note head is one clause among the split parts: the producer's join
-  // order puts note: before the events clause (watchConditionSummary), so a
-  // legacy persisted Condition reads "output_match: …; note: …; events: […]"
-  // and every trigger clause parses beside the note (RoboRev PR #954). The
-  // note value runs to the next head or end-of-string — a note that itself
-  // contains delimiter-looking text ("; events: […]") truncates here, which
-  // is why list/inspect raws also carry the note in its own structured field
-  // (readers prefer that field; this parse is the fallback for stored frames
-  // that predate it). Slice-free: every part parses independently, so the
-  // note's own whitespace survives verbatim.
-  // When the caller passes the structured note, its exact embedded clause is
-  // stripped first (stripStructuredNoteClause) so delimiter-looking prose
-  // inside the note never parses as armed triggers.
-  // (A caller-supplied output_match containing "; note: " stays ambiguous
-  // even to the producer's own join — the split takes the field reading,
-  // matching what list/inspect show.)
-  for (const part of stripStructuredNoteClause(condition, note).split(CONDITION_PART_SPLIT)) {
-    const text = part.trim();
-    // A leading "note:" head (a bare note-only string, which the producer
-    // never emits but a stored transcript could carry) is the whole note.
-    const note = /^(?:note:\s*)([\s\S]+)$/.exec(text)?.[1]?.trim();
-    if (note) {
-      if (!parsed.note) parsed.note = note;
-      continue;
-    }
-    const outputMatch = /^output_match:\s*([\s\S]+)$/.exec(text)?.[1]?.trim();
-    if (outputMatch) {
-      parsed.outputMatch = outputMatch;
-      continue;
-    }
-    const afterSeconds = /^after_seconds:\s*(\d+)/.exec(text)?.[1];
-    if (afterSeconds !== undefined) {
-      parsed.afterSeconds = numAfter(afterSeconds);
-      continue;
-    }
-    const repeatSeconds = /^repeat_seconds:\s*(\d+)/.exec(text)?.[1];
-    if (repeatSeconds !== undefined) {
-      parsed.repeatSeconds = numAfter(repeatSeconds);
-      continue;
-    }
-    const progressMS = /^progress_interval_ms:\s*(\d+)/.exec(text)?.[1];
-    if (progressMS !== undefined) {
-      parsed.progressIntervalMS = numAfter(progressMS);
-      continue;
-    }
-    const eventsClause = /^events:\s*\[(.*)\]\s*(?:every\s+(\d+))?\s*(?:where\s+(.+))?$/.exec(text);
-    if (eventsClause) {
-      parsed.events = (eventsClause[1] ?? "")
-        .split(",")
-        .map((name) => name.trim())
-        .filter((name) => name !== "");
-      parsed.every = numAfter(eventsClause[2]);
-      const whereClause = (eventsClause[3] ?? "").trim();
-      if (whereClause) {
-        const tool = /tool_name=([^,\s]+)/.exec(whereClause)?.[1];
-        const status = /status=([^,\s]+)/.exec(whereClause)?.[1];
-        if (tool) parsed.filterToolName = tool;
-        if (status) parsed.filterStatus = status;
-      }
-    }
-    // Anything unrecognized degrades to the fallback below rather than
-    // inventing rendering. (The note head is terminal and handled above,
-    // so reaching here means this part is genuinely something else.)
-  }
-  return parsed;
-}
-
 // conditionSentence renders one humanized trigger sentence from a parsed
 // Condition: pattern, timer cadence, heartbeat, events, and filter in
 // prose, machine tokens in mono. Shared by list rows (short form) and
 // inspect bodies (full form) so the two never drift.
 function rowConditionPhrase(row: WatchRow): string {
-  const state = watchState(row);
+  const state = watchDisplayState(row);
   if (state === "watching") {
     if (row.condition) {
       const parsed = parseConditionText(row.condition, row.note);
@@ -648,7 +316,7 @@ function rowConditionPhrase(row: WatchRow): string {
       // "(every N)" shape (RoboRev PR #954 review 3).
       const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
       if (parsed.events.length > 0) {
-        const names = parsed.events.map(eventDisplayName).join(", ");
+        const names = parsed.events.map(watchEventLabel).join(", ");
         bits.push(`${names}${every}`);
       }
       if (parsed.filterToolName || parsed.filterStatus) {
@@ -674,23 +342,6 @@ function rowConditionPhrase(row: WatchRow): string {
   if (state === "missing") return "not found";
   if (state === "pending") return `pending · ${sourceLabel(row.source)}`;
   return row.endReason ? `ended: ${endReasonPhrase(row.endReason)}` : "ended";
-}
-
-// watchState reads a watch row/inspect result's lifecycle state in the
-// producer's own three-way grammar (agent/session_tools_jobs.go
-// formatJobWatchInspect, which is also what watchInspectFound in the same file
-// gates on): watching; end_reason set (ended); source set without end_reason
-// (pending — a detached watch on the terminal-flush rail still holding
-// frames); neither (not found — inspectWatchByID's empty return). Collapsing
-// pending and missing into "ended" misreports both (RoboRev PR #954 combined
-// review).
-type WatchState = "watching" | "pending" | "ended" | "missing";
-
-function watchState(entry: { watching: boolean; source?: string; endReason?: string }): WatchState {
-  if (entry.watching) return "watching";
-  if (entry.endReason) return "ended";
-  if (entry.source) return "pending";
-  return "missing";
 }
 
 // endReasonPhrase renders a watch end_reason id in words, shared by list rows
@@ -736,7 +387,7 @@ function listCounts(raw: JsonObject): { active: number; pending: number; ended: 
     // Count by the same state the row chip renders (watchState): a live row
     // carrying an end_reason is ended, not pending, so the summary can never
     // disagree with its rows (combined RoboRev review).
-    const state = watchState(row);
+    const state = watchDisplayState(row);
     if (state === "watching") active += 1;
     else if (state === "pending") pending += 1;
     else liveEnded += 1;
@@ -763,7 +414,7 @@ function summarizeInspect(item: ItemModel, raw: JsonObject): string {
   // rendering "Inspected  · …" with an empty id (RoboRev PR #954 combined
   // review).
   if (!id) return "job_watch: inspect";
-  const state = watchState({
+  const state = watchDisplayState({
     watching: isWatching(raw),
     source: strField(raw, "source"),
     endReason: strField(raw, "end_reason"),
@@ -903,7 +554,7 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
     if (spec.events.length === 1) {
       parts.push(
         <span key="filter-event">
-          (<span className={CLASS.mono}>{eventDisplayName(spec.events[0] ?? "")}</span>)
+          (<span className={CLASS.mono}>{watchEventLabel(spec.events[0] ?? "")}</span>)
         </span>,
       );
     }
@@ -917,7 +568,7 @@ function ConditionSentence({ source, spec, meta }: { source: string; spec: Condi
     const throttle = spec.every !== undefined ? ` (every ${spec.every})` : "";
     head.push(
       <span key="events">
-        wakes on <span className={CLASS.mono}>{spec.events.map(eventDisplayName).join(", ")}</span>
+        wakes on <span className={CLASS.mono}>{spec.events.map(watchEventLabel).join(", ")}</span>
         {throttle}
       </span>,
     );
@@ -986,7 +637,7 @@ function CreateBody({ raw, item }: { raw: JsonObject; item: ItemModel }) {
   );
 }
 
-function WatchRow({ row }: { row: WatchRow }) {
+function WatchListRow({ row }: { row: WatchRow }) {
   const [open, setOpen] = useState(false);
   // Rows are real buttons (mockup §C: tappable rows opening the watch's
   // details) — but only when they CAN expand. Expanding shows the row's own
@@ -997,7 +648,7 @@ function WatchRow({ row }: { row: WatchRow }) {
   // with a no-op onClick is a control that does nothing (RoboRev PR #954
   // combined review).
   const detail = row.watching ? rowDetailPhrase(row) : undefined;
-  const state = watchState(row);
+  const state = watchDisplayState(row);
   const chip = state === "watching" ? "watching" : state === "missing" ? "not found" : state;
   // No per-row wrapper div: rows are direct children of the list container
   // so the container's :not(:first-child) separator applies (a wrapper
@@ -1007,7 +658,7 @@ function WatchRow({ row }: { row: WatchRow }) {
       <div className={CLASS.rowStatic} data-testid="job-watch-row">
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          {clipJobID(row.id)}
+          <EntityRef id={row.id} display={clipJobID(row.id)} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </div>
@@ -1026,7 +677,8 @@ function WatchRow({ row }: { row: WatchRow }) {
       >
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          {clipJobID(row.id)}
+          {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. */}
+          <EntityRef id={row.id} display={clipJobID(row.id)} embedded />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </button>
@@ -1066,7 +718,7 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
     const bits: string[] = [`“${parsed.outputMatch}”`];
     const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
     if (parsed.events.length > 0) {
-      const names = parsed.events.map(eventDisplayName).join(", ");
+      const names = parsed.events.map(watchEventLabel).join(", ");
       bits.push(`${names}${every}`);
     }
     if (parsed.filterToolName || parsed.filterStatus) {
@@ -1089,7 +741,7 @@ function rowDetailPhrase(row: WatchRow): string | undefined {
   const bits: string[] = [];
   const every = parsed.every !== undefined ? ` (every ${parsed.every})` : "";
   if (parsed.events.length > 0) {
-    const names = parsed.events.map(eventDisplayName).join(", ");
+    const names = parsed.events.map(watchEventLabel).join(", ");
     bits.push(`${names}${every}`);
   }
   if (parsed.filterToolName || parsed.filterStatus) {
@@ -1127,7 +779,7 @@ function ListBody({ raw }: { raw: JsonObject }) {
   return (
     <div className={CLASS.list}>
       {rows.map((row) => (
-        <WatchRow key={row.id} row={row} />
+        <WatchListRow key={row.id} row={row} />
       ))}
     </div>
   );
@@ -1149,7 +801,7 @@ function formatCreatedDate(createdAt: string | undefined): string | undefined {
 }
 
 function InspectBody({ raw }: { raw: JsonObject }) {
-  const state = watchState({
+  const state = watchDisplayState({
     watching: isWatching(raw),
     source: strField(raw, "source"),
     endReason: strField(raw, "end_reason"),

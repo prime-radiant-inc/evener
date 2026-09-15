@@ -81,6 +81,25 @@ func TestMessageUnmarshalDispatch(t *testing.T) {
 			t.Fatal("decoding a frame with no method/result/error: want an error")
 		}
 	})
+
+	// Decoding into a Message that already holds a frame replaces it: Kind()
+	// prefers Request over Notification, so a stale request left behind would
+	// misclassify the notification decoded after it.
+	t.Run("reused receiver drops the previous frame", func(t *testing.T) {
+		var m Message
+		if err := json.Unmarshal([]byte(`{"id":1,"method":"do"}`), &m); err != nil {
+			t.Fatalf("unmarshal request: %v", err)
+		}
+		if err := json.Unmarshal([]byte(`{"method":"ping"}`), &m); err != nil {
+			t.Fatalf("unmarshal notification: %v", err)
+		}
+		if m.Request != nil {
+			t.Errorf("Request = %+v after decoding a notification, want nil", m.Request)
+		}
+		if m.Kind() != MessageNotification {
+			t.Errorf("Kind() = %d, want %d", m.Kind(), MessageNotification)
+		}
+	})
 }
 
 // TestMessageMarshalDispatch covers each branch of Message.MarshalJSON
