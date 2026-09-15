@@ -1,11 +1,12 @@
 import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
+import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import {
   activeSourceLabel,
+  CONNECTION_REPLACED_ERROR,
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
@@ -17,6 +18,12 @@ import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { useEditorLifetime } from "./useEditorLifetime";
+
+// ENDPOINT_MOVED_ERROR is what this flow says when the destination the user
+// reviewed is no longer the one the name resolves to - the hub refused the
+// assertion this flow carried, or the client's own listing moved under it.
+const ENDPOINT_MOVED_ERROR =
+  "This connection changed to a different endpoint. Check its destination and enter the key again.";
 
 /** Instance-identity reports a hosting dialog forwards from a sibling
  * full-settings view into the connection's mailbox (see reportsRef). */
@@ -433,11 +440,15 @@ function SelectedConnection({
       if (response.status !== "success") setError(response.message);
     } catch (err) {
       if (!current(token)) return;
-      // A refused assertion means the destination moved under the check - the
-      // same change submit() reports. Reset the flow and re-anchor rather than
-      // dress the refusal up as an endpoint failure.
-      if (isEndpointConflict(err)) {
-        await recoverChangedEndpoint();
+      // A refused assertion means the destination moved under the check, and a
+      // refusal from a listing the store no longer trusts (the connection was
+      // replaced) means the destination this check anchored on was read by a
+      // connection that is gone - the same change submit() reports. Reset the
+      // flow and re-anchor rather than dress the refusal up as an endpoint
+      // failure, which no retry against this listing would fix.
+      const replaced = isStaleListingRefusal(err);
+      if (isEndpointConflict(err) || replaced) {
+        await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_MOVED_ERROR);
         return;
       }
       const response = safeCredentialTestResult(target.name, {
@@ -452,13 +463,17 @@ function SelectedConnection({
   }
 
   // A refused endpoint assertion means the name moved between this flow's check
-  // and the write, so the draft was typed for an endpoint that is gone: drop
-  // it, re-anchor to what the hub resolves now, and say why - rather than leave
-  // the user with a save that silently went somewhere else. The re-read is the
-  // flow's own, so it carries the flow's own marker (fetchSelf): this refusal is
-  // the outcome the user gets, not a reason for the invalidation watch to reset
-  // the flow underneath it. changeValue below settles the flow either way.
-  async function recoverChangedEndpoint() {
+  // and the write - or, when the store refused the write, that the listing this
+  // flow anchored on was read by a connection that is gone - so the draft was
+  // typed for a destination nobody can vouch for: drop it, re-anchor to what
+  // the listing now holds, and say why - rather than leave the user with a save
+  // that silently went somewhere else. changedMessage names the change, because
+  // the two differ in what the user has to check and the caller knows which one
+  // refused it. The re-read is the flow's own, so it carries the flow's own
+  // marker (fetchSelf): this refusal is the outcome the user gets, not a reason
+  // for the invalidation watch to reset the flow underneath it. changeValue
+  // below settles the flow either way.
+  async function recoverChangedEndpoint(changedMessage: string) {
     try {
       await credentialsStore.getState().fetchSelf();
     } catch {
@@ -466,7 +481,7 @@ function SelectedConnection({
     }
     changeValue("");
     setBaseline(findSetup(name));
-    setError("This connection changed to a different endpoint. Check its destination and enter the key again.");
+    setError(changedMessage);
   }
 
   async function refreshAndCheck(token: number, expectedSource?: string) {
@@ -559,7 +574,7 @@ function SelectedConnection({
       if (row && destination(row) !== destination(baseline)) {
         changeValue("");
         setBaseline(row);
-        setError("This connection changed to a different endpoint. Check its destination and enter the key again.");
+        setError(ENDPOINT_MOVED_ERROR);
         return;
       }
       setPhase("saving");
@@ -575,8 +590,12 @@ function SelectedConnection({
         setSaved(true);
       } catch (err) {
         if (!current(token)) return;
-        if (isEndpointConflict(err)) {
-          await recoverChangedEndpoint();
+        // The same two changes, and the same recovery: the hub refused the
+        // assertion this flow carried, or the store refused the write because
+        // the listing it was anchored on belongs to a connection that is gone.
+        const replaced = isStaleListingRefusal(err);
+        if (isEndpointConflict(err) || replaced) {
+          await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_MOVED_ERROR);
           return;
         }
         setPhase("idle");

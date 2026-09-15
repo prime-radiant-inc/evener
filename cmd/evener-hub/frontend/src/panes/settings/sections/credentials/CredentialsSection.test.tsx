@@ -11,7 +11,11 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
+import {
+  CONNECTION_REPLACED_ERROR,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+} from "./credentialLabels";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -627,6 +631,107 @@ describe("credential verification", () => {
     // A retry has to assert the destination now on screen, so the listing is
     // re-read after the refusal.
     await waitFor(() => expect(listCalls).toBeGreaterThan(callsBefore));
+  });
+});
+
+// The store refuses writes and probes issued from the previous connection's
+// listing (stores/credentials.ts's requireWritableClient): the rows on screen
+// name instances of a connection that is gone. Every section action that can
+// hit that refusal reports the change it is and asks for this connection's
+// listing - never as a failure of the action the user asked for, and never in
+// the store's own words.
+describe("actions refused while the held listing belongs to a replaced connection", () => {
+  /** Renders the section with a listing on screen, replaces the client (as a
+   * reconnect does), and leaves the store in the window the guard refuses in:
+   * the rows on screen were read by the connection that is gone and this one's
+   * listing has not been applied. The marker is set the way the store sets it
+   * on a replacement (stores/credentials.ts's connectionStore subscription);
+   * holding the read open cannot express this state here, because a read in
+   * flight swaps the section's rows for its skeleton. */
+  async function renderWithReplacedConnection(): Promise<{ replacement: FakeClient }> {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST);
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => LIST);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    await act(async () => connectionStore.getState().connect(replacement));
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await act(async () => credentialsStore.setState({ listingFromPreviousConnection: true }));
+    expect(screen.getByText("work")).toBeTruthy();
+    return { replacement };
+  }
+
+  test("a credential test is refused with the change, clears its pending state, and re-reads the listing", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    // No probe reached the replacement connection - the test was refused, not
+    // run against a destination this connection never read.
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
+    // The pending test clears, so the action does not sit in "Testing…".
+    await waitFor(() =>
+      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    // The refusal asked for this connection's own listing, and that read is
+    // what reopens the action.
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+
+    // The same action now goes out and is answered by this connection.
+    replacement.on("evener/auth/test", () => ({
+      provider: "work",
+      status: "success",
+      message: "Credentials verified.",
+    }));
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+    await waitFor(() => expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1));
+  });
+
+  test("make default is refused with the change, not reported as a failed action", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: /make default/i }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/setDefault")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Set default failed/)).toBeNull();
+  });
+
+  test("starting a sign-in is refused with the change, not reported as a failed sign-in", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Sign in…" }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/start")).toHaveLength(0);
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/login/start")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Sign-in failed/)).toBeNull();
+  });
+
+  test("a confirm-gated removal is refused with the change, not reported as a failed removal", async () => {
+    const { replacement } = await renderWithReplacedConnection();
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
   });
 });
 

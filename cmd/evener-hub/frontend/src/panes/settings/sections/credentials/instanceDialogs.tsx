@@ -20,10 +20,10 @@
 import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
-import { credentialsStore } from "../../../../stores/credentials";
+import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
+import { CONNECTION_REPLACED_ERROR, FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -210,6 +210,19 @@ export function AddInstanceDialog({
       onSuccess(trimmedName);
     } catch (err) {
       if (!active.current) return;
+      // The store's own refusal of a write from the previous connection's
+      // listing (stores/credentials.ts's requireWritableClient): the providers
+      // and names this form was filled from were read on a connection that is
+      // gone, so nothing was sent. Keep the draft, say what happened, and ask
+      // for this connection's listing - the read whose arrival is what makes
+      // the retry land. Reported as a create failure it would tell the user
+      // their instance could not be created when no create ever went out.
+      if (isStaleListingRefusal(err)) {
+        setError(CONNECTION_REPLACED_ERROR);
+        toast.push("warning", CONNECTION_REPLACED_ERROR);
+        void refreshListingAfterMutation();
+        return;
+      }
       const message = errorText(err);
       setError(message);
       toast.push("error", `Create failed: ${message}`);
@@ -487,16 +500,20 @@ function CredentialValueDialog({
       onSuccess();
     } catch (err) {
       if (!active.current) return;
-      // A hub refusal of the asserted destination is the change the guard above
-      // makes locally when the client's listing already reflects it - the
-      // window the client cannot see is the one between that listing and this
-      // write. It is not a save failure, and the value must not be sent again
-      // against the endpoint that is gone: drop it, re-read the listing, and
-      // re-anchor to the row now on screen, so the retype the message asks for
-      // saves against the destination the user can review. ProviderConnection
-      // recovers a refused assertion the same way.
-      if (isEndpointConflict(err)) {
-        await recoverChangedEndpoint();
+      // A hub refusal of the asserted destination, or the store's own refusal
+      // of a write issued from the previous connection's listing
+      // (stores/credentials.ts's requireWritableClient), is the change the
+      // guard above makes locally when the client's listing already reflects
+      // it - the window the client cannot see is the one between that listing
+      // and this write, or the connection that replaced it. Neither is a save
+      // failure, and the value must not be sent again against an endpoint
+      // nobody can vouch for: drop it, re-read the listing, and re-anchor to
+      // the row now on screen, so the retype the message asks for saves against
+      // the destination the user can review. ProviderConnection recovers a
+      // refused assertion the same way.
+      const replaced = isStaleListingRefusal(err);
+      if (isEndpointConflict(err) || replaced) {
+        await recoverChangedEndpoint(replaced ? CONNECTION_REPLACED_ERROR : ENDPOINT_CHANGED_ERROR);
         return;
       }
       const message = errorText(err);
@@ -518,7 +535,11 @@ function CredentialValueDialog({
   // cleared so proceeding takes a deliberate retype, and the hub re-checks the
   // assertion under its credential lock at write time, so a second change is
   // refused again instead of landing anywhere new.
-  async function recoverChangedEndpoint(): Promise<void> {
+  // changedMessage names the change that was refused - the hub's endpoint
+  // conflict, or the store's replacement of the connection - because the two
+  // differ in what the user has to check, and the caller is the one that knows
+  // which refused it.
+  async function recoverChangedEndpoint(changedMessage: string): Promise<void> {
     await refreshListingAfterMutation();
     if (!active.current) return;
     setValue("");
@@ -532,7 +553,7 @@ function CredentialValueDialog({
       return;
     }
     expected.current = row.endpointFingerprint;
-    setError(ENDPOINT_CHANGED_ERROR);
+    setError(changedMessage);
   }
 
   return (

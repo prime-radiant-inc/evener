@@ -94,8 +94,17 @@ function ManageConnections({
   onBack,
   onSettings,
 }: ConnectProviderDialogProps & { onBack(): void; onSettings(): void }) {
-  const { instances, availableProviders, diagnostics, userLayer, writesRefused, loading, error, fetch } =
-    useCredentialsStore();
+  const {
+    instances,
+    availableProviders,
+    diagnostics,
+    userLayer,
+    writesRefused,
+    loading,
+    error,
+    listingFromPreviousConnection,
+    fetch,
+  } = useCredentialsStore();
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [testState, setTestState] = useState<{
     name: string;
@@ -324,12 +333,34 @@ function ManageConnections({
 
   const visibleInstances = instances.filter((instance) => !instance.hidden);
   const onboardingDiagnostics = diagnostics.filter((diagnostic) => !userLayer || diagnostic !== userLayer);
+  // Rows and provider facts read on a connection that has since been replaced
+  // name instances and endpoints that are gone: everything that would act on
+  // them stays unavailable until this connection's own listing lands, and
+  // reopens on the listing that read produced. Deliberately not keyed on
+  // `loading`: every read sets that, including a same-connection refresh whose
+  // rows are still the user's.
+  //
+  // Refused with aria-disabled and a guarded handler, not the native
+  // `disabled` these controls used before rows were kept mounted: a native
+  // disabled control that holds the keyboard's focus drops focus to <body>
+  // (measured in Chrome), which is the focus loss keeping the rows mounted
+  // exists to prevent - the stale transition would put the keyboard back where
+  // the unmounting one left it.
+  const actionsDisabled = listingFromPreviousConnection;
 
   return (
     <Dialog open onClose={closeDialog} title="Connect provider">
       <div className={CLASS.body}>
         <p className={CLASS.intro}>Choose a provider instance, configure it if needed, then test the connection.</p>
-        {loading && <Skeleton />}
+        {/* A refresh in flight keeps the listing already on screen. These rows
+            are this dialog's own focus targets - FocusScope moves focus to the
+            first one when the dialog opens - so swapping them for the skeleton
+            unmounts the row the keyboard is on, and focus falls to <body> with
+            nothing to restore it (the scope focuses on mount only). A listing
+            read a background change schedules would then take the keyboard out
+            of the dialog the user is working in. The skeleton stays for the
+            state it was written for: no listing to show yet. */}
+        {loading && visibleInstances.length === 0 && <Skeleton />}
         {error && (
           <div className={CLASS.actions}>
             <p className={CLASS.error} role="alert">
@@ -342,7 +373,10 @@ function ManageConnections({
             </Button>
           </div>
         )}
-        {onboardingDiagnostics.length > 0 && (
+        {/* A diagnostic describes the listing that produced it, so a
+            replacement connection's warnings are not shown until its own read
+            lands - the same rule the rows follow. */}
+        {!actionsDisabled && onboardingDiagnostics.length > 0 && (
           <ul className={CLASS.diagnostics} aria-label="Provider warnings">
             {onboardingDiagnostics.map((diagnostic, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: registry diagnostics are an unordered list without stable identities
@@ -353,7 +387,13 @@ function ManageConnections({
         {!loading && !error && visibleInstances.length === 0 && (
           <p className={CLASS.empty}>No provider instances are available.</p>
         )}
-        {!loading && !error && visibleInstances.length > 0 && (
+        {/* The rows stay for the error path too: readListing keeps the listing
+            it already had when a refresh fails, and the rows are this dialog's
+            focus targets, so gating them on `!error` would unmount the row the
+            keyboard is on - the same focus loss the loading gate above exists
+            to prevent, just reached by a failed read instead of a pending one.
+            The banner sits above the rows it explains. */}
+        {visibleInstances.length > 0 && (
           <ul className={CLASS.providerList}>
             {visibleInstances.map((instance) => {
               const providerName =
@@ -387,13 +427,15 @@ function ManageConnections({
                     {supportsApiKey && (
                       <Button
                         variant="secondary"
-                        onClick={() =>
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
                           chooseEditor({
                             kind: "apiKey",
                             name: instance.name,
                             expectedEndpointFingerprint: instance.endpointFingerprint,
-                          })
-                        }
+                          });
+                        }}
                       >
                         {instance.hasStoredFile ? "Replace API key" : "Set API key"}
                       </Button>
@@ -401,23 +443,43 @@ function ManageConnections({
                     {supportsCredentialJson && (
                       <Button
                         variant="secondary"
-                        onClick={() =>
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
                           chooseEditor({
                             kind: "credentialJson",
                             name: instance.name,
                             expectedEndpointFingerprint: instance.endpointFingerprint,
-                          })
-                        }
+                          });
+                        }}
                       >
                         {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                       </Button>
                     )}
                     {supportsOAuth && (
-                      <Button variant="secondary" onClick={() => void startSignIn(instance.name)}>
+                      <Button
+                        variant="secondary"
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
+                          void startSignIn(instance.name);
+                        }}
+                      >
                         {instance.hasStoredOAuth ? "Refresh sign-in" : "Sign in"}
                       </Button>
                     )}
-                    <Button onClick={() => void testConnection(instance.name)} disabled={pending}>
+                    {/* Pending is a mark, not a native disabled attribute:
+                        this button's own click is what focused it, and a
+                        native disabled control holding focus drops focus to
+                        <body> - the same hazard the row's other controls
+                        answer with aria-disabled. */}
+                    <Button
+                      aria-disabled={pending || actionsDisabled}
+                      onClick={() => {
+                        if (pending || actionsDisabled) return;
+                        void testConnection(instance.name);
+                      }}
+                    >
                       {pending ? "Testing connection…" : result || notice ? "Retry test" : "Test connection"}
                     </Button>
                   </div>
@@ -438,7 +500,9 @@ function ManageConnections({
           </Button>
           <Button
             variant="quiet"
+            aria-disabled={actionsDisabled}
             onClick={() => {
+              if (actionsDisabled) return;
               operationVersion.current += 1;
               onSettings();
             }}
@@ -447,7 +511,11 @@ function ManageConnections({
           </Button>
           <Button
             variant="secondary"
-            onClick={() => chooseEditor({ kind: "add" })}
+            aria-disabled={actionsDisabled}
+            onClick={() => {
+              if (actionsDisabled) return;
+              chooseEditor({ kind: "add" });
+            }}
             disabled={writesRefused || availableProviders.length === 0}
           >
             Add provider instance

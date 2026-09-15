@@ -1,7 +1,7 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -340,6 +340,38 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+// The store refuses a save issued from the previous connection's listing
+// (stores/credentials.ts's requireWritableClient): the destination this flow
+// anchored on was read by a connection that is gone. That refusal is the
+// change the conflict recovery above handles, so it gets the same recovery -
+// drop the draft, re-read the listing, and say what changed - instead of the
+// flow's own "could not be saved" report for a save that was never sent.
+test("a save refused because the held listing belongs to a replaced connection reports the change, not a failed save", async () => {
+  const { user, client } = setup();
+  scriptSave(client);
+  await choose(user);
+  await user.type(screen.getByLabelText("API key"), "fixture-key");
+  const readsBefore = client.calls.filter((c) => c.method === "evener/instance/list").length;
+  // The connection is replaced and its own listing has not been applied yet.
+  act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+
+  // Nothing was sent to the replacement connection...
+  expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(0);
+  // ...and the refusal names the change rather than reporting a save failure.
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("connection was replaced");
+  expect(screen.queryByText(/could not be saved/)).toBeNull();
+  // The draft was aimed at a destination that is gone, so it is dropped, and
+  // the flow re-reads the listing to re-anchor on the one now on screen.
+  await waitFor(() => expect(screen.getByLabelText("API key")).toHaveProperty("value", ""));
+  await waitFor(() =>
+    expect(client.calls.filter((c) => c.method === "evener/instance/list").length).toBeGreaterThan(readsBefore),
+  );
+  // No check ran against a destination this connection never showed.
+  expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
+});
 
 test("empty required key stays focused and does not mutate", async () => {
   const { user, client } = setup();
