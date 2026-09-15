@@ -34,10 +34,10 @@ dir=""
 # leak the directory.
 trap scratch_rm EXIT
 scratch_dir dir evener-native-bundle
-mkdir -p "$dir/home" "$dir/tmp" || exit 1
+mkdir -p "$dir/home" "$dir/tmp" "$dir/xdg-config" "$dir/xdg-cache" "$dir/xdg-state" || exit 1
 
 cd "$script_dir/../../mobile-native" || exit 1
-HOME="$dir/home" TMPDIR="$dir/tmp" NODE_DISABLE_COMPILE_CACHE=1 \
+HOME="$dir/home" TMPDIR="$dir/tmp" XDG_CONFIG_HOME="$dir/xdg-config" XDG_CACHE_HOME="$dir/xdg-cache" XDG_STATE_HOME="$dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 \
 	${bound[@]+"${bound[@]}"} \
 	npx expo export --platform ios --output-dir "$dir/export" --clear || exit 1
 

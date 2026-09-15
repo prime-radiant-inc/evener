@@ -66,8 +66,8 @@ test-native: test-native-bundle
 ##   sources or metro.config.js change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency
 ##   tree; no device, simulator, packager, hub, or provider. Runs with a
-##   private process home and temporary root and passes --clear, so the
-##   verdict never comes from a warm Metro cache. ~10s on a developer Mac,
+##   private process home plus temporary and XDG roots and passes --clear, so
+##   the verdict never comes from a warm Metro cache. ~10s on a developer Mac,
 ##   bounded by `timeout 900` where coreutils provides it (the ubuntu runner,
 ##   or a Mac with gtimeout); without it the run is unbounded and the CI
 ##   step's timeout-minutes is the backstop.

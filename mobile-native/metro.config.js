@@ -8,7 +8,8 @@ config.resolver.nodeModulesPaths = [path.resolve(__dirname, "node_modules")];
 // both where "@evener/appwire-client" lives and that its sources count as
 // shared headless code. Metro reads neither tsconfig paths nor the package's
 // own exports map, so this branch is the only thing that resolves the name for
-// the native bundle - and no gate bundles the app, so a break here ships green.
+// the native bundle - and `make test-native-bundle` bundles the app, so a break
+// here fails CI.
 const appwirePackage = path.join(root, "appwire-client", "typescript");
 const appwireName = "@evener/appwire-client";
 // Shared headless sources use this app's React/Zustand installation. Keep
