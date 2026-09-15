@@ -144,6 +144,19 @@ test("collapsed default shows empty placeholder when no notes or links exist", (
   expect(screen.queryByTestId("top-notes-icon-globe")).toBeNull();
 });
 
+test("collapsed summary treats a whitespace-only note as empty", () => {
+  const model = makeModel({
+    humanNote: "   ",
+    agentNote: " \n\t ",
+    sessionUrls: [],
+  });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  expect(screen.getByText("Add a note…")).toBeTruthy();
+  expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
+  expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
+});
+
 test("clicking the collapsed summary expands the panel, clicking header collapses it", async () => {
   const user = userEvent.setup();
   const model = makeModel({

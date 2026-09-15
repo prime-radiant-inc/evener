@@ -45,6 +45,14 @@ function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
 }
 
+/** A note carries content only when something survives trimming. The
+ * collapsed summary and the expanded body must judge emptiness the same
+ * way, or a whitespace-only note reads "Add a note…" collapsed while
+ * expanding shows a blank paragraph. */
+export function hasNoteText(text: string): boolean {
+  return text.trim() !== "";
+}
+
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
@@ -192,7 +200,7 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
   // body entirely. After the hooks above (Rules of Hooks).
   if (!canReadSharedNotes(model)) return null;
 
-  const hasContent = model.humanNote !== "" || model.agentNote !== "" || model.sessionUrls.length > 0;
+  const hasContent = hasNoteText(model.humanNote) || hasNoteText(model.agentNote) || model.sessionUrls.length > 0;
 
   return (
     <div data-testid="shared-notes-section">
@@ -214,15 +222,15 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
             </div>
             <HumanStatus saving={saving} saved={saved} error={error} idleWake={idleWake} />
           </>
-        ) : model.humanNote !== "" ? (
+        ) : hasNoteText(model.humanNote) ? (
           <p className={CLASS.prose} data-testid="shared-notes-human">
             {model.humanNote}
           </p>
         ) : null}
       </Section>
-      {(model.agentNote !== "" || live) && (
+      {(hasNoteText(model.agentNote) || live) && (
         <Section title="Agent">
-          {model.agentNote !== "" ? (
+          {hasNoteText(model.agentNote) ? (
             <p className={CLASS.prose} data-testid="shared-notes-agent">
               {model.agentNote}
             </p>
