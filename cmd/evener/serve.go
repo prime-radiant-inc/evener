@@ -228,6 +228,10 @@ type serveDeps struct {
 	// outside every lock. It exists so a test can sequence virtual-time
 	// advances against the pipeline and hold a claim open at a gate.
 	retirementObserve func(event, rootID string)
+	// retirementCommit is the controller's Commit step. Nil in production, where
+	// the controller's own Commit runs; a test injects a failure to drive the
+	// pre-commit rollback that must abort the claim and reopen the exit.
+	retirementCommit func(*agent.RetirementController, *agent.RetirementClaim) error
 }
 
 type serveCallbackObserver struct {
@@ -820,6 +824,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		listener.Close() //nolint:errcheck // returning the construction failure; the close error is not actionable
 		return fmt.Errorf("retirement controller: %w", err)
 	}
+	// commitRetirement is the controller's Commit step. serveDeps may inject a
+	// failure so a test can drive the pre-commit rollback below; nil means the
+	// controller's own Commit.
+	commitRetirement := deps.retirementCommit
+	if commitRetirement == nil {
+		commitRetirement = func(c *agent.RetirementController, claim *agent.RetirementClaim) error {
+			return c.Commit(claim)
+		}
+	}
 	retirementObserve := func(event, rootID string) {
 		if deps.retirementObserve != nil {
 			deps.retirementObserve(event, rootID)
@@ -873,8 +886,18 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if !reserveRetirementExit(root) {
 			return failBeforeCommit(errors.New("retirement exit is no longer owned by the prepared root"))
 		}
-		if err := retirement.Commit(claim); err != nil {
-			return fmt.Errorf("retirement commit: %w", err)
+		if err := commitRetirement(retirement, claim); err != nil {
+			// The process did not commit, so the exit is genuinely still
+			// undecided: drop the reservation reserveRetirementExit took before
+			// the claim aborts. Without this, closeLiveSession sees
+			// exitPolicy != "" and returns early forever, leaking the live
+			// session's open delegates, running jobs, worktree locks and
+			// transcript flushes. Written under currentMu, the same lock every
+			// other exitPolicy read/write holds.
+			currentMu.Lock()
+			exitPolicy = ""
+			currentMu.Unlock()
+			return failBeforeCommit(fmt.Errorf("retirement commit: %w", err))
 		}
 		retirementObserve("committed", root.ID())
 		// Post-commit teardown is daemon-owned, not request-owned. The ctx used
@@ -965,7 +988,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		}
 		return retirement.BeginMutation(getSession().ID(), "admission")
 	})
-	go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
 
 	// The observer runs ON the bridge goroutine, which is the daemon's
 	// authoritative consumer, so it must never block: see verboseEventTee.
@@ -1630,6 +1652,15 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				serveLogf(os.Stderr, getSession().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
+		// The idle clock may only start once the daemon has published its
+		// initial rendezvous entry. Starting it earlier let a short
+		// --daemon-idle-timeout make a fresh daemon eligible, claim and cancel
+		// its context before that entry existed, stranding the initial session
+		// as stale/unavailable. A registration failure starts no loop, so a
+		// daemon that could not publish itself never silently enables automatic
+		// retirement. Manual retirement is unaffected: requestRetirement
+		// requires the very entry this guards, so it cannot run before it either.
+		go func() { _ = retirement.Run(ctx, consumeRetirementClaim) }()
 	}
 
 	httpSrv := &http.Server{Handler: srv}
