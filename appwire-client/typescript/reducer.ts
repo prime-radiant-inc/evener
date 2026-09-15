@@ -1238,6 +1238,15 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // no live push to refresh it), so clear it in lockstep with activeTurnId
         // to stop the work-clock ticking against a completed turn.
         activeTurnStartedAt: undefined,
+        // The status is thread/status/changed's, not this frame's: a completed
+        // turn is followed by one (idle at session end, active when the next
+        // turn runs inline), so it is left alone here. The one exception is a
+        // genuine failure: the projector's EventError branch emits this frame
+        // with status "failed" and nothing after it, because the agent returns
+        // the failure before the EventSessionEnd that only the clean completion
+        // and the interrupt reach (kata s8x8). Without this the session reads
+        // active forever, Stop and Steer stay and Send is withheld.
+        status: stamp.status === "failed" && model.status.type === "active" ? { type: "idle" } : model.status,
         lastFrameAt: now,
       };
     }

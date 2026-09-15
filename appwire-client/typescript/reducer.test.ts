@@ -5875,3 +5875,62 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
   expect(spy.mock.calls[0]?.[0]).toMatch(/turn\/completed.*turn_2.*2 turns/i);
   spy.mockRestore();
 });
+
+// A genuine turn failure is the one turn end with no status frame behind it:
+// the projector's EventError branch emits turn/completed{status: "failed",
+// error} and nothing else, and the agent's processInputKindWithProvenance
+// returns the failure before the EventSessionEnd that only the clean
+// completion and the interrupt reach (kata s8x8, which the TUI reconciles the
+// same way). Left alone, the model stays active forever: Stop and Steer shown,
+// Send disabled. A completed turn is different: the status frame that follows
+// it (idle at session end, active at an inline boundary) is the authority.
+test("a failed active turn with no status frame behind it settles the session idle", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const failed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error: { message: "rate limited" } },
+      },
+    },
+    2000,
+  );
+  expect(failed.status.type).toBe("idle");
+  expect(failed.activeTurnId).toBeUndefined();
+});
+
+test("a completed active turn leaves the status to the frame that follows it (inline boundary)", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const completed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    },
+    2000,
+  );
+  expect(completed.status.type).toBe("active");
+});

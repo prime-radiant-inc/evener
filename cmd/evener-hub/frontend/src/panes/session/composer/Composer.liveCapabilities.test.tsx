@@ -539,6 +539,35 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
+// A genuine turn failure ends with turn/completed{status: "failed"} and no
+// status frame behind it (the projector's EventError branch; the agent returns
+// the failure before the EventSessionEnd that only a clean completion or an
+// interrupt reaches, kata s8x8). The reducer settles the session idle on that
+// frame, so Stop and Steer leave and Send returns.
+test("a failed turn takes Stop and Steer off and gives Send back", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("another thought");
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: `thr_${REF}`,
+        ref: REF,
+        turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
+      },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(REF)?.status.type).toBe("idle");
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(false);
+});
+
 test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
