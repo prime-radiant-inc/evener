@@ -467,10 +467,12 @@ export interface FeatureSet {
 
 export interface GitHeadParams {
   cwd: string;
+  includeOrigin?: boolean;
 }
 
 export interface GitHeadResponse {
   head: string;
+  originUrl?: string;
 }
 
 export interface GitInfo {
