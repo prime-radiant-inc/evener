@@ -336,8 +336,18 @@ type targetInfo struct {
 // model -- any gateway can be called anything -- so a resolved target offers only
 // its model name; a caller that passed names alone has nothing else to go on.
 func (t targetInfo) vendorNameBasis() string {
-	if t.resolved && !t.providerFromCaller {
-		return ""
+	if t.resolved {
+		// The row's own facts decide when it has any: a provider name -- even one
+		// the caller supplied -- that merely repeats an instance alias must not
+		// outrank the protocol the row actually speaks.
+		if t.surface != "" || t.family != "" || t.protocol != "" {
+			return ""
+		}
+		// With nothing else to go on, a name the caller supplied is evidence and
+		// the row's instance alias is not.
+		if !t.providerFromCaller {
+			return ""
+		}
 	}
 	return t.provider
 }

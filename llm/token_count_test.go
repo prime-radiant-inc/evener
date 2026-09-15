@@ -725,6 +725,25 @@ func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T
 	}
 }
 
+// A provider name that merely repeats the row's own instance alias is still an
+// alias: with the row's protocol in hand it must not claim a vendor the row does
+// not carry, or the request estimate and the history estimate disagree about one
+// row.
+func TestEstimateInputTokensForResolved_InstanceAliasDoesNotOutrankTheRowProtocol(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	row := registry.Resolved{Instance: "anthropic", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIResponses}
+	req := Request{Provider: "anthropic", Model: "gateway-zz", Messages: messages}
+
+	got := EstimateInputTokensForResolved(row, req).Tokens
+	want := EstimateMessagesInputTokensForResolved(row, messages).Tokens
+	if got != want {
+		t.Fatalf("request estimate = %d, want the history estimate %d for the same row: an alias is not vendor identity", got, want)
+	}
+}
+
 // The estimator may read a caller-supplied provider name, never the instance the
 // request resolved to: an aliased instance (here "google" serving an OpenAI
 // protocol) must not claim a vendor's image rules for a row that does not carry
