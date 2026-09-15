@@ -886,6 +886,42 @@ test("the real live Composer mount discovers initial activity without a test-sup
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
 });
 
+// The companion to the test above for the state it cannot cover: a SAVED
+// (notLoaded) session that still advertises send arrives with a collapsed
+// follow-up card, and the card's own control row - the composer's only
+// discovery opt-in - is not mounted while the card rests. Without a
+// chrome-less owner, entity ids in that session's transcript would stay plain
+// text until the card is engaged (issue #1335).
+test("a saved notLoaded session with sending enabled discovers activity while its card rests", async () => {
+  const ref = "ref_activity_saved";
+  const fake = connectFakeClient();
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    }),
+  );
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  await threadsStore.getState().ensureThread(ref);
+
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref={ref} focused={false} />
+    </ClientProvider>,
+  );
+
+  // The card rests as a bare invitation, so the composer's own chrome - the
+  // other discovery opt-in - is genuinely absent for this whole interval.
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+});
+
 test("restores a stored draft into the textarea on mount", async () => {
   localStorage.setItem("evener.composer.draft.v1.ref_a", "unsent thought");
   await mountComposer("ref_a");
