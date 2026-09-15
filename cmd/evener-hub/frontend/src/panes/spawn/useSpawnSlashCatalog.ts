@@ -1,6 +1,7 @@
 import type { AppwireClientLike, LaunchConfigLayer, SpawnSlashCatalogResponse } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { hostRequest } from "../../stores/hostRouting";
 
 export const SPAWN_SLASH_CATALOG_DEBOUNCE_MS = 250;
 
@@ -12,6 +13,9 @@ export type SpawnSlashCatalogLoadState =
 export interface UseSpawnSlashCatalogArgs {
   client: AppwireClientLike;
   cwd: string;
+  // The selected host (component 07b): the catalog is resolved by the host's
+  // own hub through evener/host/request; "local" keeps the plain call.
+  host?: string;
   harness?: string;
   launchOverrides: LaunchConfigLayer;
   pluginRevision: number;
@@ -22,7 +26,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
   state: SpawnSlashCatalogLoadState;
   retry(): void;
 } {
-  const { client, cwd, harness = "", launchOverrides, pluginRevision, enabled = true } = args;
+  const { client, cwd, host = "local", harness = "", launchOverrides, pluginRevision, enabled = true } = args;
   const [retryRevision, setRetryRevision] = useState(0);
   const [result, setResult] = useState<{
     client: AppwireClientLike;
@@ -33,6 +37,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
   const lastResponse = useRef<{
     client: AppwireClientLike;
     cwd: string;
+    host: string;
     logicalKey: string;
     response: SpawnSlashCatalogResponse;
   } | null>(null);
@@ -59,7 +64,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     }
   }, [client]);
   const serializedOverrides = JSON.stringify(launchOverrides);
-  const logicalKey = `${cwd}\u0000${serializedOverrides}\u0000${harness}\u0000${pluginRevision}`;
+  const logicalKey = `${host}\u0000${cwd}\u0000${serializedOverrides}\u0000${harness}\u0000${pluginRevision}`;
   const requestKey = `${logicalKey}\u0000${retryRevision}`;
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
@@ -80,7 +85,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     // authority to reuse the stale list (mirrors usePluginPreview).
     const cached = lastResponse.current;
     setState(
-      cached !== null && cached.client === client && cached.cwd === cwd
+      cached !== null && cached.client === client && cached.cwd === cwd && cached.host === host
         ? { status: "loading", response: cached.response }
         : { status: "loading" },
     );
@@ -95,10 +100,10 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
         ...(currentHarness ? { harness: currentHarness } : {}),
         ...(hasOverrides ? { launchOverrides: currentOverrides } : {}),
       };
-      void client.request("evener/spawn/slashCatalog", params).then(
+      void hostRequest(client, host, "evener/spawn/slashCatalog", params).then(
         (response) => {
           if (latestKey.current === requestKey && clientGenerationRef.current === requestGeneration) {
-            lastResponse.current = { client, cwd, logicalKey, response };
+            lastResponse.current = { client, cwd, host, logicalKey, response };
             setState({ status: "ready", response });
           }
         },
@@ -119,7 +124,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     }, SPAWN_SLASH_CATALOG_DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [client, cwd, enabled, logicalKey, requestKey]);
+  }, [client, cwd, host, enabled, logicalKey, requestKey]);
 
   // Effects reset state after consumers have already rendered. Never expose
   // another request's ready/error state during that first render: SpawnForm
@@ -132,7 +137,7 @@ export function useSpawnSlashCatalog(args: UseSpawnSlashCatalogArgs): {
     ? { status: "ready", response: { commands: [], skills: [] } }
     : result?.client === client && result.requestKey === requestKey
       ? result.state
-      : cached !== null && cached.client === client && cached.cwd === cwd
+      : cached !== null && cached.client === client && cached.cwd === cwd && cached.host === host
         ? { status: "loading", response: cached.response }
         : { status: "loading" };
   return { state, retry };

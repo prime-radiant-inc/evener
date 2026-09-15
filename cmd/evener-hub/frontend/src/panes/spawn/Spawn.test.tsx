@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AnyNotification,
+  HostForwardedResult,
+  HostRequestParams,
   InstanceListResponse,
   LaunchConfigResolved,
   LaunchOption,
@@ -27,6 +29,7 @@ import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
@@ -36,7 +39,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
-import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -99,6 +102,66 @@ function startResponse(ref: string): ThreadStartResponse {
   return { thread: threadWithRef(ref), turn: { id: "turn_1", itemsView: "full", status: "idle" } };
 }
 
+// routedDiscoveryDefault answers one forwarded discovery method the way
+// readyClient answers its controller-scoped twin, so a test that selects a
+// remote host hydrates exactly as a local mount does: the spawn form issues the
+// same calls, just wrapped in evener/host/request (component 07b). A test
+// overrides the proxy handler wholesale when it needs host-specific values.
+function routedDiscoveryDefault(method: string): HostForwardedResult {
+  switch (method) {
+    case "evener/instance/list":
+      return {
+        instances: [
+          {
+            name: "anthropic",
+            providerId: "anthropic",
+            protocol: "anthropic",
+            auth: "bearer",
+            implicit: false,
+            isDefault: true,
+            activeSource: "store",
+            hasStoredOAuth: false,
+            credentialRequired: true,
+          },
+        ],
+        availableProviders: [],
+      };
+    case "evener/harnesses/list":
+      return {
+        data: [
+          { id: "evener", label: "evener", kind: "evener" },
+          { id: "external", label: "external", kind: "external" },
+        ],
+      };
+    case "evener/launch/schema":
+      return { options: [] };
+    case "model/list":
+      return {
+        data: modelListOverride ?? [
+          { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+          { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+        ],
+      };
+    case "evener/launch/resolve":
+      return { effective: {}, layers: {}, provenance: {} };
+    case "evener/git/head":
+      return { head: "main" };
+    case "evener/projects/recent":
+    case "evener/paths/complete":
+      return { data: [] };
+    case "evener/path/validate":
+      return { path: "", valid: true };
+    case "evener/dirs/create":
+      return { path: "", created: true };
+    case "evener/plugin/preview":
+      return { plugins: [] };
+    case "evener/spawn/slashCatalog":
+      return { commands: [], skills: [] };
+    default:
+      return {};
+  }
+}
+
 // A ready FakeClient with every mount-time catalog scripted so the form fully
 // hydrates; individual tests override specific methods as needed.
 function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
@@ -140,6 +203,10 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
+  // Host-routed discovery (component 07b): a selected remote host's calls go
+  // through evener/host/request, so the same answers are wired here. Tests that
+  // pin host-specific values override this handler in `configure`.
+  fake.on("evener/host/request", (params) => routedDiscoveryDefault((params as HostRequestParams).method));
   configure?.(fake);
   return fake;
 }
@@ -6547,13 +6614,35 @@ test("a remote host does not inherit the controller's uncredentialed-default fal
       layers: {},
       provenance: {},
     }));
+    // The selected host answers its own catalog and launch defaults (component
+    // 07b): those reads are forwarded, so the proxy answers them too.
+    f.on("evener/host/request", (params) => {
+      const method = (params as HostRequestParams).method;
+      if (method === "model/list") {
+        return {
+          data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+        } as HostForwardedResult;
+      }
+      if (method === "evener/launch/resolve") {
+        return { effective: { model: "openai/gpt-5.5" }, layers: {}, provenance: {} } as HostForwardedResult;
+      }
+      return routedDiscoveryDefault(method);
+    });
   });
   window.history.pushState({}, "", "/new?dir=/tmp/remote-fallback");
   renderSpawn(fake);
   // Select the remote host before the fallback's CATALOG_SETTLE_MS window can
   // elapse, so this pins the remote-at-mount path.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (c) =>
+          c.method === "evener/launch/resolve" ||
+          (c.method === "evener/host/request" && (c.params as HostRequestParams).method === "evener/launch/resolve"),
+      ),
+    ).toBe(true),
+  );
   // Outlast the settle window: a still-armed fallback would fire in here.
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
@@ -6900,7 +6989,18 @@ test("a cwd picked for a remote target is not recorded as the controller's picke
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
   window.history.pushState({}, "", "/new?dir=/tmp/seed-local");
-  renderSpawn(readyClient());
+  // The path validator is host-routed (component 07b): the selected host
+  // answers for its own filesystem, so the picker's acceptance of the remote
+  // path below is the host's verdict.
+  renderSpawn(
+    readyClient((f) =>
+      f.on("evener/host/request", (params) =>
+        (params as HostRequestParams).method === "evener/path/validate"
+          ? ({ path: "/srv/remote-only", valid: true } as HostForwardedResult)
+          : routedDiscoveryDefault((params as HostRequestParams).method),
+      ),
+    ),
+  );
   await settled();
 
   // A local pick still updates the controller's own browse history.
@@ -6928,9 +7028,17 @@ test("a remote target can select a directory this controller cannot see", async 
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
-  const fake = readyClient((f) =>
-    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
-  );
+  const fake = readyClient((f) => {
+    // The controller's own filesystem cannot see the path...
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+    // ...but the selected host can, and it is the host that judges a remote
+    // target's path (component 07b, through evener/host/request).
+    f.on("evener/host/request", (params) =>
+      (params as HostRequestParams).method === "evener/path/validate"
+        ? ({ path: "/srv/remote-only", valid: true } as HostForwardedResult)
+        : routedDiscoveryDefault((params as HostRequestParams).method),
+    );
+  });
   window.history.pushState({}, "", "/new?dir=/tmp/picker-base");
   renderSpawn(fake);
   await settled();
@@ -6952,18 +7060,25 @@ test("a remote target can select a directory this controller cannot see", async 
   expect(screen.queryByText("no such file or directory")).toBeNull();
 });
 
-// Creating a folder is a WRITE on this hub's own filesystem (evener/dirs/create
-// MkdirAll's it here). A remote target's path is the selected host's, so the
-// picker's New folder affordance - newly reachable for a remote-only path now
-// that validation is skipped - must refuse rather than materialize it locally
-// (the wrong-host action the cwd preflight already refuses to offer).
-test("the picker does not create folders locally for a remote target", async () => {
+// The picker's "New folder" is a WRITE, and evener/dirs/create MkdirAll's the
+// path on the filesystem of the hub it reaches. A remote target's path belongs
+// to the selected host, so the request is forwarded there (component 07b)
+// instead of materializing the folder on the controller.
+test("the picker creates a folder on the selected host, never on the controller", async () => {
   const user = userEvent.setup();
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
-  const fake = readyClient();
+  const forwarded: string[] = [];
+  const fake = readyClient((f) =>
+    f.on("evener/host/request", (params) => {
+      const method = (params as HostRequestParams).method;
+      forwarded.push(method);
+      if (method === "evener/dirs/create") return { path: "/srv/remote-create/child", created: true } as HostForwardedResult;
+      return routedDiscoveryDefault(method);
+    }),
+  );
   window.history.pushState({}, "", "/new?dir=/tmp/remote-create-base");
   renderSpawn(fake);
   await settled();
@@ -6979,8 +7094,13 @@ test("the picker does not create folders locally for a remote target", async () 
   await user.click(screen.getByRole("button", { name: "New folder" }));
   await user.type(screen.getByRole("textbox", { name: "Folder name" }), "child{Enter}");
 
+  // Nothing was created on the controller...
   expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
-  expect(await screen.findByText(/Create the folder on buildbox/)).toBeTruthy();
+  // ...the creation went to the selected host, through the admin proxy.
+  expect(forwarded).toContain("evener/dirs/create");
+  for (const call of fake.calls.filter((call) => call.method === "evener/host/request")) {
+    expect((call.params as HostRequestParams).host).toBe("buildbox");
+  }
 });
 
 // The advanced panel validates a path-kind value through the same controller
@@ -7149,13 +7269,27 @@ test("a draft already on a remote host is never swept by the controller's catalo
   );
   const parked = deferred<ModelListResponse>();
   let globalRequests = 0;
-  const fake = readyClient((f) =>
+  let routedRequests = 0;
+  const fake = readyClient((f) => {
     f.on("model/list", ({ harness, cwd }) => {
       if (harness !== "evener" || cwd !== undefined) return { data: [{ provider: "openai", model: "gpt-5" }] };
       globalRequests += 1;
       return globalRequests === 1 ? parked.promise : { data: [{ provider: "openai", model: "gpt-5" }] };
-    }),
-  );
+    });
+    // A remote draft's catalog read is forwarded to the selected host
+    // (component 07b), so the controller's own listing is not what a remote
+    // mount consults.
+    f.on("evener/host/request", (params) => {
+      const forwarded = params as HostRequestParams;
+      if (forwarded.method !== "model/list") return routedDiscoveryDefault(forwarded.method);
+      const { harness, cwd } = forwarded.params as { harness?: string; cwd?: string };
+      if (harness !== "evener" || cwd !== undefined) {
+        return { data: [{ provider: "openai", model: "gpt-5" }] } as HostForwardedResult;
+      }
+      routedRequests += 1;
+      return { data: [{ provider: "openai", model: "gpt-5" }] } as HostForwardedResult;
+    });
+  });
   const mounted = renderSpawn(fake);
   await settled();
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
@@ -7163,13 +7297,15 @@ test("a draft already on a remote host is never swept by the controller's catalo
   expect(modelValue().textContent).toContain("openai/retired");
 
   // Remount: the draft (and its host) persist, so the fresh mount's own
-  // catalog request resolves under a remote target from its first render.
+  // catalog request resolves under a remote target from its first render - and
+  // that request is the HOST's (routed), never the controller's parked one.
   mounted.unmount();
   renderSpawn(fake);
   await settled();
   await act(async () => {});
   expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
-  expect(globalRequests).toBe(2);
+  expect(routedRequests).toBeGreaterThan(0);
+  expect(globalRequests).toBe(1);
   expect(modelValue().textContent).toContain("openai/retired");
   expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
 });
@@ -7187,21 +7323,32 @@ test("a path marked invalid while local reaches the launch after switching host 
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
+  const schema = {
+    options: [
+      {
+        field: "agent",
+        wireField: "agent",
+        label: "Agent",
+        kind: "text",
+        group: "general",
+        pathKind: "command",
+        perLaunch: true,
+      },
+    ],
+  };
   const fake = readyClient((f) => {
-    f.on("evener/launch/schema", () => ({
-      options: [
-        {
-          field: "agent",
-          wireField: "agent",
-          label: "Agent",
-          kind: "text",
-          group: "general",
-          pathKind: "command",
-          perLaunch: true,
-        },
-      ],
-    }));
+    f.on("evener/launch/schema", () => schema);
+    // The controller cannot see the path...
     f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+    // ...and the selected host judges its own filesystem (component 07b), where
+    // the value is fine. The schema is host-dependent too, so it is answered
+    // here for the routed read.
+    f.on("evener/host/request", (params) => {
+      const method = (params as HostRequestParams).method;
+      if (method === "evener/launch/schema") return schema as HostForwardedResult;
+      if (method === "evener/path/validate") return { path: "", valid: true } as HostForwardedResult;
+      return routedDiscoveryDefault(method);
+    });
   });
   window.history.pushState({}, "", "/new?dir=/tmp/remote-switch-path");
   renderSpawn(fake);
@@ -7246,4 +7393,74 @@ test("a path marked invalid while local reaches the launch after switching host 
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.source).toBe("buildbox");
   expect(params.launchOverrides).toMatchObject({ agent: "host-only-agent" });
+});
+
+// --- host-routed discovery (Component 07b) ---------------------------------
+
+// The discovery methods the spawn form's mount path issues for the selected
+// host. The on-demand methods (path completion/validation, dirs/create, recent
+// projects, the slash catalog, plugin preview) are covered by their own seams'
+// tests; stores/hostRouting.test.ts covers the whole spec set at the seam.
+const MOUNT_DISCOVERY_METHODS = [
+  "model/list",
+  "evener/harnesses/list",
+  "evener/launch/schema",
+  "evener/launch/resolve",
+  "evener/git/head",
+  "evener/instance/list",
+] as const;
+
+test("a selected remote host routes every discovery call through evener/host/request", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = new FakeClient("ready");
+  const forwarded: Record<string, unknown> = {
+    "model/list": {
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    },
+    "evener/harnesses/list": { data: [{ id: "evener", label: "evener", kind: "evener" }] },
+    "evener/launch/schema": { options: [] },
+    "evener/launch/resolve": { effective: {}, layers: {}, provenance: {} },
+    "evener/git/head": { head: "main" },
+    "evener/instance/list": { instances: [], availableProviders: [] },
+    "evener/projects/recent": { data: [] },
+    "evener/paths/complete": { data: [] },
+    "evener/path/validate": { path: "", valid: true },
+    "evener/dirs/create": { path: "", created: true },
+    "evener/plugin/preview": { plugins: [] },
+    "evener/spawn/slashCatalog": { commands: [], skills: [] },
+  };
+  fake.on("evener/host/request", (params) => {
+    const method = (params as HostRequestParams).method;
+    return (forwarded[method] ?? {}) as HostForwardedResult;
+  });
+  connectionStore.getState().connect(fake);
+
+  // Select the remote host before the form mounts, so the mount-time discovery
+  // calls are issued against it from the first render.
+  const draft = selectSpawnDirectory("/tmp/remote-routing");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-routing");
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => {
+    const routed = new Set(
+      fake.calls
+        .filter((call) => call.method === "evener/host/request")
+        .map((call) => (call.params as HostRequestParams).method),
+    );
+    for (const method of MOUNT_DISCOVERY_METHODS) expect(routed.has(method)).toBe(true);
+  });
+
+  // Every proxied call names the selected host...
+  for (const call of fake.calls.filter((call) => call.method === "evener/host/request")) {
+    expect((call.params as HostRequestParams).host).toBe("buildbox");
+  }
+  // ...and nothing was left controller-scoped.
+  for (const method of HOST_DEPENDENT_DISCOVERY_METHODS) {
+    expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  }
 });

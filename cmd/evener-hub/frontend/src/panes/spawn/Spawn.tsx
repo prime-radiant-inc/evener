@@ -39,6 +39,7 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
+import { hostRequest } from "../../stores/hostRouting";
 import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import {
@@ -237,7 +238,54 @@ function SpawnForm({
 }) {
   const client = useClient();
   const toasts = useToasts();
-  const providerSetup = useProviderSetup();
+  const [source, setSource] = useDraftField(draft, "source");
+  // The manifest carries every configured launch source (Component 06a). It is
+  // empty until it loads, and in the common single-host case holds only
+  // "local" - either way no picker renders, so the existing form is unchanged.
+  //
+  // Two views of it, deliberately (round nine). `sources` is the SETTLED list
+  // and owns every decision: the launchable host below, the submitted source,
+  // and the write-back; `displaySources` (below) is last-known data for DISPLAY
+  // only, so a revalidation cannot make the picker vanish.
+  const sources = useNavigationStore(selectSources);
+  // A draft may name a host that is no longer launchable: removed from the
+  // manifest while the draft lived, or still listed but offline (the hub keeps
+  // offline sources in the manifest - only the online flag flips). Both fall
+  // back to local rather than submitting a source the hub rejects with
+  // "spawn source is not available". The fallback is written back into the
+  // draft below so the picker's value and the submitted source never diverge: a
+  // stale draft value would otherwise survive the fallback and, when the host
+  // came back online, silently flip both the select and the launch target back
+  // to it. Affirmatively settling on local cannot rewrite the stale value -
+  // selecting "Local" fires no change event while the select already reads
+  // local - so the draft, not the remembered host, must carry the choice.
+  const chosenSource = sources.find((candidate) => candidate.id === source);
+  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
+  // `sources` is empty both while the manifest loads (and if it never arrives)
+  // and when it genuinely lists no remote host, so its emptiness is not
+  // evidence the draft's host is gone. Until the manifest lists the sources,
+  // the submission carries the draft's own value; only a settled manifest - the
+  // same `sources.length > 0` gate the write-back below uses - can confirm the
+  // fallback. Reading the loading window as a fallback would start the session
+  // locally with no indication while the draft still names a remote host
+  // (Component 06b review).
+  const submittedSource = sources.length > 0 ? hostChoice : source;
+  useEffect(() => {
+    // Guarded on a loaded manifest: while the sources are still in flight
+    // hostChoice is a provisional "local", and rewriting the draft then would
+    // discard a persisted remote host that is merely still loading.
+    if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
+  }, [sources.length, source, hostChoice, setSource]);
+
+  // Every host-dependent discovery/validation call below is issued against
+  // submittedSource (component 07b): remote hosts read models, harnesses,
+  // launch config, paths, projects, the slash catalog, git HEAD, plugin
+  // diagnostics, and provider instances through evener/host/request; "local"
+  // keeps the plain call. submittedSource is the value the form submits as
+  // ThreadStartParams.Source, so discovery describes the machine the launch
+  // will use - including while the manifest is still settling, when the
+  // draft already names the host.
+  const providerSetup = useProviderSetup(submittedSource);
   const [connectingProvider, setConnectingProvider] = useState(false);
   const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
   // Save/reload can make new models appear before Continue. Once a draft scope
@@ -270,46 +318,11 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
-  const [source, setSource] = useDraftField(draft, "source");
-  // The manifest carries every configured launch source (Component 06a). It is
-  // empty until it loads, and in the common single-host case holds only
-  // "local" - either way no picker renders, so the existing form is unchanged.
-  //
-  // Two views of it, deliberately (round nine). `sources` is the SETTLED list
-  // and owns every decision: the launchable host below, the submitted source,
-  // and the write-back. `displaySources` is last-known data for DISPLAY only,
-  // so a revalidation (loading/stale) cannot make the picker vanish or the
-  // visible host flip to Local while the fresh manifest is in flight.
-  const sources = useNavigationStore(selectSources);
+  // The display-only view of the same manifest, used by the picker alone
+  // (round nine): last-known data, so a revalidation (loading/stale) cannot
+  // make the picker vanish or the visible host flip to Local while the fresh
+  // manifest is in flight.
   const displaySources = useNavigationStore(selectDisplaySources);
-  // A draft may name a host that is no longer launchable: removed from the
-  // manifest while the draft lived, or still listed but offline (the hub keeps
-  // offline sources in the manifest - only the online flag flips). Both fall
-  // back to local rather than submitting a source the hub rejects with
-  // "spawn source is not available". The fallback is written back into the
-  // draft below so the picker's value and the submitted source never diverge: a
-  // stale draft value would otherwise survive the fallback and, when the host
-  // came back online, silently flip both the select and the launch target back
-  // to it. Affirmatively settling on local cannot rewrite the stale value -
-  // selecting "Local" fires no change event while the select already reads
-  // local - so the draft, not the remembered host, must carry the choice.
-  const chosenSource = sources.find((candidate) => candidate.id === source);
-  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
-  // `sources` is empty both while the manifest loads (and if it never arrives)
-  // and when it genuinely lists no remote host, so its emptiness is not
-  // evidence the draft's host is gone. Until the manifest lists the sources,
-  // the submission carries the draft's own value; only a settled manifest - the
-  // same `sources.length > 0` gate the write-back below uses - can confirm the
-  // fallback. Reading the loading window as a fallback would start the session
-  // locally with no indication while the draft still names a remote host
-  // (Component 06b review).
-  const submittedSource = sources.length > 0 ? hostChoice : source;
-  useEffect(() => {
-    // Guarded on a loaded manifest: while the sources are still in flight
-    // hostChoice is a provisional "local", and rewriting the draft then would
-    // discard a persisted remote host that is merely still loading.
-    if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
-  }, [sources.length, source, hostChoice, setSource]);
   // The select's own value, and its option list: last-known data, so the picker
   // stays visible while the manifest revalidates and keeps showing the host the
   // draft names (only `sources` above may decide the launch target). While the
@@ -441,6 +454,7 @@ function SpawnForm({
   const slashCatalog = useSpawnSlashCatalog({
     client,
     cwd,
+    host: submittedSource,
     harness,
     launchOverrides: combinedOverrides,
     pluginRevision,
@@ -730,11 +744,14 @@ function SpawnForm({
       };
     }
     const cache = modelListCache.current.entries;
-    const key = `${harness}\0${cwd}`;
+    const key = `${submittedSource}\0${harness}\0${cwd}`;
     const cached = cache.get(key);
     if (cached) return cached;
 
-    const request = client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined });
+    const request = hostRequest(client, submittedSource, "model/list", {
+      harness: harness || undefined,
+      cwd: cwd || undefined,
+    });
     let tracked: Promise<ModelListResponse>;
     tracked = request.catch((error) => {
       if (cache.get(key) === tracked) cache.delete(key);
@@ -742,7 +759,7 @@ function SpawnForm({
     });
     cache.set(key, tracked);
     return tracked;
-  }, [client, harness, cwd, providerSetup.instances, credentialsGeneration]);
+  }, [client, submittedSource, harness, cwd, providerSetup.instances, credentialsGeneration]);
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   // Every model-valued control in the spawn pane consumes this one scoped
   // response. The same promise is shared with the default-model preview, so
@@ -765,90 +782,68 @@ function SpawnForm({
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
   // help here; these coalesce so a consumer counting entries never sees null.
   const listRecents = useCallback(
-    () => client.request("evener/projects/recent", {}).then((r) => r.data ?? []),
-    [client],
+    () => hostRequest(client, submittedSource, "evener/projects/recent", {}).then((r) => r.data ?? []),
+    [client, submittedSource],
   );
   // Injected into every PathField on this pane (the working directory here and
   // the advanced panel's path/pathList fields): the widget derives includeFiles
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      client.request("evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
-    [client],
+      hostRequest(client, submittedSource, "evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
+    [client, submittedSource],
   );
-  // Path unfolding here is source-aware (round nine). evener/path/validate and
-  // evener/dirs/create answer for THIS controller's filesystem, but a remote
-  // launch's paths belong to the SELECTED HOST: a directory that exists only
-  // there reads as invalid here, which made the picker refuse to select it and
-  // let the advanced panel's live validation mark a perfectly good remote path
-  // invalid - collectAdvancedOverrides then dropped it from launchOverrides with
-  // no reason the reader could act on. So a remote target is not judged by this
-  // controller at all: the check is skipped and the typed spelling is accepted,
-  // exactly as a validator that cannot answer already behaves (fail-open), and
-  // the selected host validates its own cwd and paths at start - the authority
-  // model the preflight, provider, plugin and model gates already follow on this
-  // pane. Local targets keep every check unchanged. (Source-aware browsing -
-  // completing a REMOTE path's children - needs the evener/host/request proxy,
-  // absent from this branch.)
+  // Path unfolding is host-scoped (component 07b). evener/path/validate answers
+  // for the filesystem of the hub it reaches, so a remote target's paths are
+  // validated by the SELECTED HOST through evener/host/request - the same
+  // authority model the preflight, provider, plugin and model gates follow on
+  // this pane, and the reason a directory that exists only on that host neither
+  // reads as invalid here nor gets dropped from launchOverrides. Local targets
+  // keep the plain call, byte-for-byte.
   const validatePath = useCallback(
     (path: string, kind: string): Promise<PathValidation> => {
-      if (remoteLaunch) return Promise.resolve({ valid: true, path });
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
-      return client
-        .request("evener/path/validate", { path, kind })
-        .then((r) => ({ valid: r.valid, error: r.error, path: r.path }));
+      return hostRequest(client, submittedSource, "evener/path/validate", { path, kind }).then((r) => ({
+        valid: r.valid,
+        error: r.error,
+        path: r.path,
+      }));
     },
-    [client, remoteLaunch],
+    [client, submittedSource],
   );
-  // Creating a folder is a WRITE, and evener/dirs/create MkdirAll's it on this
-  // hub's own filesystem. A remote target's path is the selected host's, so the
-  // picker's "New folder" must not materialize it HERE - the same wrong-host
-  // action the cwd preflight above already refuses to offer for a remote
-  // target. Skipping validation (above) is what makes that affordance reachable
-  // for a remote-only path, so the refusal has to be explicit; the reason goes
-  // through a toast, since the picker's own slot shows a wire error's text and
-  // this rejection never crossed the wire.
+  // Creating a folder is a WRITE, and evener/dirs/create MkdirAll's it on the
+  // filesystem of the hub it reaches. A remote target's path belongs to the
+  // SELECTED HOST, so the picker's "New folder" is issued against that host
+  // through evener/host/request (component 07b): the folder is created on the
+  // machine the launch will use, never here.
   const createDirectory = useCallback(
-    (path: string) => {
-      if (!remoteLaunch) return createDir(client, path);
-      toasts.push("error", `Create the folder on ${remoteSourceLabel}: this controller can't create it there.`);
-      return Promise.reject(new Error("a remote target's paths belong to the selected host"));
-    },
-    [client, remoteLaunch, remoteSourceLabel, toasts],
+    (path: string) => createDir(client, path, submittedSource),
+    [client, submittedSource],
   );
   // A path-kind value's verdict belongs to the TARGET it was judged for, but
   // the record the advanced panel keeps carries no target with it: `invalid`
-  // in advancedValues (and its message in advancedErrors) says "the controller
-  // cannot see this path", which is a fact about THIS host only. Because the
+  // in advancedValues (and its message in advancedErrors) says "this target
+  // cannot see this path", which is a fact about one host only. Because the
   // verdict is made at the moment the field's value changes, a later switch of
   // the Host picker leaves it asserting a fact about the wrong host: a path
   // typed while local stays marked "no such file or directory" after a remote
-  // source is selected, so collectAdvancedOverrides (schema.ts:41) keeps
-  // dropping it from launchOverrides even though the disclosure below says the
-  // selected host resolves these paths (round ten). Re-validate the stored
-  // values whenever the target mode changes - the first run counts, so a
-  // remount under a remote target clears a flag a local era left behind - so
-  // the flag, the message and the collected overrides always describe the
-  // CURRENT target: to remote it is the host's business (validatePath's own
-  // short-circuit: valid, no reason to show), and a switch back to local asks
-  // this controller again, so a path this host really cannot see is dropped
-  // only while this host is the judge. The write is the same one the panel's
-  // own updateScalar makes (values + errors + the collected overrides), so a
-  // field the reader is looking at updates in place.
-  const pathValidationMode = useRef<boolean | null>(null);
+  // source is selected, so collectAdvancedOverrides keeps dropping it from
+  // launchOverrides even though the disclosure below says the selected host
+  // resolves these paths (round ten). Re-validate the stored values whenever
+  // the launch target changes - the first run counts, so a remount under a
+  // remote target clears a flag a local era left behind - so the flag, the
+  // message and the collected overrides always describe the CURRENT target.
+  // The write is the same one the panel's own updateScalar makes (values +
+  // errors + the collected overrides), so a field the reader is looking at
+  // updates in place.
+  const pathValidationTarget = useRef<string | null>(null);
   useEffect(() => {
-    const previous = pathValidationMode.current;
-    pathValidationMode.current = remoteLaunch;
-    const modeChanged = previous !== remoteLaunch;
-    // A pass that is not a mode change still matters for a remote target: the
-    // verdict there is one this controller can state without asking anyone
-    // (validatePath short-circuits before the wire), so a flag the local era
-    // left on a draft the schema is only now revealing - or on a draft this
-    // pane switched to - is retired as soon as it becomes visible. A local
-    // pass must ask the controller, and only a mode change makes that
-    // necessary; it is skipped otherwise.
-    if (!modeChanged && !remoteLaunch) return;
+    const previous = pathValidationTarget.current;
+    pathValidationTarget.current = submittedSource;
+    // Only a target change invalidates a stored verdict; within one target,
+    // editing a value is what re-judges it.
+    if (previous === submittedSource) return;
     const stored = readAdvancedValues();
     const storedErrors = draft.fields.getState().advancedErrors;
     for (const option of schemaOptions) {
@@ -857,16 +852,18 @@ function SpawnForm({
       if (!field) continue;
       const value = field.value;
       if (typeof value !== "string" || value.trim() === "") continue;
-      // Nothing for a later pass to retire: the record already reads as the
-      // remote target's (no flag, no message), so it is left alone.
-      if (!modeChanged && field.invalid !== true && (storedErrors[option.wireField] ?? "") === "") continue;
+      // Every stored value is re-judged for the new target: a flag this pass
+      // must SET is invisible in the record it is reading (the previous
+      // target's verdict may have been "valid"), so the pass cannot skip the
+      // unflagged ones.
       validatePath(value, schemaPathKind(option.pathKind)).then(
         (result) => {
           // A later edit owns this field now, even if it returned to the same
-          // text - and a second mode change owns the verdict: its own run has
-          // already re-stamped the mode this one was registered under, so this
-          // response no longer describes the target in front of the reader.
-          if (pathValidationMode.current !== remoteLaunch) return;
+          // text - and a second target change owns the verdict: its own run has
+          // already re-stamped the target this one was registered under, so
+          // this response no longer describes the target in front of the
+          // reader.
+          if (pathValidationTarget.current !== submittedSource) return;
           const current = readAdvancedValues();
           if (current[option.wireField] !== field) return;
           const next: AdvancedValues = { ...current, [option.wireField]: { value, invalid: !result.valid } };
@@ -883,7 +880,7 @@ function SpawnForm({
     }
   }, [
     draft,
-    remoteLaunch,
+    submittedSource,
     schemaOptions,
     validatePath,
     readAdvancedValues,
@@ -893,18 +890,19 @@ function SpawnForm({
   ]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
-      client.request("evener/launch/resolve", {
+      hostRequest(client, submittedSource, "evener/launch/resolve", {
         cwd,
         launchOverrides: pluginSelectionSupported
           ? withPluginSelection(overrides, pluginSelection)
           : withPluginSelection(overrides, { mode: "default" }),
       }),
-    [client, cwd, pluginSelection, pluginSelectionSupported],
+    [client, submittedSource, cwd, pluginSelection, pluginSelectionSupported],
   );
 
   const pluginPreview = usePluginPreview({
     client,
     cwd,
+    host: submittedSource,
     launchOverrides: combinedOverrides,
     pluginRevision,
     enabled: pluginSelectionSupported,
@@ -949,17 +947,19 @@ function SpawnForm({
   useMountAutofocus(textareaRef, focused);
 
   // Draft defaults and URL prefill are owned above the form's lifetime.
-  // Mount only the asynchronous catalogs and focus the current prompt.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only catalog loading
+  // Load the host-dependent catalogs and focus the current prompt. Reloaded
+  // when the selected host changes (component 07b): harnesses and launch
+  // schema describe the host, so a remote selection must not keep showing the
+  // controller's lists.
   useEffect(() => {
     let active = true;
-    client.request("evener/harnesses/list", {}).then(
+    hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
       (r) => {
         if (active) setHarnesses(r.data);
       },
       () => {},
     );
-    client.request("evener/launch/schema", {}).then(
+    hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
       (r) => {
         if (active) setSchemaOptions(perLaunchEvenerOptions(r));
       },
@@ -968,7 +968,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, []);
+  }, [client, submittedSource]);
 
   // Persisted defaults span every project, so only an explicitly global Evener
   // catalog has authority to sweep them. Picker catalogs may belong to another
@@ -977,7 +977,7 @@ function SpawnForm({
   useEffect(() => {
     const request = {
       active: true,
-      promise: client.request("model/list", { harness: "evener" }),
+      promise: hostRequest(client, submittedSource, "model/list", { harness: "evener" }),
     };
     setGlobalModelRequest(request);
     request.promise.then(
@@ -992,7 +992,7 @@ function SpawnForm({
     return () => {
       request.active = false;
     };
-  }, [client, providerSetup.instances, credentialsGeneration]);
+  }, [client, submittedSource, providerSetup.instances, credentialsGeneration]);
 
   // Validate each entered draft independently of storage: an earlier sweep may
   // already have deleted its saved model while the live draft still retains it.
@@ -1084,13 +1084,13 @@ function SpawnForm({
   useEffect(() => {
     if (cwd.trim() === "") return undefined;
     let active = true;
-    resolveHeadBranch(client, cwd).then((head) => {
+    resolveHeadBranch(client, cwd, submittedSource).then((head) => {
       if (active) setBranchHead({ cwd, head });
     });
     return () => {
       active = false;
     };
-  }, [client, cwd]);
+  }, [client, cwd, submittedSource]);
 
   // Default-model preview (kata xgk8): thread/start resolves Model from the
   // SAME layered launch config this previews (app_threadlifecycle.go -
@@ -1709,31 +1709,25 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      // The working-directory preflight is the CONTROLLER's own filesystem
-      // check: evener/path/validate and evener/dirs/create answer for this hub's
-      // host. A remote launch's cwd belongs to the selected source instead, so
-      // the local answer is not authoritative - a path that exists only on the
-      // remote reads as missing here, and "Create & start" would create the
-      // directory LOCALLY before the remote launch still failed on its own cwd.
-      // Skip it for a remote target and let that hub validate its own cwd via
-      // thread/start; source-aware preflight arrives with the evener/host/request
-      // proxy (Component 07a), not this branch.
-      if (!remoteLaunch) {
-        const outcome = await preflightDir(client, cwd);
-        if (outcome.kind === "abort") {
-          toasts.push("error", outcome.message);
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
-          return;
-        }
-        if (outcome.kind === "offer-create") {
-          setCreateDialogPath(outcome.path);
-          busyRef.current = false;
-          setBusy(false);
-          setBusyStartedAt(null);
-          return;
-        }
+      // The working-directory preflight is host-scoped (component 07b):
+      // evener/path/validate and evener/dirs/create answer for the hub they
+      // reach, so a remote target's cwd is checked - and offered for creation -
+      // on the SELECTED HOST through evener/host/request, the same host the
+      // launch will use.
+      const outcome = await preflightDir(client, cwd, submittedSource);
+      if (outcome.kind === "abort") {
+        toasts.push("error", outcome.message);
+        busyRef.current = false;
+        setBusy(false);
+        setBusyStartedAt(null);
+        return;
+      }
+      if (outcome.kind === "offer-create") {
+        setCreateDialogPath(outcome.path);
+        busyRef.current = false;
+        setBusy(false);
+        setBusyStartedAt(null);
+        return;
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
@@ -1761,7 +1755,7 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      await createDir(client, path);
+      await createDir(client, path, submittedSource);
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call
