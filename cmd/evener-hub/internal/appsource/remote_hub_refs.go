@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -213,6 +214,61 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 		return raw
 	}
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
+}
+
+// translateThreadRaw rewrites a thread object's ref-bearing fields at the JSON
+// level, preserving every field this hub does not understand. Round-tripping
+// through appwire.Thread would silently drop a field a newer remote hub sent —
+// the same reason the notification translator works in RawMessage throughout.
+// Only Source, Evener.Ref and Evener.ParentRef are rewritten; InstanceID and
+// everything else pass through byte-for-byte.
+func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		fields = map[string]json.RawMessage{}
+	}
+	source, err := json.Marshal(s.id)
+	if err != nil {
+		return nil, err
+	}
+	fields["source"] = source
+	if evener, ok := fields["evener"]; ok && len(evener) > 0 {
+		var evenerFields map[string]json.RawMessage
+		if err := json.Unmarshal(evener, &evenerFields); err != nil {
+			return nil, err
+		}
+		for _, key := range []string{"ref", "parentRef"} {
+			field, ok := evenerFields[key]
+			if !ok {
+				continue
+			}
+			var rawRef string
+			if err := json.Unmarshal(field, &rawRef); err != nil {
+				return nil, err
+			}
+			if rawRef == "" {
+				continue
+			}
+			translated, err := s.fromRemoteRefString(rawRef)
+			if err != nil {
+				return nil, err
+			}
+			encoded, err := json.Marshal(translated)
+			if err != nil {
+				return nil, err
+			}
+			evenerFields[key] = encoded
+		}
+		encoded, err := json.Marshal(evenerFields)
+		if err != nil {
+			return nil, err
+		}
+		fields["evener"] = encoded
+	}
+	return json.Marshal(fields)
 }
 
 // translateOut applies outbound ref translation to whichever response type
