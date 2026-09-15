@@ -142,7 +142,7 @@ async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<vo
 
 // applied registers a fake handler for a mutation that answers with an
 // applied receipt, the response every accepted control mutation carries.
-function applied(fake: FakeClient, method: string): void {
+function applied(fake: FakeClient, method: "turn/drainAsSteer" | "turn/promoteQueuedAsSteer"): void {
   fake.on(method, (params) => ({
     receipt: {
       clientMutationId: params.clientMutationId,

@@ -199,7 +199,8 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 				sendKeys = append(sendKeys, "ctrl+s: run queue as steer")
 				panel.CanSteer = true
 			}
-			panel.Keys = append(sendKeys, keys...)
+			sendKeys = append(sendKeys, keys...)
+			panel.Keys = sendKeys
 		}
 		if depth := len(m.sessionQueue); depth > 0 {
 			panel.ChipContext.Mode = "QUEUE " + itoa(depth)
