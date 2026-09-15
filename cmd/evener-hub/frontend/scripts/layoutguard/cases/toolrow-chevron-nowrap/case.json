@@ -1,16 +1,19 @@
 {
   "name": "toolrow-chevron-nowrap",
-  "description": "An intent-bearing tool row (the plain-trigger branch read_file/grep rows use: intent on line 1, demoted summary on line 2) keeps its trailing disclosure chevron on the intent's LAST text line at every swept column width - a line that fills exactly moves the chevron with the words it opens, never the glyph alone onto a wrapped line of its own. Each column sweeps a 20-width ladder so the case finds the binding widths wherever the platform's font metrics put them, and the assert requires that each sweep found at least one (last line within 18px of the column edge, intent wrapped to 2+ lines), so a font or platform change that moves the geometry fails the case instead of letting it pass vacuously.",
+  "description": "ToolRow's trailing glyphs never wrap to a line by themselves. Four surfaces, all swept across a width ladder per column: the intent line's chevron (plain-trigger branch), the two-level expanded summary line's body chevron, the same line with an 'Open beside' control ahead of the chevron, and the expanded read_file shape whose chevron trails the 'lines N-M' meta (its mid-summary control has no stranding geometry - the meta text always wraps onto the control's line - so only the chevron is asserted there). Every fixture renders the production row plus an unglued probe (the pre-fix markup): the production row must satisfy the invariant at EVERY swept width, and the probe must STRAND somewhere in the sweep - proof the ladder exercises the stranding geometry at this font, so a font change that moves the geometry fails the case instead of letting it pass vacuously.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
-    "panes/session/transcript/toolcallitem.module.css"
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
   ],
-  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "viewport": { "width": 1200, "height": 1600, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
     "declaration": "ToolRow.tsx: the chevron rendered as a bare inline sibling after the intent text, with no atomic .intentTail unit around the final word (the harness's GLUED=false shape)",
     "verified": "2026-09-15",
     "expect": "fail",
-    "note": "Verified with the final harness both ways on 2026-09-15: GLUED=false (the pre-fix bare inline chevron, this case's own first run) FAILs with the chevron stranded below the intent's last text line at every binding width the sweeps found (e.g. phone 374-388px, probe slack 1.6-15.6px); GLUED=true (production's .intentTail unit) PASSes all 151 widths per sweep with binding geometry still present. The equivalent CSS-only mutation (reverting .intentTail display:inline-flex to display:inline) strands the same way, per the identical secondaryTail mechanism verified on 2026-09-11 for notification-open-last-line."
+    "note": "Verified with the final harness both ways on 2026-09-15, per shape: the intent shapes went red-first against the pre-fix production markup (bare inline chevron stranded below the intent's last text line at every binding width the sweeps found, e.g. phone 374-388px) and pass with the .intentTail unit; the summary-line shapes (body chevron, Open control ahead of it, read_file anchor meta) went red-first against the pre-fix production markup the same way (e.g. summary-chevron strands at 492-498px, the open-control shape at 492px+) and pass with the .summaryTail unit - flipping any shape's glue flag back to false is the recorded mutation and strands that shape's glyph at the same binding widths (re-verified for summary-open-control after the fix). The equivalent CSS-only mutation (reverting the tail unit's display:inline-flex to display:inline) strands identically, per the secondaryTail mechanism verified on 2026-09-11 for notification-open-last-line."
   }
 }

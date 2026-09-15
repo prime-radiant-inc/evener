@@ -514,10 +514,28 @@
   overflow-wrap: anywhere;
 }
 
+/* The EXPANDED summary line's twin of .intentTail: its final word and the
+ * glyphs that trail it (the "Open beside" control, the two-level body
+ * chevron) are one atomic unit, so a line that runs out of room moves the
+ * whole unit and neither glyph can wrap to a line by itself. Same shape, a
+ * second name, so each line's markup reads its own vocabulary. */
+.summaryTail {
+  display: inline-flex;
+  align-items: flex-end;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.summaryTailText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* One line box tall, glyph centered in it, so the chevron seats level with
  * the words of the line it shares (see widgets/disclosure's own .chevron for
  * the same 1lh pinning rationale). */
-.intentTail .chevron {
+.intentTail .chevron,
+.summaryTail .chevron {
   height: 1lh;
   align-items: center;
 }

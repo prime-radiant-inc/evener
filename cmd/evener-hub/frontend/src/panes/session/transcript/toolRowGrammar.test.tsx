@@ -39,6 +39,19 @@ function rowCss(): string {
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
+// The text on either side of an inline element within its parent. The
+// expanded anchor glue renders the prefix's final word as its own text node
+// (ToolRow's summaryTail split), so "the control sits between the anchor
+// prefix and the meta" is asserted over the whole run of text around the
+// control, never one sibling node.
+function textAround(el: Element): [before: string, after: string] {
+  let before = "";
+  for (let node = el.previousSibling; node; node = node.previousSibling) before = (node.textContent ?? "") + before;
+  let after = "";
+  for (let node = el.nextSibling; node; node = node.nextSibling) after += node.textContent ?? "";
+  return [before, after];
+}
+
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
@@ -819,9 +832,10 @@ test("trailingAfter on an expanded row splits the full summary around the contro
   // still there, once each, in order around it.
   expect(screen.queryByTestId("tool-row-summary-head")).toBe(null);
   const trailingEl = screen.getByTestId("tool-row-trailing");
-  expect(trailingEl.previousSibling?.textContent).toBe("Read src/a.ts");
-  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-3");
-  expect((trailingEl.previousSibling?.textContent ?? "") + (trailingEl.nextSibling?.textContent ?? "")).toBe(summary);
+  const [before, after] = textAround(trailingEl);
+  expect(before).toBe("Read src/a.ts");
+  expect(after).toBe(" · lines 1-3");
+  expect(before + after).toBe(summary);
 });
 
 test("a trailingAfter anchor NOT present at all in the summary falls back to the end placement", () => {
@@ -948,8 +962,9 @@ test("the complete prefix anchors correctly even when the bare target text recur
     />,
   );
   const trailingEl = screen.getByTestId("tool-row-trailing");
-  expect(trailingEl.previousSibling?.textContent).toBe("Read lines");
-  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-25");
+  const [before, after] = textAround(trailingEl);
+  expect(before).toBe("Read lines");
+  expect(after).toBe(" · lines 1-25");
 });
 
 // Associativity rhythm (Jesse's review call): the gap between a rationale

@@ -33,10 +33,12 @@
 //   - the chevron rides INLINE at the end of the headline text - inside the
 //     intent when there is one, otherwise inside the summary - wrapping with
 //     the words it opens, glued to the final word in an atomic .intentTail
-//     unit so it can never wrap to a line by itself. The intent-only Open
-//     variant is the exception: its valid sibling order is intent, Open,
-//     chevron (never Open beyond the disclosure arrow), with one overlay
-//     trigger owning the whole line;
+//     unit so it can never wrap to a line by itself. The expanded summary
+//     line glues its own trailing glyphs (the "Open beside" control, the
+//     two-level body chevron) the same way, in a .summaryTail unit. The
+//     intent-only Open variant is the exception: its valid sibling order is
+//     intent, Open, chevron (never Open beyond the disclosure arrow), with
+//     one overlay trigger owning the whole line;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the intent is the agent's own stated reason for the call
@@ -75,6 +77,8 @@ const CLASS = {
   intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
   intentTail: requireClass(styles.intentTail, "toolcallitem.module.css", "intentTail"),
   intentTailText: requireClass(styles.intentTailText, "toolcallitem.module.css", "intentTailText"),
+  summaryTail: requireClass(styles.summaryTail, "toolcallitem.module.css", "summaryTail"),
+  summaryTailText: requireClass(styles.summaryTailText, "toolcallitem.module.css", "summaryTailText"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
@@ -164,6 +168,34 @@ function splitTrailingWord(text: string): [leading: string, trailing: string] {
   const leading = match?.[1];
   const trailing = match?.[2];
   return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
+}
+
+/** The expanded summary line's glue: its final word (`word`, split out by
+ * splitTrailingWord from the text the glyphs trail) and the trailing
+ * control/body chevron ride inside ONE atomic .summaryTail unit, so a line
+ * that fills exactly moves the whole unit - never a glyph alone onto a
+ * wrapped line of its own (the same mechanism as the intent line's
+ * .intentTail; see the grammar above and the stylesheet). */
+function SummaryTail({
+  head,
+  word,
+  summaryLink,
+  children,
+}: {
+  head: string;
+  word: string;
+  summaryLink?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <>
+      {linkifySummary(head, summaryLink)}
+      <span className={CLASS.summaryTail}>
+        <span className={CLASS.summaryTailText}>{linkifySummary(word, summaryLink)}</span>
+        {children}
+      </span>
+    </>
+  );
 }
 
 /** The one rule for reading a tool call's stated intent (ItemModel.description):
@@ -500,27 +532,70 @@ export function ToolRow({
           title={hasIntent ? summary : undefined}
         >
           {hasIntent && !expanded ? (
-            clampedSummary
-          ) : anchorSplit !== undefined ? (
+            // Collapsed: the middle-truncating clamp is a nowrap flex line
+            // and the trailing control / body chevron ride it as flex items,
+            // so nothing here can wrap - no glue needed.
             <>
-              {linkifySummary(anchorSplit[0], summaryLink)}
-              <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
-                {trailing}
-              </span>
-              {linkifySummary(anchorSplit[1], summaryLink)}
+              {clampedSummary}
+              {trailing && anchorSplit === undefined ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+              {bodyChevronInline ? bodyChevron : null}
             </>
+          ) : anchorSplit !== undefined ? (
+            // Expanded with the control anchored mid-summary (read_file):
+            // the control trails the file path, whose wrap point always
+            // carries the following meta onto the same line, so it has no
+            // stranding geometry of its own and stays bare; the body chevron
+            // trails the LAST text, so it glues to that segment's final
+            // word. A summary ending at the path itself (a binary read: no
+            // lines meta) puts the control at the end of the text, where it
+            // strands together with the chevron exactly like the plain
+            // variant below - so there the path's final word, the control,
+            // and the chevron are ONE unit.
+            (() => {
+              const [head0, word0] = splitTrailingWord(anchorSplit[0]);
+              const [head1, word1] = splitTrailingWord(anchorSplit[1]);
+              return anchorSplit[1] === "" ? (
+                <SummaryTail head={head0} word={word0} summaryLink={summaryLink}>
+                  <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                    {trailing}
+                  </span>
+                  {bodyChevronInline ? bodyChevron : null}
+                </SummaryTail>
+              ) : (
+                <>
+                  {linkifySummary(head0, summaryLink)}
+                  {linkifySummary(word0, summaryLink)}
+                  <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                    {trailing}
+                  </span>
+                  {bodyChevronInline ? (
+                    <SummaryTail head={head1} word={word1} summaryLink={summaryLink}>
+                      {bodyChevron}
+                    </SummaryTail>
+                  ) : (
+                    linkifySummary(anchorSplit[1], summaryLink)
+                  )}
+                </>
+              );
+            })()
+          ) : hasIntent && (trailing || bodyChevronInline) ? (
+            // Expanded with the glyphs at the end of a plain (wrapping)
+            // summary: glue them to the summary's final word. The
+            // .bodyTrigger overlay button (below) carries the click target;
+            // the chevron span sits inside the pointer-events-none
+            // .summary, so it never double-hits.
+            (() => {
+              const [head, word] = splitTrailingWord(summary);
+              return (
+                <SummaryTail head={head} word={word} summaryLink={summaryLink}>
+                  {trailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+                  {bodyChevronInline ? bodyChevron : null}
+                </SummaryTail>
+              );
+            })()
           ) : (
             linkifySummary(summary, summaryLink)
           )}
-          {hasIntent && trailing && anchorSplit === undefined ? (
-            <span className={CLASS.summaryTrailing}>{trailing}</span>
-          ) : null}
-          {/* The two-level body chevron rides inline at the end of the summary
-              text, after the trailing control - the same end-of-text slot the
-              grammar gives every chevron. The .bodyTrigger overlay button
-              (below) carries the click target; this span sits inside the
-              pointer-events-none .summary, so it never double-hits. */}
-          {bodyChevronInline ? bodyChevron : null}
         </span>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An

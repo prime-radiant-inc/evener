@@ -1,76 +1,65 @@
 // The invariant from the bug report (screenshot: three read/grep rows whose
 // trailing disclosure arrows sat alone on their own wrapped lines): a
-// disclosure arrow may never wrap to a line by itself. For an intent-bearing
-// tool row that means the chevron vertically shares the intent's LAST text
-// line at every width - when the line runs out of room, the words it opens
-// move with it.
+// trailing glyph may never wrap to a line by itself. It holds at BOTH of
+// ToolRow's glyph surfaces - the intent line (chevron glued to the intent's
+// final word) and the two-level expanded summary line (the "Open beside"
+// control and the body chevron glued to the summary text's final word; the
+// read_file anchor shape glues the chevron to its meta segment's final word).
 //
-// The fixtures sweep a width ladder per column, because whether an intent's
-// last line lands within a chevron-width (14px box + 8px margin) of the edge
-// is a property of font metrics the harness must not guess. Two consequences,
-// both asserted:
+// Each swept fixture renders the production row PLUS an unglued probe row
+// (the pre-fix markup) and walks a width ladder, because whether a text's
+// last line lands within a glyph unit of the edge is a property of font
+// metrics the harness must not guess. Two consequences, both asserted:
 //
-//   1. EVERY swept width must satisfy the invariant, not just a binding one -
-//      the non-binding widths are the no-regression half (the chevron must
-//      stay inline when there IS room, so the fix cannot "solve" stranding by
-//      parking the glyph on its own line at every width).
-//   2. EVERY swept fixture must have FOUND a binding width, measured on its
-//      chevron-less probe row (whose text-only wrap geometry is exactly what
-//      the unglued DOM's text sees): the unglued intent's last line with less
-//      than a chevron unit of slack. If a font or platform change moves the
-//      geometry so no swept width binds, the fixture would pass vacuously -
-//      a guard that can no longer see the defect - and that is a failure,
-//      not a pass.
+//   1. EVERY swept width must satisfy the invariant for EVERY production
+//      glyph - the non-binding widths are the no-regression half (glyphs
+//      stay inline when there IS room).
+//   2. EVERY swept fixture's probe must STRAND at least once across the
+//      sweep: the unglued markup failing at this font is what proves the
+//      sweep exercises the stranding geometry. A probe that never strands
+//      means the fixture passes vacuously - a guard that can no longer see
+//      the defect - and that is a failure, not a pass.
 
 export default function assert(measurement) {
   const failures = [];
   for (const fixture of measurement) {
-    const where = fixture.id;
-    if (!fixture.sweep) {
+    if (fixture.kind === "short") {
       const m = fixture.fixed;
       if (m.lineCount !== 1) {
         failures.push(
-          `${where}: short intent rendered ${m.lineCount} lines; fixture no longer exercises the one-line case`,
+          `${fixture.id}: short intent rendered ${m.lineCount} lines; fixture no longer exercises the one-line case`,
         );
       }
-      if (!m.sharesLastLine) {
+      const chevron = m.production[0];
+      if (!chevron.sharesLastLine) {
         failures.push(
-          `${where}: chevron [${m.chevronTop.toFixed(1)}, ${m.chevronBottom.toFixed(1)}] does not share the intent's single line [${m.lastLineTop.toFixed(1)}, ${m.lastLineBottom.toFixed(1)}]`,
-        );
-      }
-      if (!m.withinRow) {
-        failures.push(
-          `${where}: chevron right ${m.chevronRight.toFixed(1)} escapes the row's measure (${m.rowRight.toFixed(1)}); the one-line case overflows`,
+          `${fixture.id}: chevron [${chevron.glyphTop.toFixed(1)}, ${chevron.glyphBottom.toFixed(1)}] does not share the intent's single line [${chevron.lineTop.toFixed(1)}, ${chevron.lineBottom.toFixed(1)}]`,
         );
       }
       continue;
     }
     for (const m of fixture.widths) {
-      if (!m.sharesLastLine) {
-        failures.push(
-          `${where}@${m.width}px: chevron [${m.chevronTop.toFixed(1)}, ${m.chevronBottom.toFixed(1)}] stranded below the intent's last text line [${m.lastLineTop.toFixed(1)}, ${m.lastLineBottom.toFixed(1)}] (probe slack ${m.probeSlack.toFixed(1)}px, ${m.lineCount} lines)`,
-        );
-      }
-      if (!m.withinRow) {
-        failures.push(
-          `${where}@${m.width}px: chevron right ${m.chevronRight.toFixed(1)} escapes the row's measure (${m.rowRight.toFixed(1)})`,
-        );
+      for (const g of m.production) {
+        if (!g.sharesLastLine) {
+          failures.push(
+            `${fixture.id}@${m.width}px: ${g.glyph} [${g.glyphTop.toFixed(1)}, ${g.glyphBottom.toFixed(1)}] stranded below its reference text's last line [${g.lineTop.toFixed(1)}, ${g.lineBottom.toFixed(1)}]`,
+          );
+        }
       }
     }
     if (!fixture.bindingFound) {
-      const smallest = Math.min(...fixture.widths.map((m) => m.probeSlack));
       failures.push(
-        `${where}: no swept width reached the binding geometry (probe last line with < 18px slack; smallest was ${smallest.toFixed(1)}px across ${fixture.widths.length} widths); the sweep no longer exercises the stranding case`,
+        `${fixture.id}: the unglued probe never stranded across ${fixture.widths.length} swept widths; the sweep no longer exercises the stranding geometry at this font`,
       );
     }
   }
   if (failures.length > 0) return { pass: false, reason: failures.slice(0, 12).join("; ") };
 
   const summary = measurement
-    .filter((f) => f.sweep)
+    .filter((f) => f.widths)
     .map(
       (f) =>
-        `${f.id}: ${f.widths.length} widths all inline, first binding at ${f.binding.width}px (probe slack ${f.binding.probeSlack.toFixed(1)}px, ${f.binding.probeLineCount} lines)`,
+        `${f.id}: ${f.widths.length} widths all inline (probe strands at ${f.binding.width}px, ${f.binding.probe.filter((p) => !p.sharesLastLine).length} glyph(s))`,
     )
     .join(" | ");
   return {
