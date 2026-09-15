@@ -65,6 +65,10 @@ var navigationReadV2MissingCaptured = func() {}
 type navigationSourceRevision struct {
 	Inputs uint64
 	Remote uint64
+	// Roster is the roster's listing generation. The watched roster also
+	// invalidates on change; a roster that refreshes on read (a hub with no
+	// roster of its own) has nothing else that would move the revision.
+	Roster uint64
 }
 
 type navigationSourceSnapshot struct {
@@ -1321,6 +1325,9 @@ func (s webNavigationSource) Revision() navigationSourceRevision {
 	}
 	if s.web.cfg.RemoteThreadCache != nil {
 		revision.Remote = s.web.cfg.RemoteThreadCache.Generation()
+	}
+	if s.web.cfg.Roster != nil {
+		revision.Roster = s.web.cfg.Roster.Generation()
 	}
 	return revision
 }

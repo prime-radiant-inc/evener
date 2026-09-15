@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -919,6 +920,64 @@ func TestHubNavigationReadsTheRosterInOneScan(t *testing.T) {
 	}
 	if got := prober.probes.Load(); got != 1 {
 		t.Fatalf("one navigation read ran %d roster scans, want 1", got)
+	}
+}
+
+// A roster-less hub's roster refreshes on read, but navigation caches its
+// snapshot by the source revision, and the roster's listing was not part of
+// that revision: after the first navigation read, a daemon appearing or
+// leaving stayed invisible until something else invalidated. The roster's
+// listing generation is part of the revision, so a plain read sees the
+// change with no other invalidation (review round 14 on #1325).
+func TestHubWithoutRosterNavigationSeesALateDaemonOnThePlainNextRead(t *testing.T) {
+	runDir := t.TempDir()
+	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
+	// The live section renders a roster entry joined with its saved session
+	// meta; the meta is present from the start, the daemon is what appears.
+	web.injectMetasForTest([]schema.SessionMeta{{ID: "late", UpdatedAt: time.Now().UTC()}})
+	live := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	readLiveRefs := func() []string {
+		t.Helper()
+		result, err := web.navigation.readV2(t.Context(), live, nil)
+		if err != nil {
+			t.Fatalf("navigation live read: %v", err)
+		}
+		// The v2 snapshot is normalized: session rows are entities of kind
+		// "session" whose value carries the ref.
+		var snapshot struct {
+			Entities []struct {
+				Kind  string `json:"kind"`
+				Value struct {
+					Ref string `json:"ref"`
+				} `json:"value"`
+			} `json:"entities"`
+		}
+		if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
+			t.Fatalf("decode live section: %v", err)
+		}
+		var refs []string
+		for _, entity := range snapshot.Entities {
+			if entity.Kind == "session" {
+				refs = append(refs, entity.Value.Ref)
+			}
+		}
+		return refs
+	}
+	if refs := readLiveRefs(); len(refs) != 0 {
+		t.Fatalf("live section before any daemon: %v", refs)
+	}
+	_, upstream := newDaemonStandIn(t, "late")
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "late",
+		SessionID: "late",
+	})
+	if refs := readLiveRefs(); len(refs) != 1 || refs[0] != "local:late" {
+		t.Fatalf("live section after the daemon appeared = %v, want [local:late] on a plain read", refs)
 	}
 }
 

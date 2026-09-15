@@ -2011,10 +2011,14 @@ func TestRelaySessionUnconfirmedClaimIsNotGone(t *testing.T) {
 		defer mu.Unlock()
 		return listed
 	})
-	source.SetUnconfirmedEntries(func() []rendezvous.Entry {
+	source.SetClaims(func() LocalDaemonClaims {
 		mu.Lock()
 		defer mu.Unlock()
-		return unconfirmed
+		live := make([]LocalDaemonEntry, 0, len(listed))
+		for _, entry := range listed {
+			live = append(live, LocalDaemonEntry{Entry: entry})
+		}
+		return LocalDaemonClaims{Live: live, Unconfirmed: unconfirmed}
 	})
 	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
 	leaseValue, err := source.acquireRelaySession(params)
@@ -2061,5 +2065,73 @@ func TestRelaySessionUnconfirmedClaimIsNotGone(t *testing.T) {
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("no resync once the claim was gone altogether")
+	}
+}
+
+// The relay decides "gone" from one roster scan. Read as two - the listing,
+// then the unresolved claims - a claim that a probe confirms between the reads
+// is in neither answer, and a live daemon is announced gone (review round 14
+// on #1325). Here the separate reads are made to disagree on purpose while
+// the single snapshot is consistent.
+func TestRelaySessionDecidesGoneFromOneScan(t *testing.T) {
+	entry := relayEntry("thread-1")
+	var offTheList atomic.Bool
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		if offTheList.Load() {
+			return nil // the listing read alone: the claim is momentarily off the list
+		}
+		return []rendezvous.Entry{entry}
+	})
+	source.SetClaims(func() LocalDaemonClaims {
+		// One scan's consistent answer: the claim is live.
+		return LocalDaemonClaims{Live: []LocalDaemonEntry{{Entry: entry}}}
+	})
+	params := appwire.ThreadReadParams{Ref: "local:thread-1", Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	defer lease.Close()
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-1", "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+	offTheList.Store(true)
+	// Recovery's redials reach the fake daemon; answer them so the relay is
+	// never left waiting on a read nobody serves.
+	go func() {
+		for {
+			select {
+			case <-t.Context().Done():
+				return
+			case redial := <-daemon.reads:
+				redial.transport.recv <- appwire.ResponseMessage(redial.request.ID, relaySnapshot("thread-1", "redialled"))
+			}
+		}
+	}()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Recovery redials the live claim (attempts at 0, 100, 300, 700ms).
+	select {
+	case delivery := <-deliveries:
+		if delivery.DaemonGone {
+			t.Fatalf("a live daemon was announced gone: %+v", delivery.Notification)
+		}
+	case <-time.After(1500 * time.Millisecond):
+	}
+	if dials := daemon.dials.Load(); dials < 2 {
+		t.Fatalf("dials = %d, want the live claim redialled", dials)
 	}
 }

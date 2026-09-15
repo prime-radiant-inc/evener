@@ -21,13 +21,14 @@ import (
 type LocalDaemonSource struct {
 	sourceID string
 	entries  func() []LocalDaemonEntry
-	// unconfirmed lists the rendezvous claims the roster holds but has not
-	// confirmed (alive PID, ownership unresolved). They are not routable, and
-	// they are not gone either: a relay whose daemon's claim is still on the
-	// table keeps dialling instead of announcing the session ended.
-	unconfirmed func() []rendezvous.Entry
-	client      *http.Client
-	dial        appwireDialFunc
+	// claims is one roster scan's live entries and unresolved claims together,
+	// read by the relay when it decides whether a daemon is gone. Unresolved
+	// claims are not routable, and they are not gone either: a relay whose
+	// daemon's claim is still on the table keeps dialling instead of
+	// announcing the session ended.
+	claims func() LocalDaemonClaims
+	client *http.Client
+	dial   appwireDialFunc
 
 	itemPagingLocks keyedMutexRegistry
 	itemSnapshots   *itemSnapshotStateCache
@@ -97,11 +98,21 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
 	}, client)
 }
 
-// SetUnconfirmedEntries tells the source which rendezvous claims the roster is
-// still holding unresolved, so the relay can tell "no claim at all" (the
-// daemon is gone) from "claim present, ownership unresolved" (keep dialling).
-func (s *LocalDaemonSource) SetUnconfirmedEntries(unconfirmed func() []rendezvous.Entry) *LocalDaemonSource {
-	s.unconfirmed = unconfirmed
+// LocalDaemonClaims is one roster scan's view of the rendezvous claims: the
+// entries it lists as live and the claims it holds unresolved (alive PID,
+// ownership not yet confirmed). The relay reads both from one scan, so a
+// claim cannot fall between the two reads - listed in neither because a probe
+// succeeded between them - and be announced gone.
+type LocalDaemonClaims struct {
+	Live        []LocalDaemonEntry
+	Unconfirmed []rendezvous.Entry
+}
+
+// SetClaims gives the source the roster's claims as one snapshot, for the
+// relay to tell "no claim at all" (the daemon is gone) from "claim present,
+// ownership unresolved" (keep dialling) without reading twice.
+func (s *LocalDaemonSource) SetClaims(claims func() LocalDaemonClaims) *LocalDaemonSource {
+	s.claims = claims
 	return s
 }
 
@@ -160,10 +171,22 @@ func (s *LocalDaemonSource) ResolveSubscriptionAdmission(params appwire.ThreadRe
 // relayEntry may refresh an endpoint, but a canonical key cannot fall back to
 // a newly reassociated current-ID alias with a different semantic owner.
 func (s *LocalDaemonSource) relayEntry(ref appwire.Ref) (rendezvous.Entry, error) {
-	entry, err := s.entryForReadRef(ref.String(), "")
+	return s.relayEntryAmong(s.liveEntries(), ref)
+}
+
+// relayEntryAmong is relayEntry resolved against one scan's live entries, so
+// the relay's "is the daemon gone" decision and the claims it consults come
+// from the same moment.
+func (s *LocalDaemonSource) relayEntryAmong(live []LocalDaemonEntry, ref appwire.Ref) (rendezvous.Entry, error) {
+	requestedRef, threadID, err := s.acceptRef(ref.String(), "")
 	if err != nil {
 		return rendezvous.Entry{}, err
 	}
+	item, err := s.localEntryAmong(live, requestedRef, threadID, true)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	entry := localDaemonRendezvousEntry(item)
 	canonical, err := s.relaySessionRef(entry)
 	if err != nil {
 		return rendezvous.Entry{}, err
@@ -209,7 +232,11 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 	if session == nil {
 		created := newRelaySession(
 			func(ctx context.Context, epoch uint64, observe func(uint64, appwire.Message, error)) (*appwire.Client, appwire.Transport, error) {
-				currentEntry, resolveErr := s.relayEntry(ref)
+				// One scan decides: the listing and the unresolved claims
+				// read together, so a claim a probe confirms between two
+				// reads cannot be in neither.
+				claims := s.currentClaims()
+				currentEntry, resolveErr := s.relayEntryAmong(claims.Live, ref)
 				if resolveErr != nil {
 					// Only "no claim at all" means the daemon is gone. A
 					// resolver failure on a listed entry (its session moved
@@ -218,7 +245,7 @@ func (s *LocalDaemonSource) AcquireRelaySession(ref appwire.Ref) (RelaySessionRo
 					// unresolved: alive, ownership not yet confirmed, kept off
 					// the listing on purpose while a probe is missed during a
 					// transition. Both keep dialling.
-					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted && !s.unconfirmedClaimNames(ref) {
+					if _, unlisted := errors.AsType[*localDaemonThreadNotFoundError](resolveErr); unlisted && !s.claimNames(claims.Unconfirmed, ref) {
 						return nil, nil, &relayDaemonGoneError{err: resolveErr}
 					}
 					return nil, nil, resolveErr
@@ -1003,18 +1030,38 @@ func (s *LocalDaemonSource) entryForRefMode(rawRef, threadID string, allowReadOn
 }
 
 func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
+	requestedRef, threadID, err := s.acceptRef(rawRef, threadID)
+	if err != nil {
+		return LocalDaemonEntry{}, err
+	}
+	// The inventory is read only for a ref this source can serve: an invalid
+	// or foreign one is refused before the listing is consulted.
+	return s.localEntryAmong(s.liveEntries(), requestedRef, threadID, allowReadOnlyAlias)
+}
+
+// acceptRef parses a requested ref and refuses one this source cannot serve,
+// before any inventory is read. It returns the trimmed ref and the thread id
+// to resolve (the ref's, when a ref is given).
+func (s *LocalDaemonSource) acceptRef(rawRef, threadID string) (string, string, error) {
 	requestedRef := strings.TrimSpace(rawRef)
 	if requestedRef != "" {
 		ref, err := appwire.ParseRef(requestedRef)
 		if err != nil {
-			return LocalDaemonEntry{}, err
+			return "", "", err
 		}
 		if ref.SourceID != s.sourceID {
-			return LocalDaemonEntry{}, fmt.Errorf("source not found: %s", ref.SourceID)
+			return "", "", fmt.Errorf("source not found: %s", ref.SourceID)
 		}
 		threadID = ref.ThreadID
 	}
-	for _, item := range s.liveEntries() {
+	return requestedRef, threadID, nil
+}
+
+// localEntryAmong resolves an accepted ref (or thread id) against the given
+// live entries, the way localEntryForRefMode resolves it against the current
+// listing.
+func (s *LocalDaemonSource) localEntryAmong(live []LocalDaemonEntry, requestedRef, threadID string, allowReadOnlyAlias bool) (LocalDaemonEntry, error) {
+	for _, item := range live {
 		if item.ReadOnlyAlias && !allowReadOnlyAlias {
 			continue
 		}
@@ -1023,6 +1070,17 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 		}
 	}
 	return LocalDaemonEntry{}, &localDaemonThreadNotFoundError{err: appwire.SessionUnavailable("thread not found: " + threadID)}
+}
+
+// currentClaims is one scan's live entries and unresolved claims. Without a
+// claims provider the listing alone is the scan, and nothing is unresolved.
+func (s *LocalDaemonSource) currentClaims() LocalDaemonClaims {
+	if s.claims == nil {
+		return LocalDaemonClaims{Live: s.liveEntries()}
+	}
+	claims := s.claims()
+	claims.Live = s.liveEntriesAmong(s.listedEntriesAmong(claims.Live))
+	return claims
 }
 
 // localEntryNamesRef reports whether an entry is the one a ref (or, without a
@@ -1038,11 +1096,8 @@ func (s *LocalDaemonSource) localEntryNamesRef(item LocalDaemonEntry, requestedR
 
 // unconfirmedClaimNames reports whether a rendezvous claim the roster holds
 // unresolved names the ref: not routable, but not gone either.
-func (s *LocalDaemonSource) unconfirmedClaimNames(ref appwire.Ref) bool {
-	if s.unconfirmed == nil {
-		return false
-	}
-	for _, claim := range s.unconfirmed() {
+func (s *LocalDaemonSource) claimNames(unconfirmed []rendezvous.Entry, ref appwire.Ref) bool {
+	for _, claim := range unconfirmed {
 		if s.localEntryNamesRef(LocalDaemonEntry{Entry: claim}, ref.String(), ref.ThreadID) {
 			return true
 		}
@@ -1060,7 +1115,12 @@ func (e *localDaemonThreadNotFoundError) Error() string { return e.err.Error() }
 func (e *localDaemonThreadNotFoundError) Unwrap() error { return e.err }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
-	entries := s.listedEntries()
+	return s.liveEntriesAmong(s.listedEntries())
+}
+
+// liveEntriesAmong keeps the routable entries of a listing that has already
+// passed listedEntries' filters.
+func (s *LocalDaemonSource) liveEntriesAmong(entries []LocalDaemonEntry) []LocalDaemonEntry {
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
 		if item.Entry.Protocol == appwire.ProtocolVersion && item.Status != appwire.ThreadStatusRestartRequired {
@@ -1076,7 +1136,10 @@ func (s *LocalDaemonSource) listedEntries() []LocalDaemonEntry {
 	if s.entries == nil {
 		return nil
 	}
-	entries := s.entries()
+	return s.listedEntriesAmong(s.entries())
+}
+
+func (s *LocalDaemonSource) listedEntriesAmong(entries []LocalDaemonEntry) []LocalDaemonEntry {
 	out := make([]LocalDaemonEntry, 0, len(entries))
 	for _, item := range entries {
 		entry := item.Entry

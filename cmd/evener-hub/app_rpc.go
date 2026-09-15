@@ -39,47 +39,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 	}
 	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		if roster != nil {
-			live := roster.List()
-			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
-			for _, item := range live {
-				if item.Crashed {
-					continue
-				}
-				entry := appsource.LocalDaemonEntry{
-					Entry:         item.Entry,
-					SessionID:     item.SessionID,
-					Status:        item.Status,
-					PendingAsk:    item.PendingAsk,
-					RunningJobs:   item.RunningJobs,
-					CompletedJobs: item.CompletedJobs,
-					Watches:       item.Watches,
-				}
-				entries = append(entries, entry)
-				// In-process descendants are addressed as their own AppWire
-				// threads, but are served by their owner's daemon endpoint.
-				for _, childID := range item.RunningSubagentIDs {
-					child := entry
-					child.OwnerSessionID = entry.SessionID
-					child.SessionID = childID
-					// The alias carries the child's OWN watches, sampled by
-					// the prober into ChildWatches. Inheriting the root
-					// entry's Watches would put the root's rows on the
-					// child row (and, for a read-only alias, they were
-					// suppressed anyway), losing the child's own.
-					child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
-					// The child's own projected status when the daemon carries
-					// it — inheriting the parent's status would render a
-					// settled delegate as working (or vice versa). "" (old
-					// daemon) keeps the inherited status, the pre-states
-					// behavior.
-					if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-						child.Status = childState
-					}
-					child.ReadOnlyAlias = true
-					entries = append(entries, child)
-				}
-			}
-			return entries
+			return localDaemonEntriesFromRoster(roster.List())
 		}
 		return nil
 	}, http.DefaultClient)
@@ -87,10 +47,59 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 		// The claims the roster holds unresolved are off the listing on
 		// purpose; the relay must still tell them apart from a daemon that
 		// is gone.
-		local.SetUnconfirmedEntries(roster.UnconfirmedEntries)
+		local.SetClaims(func() appsource.LocalDaemonClaims {
+			scan := roster.Snapshot()
+			return appsource.LocalDaemonClaims{Live: localDaemonEntriesFromRoster(scan.Live), Unconfirmed: scan.Unconfirmed}
+		})
 	}
 	registry.Add(local)
 	return registry, cfg
+}
+
+// localDaemonEntriesFromRoster is the local source's view of a roster's live
+// entries: crashed ones skipped, in-process descendants addressed as their own
+// AppWire threads served by their owner's endpoint.
+func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDaemonEntry {
+	entries := make([]appsource.LocalDaemonEntry, 0, len(live))
+	for _, item := range live {
+		if item.Crashed {
+			continue
+		}
+		entry := appsource.LocalDaemonEntry{
+			Entry:         item.Entry,
+			SessionID:     item.SessionID,
+			Status:        item.Status,
+			PendingAsk:    item.PendingAsk,
+			RunningJobs:   item.RunningJobs,
+			CompletedJobs: item.CompletedJobs,
+			Watches:       item.Watches,
+		}
+		entries = append(entries, entry)
+		// In-process descendants are addressed as their own AppWire
+		// threads, but are served by their owner's daemon endpoint.
+		for _, childID := range item.RunningSubagentIDs {
+			child := entry
+			child.OwnerSessionID = entry.SessionID
+			child.SessionID = childID
+			// The alias carries the child's OWN watches, sampled by
+			// the prober into ChildWatches. Inheriting the root
+			// entry's Watches would put the root's rows on the
+			// child row (and, for a read-only alias, they were
+			// suppressed anyway), losing the child's own.
+			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
+			// The child's own projected status when the daemon carries
+			// it — inheriting the parent's status would render a
+			// settled delegate as working (or vice versa). "" (old
+			// daemon) keeps the inherited status, the pre-states
+			// behavior.
+			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
+				child.Status = childState
+			}
+			child.ReadOnlyAlias = true
+			entries = append(entries, child)
+		}
+	}
+	return entries
 }
 
 var (

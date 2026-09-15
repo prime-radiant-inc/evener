@@ -198,6 +198,11 @@ type Roster struct {
 	// would ever bring the snapshot up to date, and every consumer already
 	// reads through these methods.
 	refreshOnRead bool
+	// generation counts the listing changes this roster has published: the
+	// live set, its statuses, the ownership error or the unresolved claims.
+	// Navigation folds it into its source revision, so a roster nothing
+	// invalidates for (one that refreshes on read) still moves the revision.
+	generation uint64
 
 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
 	// been registered on runDir. Nil in production; injected by tests to
@@ -694,6 +699,9 @@ func (r *Roster) refresh() error {
 	r.ownershipErr = nil
 	r.unconfirmed = unconfirmed
 	changed := fp != r.fingerprint || ownershipChanged
+	if changed {
+		r.generation++
+	}
 	r.fingerprint = fp
 	statusChanges := make([]string, 0)
 	for id, cur := range bySess {
@@ -823,6 +831,16 @@ type RosterSnapshot struct {
 	OwnershipError error
 	Live           []LiveEntry
 	Unconfirmed    []rendezvous.Entry
+}
+
+// Generation is the count of listing changes published so far; equal
+// generations mean the listing, statuses, ownership error and unresolved
+// claims are all unchanged.
+func (r *Roster) Generation() uint64 {
+	r.syncForRead()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.generation
 }
 
 // Snapshot is OwnershipError, List and UnconfirmedEntries from a single scan.
@@ -1183,6 +1201,9 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 	}
 	fp := rosterFingerprint(bySess)
 	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
+	if changed {
+		r.generation++
+	}
 	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
 	r.entryPublishedGen[entry.PID] = generation
 	r.fingerprint = fp
