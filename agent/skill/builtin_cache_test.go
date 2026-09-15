@@ -950,3 +950,43 @@ func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyDisappears(t *testing.T) 
 		t.Fatalf("metadata after re-extraction has %d skills, want %d", len(meta), len(skills))
 	}
 }
+
+// A cleaner that removes files but leaves the process directory must not leave
+// an incomplete tree in place.
+func TestEmbeddedSkillsDir_ReExtractsWhenTheProcessCopyIsIncomplete(t *testing.T) {
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	entries, err := os.ReadDir(first)
+	if err != nil {
+		t.Fatalf("read process copy: %v", err)
+	}
+	var removed string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			removed = entry.Name()
+			break
+		}
+	}
+	if removed == "" {
+		t.Fatalf("process copy %q has no skill directories", first)
+	}
+	if err := os.RemoveAll(filepath.Join(first, removed)); err != nil {
+		t.Fatalf("remove skill %q: %v", removed, err)
+	}
+
+	second, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (incomplete copy): %v", err)
+	}
+	if second == first {
+		t.Fatal("reused an incomplete process copy")
+	}
+	if _, err := os.Stat(filepath.Join(second, removed)); err != nil {
+		t.Fatalf("re-extracted copy %q is missing %q: %v", second, removed, err)
+	}
+}

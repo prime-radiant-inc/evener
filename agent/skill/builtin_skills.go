@@ -90,6 +90,13 @@ var (
 // nothing in this package reaps it.
 const processSkillsTempPattern = embeddedSkillsPrefix + "process-*"
 
+// bundledSkillsDigest is the digest of the embedded tree. The embedded content
+// cannot change while the process runs, so it is computed at most once and the
+// process-lifetime copy is validated against it.
+var bundledSkillsDigest = sync.OnceValues(func() (string, error) {
+	return digestSkillsFS(bundled.Skills())
+})
+
 // embeddedProcessSkillsDir returns the process-lifetime private extraction,
 // creating or recreating it as needed. It extracts through the same
 // implementation as ExtractEmbeddedSkills, under its own temp name so the copy
@@ -100,7 +107,14 @@ const processSkillsTempPattern = embeddedSkillsPrefix + "process-*"
 func embeddedProcessSkillsDir() (string, error) {
 	processSkillsMu.Lock()
 	defer processSkillsMu.Unlock()
-	if processSkillsDir != "" && cacheDirExists(processSkillsDir) {
+	digest, err := bundledSkillsDigest()
+	if err != nil {
+		return "", err
+	}
+	// The whole tree is validated, not just its directory: a cleaner that removed
+	// files but left the directory would otherwise be served as an incomplete set
+	// of skills whose cached metadata points at paths that no longer exist.
+	if processSkillsDir != "" && cacheDirUsable(processSkillsDir, digest) {
 		return processSkillsDir, nil
 	}
 	if err := ensureTrustedRoot(os.TempDir()); err != nil {
@@ -486,13 +500,6 @@ func cacheDirUsable(dir, expected string) bool {
 // both ModeDir and ModeSymlink set, so IsDir alone would accept it.
 func dirInfo(info fs.FileInfo) bool {
 	return info.IsDir() && info.Mode()&os.ModeSymlink == 0
-}
-
-// cacheDirExists reports whether dir is still a real directory. It never
-// follows a symlink, so a replaced cache path is not mistaken for the copy.
-func cacheDirExists(dir string) bool {
-	info, err := os.Lstat(dir)
-	return err == nil && dirInfo(info)
 }
 
 // rememberCacheDirLocked records the directory the cache resolved, with the
