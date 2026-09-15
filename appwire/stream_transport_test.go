@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -268,5 +269,157 @@ func TestStreamTransportSendUnblocksOnCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Send did not return after cancellation")
+	}
+}
+
+// blockingWriteStream stalls inside Write until released, so a test can hold the
+// transport's write lock deterministically instead of racing a sleep.
+type blockingWriteStream struct {
+	release chan struct{}
+	mu      sync.Mutex
+	writes  int
+}
+
+func (s *blockingWriteStream) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (s *blockingWriteStream) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	s.mu.Unlock()
+	<-s.release
+	return len(p), nil
+}
+
+func (s *blockingWriteStream) Close() error { return nil }
+
+func (s *blockingWriteStream) waitForWrites(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		got := s.writes
+		s.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("write never started")
+}
+
+// shortWriteStream accepts only part of every write, the way a stream that fails
+// mid-frame behaves.
+type shortWriteStream struct {
+	io.Reader
+	limit int
+}
+
+func (s *shortWriteStream) Write([]byte) (int, error) { return s.limit, nil }
+func (s *shortWriteStream) Close() error              { return nil }
+
+// A send queued behind another stalled write must obey its own context rather
+// than wait for a lock it may never get.
+func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
+	st := &blockingWriteStream{release: make(chan struct{})}
+	tr := NewStreamTransport(st)
+
+	holder := make(chan error, 1)
+	go func() {
+		holder <- tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	}()
+	// Once the first send is inside Write it owns the lock.
+	st.waitForWrites(t, 1)
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	queued := make(chan error, 1)
+	go func() { queued <- tr.Send(queuedCtx, ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`))) }()
+	cancelQueued()
+
+	select {
+	case err := <-queued:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("queued Send err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Send queued on the write lock did not honor its canceled context")
+	}
+
+	close(st.release)
+	<-holder
+}
+
+// A canceled send that never wrote a byte must not tear the stream down for the
+// callers that are still using it.
+func TestStreamTransportCanceledSendLeavesStreamUsable(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close() //nolint:errcheck // test cleanup
+	defer b.Close() //nolint:errcheck // test cleanup
+	tr := NewStreamTransport(b)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := tr.Send(ctx, ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`))); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Send err = %v, want context.Canceled", err)
+	}
+
+	frame, err := marshalWSMessage(ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	if err != nil {
+		t.Fatalf("marshal probe frame: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.Recv(context.Background())
+		done <- err
+	}()
+	if _, err := a.Write(append(frame, '\n')); err != nil {
+		t.Fatalf("write after the canceled Send: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Recv after a canceled Send: %v, want the stream to still work", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream was torn down by a Send that never wrote")
+	}
+}
+
+// An oversize frame leaves its tail on the wire, so the transport poisons
+// itself: a reader that resynchronized would decode the tail as a message.
+func TestStreamTransportOversizeFramePoisons(t *testing.T) {
+	const limit = 64
+	a, b := net.Pipe()
+	t.Cleanup(func() {
+		_ = a.Close()
+		_ = b.Close()
+	})
+	tr := NewStreamTransportWithLimit(b, limit)
+
+	go func() {
+		// An oversize frame with no newline, immediately followed by bytes that
+		// look like a valid frame.
+		_, _ = a.Write(bytes.Repeat([]byte("x"), 4*limit))
+		_, _ = a.Write([]byte("{\"response\":{\"id\":1,\"result\":{}}}\n"))
+	}()
+
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("Recv err = %v, want ErrStreamFrameTooLarge", err)
+	}
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamFrameTooLarge) {
+		t.Fatalf("second Recv err = %v, want the poisoning ErrStreamFrameTooLarge", err)
+	}
+}
+
+// A short write leaves a partial frame on the wire, which cannot be repaired, so
+// every later call must fail rather than write into a desynchronized stream.
+func TestStreamTransportPartialWritePoisons(t *testing.T) {
+	tr := NewStreamTransport(&shortWriteStream{Reader: bytes.NewReader(nil), limit: 4})
+
+	err := tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Send err = %v, want io.ErrShortWrite", err)
+	}
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`))); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("second Send err = %v, want the poisoning io.ErrShortWrite", err)
 	}
 }
