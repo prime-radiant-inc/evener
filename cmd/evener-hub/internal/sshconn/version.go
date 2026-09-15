@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,25 +34,33 @@ const (
 	systemctlListUnitsUser = "systemctl --user list-units --type=service --all --no-legend --plain"
 )
 
-// hubAddr returns the configured hub listen address or the default.
-func (o Options) hubAddr() string {
-	if a := strings.TrimSpace(o.HubAddr); a != "" {
+// explicitHostAddr is the address the operator configured for host: the per-host
+// registry Addr when set, else the manager-wide Options.HubAddr. Empty means the
+// controller was told nothing, and the host must resolve its own address (from
+// hub.toml, else the hub default), so the bridge is left to do exactly that
+// rather than being handed a default that would override the config.
+func explicitHostAddr(o Options, host hostreg.Host) string {
+	if a := strings.TrimSpace(host.Addr); a != "" {
+		return a
+	}
+	return strings.TrimSpace(o.HubAddr)
+}
+
+// hostAddrFor resolves the listen address of host's hub for the restart and
+// health probes: the configured address when there is one, else the hub default.
+// channelArgv passes the same configured address as the bridge's --addr, so the
+// bridge and the probes can never address different ports (a non-default
+// Options.HubAddr with no per-host Addr used to make the probes kill or poll a
+// port the bridge never dialed).
+func hostAddrFor(o Options, host hostreg.Host) string {
+	if a := explicitHostAddr(o, host); a != "" {
 		return a
 	}
 	return defaultHubAddr
 }
 
-// hostAddr returns the listen address of this host's hub: the per-host registry
-// Addr when set, else the manager-wide Options.HubAddr, else the default.
-// channelArgv passes host.Addr as the bridge's --addr, so the restart and health
-// probes must read the same value to address the host's actual hub rather than
-// the controller's default port (a non-default port would otherwise kill the
-// wrong process or poll the wrong service).
 func (m *Manager) hostAddr(host hostreg.Host) string {
-	if a := strings.TrimSpace(host.Addr); a != "" {
-		return a
-	}
-	return m.opts.hubAddr()
+	return hostAddrFor(m.opts, host)
 }
 
 // hubPort extracts the TCP port from a host:port hub address, defaulting to the
@@ -274,13 +283,37 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 			}
 			return err
 		}
+		m.clearPendingRelaunch(host.Name)
 		return nil
 	}
 
 	if err := m.restartBare(ctx, host); err != nil {
 		return err
 	}
-	return m.waitHealthy(ctx, host, expected)
+	if err := m.waitHealthy(ctx, host, expected); err != nil {
+		return err
+	}
+	// A healthy replacement is serving, so any relaunch this Manager recorded for
+	// this host is settled.
+	m.clearPendingRelaunch(host.Name)
+	return nil
+}
+
+// recoverRelaunch retries a bare relaunch a previous restart recorded before it
+// died. It is the recovery half of the ladder: a restart that killed the old hub
+// but left no listener must be completed by the next Ensure, which is what
+// ErrRestart promises. There is no hub to kill here, so it runs the recorded
+// command directly and waits for the expected build to answer.
+func (m *Manager) recoverRelaunch(ctx context.Context, host hostreg.Host, relaunch string) error {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
+	if err != nil {
+		return fmt.Errorf("%w: host %q relaunch recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
+	}
+	if err := m.waitHealthy(ctx, host, m.opts.controllerVersion()); err != nil {
+		return err
+	}
+	m.clearPendingRelaunch(host.Name)
+	return nil
 }
 
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
@@ -293,25 +326,13 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 		return err
 	}
 
-	// `-o command=` (trailing `=`) suppresses the `COMMAND` header line, so the
-	// recovered command line is the process's argv, not the header followed by
-	// it. Real GNU/BSD ps emit the header without the trailing `=`, which is what
-	// made the old invocation relaunch as `nohup COMMAND`.
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+shellQuote(pid)+" -ww -o command="), nil)
-	if err != nil {
-		return fmt.Errorf("%w: host %q ps pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
-	}
-	cmdline := stripPSHeader(string(out))
-	if cmdline == "" {
-		return fmt.Errorf("%w: host %q could not recover argv for pid %s", ErrRestart, host.Name, pid)
-	}
 	// Validate before killing: the process merely holds the hub's port, which a
-	// port collision could make an unrelated service. Only a tokenizable
+	// port collision could make an unrelated service. Only a recovered
 	// `evener hub` invocation whose --addr agrees with the probed port is
 	// restarted; anything else is refused rather than guessed at.
-	argv, err := hubArgvFromCommandLine(cmdline)
+	argv, err := m.recoverHubArgv(ctx, host, pid)
 	if err != nil {
-		return fmt.Errorf("%w: host %q pid %s: %w (command line %q)", ErrRestart, host.Name, pid, err, cmdline)
+		return err
 	}
 	if a, ok := hubAddrFlag(argv); ok && hubPort(a) != port {
 		return fmt.Errorf("%w: host %q pid %s listens on :%s but was launched with --addr %q; refusing to restart it",
@@ -335,6 +356,10 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	}
 
 	relaunch := relaunchCommand(argv, logPath)
+	// Record the relaunch before running it: if it fails, or the hub never comes
+	// up, the next Ensure retries this exact command instead of giving up on a
+	// host that now has no hub. restartHub clears it once health is confirmed.
+	m.setPendingRelaunch(host.Name, relaunch)
 	rout, rerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if rerr != nil {
 		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))
@@ -478,13 +503,79 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 
 // parseHealthVersion reads the running version from a /api/health body. A body
 // that is not the hub's HealthResponse JSON is not usable evidence, so it is
-// reported as absent rather than as whatever the version field decoded to.
+// reported as absent rather than as whatever the version field decoded to. That
+// includes JSON that decodes but carries no version: `{}` or `{"status":"ok"}`
+// from some unrelated listener is not a hub with an empty version, and reading
+// it as one would invent a restart against a non-hub process.
 func parseHealthVersion(out []byte) (string, bool) {
 	var resp hubapi.HealthResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
+	if err := json.Unmarshal(out, &resp); err != nil || resp.Version == "" {
 		return "", false
 	}
 	return resp.Version, true
+}
+
+// recoverHubArgv recovers the argv of pid. It prefers the host's null-delimited
+// /proc/<pid>/cmdline (Linux), the only form that preserves argument boundaries:
+// `ps -o command=` joins argv with single spaces, so a path containing a space
+// would be split and a wrong argv relaunched. Where the null-delimited source is
+// unavailable (macOS), it falls back to ps and refuses a command line whose word
+// boundaries are ambiguous rather than guessing.
+func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
+	if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubArgvRemote(pid)), nil); err == nil && len(out) > 0 {
+		if argv, ok := splitNullArgv(out); ok {
+			if err := validateHubArgv(argv); err != nil {
+				return nil, fmt.Errorf("%w: host %q pid %s: %w", ErrRestart, host.Name, pid, err)
+			}
+			return argv, nil
+		}
+	}
+
+	// `-o command=` (trailing `=`) suppresses the `COMMAND` header line, so the
+	// recovered command line is the process's argv, not the header followed by
+	// it. Real GNU/BSD ps emit the header without the trailing `=`, which is what
+	// made the old invocation relaunch as `nohup COMMAND`.
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+shellQuote(pid)+" -ww -o command="), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: host %q ps pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
+	}
+	cmdline := stripPSHeader(string(out))
+	if cmdline == "" {
+		return nil, fmt.Errorf("%w: host %q could not recover argv for pid %s", ErrRestart, host.Name, pid)
+	}
+	argv, err := hubArgvFromCommandLine(cmdline)
+	if err != nil {
+		return nil, fmt.Errorf("%w: host %q pid %s: %w (command line %q)", ErrRestart, host.Name, pid, err, cmdline)
+	}
+	return argv, nil
+}
+
+// hubArgvRemote builds the remote command that prints pid's argv NUL-separated.
+// It prints nothing and exits 0 when the host has no readable
+// /proc/<pid>/cmdline, so the caller falls back to ps instead of reading an
+// error as an empty argv.
+func hubArgvRemote(pid string) string {
+	p := shellQuote("/proc/" + pid + "/cmdline")
+	return "if [ -r " + p + " ]; then cat " + p + "; fi"
+}
+
+// splitNullArgv parses a NUL-delimited argv. It reports false for anything but a
+// non-empty argv with no empty words: an empty word makes the reconstructed
+// command line ambiguous, so the caller falls back rather than guessing.
+func splitNullArgv(out []byte) ([]string, bool) {
+	out = bytes.TrimRight(out, "\x00")
+	if len(out) == 0 {
+		return nil, false
+	}
+	parts := bytes.Split(out, []byte{0})
+	argv := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if len(p) == 0 {
+			return nil, false
+		}
+		argv = append(argv, string(p))
+	}
+	return argv, true
 }
 
 // hubArgvFromCommandLine recovers the argv of the process whose command line ps
@@ -496,11 +587,20 @@ func hubArgvFromCommandLine(line string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateHubArgv(argv); err != nil {
+		return nil, err
+	}
+	return argv, nil
+}
+
+// validateHubArgv checks that argv is a plausible `evener hub` daemon
+// invocation. It is shared by the exact (null-delimited) and ps paths.
+func validateHubArgv(argv []string) error {
 	if len(argv) == 0 {
-		return nil, errors.New("empty command line")
+		return errors.New("empty command line")
 	}
 	if base := path.Base(argv[0]); base != "evener" {
-		return nil, fmt.Errorf("executable %q is not evener", argv[0])
+		return fmt.Errorf("executable %q is not evener", argv[0])
 	}
 	// The hub subcommand must sit at the actual subcommand position. Matching
 	// "hub" anywhere in argv accepts an unrelated command that merely names it
@@ -509,12 +609,21 @@ func hubArgvFromCommandLine(line string) ([]string, error) {
 	// subcommand, so a later positional (`evener hub attach`, the client) is
 	// not the daemon either.
 	if len(argv) < 2 || argv[1] != "hub" {
-		return nil, fmt.Errorf("argv does not run the hub subcommand at position 1: %q", argv)
+		return fmt.Errorf("argv does not run the hub subcommand at position 1: %q", argv)
 	}
 	if len(argv) > 2 && !strings.HasPrefix(argv[2], "-") {
-		return nil, fmt.Errorf("unexpected positional %q after the hub subcommand", argv[2])
+		return fmt.Errorf("unexpected positional %q after the hub subcommand", argv[2])
 	}
-	return argv, nil
+	// A value's boundary cannot be recovered from a space-joined `ps` line: two
+	// consecutive non-flag words are the signature of a split value (a path with
+	// a space), so refuse rather than relaunch a wrong argv. An exact
+	// (null-delimited) argv never has this shape for a valid invocation.
+	for i := 3; i < len(argv); i++ {
+		if !strings.HasPrefix(argv[i], "-") && !strings.HasPrefix(argv[i-1], "-") {
+			return fmt.Errorf("ambiguous word boundary between %q and %q: a value may contain a space", argv[i-1], argv[i])
+		}
+	}
+	return nil
 }
 
 // tokenizeCommandLine splits a command line recovered from `ps -o command=` into

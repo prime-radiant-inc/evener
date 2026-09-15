@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -139,57 +140,168 @@ func TestEnsureStderrWiredToSink(t *testing.T) {
 	}
 }
 
-func TestEnsureProtocolMismatchShortCircuitsBeforeStart(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	override := map[string][]byte{
-		"launch-check": []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
-	}
-	fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+// TestEnsureProtocolMismatchReachesTheDeployPath proves the High fix: a host
+// whose on-disk binary speaks a different appwire protocol is not refused
+// terminally before the deploy path has run (deploy is over ssh, not appwire).
+// With no deploy configured the outcome is the deploy failure, not a protocol
+// refusal; with one configured the host is upgraded and attaches.
+func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
+	t.Run("no deploy configured does not refuse on protocol", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+		override := map[string][]byte{
+			"launch-check": []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
+		}
+		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
-	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, ErrProtocolIncompatible) {
-		t.Fatalf("err = %v, want ErrProtocolIncompatible", err)
-	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("Start calls = %d, want 0 (refused before bridge)", got)
-	}
+		_, err := m.Ensure(context.Background(), "alpha")
+		if errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("protocol mismatch was refused before the deploy path had its chance: %v", err)
+		}
+		if !errors.Is(err, ErrDeploy) {
+			t.Fatalf("err = %v, want the deploy failure", err)
+		}
+		if got := len(fr.recordedStarts()); got != 0 {
+			t.Fatalf("Start calls = %d, want 0 (no bridge before the upgrade)", got)
+		}
+	})
+
+	t.Run("deploy upgrades a protocol-incompatible host", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, Options{
+			controllerVersionOverride: "newsha",
+			BuildBinary:               writeStageBinary,
+		})
+
+		ch, err := m.Ensure(context.Background(), "alpha")
+		if err != nil {
+			t.Fatalf("Ensure: %v (a protocol-incompatible host must be upgradable over ssh)", err)
+		}
+		if got := ch.Preflight().Version; got != "newsha" {
+			t.Fatalf("channel version = %q, want newsha", got)
+		}
+	})
 }
 
-func TestEnsureProtocolRefusedByRunShortCircuits(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{
-		runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-			if containsToken(argv, "launch-check") {
-				return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
-			}
-			return cannedRun(nil)(context.Background(), argv, nil)
-		},
-		startFn: goodStartFn(t),
-	}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, ErrProtocolIncompatible) {
-		t.Fatalf("err = %v, want ErrProtocolIncompatible", err)
-	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("Start calls = %d, want 0", got)
-	}
+// TestEnsureProtocolRefusedByRunReachesTheDeployPath covers the sibling case:
+// the on-disk binary refuses `launch-check --protocol` outright, so there is no
+// parsed contract at all. That is still a fact about a host reachable over ssh,
+// so the deploy path must run before any refusal.
+func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
+	t.Run("refusal does not short-circuit before the deploy", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+		fr := &fakeRunner{
+			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				if containsToken(argv, "launch-check") {
+					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+				}
+				return cannedRun(nil)(context.Background(), argv, nil)
+			},
+			startFn: goodStartFn(t),
+		}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+		_, err := m.Ensure(context.Background(), "alpha")
+		if errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("protocol refusal short-circuited the deploy path: %v", err)
+		}
+		if !errors.Is(err, ErrDeploy) {
+			t.Fatalf("err = %v, want the deploy failure", err)
+		}
+		if got := len(fr.recordedStarts()); got != 0 {
+			t.Fatalf("Start calls = %d, want 0", got)
+		}
+	})
+
+	t.Run("deploy upgrades a host whose binary refused the protocol", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`unsupported appwire protocol "evener-appwire-v5" (supported "evener-appwire-v4")`), errors.New("exit status 1")
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, Options{
+			controllerVersionOverride: "newsha",
+			BuildBinary:               writeStageBinary,
+		})
+
+		ch, err := m.Ensure(context.Background(), "alpha")
+		if err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+		if got := ch.Preflight().Version; got != "newsha" {
+			t.Fatalf("channel version = %q, want newsha", got)
+		}
+	})
 }
 
-func TestEnsureMissingAPILogFlag(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	override := map[string][]byte{"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`)}
-	fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+// TestEnsureMissingAPILogFlagIsDeployable covers the equal-version case the High
+// finding named: two unstamped dev builds report "dev", so the version match says
+// nothing and the flag check must itself be part of the deploy trigger. Only a
+// deploy that still leaves the flag missing is a terminal refusal.
+func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
+	t.Run("still missing after the deploy is a terminal refusal", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		built := false
+		fr := deployRunner(t,
+			func(int) ([]byte, error) {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+			},
+			func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, Options{
+			controllerVersionOverride: "dev",
+			BuildBinary: func(_ context.Context, _, _, out string) error {
+				built = true
+				return os.WriteFile(out, []byte("bin"), 0o755)
+			},
+		})
 
-	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, ErrLaunchContract) {
-		t.Fatalf("err = %v, want ErrLaunchContract", err)
-	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("Start calls = %d, want 0", got)
-	}
+		_, err := m.Ensure(context.Background(), "alpha")
+		if !errors.Is(err, ErrLaunchContract) {
+			t.Fatalf("err = %v, want ErrLaunchContract", err)
+		}
+		if !built {
+			t.Fatal("the deploy path was never offered before the refusal")
+		}
+		if got := len(fr.recordedStarts()); got != 0 {
+			t.Fatalf("Start calls = %d, want 0", got)
+		}
+	})
+
+	t.Run("deploy that advertises the flag lets the host attach", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, Options{
+			controllerVersionOverride: "dev",
+			BuildBinary:               writeStageBinary,
+		})
+
+		if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+			t.Fatalf("Ensure: %v", err)
+		}
+	})
 }
 
 func TestEnsureInitializeProtocolMismatch(t *testing.T) {

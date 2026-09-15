@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -88,7 +89,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		t.Fatalf("pushed bytes = %q", pushedBytes)
 	}
 
-	wantRemote := "cat > /opt/evener/bin/evener.tmp && chmod +x /opt/evener/bin/evener.tmp && mv /opt/evener/bin/evener.tmp /opt/evener/bin/evener"
+	wantRemote := pushBinaryRemote("/opt/evener/bin/evener")
 	want := rawCommandArgv(m.opts, host, wantRemote)
 	if !equalArgv(pushArgv, want) {
 		t.Fatalf("push argv:\n got %v\nwant %v", pushArgv, want)
@@ -159,7 +160,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	want := "cat > /home/dev/.local/bin/evener.tmp && chmod +x /home/dev/.local/bin/evener.tmp && mv /home/dev/.local/bin/evener.tmp /home/dev/.local/bin/evener"
+	want := pushBinaryRemote("/home/dev/.local/bin/evener")
 	if !strings.Contains(pushJoined, want) {
 		t.Fatalf("push command = %q, want it to contain %q", pushJoined, want)
 	}
@@ -202,8 +203,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellQuote(dir)) {
 		t.Fatalf("test -d does not quote the path with a space: %q", testDirRemote)
 	}
-	tmp := shellQuote(target + deployTempSuffix)
-	wantPush := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", tmp, tmp, tmp, shellQuote(target))
+	wantPush := pushBinaryRemote(target)
 	if !strings.Contains(pushRemote, wantPush) {
 		t.Fatalf("push does not quote the paths:\n got %q\nwant it to contain %q", pushRemote, wantPush)
 	}
@@ -244,10 +244,10 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if !strings.Contains(pushRemote, "cat > "+realPath+".tmp") || !strings.Contains(pushRemote, "mv "+realPath+".tmp "+realPath) {
+	if !strings.Contains(pushRemote, pushBinaryRemote(realPath)) {
 		t.Fatalf("push does not install onto the symlink's real file %q: %q", realPath, pushRemote)
 	}
-	if strings.Contains(pushRemote, "mv "+realPath+".tmp "+link) {
+	if strings.Contains(pushRemote, shellQuote(link)) {
 		t.Fatalf("push replaces the symlink %q instead of its target: %q", link, pushRemote)
 	}
 }
@@ -337,6 +337,32 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("resolver printed %q for a missing path, want nothing", out)
 	}
+
+	// A symlink cycle must fail like ELOOP instead of looping forever: the
+	// unbounded `while [ -L "$p" ]` hung the whole deploy ssh command.
+	cycleA := filepath.Join(root, "cycle-a")
+	cycleB := filepath.Join(root, "cycle-b")
+	if err := os.Symlink(cycleB, cycleA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cycleA, cycleB); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cycleCmd := exec.CommandContext(ctx, "sh", "-c", resolveDeployCommand(cycleA))
+	cycleCmd.Env = env
+	var cycOut bytes.Buffer
+	cycleCmd.Stdout = &cycOut
+	if err := cycleCmd.Run(); err == nil {
+		t.Fatalf("resolver accepted a symlink cycle (stdout %q)", cycOut.String())
+	}
+	if ctx.Err() != nil {
+		t.Fatal("resolver hung on a symlink cycle")
+	}
+	if strings.TrimSpace(cycOut.String()) != "" {
+		t.Fatalf("resolver printed %q for a symlink cycle, want nothing", cycOut.String())
+	}
 }
 
 // TestVerifyBuildSourceRequiresAnEvenerCheckout proves the explicit build source
@@ -374,6 +400,22 @@ func TestVerifyBuildSourceRequiresAnEvenerCheckout(t *testing.T) {
 	if want, _ := filepath.EvalSymlinks(evener); got != want {
 		t.Fatalf("verifyBuildSource = %q, want %q", got, want)
 	}
+
+	// A source reached through a symlinked root must still come back canonical: on
+	// macOS t.TempDir (and /var/folders generally) lives under a symlinked /var,
+	// so callers comparing against EvalSymlinks would otherwise see two spellings
+	// of the same tree.
+	link := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(evener, link); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := verifyBuildSource(link)
+	if err != nil {
+		t.Fatalf("verifyBuildSource(symlinked root): %v", err)
+	}
+	if want, _ := filepath.EvalSymlinks(evener); canonical != want {
+		t.Fatalf("verifyBuildSource(symlinked root) = %q, want canonical %q", canonical, want)
+	}
 }
 
 // TestLocalBuildWithoutBuildSourceFailsClearly proves the production builder
@@ -400,10 +442,18 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(source, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	dist := filepath.Join(source, "cmd", "evener-hub", "frontend", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("built"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	shimDir := t.TempDir()
 	marker := filepath.Join(shimDir, "go-wd")
-	shim := "#!/bin/sh\npwd > " + marker + "\n" +
+	argsMarker := filepath.Join(shimDir, "go-args")
+	shim := "#!/bin/sh\npwd > " + marker + "\nprintf '%s\\n' \"$@\" > " + argsMarker + "\n" +
 		"out=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"-o\" ]; then out=$2; fi; shift; done\n" +
 		"printf fake > \"$out\"\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
@@ -441,6 +491,54 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	want, _ := filepath.EvalSymlinks(source)
 	if strings.TrimSpace(string(got)) != want {
 		t.Fatalf("go build ran in %q, want the configured source %q", strings.TrimSpace(string(got)), want)
+	}
+	args, err := os.ReadFile(argsMarker)
+	if err != nil {
+		t.Fatalf("go build args not recorded: %v", err)
+	}
+	if !strings.Contains("\n"+string(args)+"\n", "\n-a\n") {
+		t.Fatalf("go build did not force a rebuild of the target closure (-a): %q", args)
+	}
+}
+
+// TestLocalBuildRefusesPlaceholderSPA proves the production builder will not
+// deploy a binary that embeds only the tracked frontend placeholder: unlike
+// build-runtime/install, localBuild has no build-web prerequisite, so without
+// this check the host would serve the documented 503 "web app not built" and
+// version auto-match could not detect it (it compares only buildinfo.GitSHA).
+func TestLocalBuildRefusesPlaceholderSPA(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dist := filepath.Join(source, "cmd", "evener-hub", "frontend", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, distPlaceholder), []byte("run make build-web\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	shimDir := t.TempDir()
+	ranMarker := filepath.Join(shimDir, "go-ran")
+	shim := "#!/bin/sh\nprintf ran > " + ranMarker + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+":"+os.Getenv("PATH"))
+
+	err := localBuild(context.Background(), source, "linux", "amd64", filepath.Join(t.TempDir(), "evener"))
+	if err == nil {
+		t.Fatal("localBuild succeeded with only the placeholder SPA")
+	}
+	if !strings.Contains(err.Error(), "build-web") {
+		t.Fatalf("error does not tell the operator to run build-web: %v", err)
+	}
+	if _, statErr := os.Stat(ranMarker); statErr == nil {
+		t.Fatal("go build ran despite the placeholder SPA")
 	}
 }
 

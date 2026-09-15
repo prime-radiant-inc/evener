@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -143,10 +144,19 @@ func TestHubPort(t *testing.T) {
 func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	buildCalled := false
-	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	// A stamped controller and host carry a comparable identity; the identity-less
+	// "dev" case is covered by TestEnsureDevBuildDeploysOncePerManager.
+	fr := &fakeRunner{
+		runFn: cannedRun(map[string][]byte{
+			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`),
+		}),
+		startFn: goodStartFn(t),
+	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		controllerVersionOverride: "dev", // cannedRun reports host version "dev"
+		controllerVersionOverride: "newsha",
 		BuildBinary:               func(context.Context, string, string, string) error { buildCalled = true; return nil },
+		// cannedRun's default answers fail the /api/health probe, so the running
+		// hub is unknown; a matching on-disk build still attaches.
 	})
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
@@ -1251,5 +1261,336 @@ func TestEnsureNoRestartWhenNoHubAnswersTheProbe(t *testing.T) {
 				t.Fatalf("an unanswerable probe invented a restart: %v", argv)
 			}
 		}
+	}
+}
+
+// TestParseHealthVersionRejectsBodyWithoutVersion pins the honest known/unknown
+// rule: JSON that decodes but carries no version is not a hub with an empty
+// version, and reading it as one would fire a restart against some unrelated
+// listener that merely speaks JSON.
+func TestParseHealthVersionRejectsBodyWithoutVersion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"hub body", `{"status":"ok","version":"newsha"}`, "newsha", true},
+		{"empty object", `{}`, "", false},
+		{"status only", `{"status":"ok"}`, "", false},
+		{"null", `null`, "", false},
+		{"not json", `<html>nope</html>`, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseHealthVersion([]byte(tc.in))
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("parseHealthVersion(%q) = (%q,%v), want (%q,%v)", tc.in, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestEnsureDevBuildDeploysOncePerManager pins the dev-identity rule: "dev" is not
+// an identity, so an unstamped controller cannot prove an unstamped host matches.
+// With a deploy configured it installs its own build once, then trusts the host
+// for this process's lifetime instead of rebuilding on every reconnect.
+func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	builds := 0
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			builds++
+			return os.WriteFile(out, []byte("bin"), 0o755)
+		},
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 1: %v", err)
+	}
+	if builds != 1 {
+		t.Fatalf("builds after first Ensure = %d, want 1 (a dev host cannot prove it matches)", builds)
+	}
+
+	// The next Ensure (after a dropped link) must not rebuild or restart again.
+	ch.markLost()
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure 2: %v", err)
+	}
+	if builds != 1 {
+		t.Fatalf("builds after second Ensure = %d, want 1 (the dev build is already installed)", builds)
+	}
+}
+
+// TestEnsureRestartRecoveryRetriesRelaunch pins High #2: a bare restart that kills
+// the old hub and fails to relaunch leaves the host with no listener. The next
+// Ensure must complete the recorded relaunch, which is what ErrRestart promises.
+func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	launchCalls, relaunches, killCalls := 0, 0, 0
+	var relaunchCommands []string
+
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor: the bare-process path
+		case strings.Contains(joined, "lsof -ti :9180"):
+			if killCalls == 0 {
+				return []byte("4242\n"), nil
+			}
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killCalls++
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunches++
+			relaunchCommands = append(relaunchCommands, joined)
+			if relaunches == 1 {
+				return []byte("nohup: failed"), errors.New("exit status 1")
+			}
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			// Nothing answers until the recovered relaunch has actually started
+			// the deployed hub.
+			if relaunches < 2 {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(`{"version":"newsha"}`), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the relaunch failed)", err)
+	}
+	if relaunches != 1 {
+		t.Fatalf("relaunches after failed restart = %d, want 1", relaunches)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 2: %v (the next Ensure must retry the recorded relaunch)", err)
+	}
+	if relaunches != 2 {
+		t.Fatalf("relaunches after recovery = %d, want 2", relaunches)
+	}
+	if len(relaunchCommands) != 2 || relaunchCommands[0] != relaunchCommands[1] {
+		t.Fatalf("recovery did not retry the recorded relaunch: %v", relaunchCommands)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel version = %q, want newsha", got)
+	}
+}
+
+// TestRestartBarePrefersNullDelimitedArgv proves restartBare recovers an exact
+// argv from /proc/<pid>/cmdline when the host provides it, so an argument
+// containing a space survives intact instead of being split by a space-joined ps
+// line.
+func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	killed := false
+	var relaunchArgv []string
+	exactArgv := []string{"/opt/evener/bin/evener", "hub", "-addr", "127.0.0.1:9180", "-config", "/opt/my hub.toml"}
+
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/proc/4242/cmdline"):
+			return []byte(strings.Join(exactArgv, "\x00") + "\x00"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunchArgv = append([]string(nil), argv...)
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host); err != nil {
+		t.Fatalf("restartBare: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "-ww -o ") {
+			t.Fatalf("restartBare fell back to space-joined ps despite a readable /proc: %v", argv)
+		}
+	}
+	want := relaunchCommand(exactArgv, "")
+	found := false
+	for _, a := range relaunchArgv {
+		if a == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("relaunch did not preserve the exact argv %v: %v", exactArgv, relaunchArgv)
+	}
+	if !strings.Contains(want, shellQuote("/opt/my hub.toml")) {
+		t.Fatalf("relaunch lost the argument boundary: %q", want)
+	}
+}
+
+// TestRestartBareRefusesAmbiguousSplitValue proves the ps fallback refuses a
+// command line whose word boundaries cannot be recovered (a value containing a
+// space) instead of killing a process and relaunching it with a wrong argv.
+func TestRestartBareRefusesAmbiguousSplitValue(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/proc/4242/cmdline"):
+			return nil, errors.New("exit status 1") // no /proc on this host
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -config /opt/my hub.toml\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host)
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for an ambiguous command line", err)
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("error does not explain the ambiguity: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+			t.Fatalf("ambiguous process was still killed: %v", argv)
+		}
+	}
+}
+
+// TestChannelArgvAndProbesShareHostAddrResolution proves the bridge and the
+// restart/health probes resolve the host's listen address the same way, so a
+// manager-wide Options.HubAddr with no per-host Addr cannot make the probes
+// address a different port than the bridge dials.
+func TestChannelArgvAndProbesShareHostAddrResolution(t *testing.T) {
+	opts := Options{HubAddr: "127.0.0.1:9999"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, opts)
+
+	if got := m.hostAddr(host); got != "127.0.0.1:9999" {
+		t.Fatalf("hostAddr = %q, want the manager-wide HubAddr", got)
+	}
+	argv := channelArgv(opts, host)
+	idx := slices.Index(argv, "--addr")
+	if idx < 0 || idx+1 >= len(argv) || argv[idx+1] != "127.0.0.1:9999" {
+		t.Fatalf("bridge argv does not carry the resolved addr: %v", argv)
+	}
+
+	host.Addr = "127.0.0.1:9998"
+	if got := m.hostAddr(host); got != "127.0.0.1:9998" {
+		t.Fatalf("hostAddr = %q, want the per-host Addr", got)
+	}
+	argv = channelArgv(opts, host)
+	if idx = slices.Index(argv, "--addr"); idx < 0 || argv[idx+1] != "127.0.0.1:9998" {
+		t.Fatalf("bridge argv does not carry the per-host addr: %v", argv)
+	}
+
+	// With nothing configured the bridge must be left to resolve the host's own
+	// hub.toml address: a default passed here would override it. The probes still
+	// have to address something, so they fall back to the hub default.
+	host.Addr = ""
+	if got := hostAddrFor(Options{}, host); got != defaultHubAddr {
+		t.Fatalf("hostAddrFor = %q, want the hub default with nothing configured", got)
+	}
+	if slices.Contains(channelArgv(Options{}, host), "--addr") {
+		t.Fatalf("bridge argv forces a default addr, overriding the host's config: %v", channelArgv(Options{}, host))
+	}
+}
+
+// TestEnsureDeployPhaseHasItsOwnBudget proves a cold cross-compile is not killed
+// by attemptLimit, which bounds only preflight: the deploy phase runs under its
+// own, longer deployLimit. Before the fix the whole ensure sequence shared
+// attemptLimit (70s by default) and a slower build failed with a context-deadline
+// error.
+func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		attemptTimeout:            50 * time.Millisecond,
+		deployTimeout:             2 * time.Second,
+		BuildBinary: func(ctx context.Context, _, _, out string) error {
+			// Longer than attemptLimit would have allowed, but within deployLimit.
+			select {
+			case <-time.After(200 * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return os.WriteFile(out, []byte("bin"), 0o755)
+		},
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v (a build longer than attemptLimit must still fit the deploy budget)", err)
 	}
 }

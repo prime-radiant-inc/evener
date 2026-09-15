@@ -3,6 +3,8 @@ package sshconn
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -16,7 +18,8 @@ import (
 //
 // It is gated by BOTH EVENER_SSH_E2E=1 and EVENER_SSH_E2E_HOST so default
 // `make test` performs no ssh and needs no host, and it skips under -short. Set
-// EVENER_SSH_E2E_EVENER_PATH to exercise a specific install path.
+// EVENER_SSH_E2E_EVENER_PATH to exercise a specific install path, and
+// EVENER_SSH_E2E_BUILD_SOURCE to build from a checkout other than this one.
 func TestLiveSSHAttachE2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live SSH test under -short")
@@ -38,7 +41,16 @@ func TestLiveSSHAttachE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
-	m := New(reg, Options{Logger: t.Logf})
+	// The deploy path needs an explicit BuildSource; without it localBuild fails
+	// closed, so a version-differing host would abort instead of upgrading. Default
+	// to this test file's own checkout (four directories up).
+	source := os.Getenv("EVENER_SSH_E2E_BUILD_SOURCE")
+	if source == "" {
+		if _, file, _, ok := runtime.Caller(0); ok {
+			source = filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+		}
+	}
+	m := New(reg, Options{Logger: t.Logf, BuildSource: source})
 	defer func() { _ = m.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

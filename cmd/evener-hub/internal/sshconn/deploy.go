@@ -20,23 +20,35 @@ import (
 // buildinfo.Version().
 const buildinfoPkg = "primeradiant.com/evener/buildinfo"
 
-// deployTempSuffix is appended to the install path to form the temp name the
-// push writes before the atomic mv. Deploys are serialized per host by the
-// manager's per-host lock, so a fixed suffix cannot collide.
-const deployTempSuffix = ".tmp"
+// deployTempSuffix precedes the mktemp XXXXXX template that names the file the
+// push writes before the atomic mv. A fresh name is created atomically on the
+// host for every push, so two managers deploying the same host cannot interleave
+// writes and mv over one another; the per-host lock alone could not guarantee
+// that across processes.
+const deployTempSuffix = ".tmp."
 
 // localBuild is the production cross-compile seam. source is the explicit
 // evener checkout to build from (Options.BuildSource); it is verified before
 // use, so an unset or wrong source is a clear error rather than a build of
 // whatever tree is nearby. It runs the same command shape make build-linux uses
-// (make/building.mk:42) and stamps this process's own buildinfo values so the
-// deployed binary reports the controller's exact version.
+// (make/building.mk:42), including `-a` so the embedded files (the frontend dist
+// among them) are re-read from disk, and stamps this process's own buildinfo
+// values so the deployed binary reports the controller's exact version.
+//
+// Unlike every runtime build target, it does not inherit build-web as a
+// prerequisite (make/building.mk:32,124), so it verifies the embedded SPA was
+// actually built before compiling: otherwise the deployed binary would embed the
+// tracked placeholder and serve the documented 503, and version auto-match could
+// not detect it because it compares only buildinfo.GitSHA.
 func localBuild(ctx context.Context, source, goos, goarch, out string) error {
 	root, err := verifyBuildSource(source)
 	if err != nil {
 		return fmt.Errorf("go build %s/%s: %w", goos, goarch, err)
 	}
-	cmd := exec.CommandContext(ctx, "go", "build", "-ldflags", buildLdflags(), "-o", out, "./cmd/evener/")
+	if err := ensureWebBuilt(root); err != nil {
+		return fmt.Errorf("go build %s/%s: %w", goos, goarch, err)
+	}
+	cmd := exec.CommandContext(ctx, "go", "build", "-a", "-ldflags", buildLdflags(), "-o", out, "./cmd/evener/")
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
 		"GOOS="+goos,
@@ -48,6 +60,31 @@ func localBuild(ctx context.Context, source, goos, goarch, out string) error {
 		return fmt.Errorf("go build %s/%s: %w: %s", goos, goarch, err, tail(outBytes))
 	}
 	return nil
+}
+
+// frontendDist is the directory cmd/evener-hub embeds with go:embed.
+const frontendDist = "cmd/evener-hub/frontend/dist"
+
+// distPlaceholder is the only file a failed or never-run `make build-web` leaves
+// in the dist directory (frontend/scripts/clean-dist.mjs, vite.config.ts).
+const distPlaceholder = "PLACEHOLDER"
+
+// ensureWebBuilt refuses to build when the embedded SPA is still only the
+// tracked placeholder: the deployed binary would serve the documented 503
+// instead of the web UI, and nothing downstream can detect that. A built dist
+// always carries at least one entry besides PLACEHOLDER.
+func ensureWebBuilt(root string) error {
+	dist := filepath.Join(root, filepath.FromSlash(frontendDist))
+	entries, err := os.ReadDir(dist)
+	if err != nil {
+		return fmt.Errorf("web UI not built: %w (run `make build-web` in %s)", err, root)
+	}
+	for _, e := range entries {
+		if e.Name() != distPlaceholder {
+			return nil
+		}
+	}
+	return fmt.Errorf("web UI not built: %s holds only the placeholder (run `make build-web` in %s)", dist, root)
 }
 
 // buildLdflags renders the -X flags that carry this process's buildinfo into
@@ -82,6 +119,13 @@ func verifyBuildSource(source string) (string, error) {
 		return "", errors.New("no build source configured: set Options.BuildSource to the evener checkout's module root (an installed hub cannot locate its own source)")
 	}
 	abs, err := filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("build source %q: %w", source, err)
+	}
+	// Canonicalize: on macOS t.TempDir (and /var/folders generally) lives under a
+	// symlinked /var, and a caller comparing this against EvalSymlinks would
+	// otherwise see two spellings of the same tree.
+	abs, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("build source %q: %w", source, err)
 	}
@@ -179,10 +223,14 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 // illegal option -- f`, so every darwin/arm64 deploy failed at path resolution.
 // It prints nothing and exits nonzero when the path does not resolve to an
 // existing file, which the caller reads as a clear error rather than a silent
-// fallback to the symlink.
+// fallback to the symlink. The traversal is bounded so a symlink cycle returns
+// nonzero like ELOOP instead of looping until the ssh command times out.
 const resolvePathScript = `evener_resolve() {
   p=$1
+  n=0
   while [ -L "$p" ]; do
+    n=$((n+1))
+    [ "$n" -le 40 ] || return 1
     d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
     t=$(readlink "$p") || return 1
     case $t in
@@ -221,13 +269,20 @@ func (m *Manager) resolveDeployTarget(ctx context.Context, host hostreg.Host, p 
 	return resolved, nil
 }
 
+// pushBinaryRemote builds the remote command that installs a pushed binary: it
+// creates a unique temp name with mktemp (atomic, and unique across manager
+// processes), streams the binary into it, marks it executable, and mv's it into
+// place. The temp-then-mv makes the install atomic: an interrupted push never
+// leaves a truncated evener at the final path.
+func pushBinaryRemote(target string) string {
+	tmp := "tmp=$(mktemp " + shellQuote(target+deployTempSuffix+"XXXXXX") + ") || exit 1"
+	return tmp + "; cat > \"$tmp\" && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
+}
+
 // pushBinary streams data to target over an ssh `cat`, then chmod +x and mv it
-// into place. The temp-then-mv makes the install atomic: an interrupted push
-// never leaves a truncated evener at the final path. Feeding the binary on the
-// Runner.Run stdin keeps argv[0] == "ssh".
+// into place. Feeding the binary on the Runner.Run stdin keeps argv[0] == "ssh".
 func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target string, data io.Reader) error {
-	tmp := target + deployTempSuffix
-	remote := fmt.Sprintf("cat > %s && chmod +x %s && mv %s %s", shellQuote(tmp), shellQuote(tmp), shellQuote(tmp), shellQuote(target))
+	remote := pushBinaryRemote(target)
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), data)
 	if err != nil {
 		return fmt.Errorf("%w: host %q push %s: %w: %s", ErrDeploy, host.Name, target, err, tail(out))

@@ -260,16 +260,19 @@ func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 //	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
 //	    [--config <path>] [--addr <addr>]
 //
-// The optional flags carry the host's own hub.toml and listen address. Without
-// them the bridge resolves defaults, so it would miss the host's token and
-// socket or address the wrong process (hostreg's EvenerPath/ConfigPath/Addr
-// docs; spec 04's corrected argv contract).
+// The optional flags carry the host's own hub.toml and the address the operator
+// configured for it (per-host Addr, else Options.HubAddr). Passing --addr from
+// the same resolution the restart and health probes use is what keeps a
+// manager-wide HubAddr from making the bridge dial a different port than the
+// probes address; with nothing configured the flag is omitted so the host
+// resolves its own hub.toml address (hostreg's EvenerPath/ConfigPath/Addr docs;
+// spec 04's corrected argv contract).
 func channelArgv(o Options, h hostreg.Host) []string {
 	args := []string{"hub", "attach", "--stdio"}
 	if p := strings.TrimSpace(h.ConfigPath); p != "" {
 		args = append(args, "--config", p)
 	}
-	if a := strings.TrimSpace(h.Addr); a != "" {
+	if a := explicitHostAddr(o, h); a != "" {
 		args = append(args, "--addr", a)
 	}
 	return evenerCommandArgv(o, h, args...)

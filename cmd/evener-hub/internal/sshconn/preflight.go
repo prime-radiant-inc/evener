@@ -35,6 +35,11 @@ type Preflight struct {
 	Version      string
 	Protocol     string
 	LaunchFlags  []string
+	// LaunchCheckKnown is true when the on-disk binary answered
+	// `launch-check --json` with a contract. It is false when the binary refused
+	// the controller's appwire protocol outright, in which case Protocol,
+	// Version, and LaunchFlags carry no information and must be read as unknown.
+	LaunchCheckKnown bool
 }
 
 // osArchTargetsSupported reports whether a build ships for this target. Only
@@ -184,18 +189,26 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 
 	lc, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
+		if errors.Is(err, ErrProtocolIncompatible) {
+			// The on-disk binary refused the controller's appwire protocol, so
+			// there is no contract to read. That is a fact about the binary, not
+			// a fatal preflight: ensureOnce must be able to deploy a matching
+			// build over ssh (which does not use appwire) before any protocol
+			// refusal is made terminal. Record the contract as unknown and let
+			// the decision ladder choose the deploy path.
+			return pf, nil
+		}
 		return pf, err
 	}
+	pf.LaunchCheckKnown = true
 	pf.Protocol = lc.Protocol
 	pf.Version = lc.Version
 	pf.LaunchFlags = append([]string(nil), lc.LaunchFlags...)
-	if lc.Protocol != appwire.ProtocolVersion {
-		return pf, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, lc.Protocol, appwire.ProtocolVersion)
-	}
-	// The launch-flag contract is enforced by ensureOnce *after* version
-	// auto-match, not here: a 04a-era host binary missing a required flag must be
-	// given the chance to be upgraded by the version-match deploy before it is
-	// refused, otherwise it is permanently rejected and no deploy can ever fix it.
+	// Neither the protocol nor the launch-flag contract is refused here. Both are
+	// judged by ensureOnce *after* the deploy path has had its chance: a 04a-era
+	// host binary missing a required flag, or speaking an older appwire protocol,
+	// must be upgradable by the version-match deploy before it is refused.
+	// Otherwise it is permanently rejected and no deploy can ever fix it.
 	return pf, nil
 }
 

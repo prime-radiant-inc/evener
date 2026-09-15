@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,8 +105,10 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
-	// HubAddr is the host hub's loopback listen address, used by the restart
-	// path to find the old pid and probe /api/health. Default 127.0.0.1:9180.
+	// HubAddr is the host hub's loopback listen address, used as this host's
+	// --addr for the bridge and by the restart path to find the old pid and probe
+	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
+	// address different ports. Default 127.0.0.1:9180.
 	HubAddr string
 
 	// Test seams.
@@ -113,6 +116,7 @@ type Options struct {
 	jitter                    func(time.Duration) time.Duration
 	initializeTimeout         time.Duration
 	attemptTimeout            time.Duration
+	deployTimeout             time.Duration
 	controllerVersionOverride string
 }
 
@@ -175,16 +179,29 @@ func (o Options) initTimeout() time.Duration {
 	return 30 * time.Second
 }
 
-// attemptTimeout bounds one reconnect attempt (preflight plus attach). Without
-// it an attempt inherits baseCtx, which lives until Close, so a single remote
+// attemptLimit bounds the preflight phase of one ensureOnce attempt. Without it
+// an attempt inherits a context that lives until Close, so a single remote
 // command that never returns would hold the host's lock indefinitely and stall
 // every later reconnect and Ensure for that host. The default covers four
-// preflight round trips plus the attach handshake.
+// preflight round trips. It deliberately does NOT bound the deploy/restart
+// phase, which has its own, longer deployLimit: a cold cross-compile can take
+// minutes and must not be killed by a budget tuned to preflight.
 func (o Options) attemptLimit() time.Duration {
 	if o.attemptTimeout > 0 {
 		return o.attemptTimeout
 	}
 	return 4*o.connectTimeout() + o.initTimeout()
+}
+
+// deployLimit bounds the deploy and restart phases of one ensureOnce. They are
+// slower than preflight by nature (a cold `go build -a` cross-compile, the
+// restart stop/health waits), so they get their own budget rather than sharing
+// attemptLimit.
+func (o Options) deployLimit() time.Duration {
+	if o.deployTimeout > 0 {
+		return o.deployTimeout
+	}
+	return 10 * time.Minute
 }
 
 func (o Options) waitSleep(ctx context.Context, d time.Duration) error {
@@ -225,6 +242,14 @@ type Manager struct {
 	closed bool
 	locks  map[string]*sync.Mutex
 	chans  map[string]*Channel
+	// devDeployed records hosts this Manager has installed its own identity-less
+	// dev build on, so the deploy happens at most once per process rather than on
+	// every reconnect.
+	devDeployed map[string]bool
+	// pendingRelaunch records, per host, the bare relaunch command a restart
+	// recorded before it ran. A restart that killed the old hub and left no
+	// listener leaves this set, and the next Ensure retries it.
+	pendingRelaunches map[string]string
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -232,13 +257,15 @@ type Manager struct {
 func New(reg *hostreg.Registry, opts Options) *Manager {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		reg:     reg,
-		opts:    opts,
-		runner:  opts.runner(),
-		baseCtx: baseCtx,
-		cancel:  cancel,
-		locks:   map[string]*sync.Mutex{},
-		chans:   map[string]*Channel{},
+		reg:               reg,
+		opts:              opts,
+		runner:            opts.runner(),
+		baseCtx:           baseCtx,
+		cancel:            cancel,
+		locks:             map[string]*sync.Mutex{},
+		chans:             map[string]*Channel{},
+		devDeployed:       map[string]bool{},
+		pendingRelaunches: map[string]string{},
 	}
 }
 
@@ -286,16 +313,10 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// supervisor must still find the channel mapped so it can run the reconnect
 	// loop. Only a successful publish retires it.
 	stale := m.currentChannel(name)
-	// Bound the first attach when the caller set no deadline of its own: without
-	// it, a hung remote command holds this host's lock for good, exactly as it
-	// would on the reconnect path (attemptLimit).
-	attachCtx := ctx
-	cancel := func() {}
-	if _, ok := ctx.Deadline(); !ok {
-		attachCtx, cancel = context.WithTimeout(ctx, m.opts.attemptLimit())
-	}
-	ch, err := m.ensureOnce(attachCtx, host)
-	cancel()
+	// ensureOnce bounds each of its phases itself (preflight, deploy/restart,
+	// then the attach handshake), so a hung remote command still cannot hold this
+	// host's lock for good without an outer deadline.
+	ch, err := m.ensureOnce(ctx, host)
 	if err != nil {
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
@@ -371,67 +392,134 @@ func (m *Manager) Close() error {
 	return first
 }
 
-// ensureOnce runs one full preflight-then-attach sequence with the state
-// transitions around it. When the host's evener build differs from the
-// controller's — whether on disk or in the hub that is actually running — it
-// deploys the matching build (only when the on-disk binary differs) and restarts
-// the host hub before attaching.
+// ensureOnce runs one full preflight-then-decide-then-attach sequence with the
+// state transitions around it. Every branch is chosen by the one decision table
+// in ensureDecision; this function owns only the ordering and the recovery.
+//
+// The ladder guarantees three things the ad-hoc gates did not:
+//   - one probe pass, with every fact recorded as known or unknown honestly;
+//   - the deploy path is offered to every host before any terminal refusal, so a
+//     protocol-broken or flag-less host can still be upgraded over ssh;
+//   - a deploy or restart that leaves the host without a listener is retried by
+//     the next Ensure, matching ErrRestart's stated contract.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, error) {
 	m.stateEvent(host.Name, StatePreflighting)
-	facts, err := m.preflight(ctx, host)
+	// Bound only the preflight here: deploy/restart below get deployLimit, and
+	// attach bounds its own handshake (initTimeout).
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, m.opts.attemptLimit())
+	facts, err := m.preflight(preflightCtx, host)
+	cancelPreflight()
 	if err != nil {
 		return nil, err
 	}
+
 	expected := m.opts.controllerVersion()
-	// Version auto-match must key off the hub that is actually RUNNING, not the
-	// binary on disk. A deploy writes the new binary before the restart is
-	// attempted, so a transient restart failure (no polkit, an ambiguous unit
-	// listing, a bare-relaunch failure) leaves the old process serving while the
-	// on-disk launch-check already matches; gating on disk would then skip the
-	// deploy/restart branch forever and attach to a stale hub, silently losing
-	// the guarantee that the attached runtime matches the controller. The
-	// running version comes from the hub's own /api/health.
-	//
-	// When nothing answers the probe there is no running hub to judge, so no
-	// restart is invented here: an on-disk mismatch still drives its own
-	// deploy/restart, and otherwise ensureOnce attaches as before and lets the
-	// existing attach failure/retry behavior apply.
-	running, runningKnown := m.probeHubVersion(ctx, host)
-	if facts.Version != expected || (runningKnown && running != expected) {
-		// Deploy only when the on-disk binary also differs: a restart left
-		// pending by an earlier failed attempt already installed this build, so
-		// re-cross-compiling on every reconnect would be a needless build.
-		if facts.Version != expected {
-			m.stateEvent(host.Name, StateDeploying)
-			if err := m.deploy(ctx, host, facts); err != nil {
-				return nil, err
-			}
-		}
-		m.stateEvent(host.Name, StateRestarting)
-		if err := m.restartHub(ctx, host, facts); err != nil {
-			return nil, err
-		}
-		// Preflight read the on-disk binary's version; the running hub now serves
-		// the deployed build. Record that so the attached channel (and callers of
-		// Channel.Preflight) report the version actually running, not the
-		// pre-deploy one.
-		//
-		// Re-probe the launch flags for the same reason: the flag gate below must
-		// judge the deployed binary, not the one this deploy just replaced, or a
-		// host predating a required flag could never be upgraded to a build that
-		// advertises it.
-		refreshed, err := m.probeLaunchCheck(ctx, host)
+	// One probe of the hub that is actually RUNNING. ok is false when nothing
+	// answered or the body was not a hub health response: an unknown fact, never
+	// a hub with an empty version.
+	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
+	running, runningKnown := m.probeHubVersion(probeCtx, host)
+	cancelProbe()
+	if runningKnown && running == expected {
+		// A hub already serving exactly the expected build resolves whatever an
+		// earlier restart left outstanding; do not launch a second hub over it.
+		m.clearPendingRelaunch(host.Name)
+	}
+
+	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown)
+	if deploy {
+		m.stateEvent(host.Name, StateDeploying)
+		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
+		err := m.deploy(deployCtx, host, facts)
+		cancelDeploy()
 		if err != nil {
 			return nil, err
 		}
-		facts.LaunchFlags = refreshed.LaunchFlags
-		facts.Version = expected
+		// The controller's own build is installed now; the dev-identity question
+		// is settled for this Manager's lifetime.
+		m.markDevDeployed(host.Name)
 	}
+	if restart {
+		m.stateEvent(host.Name, StateRestarting)
+		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
+		var restartErr error
+		if relaunch := m.pendingRelaunch(host.Name); relaunch != "" && !runningKnown {
+			// A previous restart killed the old hub and left no listener. There is
+			// no hub to kill now, so complete the recorded relaunch instead.
+			restartErr = m.recoverRelaunch(restartCtx, host, relaunch)
+		} else {
+			restartErr = m.restartHub(restartCtx, host, facts)
+		}
+		if restartErr != nil {
+			cancelRestart()
+			return nil, restartErr
+		}
+		facts, err = m.refreshAfterRestart(restartCtx, host, facts, expected)
+		cancelRestart()
+		if err != nil {
+			return nil, err
+		}
+	}
+	// The terminal launch-contract refusal fires only now: the deploy path has
+	// had its chance, and this judges the build that will actually serve.
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
 		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
 	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
+}
+
+// ensureDecision is the one decision table for ensureOnce. Everything it needs
+// comes from a single preflight and a single /api/health probe:
+//
+//   - deploy when the on-disk binary is not the build this controller requires:
+//     its launch-check version differs, its appwire protocol is incompatible,
+//     its launch flags are missing the required one, or its contract could not
+//     be read at all. The deploy runs over ssh, not appwire, so even a
+//     protocol-broken host is upgradable.
+//   - restart when a deploy just installed a new binary, a hub answers with a
+//     build other than the expected one, or a previous restart left the host
+//     without a listener (a pending relaunch).
+//   - attach otherwise.
+//
+// No terminal refusal is decided here: the protocol and launch-contract gates
+// are judged by ensureOnce only after a deploy/restart has run.
+func (m *Manager) ensureDecision(name string, facts Preflight, expected, running string, runningKnown bool) (deploy, restart bool) {
+	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
+	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
+	// "dev" is not an identity: an unstamped controller and an unstamped host
+	// both report it, so equality cannot prove they are the same code. When a
+	// deploy is configured the controller installs its own build once per Manager
+	// and then trusts the host for this process's lifetime; with no deploy
+	// configured there is nothing to install and the literal comparison stands.
+	devUnverified := isDevVersion(expected) && m.canDeploy() && !m.isDevDeployed(name)
+
+	deploy = versionDiffers || !protocolOK || !flagsOK || devUnverified
+	restart = deploy || (runningKnown && running != expected) || m.pendingRelaunch(name) != ""
+	return deploy, restart
+}
+
+// refreshAfterRestart re-reads the on-disk launch contract after a deploy or
+// restart and refuses a still-incompatible protocol. The pre-restart facts
+// describe the build the restart replaced, so judging the launch contract on
+// them would let a host predating a required flag, or speaking an older
+// protocol, never be accepted even after a successful upgrade.
+func (m *Manager) refreshAfterRestart(ctx context.Context, host hostreg.Host, facts Preflight, expected string) (Preflight, error) {
+	refreshed, err := m.probeLaunchCheck(ctx, host)
+	if err != nil {
+		return facts, err
+	}
+	if refreshed.Protocol != appwire.ProtocolVersion {
+		return facts, fmt.Errorf("%w: host %q protocol %q, want %q after restart", ErrProtocolIncompatible, host.Name, refreshed.Protocol, appwire.ProtocolVersion)
+	}
+	facts.LaunchCheckKnown = true
+	facts.Protocol = refreshed.Protocol
+	facts.LaunchFlags = refreshed.LaunchFlags
+	// The restart verified the running hub against expected, so report the build
+	// actually serving rather than the pre-deploy on-disk version.
+	facts.Version = expected
+	return facts, nil
 }
 
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
@@ -577,9 +665,7 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 		// Another Ensure attached while we slept; its supervisor owns the host.
 		return false
 	}
-	attemptCtx, cancel := context.WithTimeout(m.baseCtx, m.opts.attemptLimit())
-	defer cancel()
-	nch, err := m.ensureOnce(attemptCtx, host)
+	nch, err := m.ensureOnce(m.baseCtx, host)
 	if err == nil {
 		if !m.publishChannel(host.Name, nch) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
@@ -686,6 +772,53 @@ func (m *Manager) clearChannel(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.chans, name)
+}
+
+// isDevVersion reports whether v is an identity-less development build.
+// buildinfo reports "dev" for any binary built without ldflags, so two dev
+// builds cannot be told apart by it.
+func isDevVersion(v string) bool {
+	return v == "" || v == "dev"
+}
+
+// canDeploy reports whether a build source is configured, so the controller can
+// actually install its own build. It gates the dev-identity deploy: with no
+// source there is nothing to install.
+func (m *Manager) canDeploy() bool {
+	return m.opts.BuildBinary != nil || strings.TrimSpace(m.opts.BuildSource) != ""
+}
+
+// isDevDeployed reports whether this Manager has installed its own dev build on
+// name. See ensureDecision.
+func (m *Manager) isDevDeployed(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.devDeployed[name]
+}
+
+func (m *Manager) markDevDeployed(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.devDeployed[name] = true
+}
+
+// pendingRelaunch returns the bare relaunch a failed restart recorded, or "".
+func (m *Manager) pendingRelaunch(name string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.pendingRelaunches[name]
+}
+
+func (m *Manager) setPendingRelaunch(name, relaunch string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingRelaunches[name] = relaunch
+}
+
+func (m *Manager) clearPendingRelaunch(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pendingRelaunches, name)
 }
 
 func (m *Manager) logf(format string, args ...any) {
