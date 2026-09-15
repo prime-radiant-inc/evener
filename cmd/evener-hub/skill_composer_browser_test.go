@@ -49,14 +49,14 @@ import (
 // milestones, this file asserts the same strings in the daemons' actual
 // provider requests and transcripts. Opaque sentinels, never prose to pin.
 const (
-	skillGuardSkillName        = "pkg:probe"
-	skillGuardReply            = "skillguard turn complete"
-	skillGuardChipRemovePrefix = "Remove skill pkg:probe"
+	skillGuardSkillName = "pkg:probe"
+	skillGuardReply     = "skillguard turn complete"
 	// The SKILL.md frontmatter description, asserted verbatim in the daemon's
 	// rendered <skill-context> (skillGuardWriteSkill is its only other use, so
 	// fixture and assertion cannot drift).
 	skillGuardSkillDescription = "fixture procedure for the browser guard"
 
+	proseTwoSkills   = "Run /skill-1 and then /skill-2"
 	proseCanonical   = "PROSE_ALPHA_14a run the fixture check on the gamma channel"
 	proseDraft       = "PROSE_DRAFT_14b staged for the switch"
 	proseQueueTurn   = "PROSE_QTURN_14c open a long turn for the queue"
@@ -75,6 +75,11 @@ const (
 
 // The fixture skill body the test writes into each helper's plugin and then
 // requires — complete and unchanged — inside the provider request.
+const skillGuardFirstBody = "INLINE_SENTINEL_1_a983\n"
+const skillGuardSecondBody = "INLINE_SENTINEL_2_b984\n"
+
+func skillGuardInline(text string) string { return text + " /" + skillGuardSkillName }
+
 const skillGuardSkillBody = "Return the opaque marker LIVE_SKILL_a983 when asked to run the fixture procedure.\n"
 
 // skillGuardDriverTimeout bounds the whole browser run: a hung driver is a
@@ -172,17 +177,22 @@ func (c skillGuardLLMCall) skillContexts() []skillGuardDocument {
 	var out []skillGuardDocument
 	for _, m := range c.Messages {
 		text := m.text()
-		open := strings.Index(text, "<skill-context>")
-		closing := strings.Index(text, "</skill-context>")
-		if open < 0 || closing < open {
-			continue
+		for {
+			open := strings.Index(text, "<skill-context>")
+			if open < 0 {
+				break
+			}
+			text = text[open+len("<skill-context>"):]
+			closing := strings.Index(text, "</skill-context>")
+			if closing < 0 {
+				break
+			}
+			var doc skillGuardDocument
+			if err := json.Unmarshal([]byte(strings.TrimSpace(text[:closing])), &doc); err == nil {
+				out = append(out, doc)
+			}
+			text = text[closing+len("</skill-context>"):]
 		}
-		payload := strings.TrimSpace(text[open+len("<skill-context>") : closing])
-		var doc skillGuardDocument
-		if err := json.Unmarshal([]byte(payload), &doc); err != nil {
-			continue
-		}
-		out = append(out, doc)
 	}
 	return out
 }
@@ -223,11 +233,19 @@ type skillGuardDurableDump struct {
 // skillGuardComposerSnapshot is the driver's composerState() dump embedded in
 // milestones.
 type skillGuardComposerSnapshot struct {
-	Text         string   `json:"text"`
-	Placeholder  string   `json:"placeholder"`
-	Chips        []string `json:"chips"`
-	RemoveLabels []string `json:"removeLabels"`
-	Tiles        int      `json:"tiles"`
+	Text         string                 `json:"text"`
+	Placeholder  string                 `json:"placeholder"`
+	Chips        []string               `json:"chips"`
+	RemoveLabels []string               `json:"removeLabels"`
+	ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+	Tiles        int                    `json:"tiles"`
+}
+
+type skillGuardChipDetail struct {
+	Text     string `json:"text"`
+	Title    string `json:"title"`
+	Label    string `json:"label"`
+	Editable string `json:"editable"`
 }
 
 type skillGuardFixture struct {
@@ -496,6 +514,18 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 		}
 		if err := os.WriteFile(fixture.control[i], nil, 0o600); err != nil {
 			t.Fatalf("create control file: %v", err)
+		}
+		// Project skills give the browser two distinct, unqualified names for
+		// the exact inline sentence, through real daemon catalog discovery.
+		for name, body := range map[string]string{"skill-1": skillGuardFirstBody, "skill-2": skillGuardSecondBody} {
+			dir := filepath.Join(fixture.workDir[i], ".agents", "skills", name)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			content := "---\nname: " + name + "\ndescription: " + skillGuardSkillDescription + "\n---\n" + body
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		// The fixture plugin: manifest "pkg" + skills/probe → catalog pkg:probe.
 		pluginDir := filepath.Join(fixture.workDir[i], "fixture-plugin")
@@ -1122,7 +1152,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// report names each one and skips nothing silently.
 	for _, name := range []string{
 		"sessions-visible", "composer-mounted", "chip-added", "chip-removed", "chip-reselected",
-		"chip-labels", "submitted-canonical", "durable-mutation", "draft-after-commit",
+		"chip-labels", "inline-editing", "inline-layout", "inline-ime", "submitted-two-skills", "submitted-canonical", "durable-mutation", "draft-after-commit",
 		"draft-staged", "thread-switched", "draft-remounted",
 		"hold-turn-started", "queued", "queue-returned", "requeued", "drain-committed", "drain-released",
 		"steer-turn-started", "steered", "steer-released",
@@ -1152,7 +1182,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		t.Fatalf("no provider request on helper alpha carried %q (artifacts: %s)", proseCanonical, fixture.artifact)
 	}
 	// The unchanged prose rode its own message, exactly as typed.
-	if !skillGuardCallHasMessageText(canonical.Request, proseCanonical) {
+	if !skillGuardCallHasMessageText(canonical.Request, skillGuardInline(proseCanonical)) {
 		t.Errorf("canonical request lost or changed the typed prose: %s", skillGuardDumpCall(t, canonical.Request))
 	}
 	// The complete fixture body arrived via the canonical skill-context.
@@ -1204,10 +1234,10 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		t.Fatal("no durable-mutation milestone")
 	} else {
 		for _, record := range append(append([]skillGuardDurableRecord{}, durable.Optimistic...), durable.Outbox...) {
-			if record.ComposerText != proseCanonical {
+			if record.ComposerText != skillGuardInline(proseCanonical) {
 				continue
 			}
-			if !durableInputHasText(record, proseCanonical) || !durableInputHasSkill(record, skillGuardSkillName) {
+			if !durableInputHasText(record, skillGuardInline(proseCanonical)) || !durableInputHasSkill(record, skillGuardSkillName) {
 				t.Errorf("durable mutation record for the canonical submit: %s", skillGuardJSON(record))
 			}
 		}
@@ -1215,9 +1245,10 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 
 	// Accessible chip labels.
 	var labels struct {
-		ChipText     []string `json:"chipText"`
-		RemoveLabels []string `json:"removeLabels"`
-		Prose        string   `json:"prose"`
+		ChipText     []string               `json:"chipText"`
+		RemoveLabels []string               `json:"removeLabels"`
+		ChipDetails  []skillGuardChipDetail `json:"chipDetails"`
+		Prose        string                 `json:"prose"`
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "chip-labels", &labels) {
 		t.Fatal("no chip-labels milestone")
@@ -1225,13 +1256,65 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if len(labels.ChipText) != 1 || !strings.Contains(labels.ChipText[0], skillGuardSkillName) {
 		t.Errorf("chip label = %v, want one chip naming %q", labels.ChipText, skillGuardSkillName)
 	}
-	if len(labels.RemoveLabels) != 1 || !strings.HasPrefix(labels.RemoveLabels[0], skillGuardChipRemovePrefix) {
-		t.Errorf("chip remove label = %v, want the accessible label starting %q", labels.RemoveLabels, skillGuardChipRemovePrefix)
+	if len(labels.RemoveLabels) != 0 {
+		t.Errorf("inline atoms must have no detached remove buttons: %v", labels.RemoveLabels)
+	}
+	if len(labels.ChipDetails) != 1 {
+		t.Errorf("inline chip details = %v, want one atom", labels.ChipDetails)
+	} else {
+		chip := labels.ChipDetails[0]
+		if chip.Text != "/"+skillGuardSkillName || chip.Editable != "false" ||
+			!strings.Contains(chip.Title, skillGuardSkillName) || !strings.Contains(chip.Label, skillGuardSkillName) ||
+			!strings.Contains(chip.Title, skillGuardSkillDescription) || !strings.Contains(chip.Label, skillGuardSkillDescription) {
+			t.Errorf("inline atom lost its canonical label, details, or indivisibility: %+v", chip)
+		}
 	}
 
 	// The durable transcript records the canonical selection with its names.
-	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], proseCanonical, []string{skillGuardSkillName}); err != nil {
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseCanonical), []string{skillGuardSkillName}); err != nil {
 		t.Errorf("canonical selection missing from helper alpha's transcript: %v", err)
+	}
+
+	// The exact user-authored sentence and both explicit references must
+	// cross the UI/provider/transcript boundary together, not in history.
+	deliveries := 0
+	for _, rec := range turnsA {
+		if rec.Request.lastUserText() != proseTwoSkills {
+			continue
+		}
+		deliveries++
+		docs := rec.Request.skillContexts()
+		for _, want := range []struct{ name, body string }{{"skill-1", skillGuardFirstBody}, {"skill-2", skillGuardSecondBody}} {
+			found := 0
+			source := filepath.Join(fixture.workDir[0], ".agents", "skills", want.name, "SKILL.md")
+			for _, doc := range docs {
+				if doc.Name != want.name {
+					continue
+				}
+				found++
+				if doc.Instructions != want.body || doc.Source != source || doc.BaseDirectory != filepath.Dir(source) || doc.Description != skillGuardSkillDescription {
+					t.Errorf("two-reference skill document changed: %+v", doc)
+				}
+			}
+			if found != 1 {
+				t.Errorf("two-reference request has %d documents for %s, want 1", found, want.name)
+			}
+		}
+	}
+	if deliveries != 1 {
+		t.Errorf("two-reference sentence dispatched %d times, want 1", deliveries)
+	}
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], proseTwoSkills, []string{"skill-1", "skill-2"}); err != nil {
+		t.Errorf("two-reference sentence or metadata missing from transcript: %v", err)
+	}
+	var twoSkills skillGuardComposerSnapshot
+	if !skillGuardMilestoneDetail(t, milestones, "submitted-two-skills", &twoSkills) || twoSkills.Text != proseTwoSkills || strings.Join(twoSkills.Chips, ",") != "/skill-1,/skill-2" {
+		t.Errorf("two-reference browser submission changed: %+v", twoSkills)
+	}
+	for _, text := range []string{proseQueueSecond, proseSteer, proseTransport} {
+		if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(text), []string{skillGuardSkillName}); err != nil {
+			t.Errorf("inline queue/steer/recovery transcript: %v", err)
+		}
 	}
 
 	// Scenario: draft thread-switch/remount.
@@ -1239,8 +1322,8 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if !skillGuardMilestoneDetail(t, milestones, "draft-remounted", &remount) {
 		t.Fatal("no draft-remounted milestone")
 	}
-	if remount.Text != proseDraft {
-		t.Errorf("draft text after thread switch/remount = %q, want %q", remount.Text, proseDraft)
+	if remount.Text != skillGuardInline(proseDraft) {
+		t.Errorf("draft text after thread switch/remount = %q, want %q", remount.Text, skillGuardInline(proseDraft))
 	}
 	if len(remount.Chips) != 1 || !strings.Contains(remount.Chips[0], skillGuardSkillName) {
 		t.Errorf("draft chips after remount = %v, want %q", remount.Chips, skillGuardSkillName)
@@ -1261,7 +1344,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 			if err := json.Unmarshal([]byte(entry.Value), &record); err != nil {
 				continue
 			}
-			if record.Text == proseDraft && len(record.SkillNames) == 1 && record.SkillNames[0] == skillGuardSkillName {
+			if record.Text == skillGuardInline(proseDraft) && len(record.SkillNames) == 1 && record.SkillNames[0] == skillGuardSkillName {
 				sawSelection = true
 			}
 		}
@@ -1280,7 +1363,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		switch {
 		case rec.Request.lastUserText() == proseQueueTurn:
 			heldQueueTurn = rec.Held
-		case rec.Request.lastUserText() == proseQueueSecond:
+		case rec.Request.lastUserText() == skillGuardInline(proseQueueSecond):
 			for _, doc := range rec.Request.skillContexts() {
 				if doc.Name == skillGuardSkillName && doc.Instructions == skillGuardSkillBody {
 					drainedDelivery = true
@@ -1301,7 +1384,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// Scenario: selected steering.
 	var steeringDelivery bool
 	for _, rec := range turnsA {
-		if rec.Request.lastUserText() != proseSteer {
+		if rec.Request.lastUserText() != skillGuardInline(proseSteer) {
 			continue
 		}
 		for _, doc := range rec.Request.skillContexts() {
@@ -1356,7 +1439,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		t.Fatal("no caploss-refused milestone")
 	}
 	refused = refusedDetail.skillGuardComposerSnapshot
-	if !strings.Contains(refused.Text, proseCapLoss) || len(refused.Chips) != 1 {
+	if refused.Text != skillGuardInline(proseCapLoss) || len(refused.Chips) != 1 {
 		t.Errorf("the capability-loss refusal did not keep the staged draft: %s", skillGuardJSON(refused))
 	}
 	for _, record := range append(append([]skillGuardDurableRecord{}, refusedDetail.Durable.Outbox...), append([]skillGuardDurableRecord{}, refusedDetail.Durable.Recovery...)...) {
@@ -1369,7 +1452,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// recorded with its names, and the ONLY provider request carrying its
 	// prose was dispatched after the failure was observed — proving no
 	// dependent request ran at the failed claim.
-	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], proseFail, []string{skillGuardSkillName}); err != nil {
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseFail), []string{skillGuardSkillName}); err != nil {
 		t.Errorf("the failed input record is missing from helper alpha's transcript: %v", err)
 	}
 	var failObservedAt, failRequestAt string
@@ -1380,7 +1463,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		}
 	}
 	for _, rec := range turnsA {
-		if rec.Request.lastUserText() != proseFail {
+		if rec.Request.lastUserText() != skillGuardInline(proseFail) {
 			continue
 		}
 		failRequests++
@@ -1410,7 +1493,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	var delaySubmitted, delayKept skillGuardComposerSnapshot
 	var delayRequests int
 	for _, rec := range turnsA {
-		if rec.Request.lastUserText() == proseDelay {
+		if rec.Request.lastUserText() == skillGuardInline(proseDelay) {
 			delayRequests++
 			if len(rec.Request.skillContexts()) == 0 {
 				t.Errorf("the delayed submit (seq %d) lost the chip selection from its payload", rec.Seq)
@@ -1441,14 +1524,14 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// durable transcript turn — the same mutation was not applied twice.
 	transportRequests := 0
 	for _, rec := range turnsA {
-		if rec.Request.lastUserText() == proseTransport {
+		if rec.Request.lastUserText() == skillGuardInline(proseTransport) {
 			transportRequests++
 		}
 	}
 	if transportRequests != 1 {
 		t.Errorf("found %d provider requests carrying %q, want exactly 1 (same-mutation delivery after the offline retry)", transportRequests, proseTransport)
 	}
-	transcriptTurns, err := skillGuardCountTranscriptInputs(t, fixture.stateDir[0], proseTransport)
+	transcriptTurns, err := skillGuardCountTranscriptInputs(t, fixture.stateDir[0], skillGuardInline(proseTransport))
 	if err != nil {
 		t.Fatalf("count transcript inputs: %v", err)
 	}
@@ -1463,7 +1546,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	}
 	var persistedOffline bool
 	for _, record := range append(append([]skillGuardDurableRecord{}, netFailed.Durable.Outbox...), append([]skillGuardDurableRecord{}, netFailed.Durable.Recovery...)...) {
-		if durableInputHasText(record, proseTransport) && durableInputHasSkill(record, skillGuardSkillName) {
+		if durableInputHasText(record, skillGuardInline(proseTransport)) && durableInputHasSkill(record, skillGuardSkillName) {
 			persistedOffline = true
 		}
 	}
@@ -1574,6 +1657,13 @@ func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, name
 				continue
 			}
 			if record.Turn.SkillState.Input.OriginalText != prose {
+				continue
+			}
+			var message strings.Builder
+			for _, part := range record.Turn.Message.Content {
+				message.WriteString(part.Text)
+			}
+			if message.String() != prose {
 				continue
 			}
 			if strings.Join(record.Turn.SkillState.Input.Names, ",") != strings.Join(names, ",") {
