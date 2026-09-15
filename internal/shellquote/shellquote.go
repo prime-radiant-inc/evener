@@ -4,8 +4,8 @@
 //
 // A word is left bare only when EVERY byte is on a conservative allow-list of
 // bytes that POSIX sh never treats as a metacharacter or a word separator
-// (alphanumerics plus _ - . / : , @ % + =, and every byte with the high bit set,
-// 0x80-0xFF). Anything else — whitespace, quotes, backslashes, the substitution
+// (alphanumerics plus _ - . / : , @ % + = ^, and every byte with the high bit
+// set, 0x80-0xFF). Anything else — whitespace, quotes, backslashes, the substitution
 // and redirection operators, glob and comment syntax, and the ASCII control
 // bytes — is wrapped in single quotes. An embedded single quote is emitted with
 // the POSIX splice (close the quote, backslash-escape one quote, reopen), which
@@ -18,7 +18,7 @@
 // This is an allow-list rather than a deny-list on purpose: a byte nobody
 // thought to deny is quoted rather than trusted.
 //
-// # High bytes stay bare on purpose
+// # High bytes and a caret stay bare on purpose
 //
 // A byte in 0x80-0xFF is not a POSIX metacharacter, so quoting it buys sh no
 // safety, and the deny-lists this package replaced left it bare. It must stay
@@ -28,6 +28,26 @@
 // delimiter. Quoting "café" would hand cmd.exe the literal bytes 'café', quotes
 // included. Leaving high bytes bare keeps the pre-consolidation behavior on
 // every platform.
+//
+// A caret (^, 0x5E) is left bare for the same reason. It is not a POSIX
+// metacharacter, and no shell denies it, so the deny-lists this package replaced
+// returned it unchanged; cmd.exe, however, is where it matters, because there it
+// IS the escape character while a single quote is ordinary text. A Grep regex or
+// git revspec carrying "^" (say "^HEAD"), quoted as '^HEAD', reaches cmd.exe with
+// the apostrophes as data and the caret inert. Leaving the caret bare restores
+// the pre-consolidation behavior on every platform.
+//
+// # Control bytes are quoted on purpose
+//
+// The deny-lists also happened to leave ASCII control bytes bare — they denied
+// only space, tab, and newline — so DEL (0x7F) in particular reaches this
+// allow-list with the same deny-list-to-allow-list drift as the caret. It stays
+// quoted. Unlike the caret, a control byte buys a shell nothing bare (it is not a
+// POSIX metacharacter, but it is also not safer trusted), cmd.exe gives it no
+// special meaning the way it does the caret, and a non-printing byte appearing
+// literally in a rendered command line is a symptom worth surfacing rather than
+// reproducing. This is the allow-list's deliberate tightening, and the tests pin
+// it.
 //
 // # Two entry points, one divergence
 //
@@ -59,7 +79,7 @@ func isSafeWord(s string, allowTilde bool) bool {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		case c == '_' || c == '-' || c == '.' || c == '/' || c == ':' ||
-			c == ',' || c == '@' || c == '%' || c == '+' || c == '=':
+			c == ',' || c == '@' || c == '%' || c == '+' || c == '=' || c == '^':
 		case c == '~' && allowTilde:
 		case c >= 0x80:
 		default:

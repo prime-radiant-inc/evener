@@ -33,6 +33,12 @@ func TestLiteralAndRemoteWord(t *testing.T) {
 		// pins the pre-consolidation deny-list behavior.
 		{name: "accented path", in: "/tmp/café/menu", literal: "/tmp/café/menu", remote: "/tmp/café/menu"},
 		{name: "accented with metacharacter", in: "café;rm", literal: "'café;rm'", remote: "'café;rm'"},
+		// A caret is not a POSIX metacharacter and no prior deny-list named it,
+		// so it stays bare; cmd.exe (which these lines reach via ExecCommand)
+		// treats "^" as its escape character, so quoting it would change the
+		// bytes a Windows Grep regex or git revspec receives.
+		{name: "caret", in: "^HEAD", literal: "^HEAD", remote: "^HEAD"},
+		{name: "caret with metacharacter", in: "^a b", literal: "'^a b'", remote: "'^a b'"},
 		{name: "substitution", in: "$(id)", literal: "'$(id)'", remote: "'$(id)'"},
 		{name: "backticks", in: "`id`", literal: "'`id`'", remote: "'`id`'"},
 		{name: "newline", in: "a\nb", literal: "'a\nb'", remote: "'a\nb'"},
@@ -118,6 +124,39 @@ func TestHighBytesAreLeftBare(t *testing.T) {
 	}
 }
 
+// TestCaretStaysBareAndDELIsQuoted pins the two bytes where the old deny-lists
+// and the new allow-list disagree, together because the finding named them
+// together. The caret is restored to the bare form: it is not a POSIX
+// metacharacter, no prior deny-list named it, and cmd.exe — which runs these
+// command lines via ExecCommand and treats "^" as its escape character — would
+// otherwise receive a literal "'^HEAD'". DEL (0x7F) is the same drift and stays
+// quoted on purpose (see the package doc): it has no cmd.exe role, and a
+// non-printing byte is better surfaced than reproduced.
+func TestCaretStaysBareAndDELIsQuoted(t *testing.T) {
+	for _, w := range []string{"^", "^HEAD", "a^b", "^v1.2.3", "a^b_c.d"} {
+		if got := Literal(w); got != w {
+			t.Errorf("Literal(%q) = %q, want the bare word so cmd.exe receives the caret unquoted", w, got)
+		}
+		if got := RemoteWord(w); got != w {
+			t.Errorf("RemoteWord(%q) = %q, want the bare word so cmd.exe receives the caret unquoted", w, got)
+		}
+	}
+
+	// A caret mixed with a real metacharacter is still quoted whole.
+	if got, want := Literal("^a b"), "'^a b'"; got != want {
+		t.Errorf("Literal(%q) = %q, want %q", "^a b", got, want)
+	}
+
+	// DEL is the other deny-list-to-allow-list drift, and stays quoted by design.
+	del := "a" + string(rune(0x7f)) + "b"
+	if got := Literal(del); got == del {
+		t.Errorf("Literal(%q) left DEL bare, want it quoted", del)
+	}
+	if got := RemoteWord(del); got == del {
+		t.Errorf("RemoteWord(%q) left DEL bare, want it quoted", del)
+	}
+}
+
 func TestArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -153,7 +192,7 @@ func TestShellRoundTrip(t *testing.T) {
 	words := []string{
 		"", "plain", "a b", "it's", "$(id)", "`id`", "a;b", "a|b", "a&b",
 		"a\nb", `a\b`, "héllo wörld", "*", "?", "[x]", "{x,y}", "#c", `"d"`,
-		"café", "/tmp/café/menu",
+		"café", "/tmp/café/menu", "^HEAD",
 	}
 	for _, w := range words {
 		out, err := exec.Command(sh, "-c", "printf '%s' "+Literal(w)).Output()
