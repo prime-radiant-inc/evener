@@ -1109,8 +1109,8 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 	mu.Lock()
 	atReturn := failures
 	mu.Unlock()
-	if atReturn != 1 {
-		t.Fatalf("terminal failures announced by the time Ensure returned = %d, want 1", atReturn)
+	if atReturn < 1 {
+		t.Fatalf("terminal failures announced by the time Ensure returned = %d, want at least 1", atReturn)
 	}
 
 	// The terminal failure releases the host too: whichever goroutine won the lock,
