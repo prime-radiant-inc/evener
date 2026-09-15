@@ -54,6 +54,69 @@ type JobStatusInfo struct {
 	Task             string `json:"task,omitempty"`
 }
 
+// WatchCadenceInfo is one trigger cadence on a live watch. Kind is one of
+// "after" (one-shot timer), "every" (repeating timer), "progress" (progress
+// interval), "output" (output match), or "events" (session/job event watch).
+// Seconds carries the interval for the timer and progress kinds and is zero
+// for output and event watches. A config's trigger sources are orthogonal, so
+// a single watch can carry more than one cadence.
+type WatchCadenceInfo struct {
+	Kind    string  `json:"kind"`
+	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is expected
+	// to fire, derived from data the daemon already holds: the install instant
+	// and the newest CLOCK fire (a repeating cadence advances from whichever of
+	// the two is later; a one-shot from the install instant alone). The delivery
+	// ring is display-only and is deliberately not consulted, because it mixes
+	// every delivery kind and an output match would move a progress cadence's
+	// date. It is an approximation: the runtime keeps a ticker the scheduler can
+	// delay, so the real fire can slide later. Absent for output and event
+	// cadences, which have no schedule.
+	DerivedNextFireAt string `json:"derived_next_fire_at,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; zero (absent) means fire on every matching event. Only the
+	// events kind sets it, and only a watch with a single concrete event kind
+	// can carry one (validateWatchEventArgs), so it is zero for every other
+	// kind and for a wildcard event watch.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter rendered exactly the way
+	// watchConditionSummary renders it for the model (e.g. "tool_name=Bash,
+	// status=error"); empty (absent) when the watch filters nothing or is a
+	// non-events cadence. It is a display string, not a structured filter:
+	// keeping it in the prose summary's own vocabulary means the wire and the
+	// model can never disagree about what the filter names.
+	Filter string `json:"filter,omitempty"`
+}
+
+// WatchStatusInfo describes one live watch with structured fields, so a
+// consumer can render its note and cadence without parsing the
+// watchConditionSummary prose that job_list hands the model. It is the
+// structured sibling of watchListEntry; liveWatchStatuses builds it from the
+// same live registry under the same lock and visibility predicate.
+type WatchStatusInfo struct {
+	ID             string             `json:"id"`
+	Source         string             `json:"source"`
+	Target         string             `json:"target,omitempty"`
+	SendTo         string             `json:"send_to,omitempty"`
+	Note           string             `json:"note,omitempty"`
+	Cadence        []WatchCadenceInfo `json:"cadence,omitempty"`
+	OutputMatch    string             `json:"output_match,omitempty"`
+	Events         []string           `json:"events,omitempty"`
+	WildcardEvents bool               `json:"wildcard_events,omitempty"`
+	Deliveries     int                `json:"deliveries"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Nil (and omitted)
+	// when the watch has not delivered.
+	DeliveryTimes []string `json:"delivery_times,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	// Active is false for a one-shot that has already delivered its single
+	// fire and is only awaiting durable teardown (firedPendingEnd); every
+	// other live config is armed.
+	Active bool `json:"active"`
+	// EndReason is empty for a live config; only ended watches carry one.
+	EndReason string `json:"end_reason,omitempty"`
+}
+
 // DelegateStatusInfo is the stable delegate read model exposed by
 // DetailedStatus. AppWire maps these values into EvenerDelegateInfo without
 // deriving them from Jobs.
@@ -133,7 +196,8 @@ type DetailedStatus struct {
 	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
 	Jobs       []JobStatusInfo      `json:"jobs,omitempty"` // active and recent jobs
 	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
-	Agents     []string             `json:"agents,omitempty"` // public agent names
+	Watches    []WatchStatusInfo    `json:"watches,omitempty"` // live watches visible to this session
+	Agents     []string             `json:"agents,omitempty"`  // public agent names
 	// TurnSlots reports tree-counter occupancy while any delegate-turn slot is
 	// held; nil when idle.
 	TurnSlots *turnSlotOccupancy `json:"turn_slots,omitempty"`
@@ -229,6 +293,17 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	// Jobs.
 	if s.jobManager != nil {
 		ds.Jobs = projectJobStatusInfos(detailedStatusJobRecords(s.jobManager.list(listFilter{})))
+		// This manager's own rows only. Aggregating descendants here would reach
+		// into other sessions' job-manager locks from inside the envelope-sampling
+		// surface, which the sampling contract forbids (session_envelope_sampling.go:
+		// a sampled method may take this session's mu and nothing else -- the event
+		// bridge calls it, and a manager lock held across an emit would then block
+		// event consumption). The receiver rollup -- a watch armed on a descendant's
+		// job, held in that descendant's manager -- is sampled by the thread LIST
+		// path instead (Session.LiveWatchRowsForSessions), which runs off the bridge
+		// and merges onto each row; this envelope facet carries what the session
+		// itself owns.
+		ds.Watches = s.jobManager.liveWatchStatusesForSession(s.ID())
 	}
 	if s.delegateController != nil {
 		rootID := s.delegateController.rootSessionID
