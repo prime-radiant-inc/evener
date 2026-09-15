@@ -176,10 +176,6 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
   cancelled: "neutral",
 };
 
-// Re-exported for SessionChrome's neighbours and the inline task card: every
-// inline/panel surface shares chrome/taskData.ts's one condensed sentence.
-export { taskAggregateLabel } from "./taskData";
-
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
   // Bare sentence, no "Tasks" prefix: the aggregate already names the noun
   // ("4 of 7 tasks left"), so a prefix would stutter ("Tasks 4 of 7 tasks

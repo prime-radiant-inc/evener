@@ -384,9 +384,9 @@ async function measureTrustedFocus(send) {
 // with a check adornment for open ones. This fixture therefore drives the
 // menu directly: open Tasks, wait for the dock split to squeeze the main
 // composer's inline session chrome below 640px, then re-open the menu and
-// confirm its counted label gains the checkmark. The harness seeds a real
-// aggregate, so SessionChrome passes `Tasks 1/4`, not the plain fallback
-// `Tasks`, to SessionMenu.
+// confirm its label gains the checkmark. The menu entry is a plain "Tasks"
+// (counts live inline and in the panel, never in the menu), whatever
+// aggregate the harness seeds.
 async function verifyPanelCollapse(cdpEndpoint, url) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
@@ -400,7 +400,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     });
     const out = await send("Runtime.evaluate", {
       expression: `(async () => {
-        const taskLabel = 'Tasks 1/4';
+        const taskLabel = 'Tasks';
         const until = async (read, label) => {
           for (let i = 0; i < 180; i++) {
             const value = read();
@@ -415,7 +415,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         actions.click();
         const tasksItem = await until(
           () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel),
-          'counted tasks menu item',
+          'tasks menu item',
         );
         tasksItem.click();
         const panel = await until(() => document.querySelector('[data-pane-scaffold="session-panel:tasks:overflowharness"]'), 'tasks pane');
@@ -438,7 +438,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
         actionsAgain.click();
         const checked = await until(
           () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === taskLabel + ' ✓'),
-          'checked counted tasks menu item',
+          'checked tasks menu item',
         );
         const pane = document.getElementById('oh-pane');
         const horizontallyOverflowing = [...pane.querySelectorAll('*')].filter((element) => {
@@ -1166,7 +1166,7 @@ async function main() {
     if (
       panelCollapse.mainWidth >= 640 ||
       !panelCollapse.panelVisible ||
-      panelCollapse.checkedText !== "Tasks 1/4 ✓" ||
+      panelCollapse.checkedText !== "Tasks ✓" ||
       panelCollapse.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail?.triggerReachable ||
       !panelCollapse.detail?.triggerHitTestable ||
