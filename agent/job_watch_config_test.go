@@ -165,6 +165,83 @@ func TestConfigureWatchRejectsUnknownEventKinds(t *testing.T) {
 	}
 }
 
+// A single watch's own payload is bounded, not only how many watches a manager
+// holds. The events list and the two trigger strings are copied into every
+// projection of the watch - the diagnostics facet, the page rows, the hub's
+// navigation summary, the SPA payload - and each projection clones them, so an
+// unbounded argument here is an unbounded payload everywhere.
+func TestConfigureWatchRejectsOversizedArguments(t *testing.T) {
+	t.Parallel()
+	tooManyEvents := make([]string, maxWatchEvents+1)
+	for i := range tooManyEvents {
+		tooManyEvents[i] = "communicate"
+	}
+	oversized := strings.Repeat("x", watchTriggerMaxChars+1)
+
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "oversized-args"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	t.Cleanup(func() { finishRunningTestJob(t, jm, rec.JobID) })
+
+	for _, tc := range []struct {
+		name string
+		args watchArgs
+		want string
+	}{
+		{
+			name: "too many events",
+			args: watchArgs{Target: "caller", Events: tooManyEvents},
+			want: "events names at most",
+		},
+		{
+			name: "oversized output_match",
+			args: watchArgs{Target: rec.JobID, OutputMatch: oversized},
+			want: "output_match must be at most",
+		},
+		{
+			name: "oversized event_filter tool name",
+			args: watchArgs{
+				Target:      "caller",
+				Events:      []string{"assistant.tool"},
+				EventFilter: &watchEventFilter{ToolName: oversized},
+			},
+			want: "tool_name must be at most",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := jm.configureWatch(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0 after every oversized argument was refused", jm.watchCount())
+	}
+}
+
+// Duplicate event names collapse. Matching is by kind, so a repeated name adds
+// nothing but payload to every projection of the watch.
+func TestConfigureWatchCollapsesDuplicateEventNames(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"communicate", "assistant.tool", "communicate"},
+	}); err != nil {
+		t.Fatalf("configureWatch: %v", err)
+	}
+	rows := jm.liveWatchStatuses()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want exactly one", rows)
+	}
+	if got := strings.Join(rows[0].Events, ","); got != "assistant.tool,communicate" {
+		t.Fatalf("events = %q, want the deduped set in sorted order", got)
+	}
+}
+
 func TestConfigureWatchRejectsAssistantMessageEvent(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)

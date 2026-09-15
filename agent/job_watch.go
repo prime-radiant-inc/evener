@@ -49,6 +49,13 @@ const (
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
 	defaultWatchSendPendingCap = 32
+	// maxWatchEvents bounds the events list ONE watch may carry, next to
+	// maxLiveWatches' bound on how many watches a manager holds. The list is
+	// copied into every projection of the watch (the diagnostics facet, the page
+	// rows, the hub's navigation summary, the SPA payload) and each projection
+	// clones it, so an unbounded list here is an unbounded payload everywhere.
+	// The watchable kinds are a fixed handful, so this is generous.
+	maxWatchEvents = 64
 	// watchDeliveryBudget caps the condition fires a watch config may deliver
 	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
 	// tick counts a delivery but is a clock rather than a condition, so it never
@@ -647,6 +654,16 @@ func normalizeWatchArgs(a *watchArgs) error {
 		return errors.New("invalid_request: repeat_seconds must be between 60 and 3600")
 	}
 	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
+	// The payload bounds: a watch whose trigger arguments are unbounded makes
+	// every projection of it unbounded too, so they are refused here rather than
+	// truncated (a cut regex or a cut tool name would silently change what the
+	// watch matches).
+	if len(a.Events) > maxWatchEvents {
+		return fmt.Errorf("invalid_request: events names at most %d kinds, got %d", maxWatchEvents, len(a.Events))
+	}
+	if len(a.OutputMatch) > watchTriggerMaxChars {
+		return fmt.Errorf("invalid_request: output_match must be at most %d characters, got %d", watchTriggerMaxChars, len(a.OutputMatch))
+	}
 	// every:1 is the semantic default (fire on each occurrence), so it reads as
 	// unset everywhere downstream; the single-concrete-kind requirement applies
 	// only to every>1, which actually throttles.
@@ -656,6 +673,9 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.EventFilter != nil {
 		a.EventFilter.ToolName = strings.TrimSpace(a.EventFilter.ToolName)
 		a.EventFilter.Status = strings.ToLower(strings.TrimSpace(a.EventFilter.Status))
+		if len(a.EventFilter.ToolName) > watchTriggerMaxChars {
+			return fmt.Errorf("invalid_request: event_filter.tool_name must be at most %d characters, got %d", watchTriggerMaxChars, len(a.EventFilter.ToolName))
+		}
 		if a.EventFilter.ToolName == "" && a.EventFilter.Status == "" {
 			a.EventFilter = nil
 		}
@@ -1331,7 +1351,11 @@ func canonicalWatchEvents(events []string) []string {
 	}
 	out := append([]string(nil), events...)
 	sort.Strings(out)
-	return out
+	// Duplicates collapse: matching is by kind, so a repeated name would add
+	// nothing but payload to every projection of the watch. This runs after
+	// validation, so the single-concrete-kind rules still read the caller's own
+	// list.
+	return slices.Compact(out)
 }
 
 func cloneWatchEventFilter(filter *watchEventFilter) *watchEventFilter {
