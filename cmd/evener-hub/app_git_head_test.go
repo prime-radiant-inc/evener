@@ -176,6 +176,14 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "scp-like unchanged", in: "git@github.com:owner/repo.git", want: "git@github.com:owner/repo.git"},
 		{name: "scp-like query token", in: "git@github.com:owner/repo.git?token=supersecret", want: "git@github.com:owner/repo.git"},
 		{name: "scp-like fragment token", in: "git@github.com:owner/repo.git#token=supersecret", want: "git@github.com:owner/repo.git"},
+		// The query is cut before the shape is judged, so a remote whose only
+		// "path" was the query comes back empty rather than as the pathless
+		// `git@github.com:` the frontend cannot use.
+		{name: "scp-like query only", in: "git@github.com:?token=supersecret", want: ""},
+		// The user and host halves take no path separator or whitespace, which
+		// is what keeps a local path containing '@' out of the allowlist.
+		{name: "local path containing at-sign", in: "/srv/foo@bar:baz", want: ""},
+		{name: "scp-like with a space", in: "git @github.com:owner/repo.git", want: ""},
 		// A local path is a remote the frontend cannot link, so it is not put on
 		// the wire at all - the allowlist leaves only scp-like remotes and
 		// authority-bearing URLs.
@@ -212,6 +220,12 @@ func TestResolveGitOriginRealRepo(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+	// Isolate the fixture AND the resolver from the developer's own git
+	// configuration: `git remote get-url` honours url.*.insteadOf rewrites, so
+	// an ambient rule would change the URL under test.
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	repo := t.TempDir()
 	for _, args := range [][]string{
 		{"init", "-q"},

@@ -79,16 +79,18 @@ func sanitizeGitRemote(raw string) string {
 		if hasOpaqueScheme(trimmed) {
 			return ""
 		}
+		// A query or fragment is not part of a git remote address, and a
+		// `?token=...` there would otherwise cross AppWire untouched: the
+		// scheme-less branch cannot rely on url.Parse to drop it. Cutting first
+		// also keeps the shape check below honest: `git@host:?token=...` must be
+		// judged on the pathless remainder it actually is.
+		if cut := strings.IndexAny(trimmed, "?#"); cut >= 0 {
+			trimmed = trimmed[:cut]
+		}
 		// Local paths and bare hostnames are not remotes the frontend can link;
 		// putting them on the wire buys nothing.
 		if !looksLikeScpRemote(trimmed) {
 			return ""
-		}
-		// A query or fragment is not part of a git remote address, and a
-		// `?token=...` there would otherwise cross AppWire untouched: the
-		// scheme-less branch cannot rely on url.Parse to drop it.
-		if cut := strings.IndexAny(trimmed, "?#"); cut >= 0 {
-			trimmed = trimmed[:cut]
 		}
 		return trimmed
 	}
@@ -112,20 +114,21 @@ func sanitizeGitRemote(raw string) string {
 }
 
 // looksLikeScpRemote reports whether value is git's scheme-less scp-like remote
-// syntax, `user@host:path`. Requiring the `@` matches the frontend's own parser,
-// which needs it to tell a remote from a bare hostname; requiring a path after
-// the colon keeps `user@host:` from passing as one.
+// syntax, `user@host:path`. It mirrors the frontend parser's own SCP_LIKE
+// pattern - a user with no path separator or whitespace, a host with no
+// separator, and a non-empty path - so the hub never emits a shape the browser
+// cannot turn into a link, and never mistakes a local path for a remote.
 func looksLikeScpRemote(value string) bool {
-	at := strings.IndexByte(value, '@')
-	if at <= 0 {
+	const separatorOrSpace = "/ \t\n\v\f\r"
+	user, rest, found := strings.Cut(value, "@")
+	if !found || user == "" || strings.ContainsAny(user, separatorOrSpace) {
 		return false
 	}
-	rest := value[at+1:]
-	colon := strings.IndexByte(rest, ':')
-	if colon <= 0 || strings.ContainsRune(rest[:colon], '/') {
+	host, path, found := strings.Cut(rest, ":")
+	if !found || host == "" || strings.ContainsAny(host, separatorOrSpace) {
 		return false
 	}
-	return strings.TrimSpace(rest[colon+1:]) != ""
+	return strings.TrimSpace(path) != ""
 }
 
 // hasOpaqueScheme reports whether value starts with a URL scheme (RFC 3986:
