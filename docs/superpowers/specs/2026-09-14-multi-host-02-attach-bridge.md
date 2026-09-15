@@ -12,15 +12,29 @@ over an SSH channel with no additionally exposed port.
 
 ## Scope
 
-- A new subcommand (working name `evener hub attach --stdio`) that:
-  1. resolves the hub's loopback address and reads the capability token from the
-     host state root (`<stateRoot>/auth-token`, trimmed);
-  2. dials `ws://<addr>/rpc` with `Authorization: Bearer <token>`;
-  3. proxies `Message`s in both directions between the WebSocket transport and a
+- A new subcommand `evener hub attach --stdio` (a hub-binary verb, beside the
+  other `evener hub` subcommands) that:
+  1. resolves the hub's loopback address: `--addr host:port` when given,
+     otherwise the host's own `hub.toml addr`, otherwise `127.0.0.1:9180`. A
+     wildcard bind address (`0.0.0.0`, `::`, or an empty host) is rewritten to
+     `127.0.0.1:<port>`, since a client running on the hub host always reaches
+     the hub over loopback even when the hub advertises a wildcard;
+  2. reads the capability token from the host state root
+     (`<stateRoot>/auth-token` — `hubedge.TokenFileName`; trimmed), taking the
+     state root from the same `hub.toml` (or `--config path`) the hub itself
+     read, never a re-derived path;
+  3. dials `ws://<addr>/rpc` with `Authorization: Bearer <token>`;
+  4. proxies `Message`s in both directions between the WebSocket transport and a
      `StreamTransport` over stdin/stdout;
-  4. exits when either side closes.
+  5. exits when either side closes.
 - This command is a **client** of the running hub. It must not start a hub, take
   `hostlock`, or bind any port.
+
+The SSH channel argv carries **no address and no token**: component 04 runs
+`ssh <opts> <dest> <evener_path> hub attach --stdio`, and the bridge derives both
+from the host's own configuration. `--addr` and `--config` exist for an operator
+(or a non-default layout) to point the bridge explicitly; the controller does
+not pass them today.
 
 ## Non-scope
 
@@ -36,7 +50,9 @@ over an SSH channel with no additionally exposed port.
 
 ## Implementation
 
-- `cmd/evener/…` subcommand wired like the other `evener hub` subcommands.
+- The subcommand lives in the hub package (`cmd/evener-hub/attach.go`) and is
+  dispatched from the hub entrypoint's argument switch like the other
+  subcommands, so `evener hub attach --stdio` needs nothing new on the CLI side.
 - Reuse: `appwire.DialWebSocketWithHeaders`, `appwire.NewStreamTransport`,
   `appwire.Transport` — a two-goroutine pump (spike `spike/bridge/main.go`).
 - Token: read from the state root, `strings.TrimSpace` (the file ends with a
@@ -81,7 +97,8 @@ Small–medium: ~150–300 LOC plus tests.
 
 ## Open questions
 
-- How the bridge discovers the hub's actual loopback address when `addr` is
-  configured away from the default (`127.0.0.1:9180`).
-- Whether to fold the bridge into `evener hub attach` or a dedicated
-  `evener hub-bridge` binary.
+- **Address discovery (resolved).** The bridge reads the host's own `hub.toml`
+  (`--addr` overrides it; wildcard binds are rewritten to loopback). The
+  controller never has to know the host's address to attach.
+- **Separate binary (resolved).** `evener hub attach --stdio` in the hub binary;
+  no `evener hub-bridge`.

@@ -63,15 +63,23 @@ type Source struct {
 
 Rules this component must satisfy:
 
-- One entry per configured host plus the local entry.
+- One entry per configured host plus the local entry, **at all times**. The
+  enumeration source is the registered-source set: component 05 registers one
+  `RemoteHubSource` per configured `[[hosts]]` entry at hub startup, whether or
+  not the host is attached, so `apiTreeSources()` sees every host and the
+  manifest never loses an offline one. Do not derive the list from "sources
+  that are currently connected": an unattached host is present-but-offline, not
+  absent (component 03, §"Source registration hook").
 - `ID` is the ref source ID (the host `name` from `[[hosts]]`, per design §5);
   it must be a valid navigation identity (`navigation_schema.go:392-397`).
 - `Kind` distinguishes local from remote; current literal values are `"local"`
   (`web_api_tree.go:710`) and `"appwire"` (`web_api_tree.go:723`). Add a
   host-remote value only if the frontend needs to distinguish "attached host"
   from any future non-host appwire source; otherwise reuse `"appwire"`.
-- `Online` must be `true` only while the SSH connection manager reports the
-  host attached and healthy; `false` for a configured-but-downtable host.
+- `Online` must be `true` only while the source's connection state says the
+  host is attached and healthy (component 05's optional online interface reads
+  it from the SSH connection manager); `false` for a configured-but-down host.
+  A source that reports no state defaults to online.
 - `Label` is bounded by `maxNavigationLabelRunes` (`navigation_schema.go:394`);
   host labels are short, so truncation is a safety net, not a design point.
 - The manifest `sources` array is capped at 64 and each element must have
@@ -93,11 +101,20 @@ which the remote-source normalization already does when it backfills
 ### Write contract (session targeting)
 
 There is no source/host field on the start request today:
-`appwire.ThreadStartParams` (`appwire/types.go:1427-1437`) has no `ref`/`source`,
-and the generated `ThreadStartParams` matches (`frontend/src/protocol/
-types.gen.ts:1855-1865`). This component adds an explicit source selector to
-`thread/start` (proposed: `ref` or `source`, see Open questions) rather than
-overloading `Harness`.
+`appwire.ThreadStartParams` (`appwire/types.go:1553-1563`) has no source field,
+and the generated `ThreadStartParams` matches
+(`appwire-client/typescript/types.gen.ts:1886-1896`). This component adds an
+explicit `source` field to `thread/start` — a bare source ID, not a ref —
+rather than overloading `Harness`. `hubThreadStart` resolves it ahead of the
+legacy `launchSourceID` harness fallback.
+
+**The field is controller-only and must not reach the remote hub.**
+`ThreadStartParams.Source` names a source in the controller's registry; the
+remote hub would resolve the same string against its own registry (wrong target
+or `spawn source is not available`). `RemoteHubSource.StartThread` clears it
+before forwarding (component 05, §"Registration and default-source selection"),
+so a host picker read on the wire never changes what the remote hub does: the
+chosen host is expressed by which `RemoteHubSource` handled the start.
 
 ## Implementation approach
 
@@ -109,10 +126,12 @@ only `local`, so the fan-out currently degenerates to one source.
 - **Source registry**: `appsource.Registry` with `Add`/`Source`/`All`/
   `SourceForRef` (`cmd/evener-hub/internal/appsource/registry.go:20-64`).
   `Source` interface is `ID()` plus thread/turn methods only
-  (`appsource/source.go:15-44`) — there is **no connectivity method today**.
+  (`appsource/source.go:15-46`) — there is **no connectivity method today**.
 - **Production registration**: `newHubSourceRegistry`
   (`cmd/evener-hub/app_rpc.go:24-74`) adds exactly one source, `"local"`
-  (`app_rpc.go:26`). Component 05 will register one source per host here.
+  (`app_rpc.go:26`). Component 05 registers one source per **configured** host
+  here, at startup and independent of attachment, so the registry — and
+  therefore this manifest — always carries the full `[[hosts]]` list.
 - **Fan-out + merge**: `hubThreadListWithSourceTimeout`
   (`cmd/evener-hub/app_threadlist.go:20-138`) already runs every allowed source
   concurrently (4 workers, `app_threadlist.go:16-18`), sorts results back into
@@ -352,11 +371,11 @@ This is larger than a single tight PR if done at once. A natural split:
 
 ## Open questions
 
-- **Wire field shape for targeting**: add `source`/`host` (a bare source ID) to
-  `ThreadStartParams`, or reuse the existing `ref` on related params (e.g.
-  `ThreadReadParams.Ref`)? A bare `source` reads best for "run this new session
-  on host X" and avoids implying an existing thread. Needs a decision before
-  touching generated code.
+- **Wire field shape for targeting (settled)**: `ThreadStartParams.Source` — a
+  bare source ID, serialized as `source` — is the chosen shape; reusing the
+  existing `ref` or overloading `Harness` were the rejected alternatives. The
+  field is controller-only and is stripped before any remote forward
+  (§"Write contract").
 - **`Kind` value for hosts**: reuse `"appwire"` or introduce a host-specific
   value? The frontend cannot currently tell an attached host from any other
   appwire source; if grouping/labels need that distinction, pick a value now to
@@ -366,9 +385,12 @@ This is larger than a single tight PR if done at once. A natural split:
   rail/tree reshape and should be its own spec/PR.
 - **Online semantics**: what counts as online — a live SSH channel, a
   successful capability probe, or both? The exact signal is owned by Component
-  04; this spec only requires that `apiTreeSources` can read a boolean and that
-  a transition invalidates navigation (`main.go:426` already does this on cache
-  changes; a connection-state change must also poke).
+  04. v1's signal is attachment state (a current, non-closed channel —
+  `sshconn.Manager.Attached` semantics), not the capability probe: a host whose
+  probe is stale but whose channel is live is online. This spec only requires
+  that `apiTreeSources` can read a boolean and that a transition invalidates
+  navigation (`main.go:426` already does this on cache changes; a
+  connection-state change must also poke).
 - **Dormant vs `Live` for offline rows**: confirm no path sets `Live:true` for
   an offline host's stale rows (`navigation_projection.go:1103,1137-1138`
   compute `Live` from the live input set). If stale remote rows are pushed into

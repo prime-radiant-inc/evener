@@ -90,9 +90,12 @@ Ordered by dependency; each is independently reviewable and landable.
 - **Host config entry** (`hub.toml`): `{ name, ssh, user?, evener_path?, roots[] }`
   — name is the source ID used in refs and URLs.
 - **Remote source ID**: the host `name`; refs surface as `name:<sessionID>`.
-- **Capability probe** (one round trip over the channel after attach):
-  protocol version, hub version, OS/arch, effective launch config, available
-  models, plugin/skill inventory, credential/provider health, working roots.
+- **Capability probe** — **not** one round trip: a short sequence of hub-scoped
+  RPCs over the already-open channel after attach (`evener/launch/getLayer`,
+  `model/list`, `evener/plugin/list`, `evener/auth/list`,
+  `evener/instance/list`), plus the component-04 preflight/attach-handshake
+  facts for protocol version, hub version, OS/arch, and features. Component 05's
+  probe table is authoritative for the exact calls and types.
 - **Bridge contract**: stdin/stdout = newline-delimited AppWire `Message` JSON;
   stderr = diagnostics; exit closes the channel.
 

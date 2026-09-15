@@ -89,15 +89,35 @@ internal seam packages `appsource` and `hostlock`; keeps the graph logic
 unit-testable without a hub). Exported surface:
 
 ```go
-type Host struct { /* HostConfig fields, validated */ }
+// Host is one validated [[hosts]] entry. It is hostreg's own dependency-neutral
+// copy of the hub's HostConfig fields: hostreg must not import the hub package,
+// so the two types are distinct and the hub converts at the boundary.
+type Host struct {
+    Name       string
+    SSH        string
+    User       string
+    EvenerPath string
+    Roots      []string
+}
 
 type Registry struct { /* mu sync.RWMutex; hosts map[string]Host; edges ... */ }
 
-func New(entries []HostConfig) (*Registry, error) // validates + builds
-func (r *Registry) Add(entry HostConfig) error    // add-time validation; ErrHostCycle etc.
+func New(entries []Host) (*Registry, error) // validates + builds
+func (r *Registry) Add(entry Host) error    // = AddWithUpstreams(entry, nil)
+func (r *Registry) AddWithUpstreams(entry Host, upstreamHostNames []string) error
 func (r *Registry) Get(name string) (Host, bool)
 func (r *Registry) All() []Host                    // sorted by name, like appsource.Registry.All
 ```
+
+**Type boundary (why `hostreg.Host` is not `hub.HostConfig`).** `HostConfig`
+stays in `cmd/evener-hub/config.go`, where it is a TOML decode target on
+`Config`; `hostreg` declares its own `Host` and imports only `appwire`. The
+import direction is therefore `hub → hostreg` and nothing else — no cycle and no
+type mismatch. `LoadConfig` validates by converting `cfg.Hosts` into
+`[]hostreg.Host` and calling `hostreg.New` on that throwaway list
+(`validateHostConfigs`), and the hub converts the same way, field for field
+(`Name`, `SSH`, `User`, `EvenerPath`, `Roots`), when it builds the live registry
+at startup. That conversion is the only place the two types meet.
 
 `All()` is the hook surface: component 05 iterates it to `appsource.Registry.Add`
 one source per host (`cmd/evener-hub/internal/appsource/registry.go:20-24`).
@@ -107,14 +127,20 @@ one source per host (`cmd/evener-hub/internal/appsource/registry.go:20-24`).
 This component supplies the data and the iteration point; it does **not** define
 the source. In `cmd/evener-hub/web.go`, where the source registry is built
 (`web.go:75`, `sources := newHubSourceRegistry(cfg)`), the hub will also build
-`hostreg.New(cfg.Hosts)` and hand it to component 05's constructor. The exact
-call shape belongs to the 05 spec; this spec fixes only:
+the `hostreg.Registry` (from the converted `cfg.Hosts`; §"Host registry") and
+hand it to component 05's constructor/wiring. The exact call shape belongs to
+the 05 spec; this spec fixes only:
 
 - the registry is built once at hub startup from the validated `cfg.Hosts`;
-- component 05 reads `Registry.All()` and is responsible for `Add`/`Remove` on
-  the `appsource.Registry` as hosts attach/detach (`registry.go:20-30`);
-- no host entry produces a source until component 05 registers one, so an
-  unattached host is simply absent from `sources.All()`.
+- component 05 registers **one source per configured host at startup**, from the
+  configured entries, whether or not an SSH channel exists yet
+  (`registry.go:20-30`). Nothing is added to or removed from the
+  `appsource.Registry` on attach/detach;
+- consequently `sources.All()` always equals the configured host list, and an
+  unattached host is **present but offline**: its `RemoteHubSource` reports
+  `Online() == false` and fails calls with `SessionUnavailable`. Connectivity is
+  the source's state, never the source's presence — component 06's fleet view
+  depends on that (see `06-fleet-view.md`, §"Read contract").
 
 ## Implementation approach (files, seams cited)
 
@@ -151,9 +177,10 @@ call shape belongs to the 05 spec; this spec fixes only:
    `validateHostConfigs` must additionally reject any `name` containing `..`
    and any `name` that is empty or `"local"`. Document that the stricter `..`
    rule is ours because names also appear in URL paths.
-   Exporting `appwire.ValidRefPart` is the smaller diff and keeps one source of
-   truth; the synthetic-`ParseRef` route avoids touching `appwire` at all. Pick
-   one in review; the spec recommends exporting the helper.
+   **Settled: export `appwire.ValidRefPart`** (the raw grammar only — it keeps
+   one source of truth and keeps `hostreg` free of hub imports, which the type
+   boundary above requires). It deliberately does **not** apply the `..` rule;
+   `hostreg.ValidateName` layers the reserved-name and `..` checks on top.
 
 3. **Registry + cycle rejection** — new package
    `cmd/evener-hub/internal/hostreg`.
@@ -174,14 +201,22 @@ call shape belongs to the 05 spec; this spec fixes only:
      only when B's host list is learned over the channel. The registry therefore
      exposes the cycle check as `Add` plus an attach-time variant whose
      upstream list component 05 supplies from the attach handshake:
-     `AddWithUpstreams(entry HostConfig, upstreamHostNames []string) error`.
-     The 05 spec owns *producing* `upstreamHostNames`; this spec owns the check.
-     (No hub identity token exists in the code today — see Open questions; the
-     registry takes this hub's identity as an injected string so it is testable.)
+     `AddWithUpstreams(entry Host, upstreamHostNames []string) error`.
+     **Deferred:** v1 callers pass no upstreams — `Add` is
+     `AddWithUpstreams(entry, nil)` — because no AppWire method reports a hub's
+     configured hosts, so component 05 cannot yet produce `upstreamHostNames`
+     (it records the same deferral in `05-remote-hub-source.md` §Open
+     questions). The exported check is the seam a later host-list RPC attaches
+     to; until then attach-time A→B→A detection does not happen. (No hub
+     identity token exists in the code today — see Open questions; the registry
+     takes this hub's identity as an injected string so it is testable.)
 
 4. **Wiring** — `cmd/evener-hub/web.go:75` builds the source registry inside
    `NewWebServer`; the host registry is built there or in `main.go` immediately
-   before, from `cfg.Hosts`, and passed to component 05's constructor.
+   before, from the converted `cfg.Hosts`
+   (`[]hostreg.Host{...}`; §"Host registry"), and passed to component 05's
+   constructor. The validated entries also reach `newHubSourceRegistry` so it
+   can register one source per host at startup (§"Source registration hook").
    `WebConfig` (`cmd/evener-hub/internal/hubcore/config.go:35-93`) gains a
    `Hosts *hostreg.Registry` (or the component-05 constructor takes it
    directly); the 05 spec decides which. No other `WebConfig` field is touched.
@@ -192,10 +227,12 @@ call shape belongs to the 05 spec; this spec fixes only:
 hub.toml [[hosts]]  →  LoadConfig (config.go:123 toml.Decode)
                     →  validateHostConfigs (new; refs.go:9 grammar)
                     →  cfg.Hosts
-                    →  hostreg.New(cfg.Hosts)          [startup, once]
-                    →  Registry.All()  →  component 05 registers a Source per host
+                    →  hostreg.New([]hostreg.Host{...})  [startup, once; boundary conversion]
+                    →  Registry.All()  →  component 05 registers one Source per host
+                                              (all configured hosts, attached or not)
                                               (appsource.Registry.Add, registry.go:20-24)
                     →  sources.All()   →  existing fleet/tree fan-out
+                                        →  an unattached host's source reports offline
 ```
 
 The last hop already exists and is the reason this component needs no UI work:
@@ -262,7 +299,7 @@ Unit tests, all without a hub or network:
 ## PR size estimate (LOC)
 
 - `HostConfig` + `Config.Hosts` + `validateHostConfigs`: ~60–90 LOC.
-- `appwire.ValidRefPart` export (or synthetic-`ParseRef` helper): ~10–20 LOC.
+- `appwire.ValidRefPart` export (settled): ~10–20 LOC.
 - `internal/hostreg`: ~120–180 LOC (types, mutex map, cycle DFS, sentinels).
 - Wiring in `web.go`/`main.go`/`WebConfig`: ~20–40 LOC.
 - Tests: ~200–300 LOC.
@@ -278,11 +315,15 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
   destination as identity, add an explicit `self`/`host_id` field, or detect
   the cycle structurally at attach time (B's host list contains our name). The
   03 spec injects the identity; the 05 spec must fix where it comes from.
+  This is only reachable once the deferred host-list retrieval lands
+  (§Implementation approach item 3); v1 never passes upstream names.
 - **Where the registry is built.** `web.go:75` (inside `NewWebServer`) versus
   `main.go` before `newWebServer` (`main.go:372`). Building it in `main.go`
   keeps `NewWebServer` free of `hub.toml` knowledge; building it in `web.go`
   matches how `newHubSourceRegistry` is already wired. Recommendation:
-  `main.go`, passed through `WebConfig`.
+  `main.go`, passed through `WebConfig` — which is the settled shape: `main.go`
+  converts `cfg.Hosts` into `[]hostreg.Host`, builds the registry, and passes
+  both the registry and the entries through `WebConfig`.
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
   preflight concern; leave them opaque here.

@@ -32,8 +32,9 @@ existing local store and writes the remote one.
   offline refusal.
 - Fan-out of the remote hub's config notifications
   (`evener/auth/updated`, `evener/instance/updated`, `evener/launch/updated`,
-  `evener/marketplace/updated`, `evener/plugin/updated`) to the controller's
-  browser clients, tagged with the host, so remote settings panes refresh.
+  `evener/marketplace/updated`, `evener/plugin/updated`,
+  `evener/settings/agentsDoc/changed`) to the controller's browser clients,
+  tagged with the host, so remote settings panes refresh.
 - A controller-side credential-push RPC that reads the local credentials file
   and writes the remote one through the remote hub's `evener/auth/apiKey/set`,
   returning a per-instance report.
@@ -67,19 +68,28 @@ handler registrations are:
 
 | Family | Handler source | Registration | Protocol rows |
 | --- | --- | --- | --- |
-| Provider instances | `cmd/evener-hub/app_instances.go` (`hubInstancesController`) | `app_rpc.go:954-1011` | `appwire/protocol.go:181-187` |
-| Launch config | `cmd/evener-hub/app_launch.go` (`hubLaunchController`) | `app_rpc.go:1015-1039` | `appwire/protocol.go:175-179` |
-| Plugins / marketplaces | `cmd/evener-hub/app_plugins.go` (`hubPluginsController`) | `app_rpc.go:1044-...` | `appwire/protocol.go:188-200` |
-| Auth / credentials | `cmd/evener-hub/app_auth.go` (`hubAuthController`) | `app_rpc.go:889-948` | `appwire/protocol.go:164-174` |
+| Provider instances | `cmd/evener-hub/app_instances.go` (`hubInstancesController`) | `app_rpc.go:969-1011` | `appwire/protocol.go:183-187` |
+| Launch config | `cmd/evener-hub/app_launch.go` (`hubLaunchController`) | `app_rpc.go:1015-1039` | `appwire/protocol.go:177-181` |
+| Plugins / marketplaces | `cmd/evener-hub/app_plugins.go` (`hubPluginsController`) | `app_rpc.go:1044-1135` | `appwire/protocol.go:188-202` |
+| Auth / credentials | `cmd/evener-hub/app_auth.go` (`hubAuthController`) | `app_rpc.go:904-962` | `appwire/protocol.go:166-176` |
+| Agents doc | `cmd/evener-hub/app_rpc_agents_doc.go` (`registerAgentsDocHandlers`) | `app_rpc_agents_doc.go:141-178` (called from `app_rpc.go:386`) | `appwire/protocol.go:210-211` |
 
 Concretely the proxied method names are (all `ScopeHub` in
 `appwire/protocol.go`):
 
-- `evener/instance/{list,create,edit,remove,setDefault,setModelDisabled,refreshModels}`
+- `evener/instance/{list,create,edit,remove,setDefault}`
 - `evener/launch/{resolve,schema,getLayer,setLayer,trustRepo}`
 - `evener/marketplace/{list,add,remove,refresh,edit,browse}` and
-  `evener/plugin/{list,install,upgrade,remove,enable,preview,checkNow}`
+  `evener/plugin/{list,install,upgrade,remove,enable,disable,setAutoUpgrade,preview,checkNow}`
 - `evener/auth/{status,test,list,login/start,login/complete,logout,apiKey/set,apiKey/clear,credentialJson/set,device/start,device/poll}`
+- `evener/settings/agentsDoc/{get,set}`
+
+The instance family has exactly those five handlers — the catalog has no
+`evener/instance/setModelDisabled` and no `evener/instance/refreshModels`
+(`protocol.go:183-187`), so the allow-list must not name them. Likewise the
+plugin family is the nine above, including `evener/plugin/disable` and
+`evener/plugin/setAutoUpgrade` (`protocol.go:201-202`), which the pane's UI can
+reach and which were missing here.
 
 Notes on the seams:
 
@@ -119,7 +129,7 @@ The handler:
 2. refuses when the host is not attached (component 04/05 exposes attachment
    state) with `appwire.Unavailable`, matching the offline rule (design §2:
    "actions refused until reconnect");
-3. allow-lists `Method` to the families in the table above — the proxy must not
+3. allow-lists `Method` to the five families in the table above — the proxy must not
    become a generic hub-to-hub RPC tunnel (design §6 "secret handling"; the
    remote hub is a trusted peer but the browser is not);
 4. calls the per-host `appwire.Client.Request(ctx, Method, Params, &out)`
@@ -179,20 +189,28 @@ never sees the file path or writes it.
 **Merge / no-clobber policy.** Before writing, the pusher asks the remote
 `evener/auth/status` for the instance (`app_auth.go:184`) and reads
 `ActiveSource` and `HasStoredFile` from `AuthStatusResponse`
-(`appwire/types.go:2119`, `:2123`). Then:
+(`appwire/types.go:2245`, `:2249`). Writes are permitted **only** when the
+remote resolves the instance's credential from the file layer or has none;
+every other source is skipped, because the pushed key either cannot be used or
+would silently change which credential is in force. Remote resolution order is
+`api_key` > `credential_headers` > `store` > `env:<VAR>` (`registry.credential`,
+`llm/registry/instances.go:414-478`):
 
-| Condition on the remote | Action |
+| Condition on the remote (evaluated top to bottom) | Action |
 | --- | --- |
-| remote `ActiveSource` is `oauth`/`adc`/`env` (a higher-precedence source) | **skipped** — don't shadow a working credential with a stale file key |
-| instance is Codex-OAuth or gcp-adc style | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go:466-474`); classify locally so the report is a skip, not an error |
+| instance is Codex-OAuth or gcp-adc style (`oauth`/`adc` or the scheme's transport) | **skipped** — the host's `apiKey/set` would refuse it (`app_auth.go:466-474`); classify locally so the report is a skip, not an error |
 | instance not present in the remote `evener/instance/list` | **skipped** — no matching instance on the host |
-| remote `HasStoredFile == false` | **added** — write |
-| remote `HasStoredFile == true` | **updated** — write (the host overwrites its own file-layer key) |
+| `ActiveSource == "api_key"` or `"credential_headers"` | **skipped** — the instance resolves from `providers.toml`, which *outranks* the file layer, so a pushed key would be shadowed and change nothing |
+| `ActiveSource == "env:<VAR>"` | **skipped** — the host operator's environment supplies a working credential; a file-layer write outranks `env:` and would silently replace it |
+| `ActiveSource == "store"` (implies `HasStoredFile == true`) | **updated** — write; the host overwrites its own file-layer key |
+| `ActiveSource == "none"` | **added** — write; the instance has no credential today |
 | remote `apiKey/set` returns an error | **failed**, with the wire error text |
 
 "Merge" means the host's other file-layer entries are never deleted — only
 `apiKey/set` is used, never `apiKey/clear`, and no whole-file replace exists.
-"Don't clobber" means no write over a non-file-layer (OAuth/ADC/env) credential.
+"Don't clobber" means no write at all unless the remote resolves from the file
+layer or has no credential: a working `api_key`, `credential_headers`, `oauth`,
+`adc`, or `env:<VAR>` credential is never shadowed by a pushed key.
 
 **Honest limitation.** `AuthStatusResponse` never returns the stored key, so the
 pusher cannot tell "same value" from "different value". `updated` is therefore
@@ -358,8 +376,10 @@ receives a key, and the controller writes nothing.
   assert one controller-side broadcast tagged with the host.
 - **Push table test:** a fake remote that records `apiKey/set` calls and reports
   scripted `status`/`instance/list`; assert the added/updated/skipped/failed
-  matrix, that `apiKey/clear` is never called, and that remote-only instances
-  survive (fake host store compared before/after).
+  matrix, that `apiKey/clear` is never called, that no `apiKey/set` is issued
+  for an `api_key`/`credential_headers`/`env:`-resolving or OAuth/ADC instance,
+  and that remote-only instances survive (fake host store compared
+  before/after).
 - **Secret hygiene:** assert no key value appears in the push response, in the
   controller log output, or in a rendered error, reusing the secret-marked
   registry (`envvars/envvars.go:21`, `Secret`) and `redactEnvSecrets`
@@ -375,11 +395,14 @@ receives a key, and the controller writes nothing.
 
 ## Acceptance criteria
 
-1. `evener/host/request` forwards each method in the four families to the named
+1. `evener/host/request` forwards each method in the five families to the named
    host's hub and returns the remote result; local execution never happens for a
    remote host request.
 2. An unknown or unattached host is refused with a typed wire error; the
-   allow-list rejects any method outside the four families.
+   allow-list rejects any method outside the five families; every method the
+   settings panes call — including `evener/plugin/disable`,
+   `evener/plugin/setAutoUpgrade`, and `evener/settings/agentsDoc/{get,set}` —
+   is inside it, and no instance method outside the five listed exists to call.
 3. Remote config mutations reach the host's own store: an `evener/instance/create`
    proxied to `m4` lands in `m4`'s `providers.toml`, not the controller's
    (`app_instances.go:22-24`).
@@ -387,7 +410,9 @@ receives a key, and the controller writes nothing.
    reload (tagged with the host).
 5. Credential push reads the local store and writes the host's store only via
    `evener/auth/apiKey/set`; the host file is written atomically at mode `0600`
-   (host-side `store.go:188-214`).
+   (host-side `store.go:188-214`). An instance whose remote credential resolves
+   from `api_key`, `credential_headers`, `oauth`, `adc`, or `env:<VAR>` receives
+   no write at all; only `store` and `none` are writable.
 6. The push report lists every local entry with `added`/`updated`/`skipped`/
    `failed` and a reason for skips; remote-only entries are preserved.
 7. No key value appears in the push response, controller logs, or errors; the
