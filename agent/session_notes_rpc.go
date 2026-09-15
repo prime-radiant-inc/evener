@@ -881,6 +881,13 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 // SteeringKind nor a mutation method -- see steeringOrigin.isHumanNoteSteer.
 const humanNoteSteerPrefix = "human updated their whiteboard:"
 
+// notesSteerIDSuffix is what the note delivery appended to the outer note
+// mutation's id when it minted the inner steer that told the session about the
+// note, before acceptance became atomic. Those inner records keep the steer
+// method, and the kind stamp only arrived later, so a record written in that
+// window has no kind to read; see steeringOriginFromJournal.
+const notesSteerIDSuffix = "/note-steer"
+
 // steeringOrigin names the durable provenance of a steering entry. kind is the
 // recorded SteeringKind, and method is the persisted client-mutation method that
 // wrote the entry; both survive on the journal record a restored session rebuilds
@@ -888,6 +895,30 @@ const humanNoteSteerPrefix = "human updated their whiteboard:"
 type steeringOrigin struct {
 	kind   string
 	method string
+}
+
+// steeringOriginFromJournal returns the durable provenance of one journal
+// record. A recorded kind or method decides as it always has. A record that kept
+// only the steer method is still note-origin when it is a legacy inner note steer
+// -- the note delivery's own id derivation (outer + notesSteerIDSuffix) plus the
+// outer notes/human/set record that wrote it -- so its text is normalized like
+// every other note-origin load path, and the entry carries the note kind. A steer
+// whose id merely ends that way, with no outer note record behind it, keeps the
+// method's decision: the suffix proves nothing on its own.
+func steeringOriginFromJournal(journal map[string]clientMutationRecord, id string) steeringOrigin {
+	record := journal[id]
+	origin := steeringOrigin{kind: record.SteeringKind, method: record.Method}
+	if origin.kind != "" || origin.method != clientMutationMethodSteer {
+		return origin
+	}
+	outer, matched := strings.CutSuffix(id, notesSteerIDSuffix)
+	if !matched {
+		return origin
+	}
+	if outerRecord, exists := journal[outer]; exists && outerRecord.Method == clientMutationMethodNotesHumanSet {
+		return steeringOrigin{kind: events.SteeringKindHumanNote}
+	}
+	return origin
 }
 
 // isHumanNoteSteer reports whether steering text came from a shared-notes update.

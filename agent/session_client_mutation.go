@@ -1283,7 +1283,8 @@ func (s *clientMutationStore) committedHumanNote() string {
 // restored steering turn, and the journal can outgrow the rest of the snapshot.
 // A record that kept neither field cannot decide anything and is left out, so
 // the caller falls back to the turn's own kind and then the write-path text
-// shape.
+// shape; a legacy inner note steer is decided by its outer note record instead
+// (see steeringOriginFromJournal).
 func (s *clientMutationStore) steeringOrigins() map[string]steeringOrigin {
 	if s == nil {
 		return nil
@@ -1291,14 +1292,15 @@ func (s *clientMutationStore) steeringOrigins() map[string]steeringOrigin {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	var origins map[string]steeringOrigin
-	for id, record := range s.state.Journal {
-		if record.SteeringKind == "" && record.Method == "" {
+	for id := range s.state.Journal {
+		origin := steeringOriginFromJournal(s.state.Journal, id)
+		if origin.kind == "" && origin.method == "" {
 			continue
 		}
 		if origins == nil {
 			origins = make(map[string]steeringOrigin, len(s.state.Journal))
 		}
-		origins[id] = steeringOrigin{kind: record.SteeringKind, method: record.Method}
+		origins[id] = origin
 	}
 	return origins
 }
