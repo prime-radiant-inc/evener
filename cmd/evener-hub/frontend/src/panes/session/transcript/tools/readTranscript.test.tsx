@@ -93,6 +93,12 @@ test("summary: same-owner job reads retain their complete distinct suffixes", ()
   expect(first).not.toBe(second);
 });
 
+test("summary: a job log read renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("read_transcript");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  expect(d.summary(call({ transcript_ref: `job:${id}` }))).toBe(`Read job log ${id}`);
+});
+
 test("summary: an expand_turn read names the turn it expanded", () => {
   const d = toolRendererFor("read_transcript");
   const envelope = {
