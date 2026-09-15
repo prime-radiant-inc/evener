@@ -15,6 +15,11 @@ import (
 // attempts and fails loudly past them. A no-op sleep shim skips the delay.
 func TestToolsGolangciRetriesTheDownload(t *testing.T) {
 	t.Parallel()
+	for _, tool := range []string{"make", "sh"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not on PATH (%v), so nothing can run the recipe", tool, err)
+		}
+	}
 	for _, tc := range []struct {
 		failures int
 		succeeds bool
