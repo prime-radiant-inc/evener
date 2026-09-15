@@ -1513,11 +1513,20 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
 	}
+	if err := c.requireAuth(); err != nil {
+		return err
+	}
 	name := strings.TrimSpace(params.Name)
 	model := strings.TrimSpace(params.Model)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Held across the write and the reload like every other mutation here
+	// (hubAuthController.credMu): a reload commits the credential view it
+	// read, so one running across a credential write's clear could publish a
+	// state that clear had already invalidated.
+	c.auth.credMu.Lock()
+	defer c.auth.credMu.Unlock()
 	if _, ok := c.reg.Get().Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}

@@ -206,7 +206,10 @@ async function applyMutation(
     // nothing about the listing the current client holds.
     if (connectionStore.getState().client === client) noteLandedMutation(reconcile?.instance ?? "");
     if (version !== requestVersion) {
-      reconcile?.supersededFor?.(response);
+      // A superseded answer from a client that is gone describes a listing
+      // this client never had: reconciling it would write the dead client's
+      // row into the current one.
+      if (connectionStore.getState().client === client) reconcile?.supersededFor?.(response);
       return false;
     }
     const refreshedDuringFlight = new Set([...refreshedInstances].filter((name) => !before.has(name)));
@@ -445,7 +448,13 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         credentialsStore.setState({ instances: merged, error: null });
       }
     } finally {
-      if (refreshVersions.get(name) === version) refreshVersions.delete(name);
+      // Only this client's entry: a reconnect clears the map, and the next
+      // client's refresh for the same instance restarts at version 1 — the
+      // old request's cleanup must not delete that newer token and discard
+      // its answer.
+      if (connectionStore.getState().client === client && refreshVersions.get(name) === version) {
+        refreshVersions.delete(name);
+      }
     }
   },
 

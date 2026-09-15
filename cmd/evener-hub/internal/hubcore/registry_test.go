@@ -485,7 +485,7 @@ func TestReloadPrunesLastGoodLiveForRemovedInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.mu.Lock()
-	h.pruneLastGoodLive(empty)
+	h.pruneLastGoodLive(empty, instanceIdentities(empty))
 	_, kept = h.lastGoodLive["gw"]
 	h.mu.Unlock()
 	if kept {
