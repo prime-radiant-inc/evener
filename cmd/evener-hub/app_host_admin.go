@@ -109,6 +109,75 @@ var remoteHostAdminMethods = map[string]struct{}{
 	appwire.MethodModelList: {},
 }
 
+// remoteHostAdminMutationMethods is the non-idempotent subset of
+// remoteHostAdminMethods: the forwarded methods that change the remote host's
+// durable state — provider instances, launch layers and repo trust,
+// marketplaces and plugins, credentials and login state, the personal
+// AGENTS.md, and the spawn form's directory creation.
+//
+// The proxy forwards these on the outcome-unknown error mapping instead of the
+// read methods' SessionUnavailable mapping. A transport failure mid-call cannot
+// be told apart from one where the remote applied the change and only the
+// answer was lost, and none of these carries an idempotency key or a
+// clientMutationId the remote could dedup on, so a caller that retried a
+// SessionUnavailable would risk a second instance, plugin install, or
+// credential write. The mutating call is answered with
+// ErrorMutationOutcomeUnknown and RetryDispositionBlocked so the outcome is
+// reported as unknown and no retry is implied.
+//
+// Like the allow-list, this is an EXACT-NAME set: every name must be a member
+// of remoteHostAdminMethods, every allow-listed name is classified here or as
+// an explicit read (see TestHostAdminMutationClassificationMatchesAllowList),
+// and a method added to the allow-list without a classification fails that
+// test.
+//
+// The read-only remainder — the families whose effect is a lookup or a
+// refetch, so an identical retry is harmless: instance/list, launch/{resolve,
+// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview,
+// checkNow}, auth/{status,test,list}, settings/agentsDoc/get, the discovery
+// helpers (paths/complete, path/validate, projects/recent, harnesses/list,
+// spawn/slashCatalog, git/head), and model/list — stays on AdminCall.
+var remoteHostAdminMutationMethods = map[string]struct{}{
+	// Provider instances: create/edit/remove/setDefault all write the host's
+	// instance config.
+	appwire.MethodEvenerInstanceCreate:     {},
+	appwire.MethodEvenerInstanceEdit:       {},
+	appwire.MethodEvenerInstanceRemove:     {},
+	appwire.MethodEvenerInstanceSetDefault: {},
+
+	// Launch config: writing a layer and trusting a repo both mutate the host.
+	appwire.MethodEvenerLaunchSetLayer:  {},
+	appwire.MethodEvenerLaunchTrustRepo: {},
+
+	// Marketplaces and plugins: the add/remove/edit/install/upgrade/toggle
+	// surface. (browse/list/refresh/preview/checkNow are reads.)
+	appwire.MethodEvenerMarketplaceAdd:       {},
+	appwire.MethodEvenerMarketplaceRemove:    {},
+	appwire.MethodEvenerMarketplaceEdit:      {},
+	appwire.MethodEvenerPluginInstall:        {},
+	appwire.MethodEvenerPluginUpgrade:        {},
+	appwire.MethodEvenerPluginRemove:         {},
+	appwire.MethodEvenerPluginEnable:         {},
+	appwire.MethodEvenerPluginDisable:        {},
+	appwire.MethodEvenerPluginSetAutoUpgrade: {},
+
+	// Auth and credentials: a login flow, a logout, or a credential write
+	// changes what the host can authenticate as. device/poll can complete the
+	// device flow and store credentials, so it is a mutation too.
+	appwire.MethodEvenerAuthLoginStart:        {},
+	appwire.MethodEvenerAuthLoginComplete:     {},
+	appwire.MethodEvenerAuthLogout:            {},
+	appwire.MethodEvenerAuthApiKeySet:         {},
+	appwire.MethodEvenerAuthApiKeyClear:       {},
+	appwire.MethodEvenerAuthCredentialJsonSet: {},
+	appwire.MethodEvenerAuthDeviceStart:       {},
+	appwire.MethodEvenerAuthDevicePoll:        {},
+
+	// The personal AGENTS.md, and the spawn form's directory creation.
+	appwire.MethodEvenerSettingsAgentsDocSet: {},
+	appwire.MethodEvenerDirsCreate:           {},
+}
+
 // remoteHostConfigNotifications is the exact set of host-owned config
 // notifications the fan-out re-emits to the controller's browser clients,
 // wrapped in evener/host/notification. Any other remote notification is
@@ -208,9 +277,19 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	if err != nil {
 		return nil, err
 	}
+	// A method that mutates the remote host is forwarded on the
+	// outcome-unknown mapping: a lost response reports that the change may or
+	// may not have been applied rather than a plain channel failure a caller
+	// might blind-retry. A read keeps AdminCall's SessionUnavailable mapping.
 	var out json.RawMessage
-	if err := remote.AdminCall(ctx, params.Method, params.Params, &out); err != nil {
-		return nil, err
+	var callErr error
+	if _, mutating := remoteHostAdminMutationMethods[params.Method]; mutating {
+		callErr = remote.AdminMutationCall(ctx, params.Method, params.Params, &out)
+	} else {
+		callErr = remote.AdminCall(ctx, params.Method, params.Params, &out)
+	}
+	if callErr != nil {
+		return nil, callErr
 	}
 	return out, nil
 }

@@ -273,6 +273,10 @@ func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelLi
 // CodeUnavailable/auto-resume rather than an InternalError, and so it matches
 // the pre-call offline refusal. A caller can still tell the two apart: a remote
 // refusal keeps its own code, a dead channel is SessionUnavailable.
+//
+// This mapping is right for the read-only methods on the proxy's allow-list.
+// A forwarded method that mutates the host uses AdminMutationCall instead,
+// whose lost-response mapping reports the mutation outcome as unknown.
 func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
@@ -285,6 +289,66 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 		return s.mapCallError(err)
 	}
 	return nil
+}
+
+// AdminMutationCall forwards one allow-listed hub-scoped admin RPC that is a
+// non-idempotent mutation (component 07a). It is AdminCall's mutating twin: the
+// request/response path is identical, and the remote's own result or semantic
+// refusal is returned verbatim, but a lost response is mapped differently.
+//
+// A transport failure on a forwarded mutation cannot be told apart from one
+// where the remote applied the change and only the answer was lost. Reporting
+// that as SessionUnavailable — AdminCall's mapping, correct for the read-only
+// methods — would invite exactly the blind retry that is unsafe for an
+// operation with no idempotency key: a retried instance/create makes a second
+// instance and a retried plugin/install a second install. The loss therefore
+// becomes ErrorMutationOutcomeUnknown with RetryDispositionBlocked, so the
+// caller is told the outcome is unknown and is not told to retry automatically.
+//
+// It mirrors mutationCall's remoteHubMutationCallError except for that
+// disposition. A forwarded thread mutation carries a clientMutationId the
+// remote dedups on, so the appwire retry-safe-mutation model can call its
+// transport loss "automatic"; an admin forward carries no such id
+// (HostRequestParams has none) and no admin method dedups, so the same loss is
+// "blocked". A semantic WireError keeps its code and message, exactly as on
+// AdminCall.
+func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return s.mapCallError(err)
+	}
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		return s.remoteHubAdminMutationCallError(err)
+	}
+	if err := client.Request(ctx, method, params, out); err != nil {
+		return s.remoteHubAdminMutationCallError(err)
+	}
+	return nil
+}
+
+// remoteHubAdminMutationCallError turns a transport-level loss on a forwarded
+// admin mutation into an explicit outcome-unknown error. Any other error shape
+// passes through mapped exactly as AdminCall maps it: caller cancellation stays
+// raw, and a semantic wire refusal keeps its own code.
+func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
+	mapped := s.mapCallError(err)
+	var wire appwire.WireError
+	if !errors.As(mapped, &wire) {
+		return mapped
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		return mapped
+	}
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: "mutation outcome is unknown after remote hub response loss: " + s.id,
+		Data: appwire.ErrorData{
+			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
+			MutationOutcome:  appwire.MutationOutcomeUnknown,
+			RetryDisposition: appwire.RetryDispositionBlocked,
+		},
+	}
 }
 
 // remoteHubHostSubscription is one host-level notification consumer, e.g. the
@@ -358,9 +422,19 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 // would stall the shared drain and therefore every thread notification for the
 // same client. A healthy consumer's pump keeps reading in, so drops are the
 // exception rather than the rule.
+//
+// The filter is applied before the matching subscriptions are snapshotted, so a
+// notification the filter rejects — the high-frequency thread/streaming
+// families that are the overwhelming majority of traffic on this goroutine —
+// costs a lock and a method comparison and builds no slice. Only a notification
+// the filter accepts pays for the snapshot.
 func (s *RemoteHubSource) publishHostNotification(client *appwire.Client, notification appwire.Notification) {
 	s.subMu.Lock()
 	filter := s.hostFilter
+	if filter != nil && !filter(notification.Method) {
+		s.subMu.Unlock()
+		return
+	}
 	subs := make([]*remoteHubHostSubscription, 0, len(s.hostSubs))
 	for sub := range s.hostSubs {
 		if sub.client == client {
@@ -368,9 +442,6 @@ func (s *RemoteHubSource) publishHostNotification(client *appwire.Client, notifi
 		}
 	}
 	s.subMu.Unlock()
-	if filter != nil && !filter(notification.Method) {
-		return
-	}
 	for _, sub := range subs {
 		select {
 		case sub.in <- notification:
