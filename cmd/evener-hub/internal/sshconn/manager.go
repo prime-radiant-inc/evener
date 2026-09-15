@@ -263,23 +263,25 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 			_ = stale.Close()
 		}
 	}()
-	// Bound the first attach when the caller set no deadline of its own, and tie
-	// it to the manager's lifetime: without the bound a hung remote command holds
-	// this host's lock for good (as on the reconnect path, attemptLimit), and
-	// without the tie an in-flight attempt outlives Manager.Close until its own
-	// deadline while its ssh child stays alive.
-	parent := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancelTimeout context.CancelFunc
-		parent, cancelTimeout = context.WithTimeout(ctx, m.opts.attemptLimit())
-		defer cancelTimeout()
-	}
-	attemptCtx, cancel := context.WithCancel(parent)
+	// Cap the attempt at attemptLimit whether or not the caller brought a
+	// deadline — a long caller deadline must not hold this host's lock that long —
+	// and tie it to the manager's lifetime: without the tie an in-flight attempt
+	// outlives Manager.Close until its own deadline, with its ssh child alive.
+	attemptCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
 	defer cancel()
 	stopClose := context.AfterFunc(m.baseCtx, cancel)
 	defer stopClose()
 	ch, err := m.ensureOnce(attemptCtx, host)
 	if err != nil {
+		// A terminal failure is the documented EventFailed case, not just a state
+		// transition: a consumer has to be able to tell it from a retryable one.
+		if isTerminal(err) {
+			m.failedEvent(name, err)
+			// The replacement cannot be built, so the dropped channel must not keep
+			// ownership: its supervisor would treat the host as its own and repeat a
+			// failure that cannot succeed. The deferred close reaps it.
+			m.clearChannel(name)
+		}
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
 		return nil, err
@@ -287,6 +289,23 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	if !m.publishChannel(name, ch) {
 		// Close landed while this attach was in flight. Handing back a channel
 		// that nothing will ever supervise would be a lie, so reap it.
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, ErrManagerClosed
+	}
+	// Validate before announcing, as reconnectOnce does: a channel that died
+	// between the handshake and here must not be installed, and consumers must not
+	// be told about one they cannot use. The window left is the inherent one
+	// between this check and the caller's first use.
+	if ch.isClosed() || ch.isLost() {
+		m.clearChannel(name)
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, errChannelDropped(name)
+	}
+	if m.isClosed() || ch.isClosed() {
+		// Close landed between publishing and announcing: nothing will supervise
+		// this channel, so consumers must not hear about it either.
 		lock.Unlock()
 		_ = ch.Close()
 		return nil, ErrManagerClosed
@@ -299,19 +318,16 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	}
 	m.attachEvent(name, StateAttached)
 	go m.supervise(host, ch, lock)
-	lock.Unlock()
-
-	// Validate last, so the window before the caller uses the channel is as small
-	// as it can be. Only the manager being closed is terminal here: a channel that
-	// died under us is a link drop, and the supervisor started above is already
-	// reconnecting, so that is reported as retryable. The deferred close above
-	// retires any replaced channel as we return.
-	if err := m.channelUsable(name, ch); err != nil {
-		if errors.Is(err, ErrManagerClosed) {
-			_ = ch.Close()
-		}
-		return nil, err
+	if m.isClosed() || ch.isClosed() {
+		// Close landed between announcing and returning. Consumers must be able to
+		// drop what they just installed, so pair the Attached with a Detached while
+		// the lock still orders the two.
+		m.detachEvent(name, StateDisconnected)
+		lock.Unlock()
+		_ = ch.Close()
+		return nil, ErrManagerClosed
 	}
+	lock.Unlock()
 	return ch, nil
 }
 
@@ -399,20 +415,22 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	stream := &stdioReadWriter{in: stdio.Stdin(), out: stdio.Stdout()}
 	monitor := newLinkMonitor(stream)
 	transport := appwire.NewStreamTransport(monitor)
-	client := appwire.NewClient(transport)
 	ch := &Channel{
 		host:      host,
 		facts:     facts,
 		stdio:     stdio,
 		transport: transport,
-		client:    client,
 		lost:      make(chan struct{}),
 		done:      make(chan struct{}),
 		stopped:   make(chan struct{}),
 	}
 	// A short read (EOF/error) is the link-down edge. Wire it before the read
-	// loop starts so no early drop is missed.
+	// loop starts so no early drop is missed. The client reads through a wrapper
+	// that reports codec-level receive errors too, because the byte-level monitor
+	// cannot see a frame the codec rejects after a successful read.
 	monitor.onErr = ch.markLost
+	client := appwire.NewClient(&lossWatchingTransport{Transport: transport, onErr: ch.markLost})
+	ch.client = client
 	// The client read loop must outlive this call's ctx; it ends when the
 	// transport is closed (Channel.Close or the link dying).
 	client.Start(m.baseCtx)
@@ -467,6 +485,24 @@ func reapBridge(transport *appwire.StreamTransport, stdio Stdio) {
 	}
 	_ = stdio.Kill()
 	_ = stdio.Wait()
+}
+
+// lossWatchingTransport reports every receive error as the channel's link-down
+// edge. linkMonitor only sees read-level failures, so a frame the codec rejects
+// after a successful read — malformed JSON, a bad length, an overflow — would
+// otherwise leave the manager holding a channel whose reader is gone. It does not
+// forward appwire.Pinger, deliberately: keepalive stays ssh's own ServerAlive*.
+type lossWatchingTransport struct {
+	appwire.Transport
+	onErr func()
+}
+
+func (t *lossWatchingTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	msg, err := t.Transport.Recv(ctx)
+	if err != nil {
+		t.onErr()
+	}
+	return msg, err
 }
 
 // supervise waits for host's channel to drop, then reconnects with bounded
@@ -591,7 +627,8 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrLaunchContract),
 		errors.Is(err, ErrSSHAuth),
 		errors.Is(err, ErrHostNotFound),
-		errors.Is(err, ErrPreflightDecode):
+		errors.Is(err, ErrPreflightDecode),
+		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
 		return false

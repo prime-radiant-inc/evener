@@ -61,6 +61,7 @@ func TestChannelArgv(t *testing.T) {
 	got := channelArgv(opts, host)
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
@@ -79,6 +80,7 @@ func TestChannelArgvDefaultsAndEmptyPath(t *testing.T) {
 	got := channelArgv(Options{}, hostreg.Host{Name: "alpha", SSH: "alpha.example"})
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
@@ -128,6 +130,7 @@ func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
 	got := channelArgv(Options{}, host)
 	want := []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",

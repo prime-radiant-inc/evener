@@ -905,10 +905,14 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 
 	var mu sync.Mutex
 	attaches := 0
+	var kinds []EventKind
 	var m *Manager
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
 	m = newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
+			mu.Lock()
+			kinds = append(kinds, ev.Kind)
+			mu.Unlock()
 			if ev.Kind != EventAttached {
 				return
 			}
@@ -940,6 +944,15 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 		t.Fatalf("Ensure racing Close = %v, want ErrManagerClosed", err)
 	}
 	waitClosed(t, ch1)
+
+	// Consumers installed a source on the Attached; the Detached that follows is
+	// what lets them drop it, so the pair has to be announced even on this path.
+	mu.Lock()
+	got := append([]EventKind(nil), kinds...)
+	mu.Unlock()
+	if len(got) < 2 || got[len(got)-2] != EventAttached || got[len(got)-1] != EventDetached {
+		t.Fatalf("Close racing the announce did not pair Attached with Detached: %v", got)
+	}
 }
 
 // Manager.Close must end an in-flight initial attach: otherwise its ssh child
@@ -980,6 +993,159 @@ func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("Close did not cancel the in-flight initial attach")
+	}
+}
+
+// A frame the codec rejects is not a read error, so the byte-level monitor never
+// sees it: without the transport wrapper the manager would keep the channel and
+// hand it out with its reader gone.
+func TestCodecErrorMarksTheLinkLost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	bridge := newFakeBridge(appwire.ProtocolVersion)
+	fr := &fakeRunner{
+		runFn:   cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) { return bridge.stdio, nil },
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// Garbage on the stream is a frame the codec cannot decode, delivered after a
+	// successful read.
+	if _, err := bridge.stdio.outW.Write([]byte("not-a-frame\n")); err != nil {
+		t.Fatalf("write malformed frame: %v", err)
+	}
+	waitForEvent(t, events, EventDetached)
+	if !ch.isLost() {
+		t.Fatal("a codec-level receive error did not mark the link lost")
+	}
+}
+
+// A terminal replacement failure must release the host: otherwise the dropped
+// channel's supervisor still treats it as owned and repeats a failure that cannot
+// succeed.
+func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	mismatch := false
+	starts := 0
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			refuse := mismatch
+			mu.Unlock()
+			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			starts++
+			mu.Unlock()
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// Queue Ensure ahead of the supervisor, as in the Close-race test, so the
+	// terminal failure is this call's.
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	mu.Lock()
+	mismatch = true
+	mu.Unlock()
+	ch1.markLost()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	lock.Unlock()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("Ensure = %v, want the terminal ErrProtocolIncompatible", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure never returned")
+	}
+
+	waitForEvent(t, events, EventFailed)
+	if got := m.currentChannel("alpha"); got != nil {
+		t.Fatalf("a terminal failure left the dropped channel mapped: %v", got)
+	}
+	waitClosed(t, ch1)
+	mu.Lock()
+	got := starts
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("Start calls = %d, want 1: a terminal failure must not be retried", got)
+	}
+}
+
+// A caller may bring a long deadline; it must not hold the host's lock for that
+// long, because the host's supervisor needs the lock to recover.
+func TestAttemptIsCappedEvenWithCallerDeadline(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{attemptTimeout: 20 * time.Millisecond})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(ctx, "alpha")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Ensure succeeded against a hung host")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a long caller deadline held the attempt: the cap is not applied")
+	}
+}
+
+// ErrManagerClosed means the manager is finished, so the reconnect loop must not
+// sleep and announce one more round before giving up.
+func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
+	if !isTerminal(ErrManagerClosed) {
+		t.Fatal("ErrManagerClosed is not terminal")
+	}
+	if isTerminal(ErrSSHStart) {
+		t.Fatal("a transport failure must stay retryable")
 	}
 }
 

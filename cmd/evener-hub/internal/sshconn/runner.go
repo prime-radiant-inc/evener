@@ -228,10 +228,13 @@ func sshSeconds(d time.Duration) string {
 	return strconv.Itoa(max(int(d/time.Second), 1))
 }
 
-// sshBaseArgv is the option prefix shared by every ssh invocation.
+// sshBaseArgv is the option prefix shared by every ssh invocation. -T refuses a
+// pseudo-terminal even when a user's ssh_config asks for one: a PTY would rewrite
+// newlines in the framed stream and fold remote diagnostics into stdout.
 func sshBaseArgv(o Options) []string {
 	return []string{
 		"ssh",
+		"-T",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=" + sshSeconds(o.connectTimeout()),
 		"-o", "ServerAliveInterval=" + sshSeconds(o.serverAliveInterval()),
