@@ -4,7 +4,7 @@
 // subject and no snapshot-only assertions.
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
 import { formatClockTime } from "../../../protocol/displayFormat";
 import type { NavigationWatchSummary } from "../../../protocol/types.gen";
@@ -58,15 +58,22 @@ function renderTree(
       watches={watches}
       omittedWatches={omittedWatches}
       omittedArmedWatches={omittedArmedWatches}
-      now={NOW}
       expandedFoldIDs={[]}
       onToggleFold={vi.fn()}
     />,
   );
 }
 
+// The tree no longer takes a clock prop - TreeNowContext reads Date.now() - so
+// these DOM assertions pin the system clock they build their expectations from.
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(NOW);
+});
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
