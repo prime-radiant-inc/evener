@@ -39,6 +39,7 @@ type embeddedSkillsCacheSnapshot struct {
 	fallbackUntil                        time.Time
 	lease                                skillsLease
 	heldLeases                           []heldSkillsLease
+	dirIdentity                          fs.FileInfo
 }
 
 func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
@@ -55,6 +56,7 @@ func saveEmbeddedSkillsCache() embeddedSkillsCacheSnapshot {
 		fallback:      embeddedSkillsCache.fallback,
 		lease:         embeddedSkillsCache.lease,
 		heldLeases:    append([]heldSkillsLease(nil), embeddedSkillsCache.heldLeases...),
+		dirIdentity:   embeddedSkillsCache.dirIdentity,
 	}
 }
 
@@ -80,6 +82,7 @@ func restoreEmbeddedSkillsCache(s embeddedSkillsCacheSnapshot) {
 	embeddedSkillsCache.lease = s.lease
 	embeddedSkillsCache.leasedDir = s.leasedDir
 	embeddedSkillsCache.heldLeases = s.heldLeases
+	embeddedSkillsCache.dirIdentity = s.dirIdentity
 }
 
 // releaseHeldSkillsLeases drops the leases the cache retains for copies this
@@ -495,6 +498,79 @@ func TestReapStaleCopies_RemovesAbandonedAndSuperseded(t *testing.T) {
 		if _, err := os.Stat(keep); err != nil {
 			t.Fatalf("%s was reaped: %v", keep, err)
 		}
+	}
+}
+
+// Retained fallback leases are capped: a process that keeps moving off fallback
+// copies must not hold a descriptor per epoch for the whole staleness window.
+func TestRetainHeldLeaseLocked_DropsTheOldestAtTheCap(t *testing.T) {
+	root := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, root)
+	t.Cleanup(releaseHeldSkillsLeases)
+
+	leases := make([]skillsLease, 0, maxHeldLeases+3)
+	for i := range maxHeldLeases + 3 {
+		name := fmt.Sprintf("copy-%d", i)
+		if err := os.MkdirAll(filepath.Join(root, name), 0o700); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		path, err := skillsLockPath(root, name, true)
+		if err != nil {
+			t.Fatalf("lock path for %s: %v", name, err)
+		}
+		lease, contended, err := acquireSkillsLease(path, false)
+		if err != nil || contended {
+			t.Fatalf("acquire lease for %s: contended=%v err=%v", name, contended, err)
+		}
+		leases = append(leases, lease)
+	}
+
+	embeddedSkillsCache.mu.Lock()
+	for _, lease := range leases {
+		retainHeldLeaseLocked(lease)
+	}
+	held := len(embeddedSkillsCache.heldLeases)
+	embeddedSkillsCache.mu.Unlock()
+
+	if held != maxHeldLeases {
+		t.Fatalf("held leases = %d, want %d", held, maxHeldLeases)
+	}
+	if leases[0].Valid() {
+		t.Fatal("oldest retained lease was not dropped at the cap")
+	}
+	if !leases[len(leases)-1].Valid() {
+		t.Fatal("newest retained lease was dropped")
+	}
+}
+
+// A copy replaced at its path must not be served on the strength of the lease
+// held for the copy it replaced.
+func TestEmbeddedSkillsDir_RejectsAReplacedCopy(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir: %v", err)
+	}
+	moved := dir + "-moved"
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatalf("move copy aside: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(moved) })
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("replace copy: %v", err)
+	}
+
+	again, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (replaced): %v", err)
+	}
+	// The replacement is rejected, so resolution rebuilds or republishes a copy
+	// with real content; a served replacement would be empty.
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(again, skills)
+	if len(skills) == 0 {
+		t.Fatalf("replacement resolution returned no skills from %q", again)
 	}
 }
 

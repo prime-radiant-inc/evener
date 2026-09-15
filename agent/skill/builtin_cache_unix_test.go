@@ -129,6 +129,34 @@ func TestReapStaleFallbackBases_UnlinksALinkWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+// A temp root another user could replace entries in must not be trusted with the
+// per-user cache.
+func TestDefaultEmbeddedSkillsBaseDir_RefusesAnUntrustedTempRoot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("TMPDIR", root)
+	if err := os.Chmod(root, 0o777); err != nil {
+		t.Fatalf("open up temp root: %v", err)
+	}
+	if _, err := defaultEmbeddedSkillsBaseDir(); err == nil {
+		t.Fatal("accepted a temp root without the sticky bit")
+	}
+	if err := os.Chmod(root, os.ModeSticky|0o777); err != nil {
+		t.Fatalf("make temp root sticky: %v", err)
+	}
+	t.Cleanup(func() {
+		privateSkillsBaseMu.Lock()
+		base := privateSkillsBase
+		privateSkillsBase = ""
+		privateSkillsBaseMu.Unlock()
+		if base != "" {
+			_ = os.RemoveAll(base)
+		}
+	})
+	if _, err := defaultEmbeddedSkillsBaseDir(); err != nil {
+		t.Fatalf("refused a sticky temp root: %v", err)
+	}
+}
+
 // A predictable base another user has squatted must yield one private base for
 // the process, not a fresh one per call: a retry that resolves a new base would
 // publish another copy there and keep another lease.

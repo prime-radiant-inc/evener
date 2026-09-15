@@ -53,6 +53,11 @@ const (
 	// once and keeps reading it refreshes mtime only when it resolves again, so
 	// the age is a use signal, not a hard lifetime.
 	staleRetainedMaxAge = 30 * 24 * time.Hour
+	// maxHeldLeases caps how many superseded fallback leases are retained. The
+	// staleness window bounds them in time and this bounds them in number, so a
+	// base that flaps between unusable and usable cannot exhaust descriptors;
+	// the oldest copies are dropped first.
+	maxHeldLeases = 8
 )
 
 // embeddedSkillsCache holds the published bundled-skills directory, the digest
@@ -84,6 +89,10 @@ var embeddedSkillsCache struct {
 	// accepted tradeoff. A copy is added only when the cache moves off a fallback
 	// it was serving, so a retry that keeps the same copy adds nothing.
 	heldLeases []heldSkillsLease
+	// dirIdentity is the directory this process validated for dir. Comparing
+	// identities rejects a replacement at the same path without re-digesting the
+	// tree on every resolution.
+	dirIdentity fs.FileInfo
 }
 
 // heldSkillsLease is the lease this process keeps on a fallback copy it no
@@ -146,7 +155,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
 		switch {
-		case embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached):
+		case embeddedSkillsCache.fallback && embeddedSkillsCache.verified &&
+			cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity):
 			// A fallback copy is only usable while its own lease is held, and it
 			// is only reused until the shared cache is due for another try.
 			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() &&
@@ -155,8 +165,9 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 				return cached, nil
 			}
 			retryFallbackDir = cached
-		case embeddedSkillsCache.verified && cacheDirExists(cached):
-			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
+		case embeddedSkillsCache.verified && cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity):
+			if err := claimEmbeddedSkillsLocked(cached); err == nil &&
+				cacheDirUnchanged(cached, embeddedSkillsCache.dirIdentity) {
 				touchDir(cached)
 				return cached, nil
 			}
@@ -166,6 +177,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		case !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest):
 			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
 				embeddedSkillsCache.verified = true
+				rememberCacheDirLocked(cached)
 				touchDir(cached)
 				return cached, nil
 			}
@@ -179,7 +191,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	// or can no longer be protected.
 	reuseFallbackLocked := func() (string, bool) {
 		if retryFallbackDir == "" || embeddedSkillsCache.dir != retryFallbackDir ||
-			embeddedSkillsCache.skills == nil || !cacheDirExists(retryFallbackDir) ||
+			embeddedSkillsCache.skills == nil ||
+			!cacheDirUnchanged(retryFallbackDir, embeddedSkillsCache.dirIdentity) ||
 			embeddedSkillsCache.lease == nil || !embeddedSkillsCache.lease.Valid() {
 			return "", false
 		}
@@ -230,6 +243,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.fallback = false
 		embeddedSkillsCache.fallbackBase = ""
 		embeddedSkillsCache.fallbackUntil = time.Time{}
+		rememberCacheDirLocked(dir)
 		// A replaced fallback base is deliberately not removed here: sessions
 		// from its window may still read skill files inside it, and the age-based
 		// reaper collects it once nothing holds it.
@@ -271,6 +285,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	embeddedSkillsCache.fallback = true
 	embeddedSkillsCache.fallbackBase = base
 	embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
+	rememberCacheDirLocked(dir)
 	return dir, nil
 }
 
@@ -320,10 +335,7 @@ func releasePreviousSkillsLeaseLocked() {
 		return
 	}
 	if embeddedSkillsCache.fallback && embeddedSkillsCache.lease.Valid() {
-		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, heldSkillsLease{
-			lease:        embeddedSkillsCache.lease,
-			protectUntil: time.Now().Add(staleRetainedMaxAge),
-		})
+		retainHeldLeaseLocked(embeddedSkillsCache.lease)
 		embeddedSkillsCache.lease = nil
 		embeddedSkillsCache.leasedDir = ""
 		// The superseded copy is no longer the cached fallback: if the replacement
@@ -335,6 +347,26 @@ func releasePreviousSkillsLeaseLocked() {
 		return
 	}
 	releaseSkillsLeaseLocked()
+}
+
+// retainHeldLeaseLocked keeps lease on a superseded fallback copy until the
+// reaper's staleness window passes, dropping the oldest retained lease once the
+// cap is reached so a flapping base cannot exhaust descriptors. The caller holds
+// the cache mutex.
+func retainHeldLeaseLocked(lease skillsLease) {
+	held := embeddedSkillsCache.heldLeases
+	if len(held) >= maxHeldLeases {
+		// Drop the oldest copy first: a flapping base must not leave this process
+		// holding a descriptor per epoch for the whole staleness window.
+		_ = held[0].lease.Release()
+		held[0] = heldSkillsLease{}
+		held = held[1:]
+	}
+	held = append(held, heldSkillsLease{
+		lease:        lease,
+		protectUntil: time.Now().Add(staleRetainedMaxAge),
+	})
+	embeddedSkillsCache.heldLeases = held
 }
 
 // releaseExpiredHeldLeasesLocked drops the retained leases whose protection
@@ -371,6 +403,7 @@ func forgetEmbeddedSkillsLocked() {
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
+	embeddedSkillsCache.dirIdentity = nil
 	embeddedSkillsCache.verified = false
 	embeddedSkillsCache.fallback = false
 	embeddedSkillsCache.fallbackBase = ""
@@ -379,10 +412,7 @@ func forgetEmbeddedSkillsLocked() {
 		// Sessions created while this fallback was current may still read its
 		// files, so its lease is retained until the reaper's staleness window has
 		// passed.
-		embeddedSkillsCache.heldLeases = append(embeddedSkillsCache.heldLeases, heldSkillsLease{
-			lease:        embeddedSkillsCache.lease,
-			protectUntil: time.Now().Add(staleRetainedMaxAge),
-		})
+		retainHeldLeaseLocked(embeddedSkillsCache.lease)
 		embeddedSkillsCache.lease = nil
 		embeddedSkillsCache.leasedDir = ""
 		return
@@ -414,6 +444,9 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// shared temp root: joining an empty root would produce a relative name, so
 	// the randomized private base below is used instead.
 	if root != "" {
+		if err := ensureTrustedRoot(root); err != nil {
+			return "", err
+		}
 		dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
 		if err := ensurePrivateCacheDir(dir); err == nil {
 			return dir, nil
@@ -425,6 +458,9 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	// session; it is not shared between processes, which is the price of the
 	// name being unusable. It is resolved once per process: publishing into a
 	// fresh base on every retry would keep a copy and a lease per retry.
+	if err := ensureTrustedRoot(os.TempDir()); err != nil {
+		return "", err
+	}
 	privateSkillsBaseMu.Lock()
 	defer privateSkillsBaseMu.Unlock()
 	if privateSkillsBase != "" && cacheDirExists(privateSkillsBase) {
@@ -436,6 +472,23 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 	}
 	privateSkillsBase = fallback
 	return fallback, nil
+}
+
+// ensureTrustedRoot reports whether root may hold a per-user cache. A root this
+// process owns privately, or one carrying the sticky bit, cannot have its
+// per-user entry replaced by another user between validation and use.
+func ensureTrustedRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("checking skill cache root %s: %w", root, err)
+	}
+	if !dirInfo(info) {
+		return fmt.Errorf("skill cache root %s is not a directory", root)
+	}
+	if !tempRootTrusted(info) {
+		return fmt.Errorf("skill cache root %s can be replaced by other users", root)
+	}
+	return nil
 }
 
 // reapStaleFallbackBases removes randomized fallback bases this user's earlier
@@ -681,6 +734,29 @@ func dirInfo(info fs.FileInfo) bool {
 func cacheDirExists(dir string) bool {
 	info, err := os.Lstat(dir)
 	return err == nil && dirInfo(info)
+}
+
+// rememberCacheDirLocked records the directory the cache resolved, with the
+// identity later resolutions compare against. The caller holds the cache mutex.
+func rememberCacheDirLocked(dir string) {
+	info, err := os.Lstat(dir)
+	if err != nil || !dirInfo(info) {
+		embeddedSkillsCache.dirIdentity = nil
+		return
+	}
+	embeddedSkillsCache.dirIdentity = info
+}
+
+// cacheDirUnchanged reports whether dir is still the directory this process
+// validated, rather than a replacement at the same path. os.SameFile compares
+// the platform's directory identity, so a swapped copy is rejected without
+// re-digesting the tree on every resolution.
+func cacheDirUnchanged(dir string, identity fs.FileInfo) bool {
+	if identity == nil {
+		return false
+	}
+	info, err := os.Lstat(dir)
+	return err == nil && dirInfo(info) && os.SameFile(info, identity)
 }
 
 // touchDir refreshes a cache directory's modification time, and its base's, so

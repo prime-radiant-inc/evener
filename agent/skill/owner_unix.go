@@ -32,3 +32,13 @@ func cacheDirHasPrivatePermissions(info fs.FileInfo) bool {
 func cacheDirOwnerCanWrite(info fs.FileInfo) bool {
 	return info.Mode().Perm()&0o700 == 0o700
 }
+
+// tempRootTrusted reports whether a root may hold a per-user cache: one carrying
+// the sticky bit, or one this process owns with no group or other write, so no
+// other user can replace the per-user entry between validation and use.
+func tempRootTrusted(info fs.FileInfo) bool {
+	if info.Mode()&os.ModeSticky != 0 {
+		return true
+	}
+	return cacheDirOwnedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
+}

@@ -17,3 +17,7 @@ func cacheDirHasPrivatePermissions(fs.FileInfo) bool { return true }
 
 // cacheDirOwnerCanWrite cannot be checked portably on these platforms.
 func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }
+
+// tempRootTrusted cannot be checked portably on these platforms; their temp
+// directory is per-user, which is the accepted limit of the check.
+func tempRootTrusted(fs.FileInfo) bool { return true }
