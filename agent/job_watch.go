@@ -2496,9 +2496,7 @@ func (jm *jobManager) liveWatchSummaries() []watchListEntry {
 // always agree on which watches are visible; only liveWatchSummaries feeds
 // job_list's model-facing output, and this one leaves it untouched.
 func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
-	statuses := jm.liveWatchStatusesForSession(jm.sessionID)
-	sortWatchStatuses(statuses)
-	return statuses
+	return jm.liveWatchStatusesForSession(jm.sessionID)
 }
 
 // liveWatchStatusesForSession is liveWatchStatuses' session-parameterized body:
@@ -2506,6 +2504,14 @@ func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
 // config with no receiver key belongs to the manager that owns it, so it is
 // visible only when that manager is sessionID's own; otherwise a descendant's
 // keyless watch would leak onto an ancestor's projection.
+//
+// The rows are ordered by (source, id) before returning. The walk below reads a
+// map, so without this the order varies between two snapshots of unchanged
+// state -- unstable wire output, and row churn for a consumer that rebuilds its
+// rows from it. The order lives here, next to the walk, rather than at each call
+// site: four of this function's callers sorted the result afterward, and the
+// fifth published an unordered projection that no test could distinguish from a
+// changed one.
 func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatusInfo {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -2519,6 +2525,7 @@ func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatu
 		}
 		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
 	}
+	sortWatchStatuses(statuses)
 	return statuses
 }
 

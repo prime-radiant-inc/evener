@@ -255,6 +255,51 @@ func TestSessionDetailedStatusProjectsWatches(t *testing.T) {
 	}
 }
 
+// TestSessionDetailedStatusOrdersWatches pins the order of the projected rows.
+// The projection walks the live-watch map, so without an explicit order two
+// snapshots of unchanged state can differ run to run: the wire output is
+// unstable and a consumer rebuilding its rows sees churn where nothing changed.
+// Every other projection of these rows orders them by (source, id), and this one
+// must agree. Enough rows are installed that a map walk cannot plausibly land in
+// sorted order by chance.
+func TestSessionDetailedStatusOrdersWatches(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	const timers = 8
+	for i := 0; i < timers; i++ {
+		if _, err := s.jobManager.configureWatch(watchArgs{
+			Operation: "create", Source: "self", Target: runtimeMessageAliasCaller,
+			AfterSeconds: 600, Note: "wake me",
+		}); err != nil {
+			t.Fatalf("install timer watch %d: %v", i, err)
+		}
+	}
+	// A job-sourced row too, so the assertion exercises both legs of the
+	// (source, id) order rather than only the id leg.
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create shell: %v", err)
+	}
+	if _, err := s.jobManager.configureWatch(watchArgs{
+		Operation: "create", Target: rec.JobID, OutputMatch: "ready",
+	}); err != nil {
+		t.Fatalf("install output watch: %v", err)
+	}
+
+	const want = timers + 1
+	ds := s.DetailedStatus()
+	if len(ds.Watches) != want {
+		t.Fatalf("DetailedStatus.Watches = %+v, want %d rows", ds.Watches, want)
+	}
+	for i := 1; i < len(ds.Watches); i++ {
+		prev, cur := ds.Watches[i-1], ds.Watches[i]
+		if prev.Source > cur.Source || (prev.Source == cur.Source && prev.ID >= cur.ID) {
+			t.Fatalf("DetailedStatus.Watches row %d is out of order: (%q, %q) then (%q, %q) in\n%+v",
+				i, prev.Source, prev.ID, cur.Source, cur.ID, ds.Watches)
+		}
+	}
+}
+
 // installOutputWatchForDeliveryTimes installs a real output-match watch through
 // the same configureWatch path job_watch uses and returns its id, target, and a
 // feeder that drives exactly one real delivery per call. The watch carries no
