@@ -169,9 +169,10 @@ type Manager struct {
 	baseCtx context.Context
 	cancel  context.CancelFunc
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
-	chans map[string]*Channel
+	mu     sync.Mutex
+	closed bool
+	locks  map[string]*sync.Mutex
+	chans  map[string]*Channel
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -198,6 +199,9 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 // exponential backoff and jitter until Manager.Close. ctx bounds this call and
 // the handshake, not the channel's lifetime.
 func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
+	if m.isClosed() {
+		return nil, ErrManagerClosed
+	}
 	if m.reg == nil {
 		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, name)
 	}
@@ -209,30 +213,50 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if ch := m.currentChannel(name); ch != nil && !ch.isClosed() {
+	if ch := m.liveChannel(name); ch != nil {
 		return ch, nil
+	}
+	// A channel whose link has dropped is no longer usable. Reap it here so this
+	// attach is its only owner; its supervisor sees the replacement and stands
+	// down instead of racing a second reconnect.
+	if stale := m.currentChannel(name); stale != nil {
+		m.clearChannel(name)
+		_ = stale.Close()
 	}
 	ch, err := m.ensureOnce(ctx, host)
 	if err != nil {
 		m.stateEvent(name, StateDisconnected)
 		return nil, err
 	}
-	m.setChannel(name, ch)
+	if !m.publishChannel(name, ch) {
+		// Close landed while this attach was in flight. Handing back a channel
+		// that nothing will ever supervise would be a lie, so reap it.
+		_ = ch.Close()
+		m.stateEvent(name, StateDisconnected)
+		return nil, ErrManagerClosed
+	}
 	m.attachEvent(name, StateAttached)
 	go m.supervise(host, ch, lock)
 	return ch, nil
 }
 
-// Close cancels every supervisor and closes every live channel. It is
-// terminal; a later Ensure starts a fresh attach.
+// Close cancels every supervisor and closes every live channel. It is terminal
+// for the Manager: the base context stays canceled, and a later Ensure reports
+// ErrManagerClosed rather than attaching a channel nothing would supervise.
 func (m *Manager) Close() error {
-	m.cancel()
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	m.closed = true
+	m.cancel()
 	chans := make([]*Channel, 0, len(m.chans))
 	for _, ch := range m.chans {
 		chans = append(chans, ch)
 	}
 	m.mu.Unlock()
+
 	var first error
 	for _, ch := range chans {
 		if err := ch.Close(); err != nil && first == nil {
@@ -261,7 +285,7 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	sink := newDiagSink(m.opts.stderr())
 	stdio, err := m.runner.Start(ctx, argv, sink)
 	if err != nil {
-		return nil, fmt.Errorf("%w: host %q: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
+		return nil, sshRunFailure(host.Name, "start bridge", err, sink.tail())
 	}
 
 	stream := &stdioReadWriter{in: stdio.Stdin(), out: stdio.Stdout()}
@@ -298,6 +322,11 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	}); err != nil {
 		_ = stdio.Kill()
 		go func() { _ = stdio.Wait() }()
+		if m.baseCtx.Err() != nil {
+			// Close landed while the handshake was in flight. The canceled base
+			// context, not a transport fault, is why this channel is unusable.
+			return nil, ErrManagerClosed
+		}
 		if _, isMismatch := errors.AsType[appwire.ProtocolVersionMismatchError](err); isMismatch {
 			return nil, fmt.Errorf("%w: host %q: %w", ErrProtocolIncompatible, host.Name, err)
 		}
@@ -311,7 +340,7 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 		_ = transport.Close()
 		_ = stdio.Kill()
 		go func() { _ = stdio.Wait() }()
-		return nil, m.baseCtx.Err()
+		return nil, ErrManagerClosed
 	}
 
 	go func() {
@@ -325,48 +354,78 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 // supervise waits for host's channel to drop, then reconnects with bounded
 // exponential backoff. It never issues a hub-start command: re-attach is a
 // fresh bridge/client against the already-running host hub.
+//
+// It holds the host lock only around state inspection, channel teardown, and
+// one attach attempt. The backoff sleep happens with the lock released, so a
+// concurrent Ensure never waits behind a delay that can reach BackoffMax.
 func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	select {
 	case <-ch.lost:
 	case <-m.baseCtx.Done():
 		return
 	}
+
 	lock.Lock()
-	defer lock.Unlock()
 	if m.baseCtx.Err() != nil || ch.isClosed() || m.currentChannel(host.Name) != ch {
+		lock.Unlock()
 		return
 	}
-
 	m.clearChannel(host.Name)
 	m.stateEvent(host.Name, StateReconnecting)
 	m.detachEvent(host.Name, StateReconnecting)
+	// Tearing the dead channel down can block on the ssh child's exit, which
+	// needs no lock; a concurrent Ensure only has to be serialized against the
+	// attach below.
+	lock.Unlock()
 	_ = ch.Close()
 
 	delay := m.opts.backoffBase()
 	for {
-		if err := m.baseCtx.Err(); err != nil {
-			m.stateEvent(host.Name, StateDisconnected)
-			return
-		}
 		if err := m.opts.waitSleep(m.baseCtx, m.jitterFor(delay)); err != nil {
 			m.stateEvent(host.Name, StateDisconnected)
 			return
 		}
-		nch, err := m.ensureOnce(m.baseCtx, host)
-		if err == nil {
-			m.setChannel(host.Name, nch)
-			m.attachEvent(host.Name, StateAttached)
-			go m.supervise(host, nch, lock)
-			return
-		}
-		if isTerminal(err) {
-			m.failedEvent(host.Name, err)
-			m.stateEvent(host.Name, StateDisconnected)
+		if !m.reconnectOnce(host, lock) {
 			return
 		}
 		m.stateEvent(host.Name, StateReconnecting)
 		delay = nextBackoff(delay, m.opts.backoffMax())
 	}
+}
+
+// reconnectOnce runs one re-attach attempt with the host lock held, and reports
+// whether another attempt is worth making. Every outcome that ends the
+// supervisor emits its own state event first.
+func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
+	lock.Lock()
+	defer lock.Unlock()
+
+	if m.baseCtx.Err() != nil {
+		m.stateEvent(host.Name, StateDisconnected)
+		return false
+	}
+	if m.liveChannel(host.Name) != nil {
+		// Another Ensure attached while we slept; its supervisor owns the host.
+		return false
+	}
+	nch, err := m.ensureOnce(m.baseCtx, host)
+	if err == nil {
+		if !m.publishChannel(host.Name, nch) {
+			// Close landed mid-attempt; reap the channel it would have orphaned.
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateDisconnected)
+			return false
+		}
+		m.attachEvent(host.Name, StateAttached)
+		go m.supervise(host, nch, lock)
+		return false
+	}
+	if isTerminal(err) {
+		m.failedEvent(host.Name, err)
+		m.stateEvent(host.Name, StateDisconnected)
+		return false
+	}
+	return true
 }
 
 func (m *Manager) jitterFor(d time.Duration) time.Duration {
@@ -419,10 +478,36 @@ func (m *Manager) currentChannel(name string) *Channel {
 	return m.chans[name]
 }
 
-func (m *Manager) setChannel(name string, ch *Channel) {
+// liveChannel returns name's channel when it is present and still usable. A
+// channel whose link has dropped is not usable: Ensure must attach a fresh one
+// rather than hand back a handle that fails on first use.
+func (m *Manager) liveChannel(name string) *Channel {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	ch := m.chans[name]
+	if ch == nil || ch.isClosed() || ch.isLost() {
+		return nil
+	}
+	return ch
+}
+
+// publishChannel records ch as name's channel unless Close already ran, in which
+// case nothing would ever supervise it: the caller reaps ch and reports
+// ErrManagerClosed instead.
+func (m *Manager) publishChannel(name string, ch *Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return false
+	}
 	m.chans[name] = ch
+	return true
+}
+
+func (m *Manager) isClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
 }
 
 func (m *Manager) clearChannel(name string) {
@@ -519,6 +604,17 @@ func (c *Channel) markLost() {
 func (c *Channel) isClosed() bool {
 	select {
 	case <-c.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// isLost reports whether the link has dropped. The channel is unusable from that
+// moment on, even though Close may not have run yet.
+func (c *Channel) isLost() bool {
+	select {
+	case <-c.lost:
 		return true
 	default:
 		return false

@@ -5,9 +5,9 @@
 //
 //   - preflights the host non-interactively (uname -> GOOS/GOARCH, HOME/XDG
 //     roots, and the host binary's launch-check protocol/version/launch_flags);
-//   - spawns `ssh <dest> <evener_path> hub attach --stdio` and wraps the child's
-//     stdin/stdout in an appwire.StreamTransport, exposing an initialized
-//     appwire.Client;
+//   - spawns `ssh <opts> -- <dest> <evener_path> hub attach --stdio` and wraps
+//     the child's stdin/stdout in an appwire.StreamTransport, exposing an
+//     initialized appwire.Client;
 //   - supervises the channel, reconnecting with bounded exponential backoff when
 //     the link drops, and never starting a hub on the host.
 //

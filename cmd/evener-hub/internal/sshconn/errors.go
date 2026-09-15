@@ -37,4 +37,9 @@ var (
 	// environment probe) that could not be parsed. Treated as an incompatible
 	// host: terminal.
 	ErrPreflightDecode = errors.New("sshconn: preflight output unparseable")
+
+	// ErrManagerClosed marks an Ensure on a Manager whose Close has already run.
+	// Close is terminal for the Manager: the base context is canceled for good,
+	// so no channel created after it would ever be supervised.
+	ErrManagerClosed = errors.New("sshconn: manager closed")
 )

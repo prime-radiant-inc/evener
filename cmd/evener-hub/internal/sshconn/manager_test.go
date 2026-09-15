@@ -248,23 +248,287 @@ func TestEnsurePreflightDecodeFailure(t *testing.T) {
 	}
 }
 
-func TestEnsureStartFailureIsErrSSHStart(t *testing.T) {
+func TestEnsureStartFailureClassification(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{
-		runFn: cannedRun(nil),
-		startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
-			// A BatchMode auth failure kills the child with no handshake.
-			_, _ = stderr.Write([]byte("bob@alpha.example: Permission denied (publickey).\n"))
-			return nil, errors.New("exit status 255")
+	cases := []struct {
+		name    string
+		stderr  string
+		wantErr error
+	}{
+		{
+			// Under BatchMode ssh never prompts, so a refusal must not be retried.
+			name:    "auth refusal is terminal",
+			stderr:  "bob@alpha.example: Permission denied (publickey).\n",
+			wantErr: ErrSSHAuth,
+		},
+		{
+			// A start-level failure with no auth marker stays retryable.
+			name:    "transport failure stays retryable",
+			stderr:  "ssh: connect to host alpha.example port 22: Connection refused\n",
+			wantErr: ErrSSHStart,
 		},
 	}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	_, err := m.Ensure(context.Background(), "alpha")
-	if !errors.Is(err, ErrSSHStart) {
-		t.Fatalf("err = %v, want ErrSSHStart", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{
+				runFn: cannedRun(nil),
+				startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
+					_, _ = stderr.Write([]byte(tc.stderr))
+					return nil, errors.New("exit status 255")
+				},
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			_, err := m.Ensure(context.Background(), "alpha")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
-	// A start-level failure is ErrSSHStart; classification of an
-	// initialize-time auth failure is covered by isAuthFailure's unit test.
+}
+
+func TestEnsureAfterCloseFailsWithErrManagerClosed(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("err = %v, want ErrManagerClosed", err)
+	}
+	if len(fr.recordedRuns()) != 0 || len(fr.recordedStarts()) != 0 {
+		t.Fatal("Ensure on a closed manager still ran commands")
+	}
+}
+
+// A dropped link makes its channel unusable before the supervisor has replaced
+// it. Ensure must never hand that dead handle back to a caller.
+func TestEnsureReplacesLostChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 1: %v", err)
+	}
+	ch1.markLost()
+
+	ch2, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure 2: %v", err)
+	}
+	if ch2 == ch1 {
+		t.Fatal("Ensure returned the lost channel")
+	}
+	if ch2.isClosed() || ch2.isLost() {
+		t.Fatal("replacement channel is not usable")
+	}
+	waitClosed(t, ch1)
+}
+
+// The supervisor's backoff sleep can reach BackoffMax. A concurrent Ensure must
+// not be stuck behind it.
+func TestReconnectSleepDoesNotHoldHostLock(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	starts := 0
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			starts++
+			mu.Unlock()
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	sleepFn := func(context.Context, time.Duration) error {
+		enterOnce.Do(func() { close(sleepEntered) })
+		<-release
+		return nil
+	}
+	defer releaseOnce.Do(func() { close(release) })
+
+	events := make(chan Event, 128)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Second,
+		sleep:       sleepFn,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch1.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("supervisor never entered the backoff sleep")
+	}
+
+	type result struct {
+		ch  *Channel
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ch, err := m.Ensure(context.Background(), "alpha")
+		done <- result{ch: ch, err: err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("Ensure during backoff: %v", r.err)
+		}
+		if r.ch == ch1 {
+			t.Fatal("Ensure returned the lost channel")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure blocked while the supervisor slept: the host lock is held across the backoff")
+	}
+
+	// Waking up, the supervisor must stand down instead of clobbering the fresh
+	// channel with a second reconnect.
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	got := starts
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("Start calls = %d, want 2 (initial + the Ensure attach)", got)
+	}
+}
+
+// Close during an in-flight attach must not leave a channel behind that nothing
+// will supervise.
+func TestEnsureInFlightCloseIsRejected(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startOnce, releaseOnce sync.Once
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			startOnce.Do(func() { close(started) })
+			<-release
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	defer releaseOnce.Do(func() { close(release) })
+
+	m := newTestManager(t, reg, fr, Options{})
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		errCh <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("attach never reached the runner")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrManagerClosed) {
+			t.Fatalf("in-flight Ensure err = %v, want ErrManagerClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight Ensure did not return")
+	}
+	if ch := m.currentChannel("alpha"); ch != nil {
+		t.Fatal("closed manager kept a channel")
+	}
+}
+
+// A preflight that cannot authenticate is terminal: the reconnect loop must not
+// hammer a host that cannot let us in.
+func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	authFail := false
+	starts := 0
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			fail := authFail
+			mu.Unlock()
+			if fail {
+				return []byte("bob@alpha.example: Permission denied (publickey).\n"), errors.New("exit status 255")
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			starts++
+			mu.Unlock()
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	mu.Lock()
+	authFail = true
+	mu.Unlock()
+	ch.markLost()
+
+	ev := waitForEvent(t, events, EventFailed)
+	if !errors.Is(ev.Err, ErrSSHAuth) {
+		t.Fatalf("failed event err = %v, want ErrSSHAuth", ev.Err)
+	}
+	mu.Lock()
+	got := starts
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("Start calls = %d, want 1 (an auth refusal must not re-attach)", got)
+	}
+}
+
+// waitClosed fails unless ch reaches the closed state within the deadline. A
+// supervisor may close a channel just after releasing the host lock, so a
+// concurrent Ensure cannot assume it already happened.
+func waitClosed(t *testing.T, ch *Channel) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ch.isClosed() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("channel was never closed")
 }
 
 func TestReconnectBackoffAndFreshStartWithoutHubStart(t *testing.T) {

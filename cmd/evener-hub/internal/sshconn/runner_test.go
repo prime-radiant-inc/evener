@@ -1,7 +1,9 @@
 package sshconn
 
 import (
+	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +62,7 @@ func TestChannelArgv(t *testing.T) {
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
+		"--",
 		"bob@alpha.example",
 		"/opt/evener/bin/evener",
 		"hub", "attach", "--stdio",
@@ -77,6 +80,7 @@ func TestChannelArgvDefaultsAndEmptyPath(t *testing.T) {
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
+		"--",
 		"alpha.example",
 		"evener",
 		"hub", "attach", "--stdio",
@@ -93,12 +97,62 @@ func TestRawAndEvenerCommandArgv(t *testing.T) {
 	if raw[0] != "ssh" || raw[len(raw)-2] != "alpha.example" || raw[len(raw)-1] != "uname -s" {
 		t.Fatalf("rawCommandArgv = %v", raw)
 	}
+	if raw[len(raw)-3] != "--" {
+		t.Fatalf("rawCommandArgv missing option terminator before the dest: %v", raw)
+	}
 	lc := evenerCommandArgv(opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json")
 	if lc[len(lc)-5] != "evener" || lc[len(lc)-4] != "launch-check" {
 		t.Fatalf("evenerCommandArgv = %v", lc)
 	}
 	if lc[len(lc)-3] != "--protocol" || lc[len(lc)-2] != appwire.ProtocolVersion {
 		t.Fatalf("protocol argv tail = %v", lc)
+	}
+	if lc[len(lc)-7] != "--" {
+		t.Fatalf("evenerCommandArgv missing option terminator before the dest: %v", lc)
+	}
+}
+
+// A registry entry is host-owned config, but it must never be able to smuggle an
+// ssh option: "-oProxyCommand=..." would run a command on the controller.
+func TestSSHDestGuardsOptionInjection(t *testing.T) {
+	const hostile = "-oProxyCommand=touch /tmp/pwned"
+	host := hostreg.Host{Name: "evil", SSH: hostile}
+	argvs := map[string][]string{
+		"raw":     rawCommandArgv(Options{}, host, "uname -s"),
+		"evener":  evenerCommandArgv(Options{}, host, "launch-check", "--json"),
+		"channel": channelArgv(Options{}, host),
+	}
+	for name, argv := range argvs {
+		dash := slices.Index(argv, "--")
+		dest := slices.Index(argv, hostile)
+		if dash < 0 {
+			t.Fatalf("%s: argv has no option terminator: %v", name, argv)
+		}
+		if dest != dash+1 {
+			t.Fatalf("%s: dest index %d is not the argument after -- at %d: %v", name, dest, dash, argv)
+		}
+	}
+}
+
+// execRunner.Run must keep the streams apart: ssh writes benign notices to
+// stderr, and merging them into a preflight response corrupts every parse
+// downstream.
+func TestExecRunnerRunSeparatesStreams(t *testing.T) {
+	r := execRunner{}
+	out, err := r.Run(context.Background(), []string{"sh", "-c", "printf stdout-only; printf 'ssh: warning' >&2"}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(out) != "stdout-only" {
+		t.Fatalf("success output = %q, want %q", out, "stdout-only")
+	}
+
+	out, err = r.Run(context.Background(), []string{"sh", "-c", "printf partial; printf boom >&2; exit 3"}, nil)
+	if err == nil {
+		t.Fatal("Run on a failing command reported no error")
+	}
+	if !strings.Contains(string(out), "partial") || !strings.Contains(string(out), "boom") {
+		t.Fatalf("failure output = %q, want both streams for the diagnostic", out)
 	}
 }
 

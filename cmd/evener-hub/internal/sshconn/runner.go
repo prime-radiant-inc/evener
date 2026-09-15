@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -23,7 +24,11 @@ import (
 type Runner interface {
 	// Start spawns a long-lived child; stderr is the caller's diagnostic sink.
 	Start(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
-	// Run executes a one-shot command and returns combined stdout+stderr.
+	// Run executes a one-shot command. On success it returns the command's
+	// stdout alone: ssh writes benign notices (host-key additions, a login
+	// message) to stderr, and a caller that parses the result must not see them.
+	// On failure it returns stdout and stderr together, because the cause (an
+	// ssh refusal, launch-check's complaint) may be on either stream.
 	Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
 }
 
@@ -63,15 +68,22 @@ func (execRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (S
 	return &execStdio{cmd: cmd, stdin: stdin, stdout: stdout}, nil
 }
 
-// Run executes a one-shot command. It returns combined output so an operator
-// diagnostic (ssh's stderr, launch-check's message) is available on failure.
+// Run executes a one-shot command with the two streams kept apart: success
+// returns stdout only, so ssh's stderr chatter cannot corrupt a parse; failure
+// returns both, so whatever explains the exit status is in hand.
 func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 	if len(argv) == 0 {
 		return nil, errors.New("empty argv")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = stdin
-	return cmd.CombinedOutput()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return append(stdout.Bytes(), stderr.Bytes()...), err
+	}
+	return stdout.Bytes(), nil
 }
 
 // execStdio owns one exec.Cmd's pipes. Wait and Kill are each run at most once
@@ -152,6 +164,14 @@ func sshBaseArgv(o Options) []string {
 	}
 }
 
+// sshDest is ssh's destination argument, always placed after the "--" option
+// terminator. A registry value that begins with "-" has to be read as a
+// hostname and never as an ssh option: "-oProxyCommand=..." would otherwise run
+// a command on the controller. ssh(1) ends option parsing at "--".
+func sshDest(h hostreg.Host) []string {
+	return []string{"--", composeDest(h)}
+}
+
 // composeDest turns a registry host into ssh's destination argument. A host
 // reaching here normally has no "@" when User is set (hostreg rejects the
 // ambiguous pair at add time with ErrAmbiguousSSHUser), but the composition is
@@ -173,24 +193,26 @@ func evenerCommand(path string) string {
 	return "evener"
 }
 
-// rawCommandArgv builds `ssh <opts> <dest> <remote>` for a remote command that
-// is not evener (uname, the environment probe).
+// rawCommandArgv builds `ssh <opts> -- <dest> <remote>` for a remote command
+// that is not evener (uname, the environment probe).
 func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 	argv := sshBaseArgv(o)
-	return append(argv, composeDest(h), remote)
+	argv = append(argv, sshDest(h)...)
+	return append(argv, remote)
 }
 
-// evenerCommandArgv builds `ssh <opts> <dest> <evener> <args...>`.
+// evenerCommandArgv builds `ssh <opts> -- <dest> <evener> <args...>`.
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
-	argv = append(argv, composeDest(h), evenerCommand(h.EvenerPath))
+	argv = append(argv, sshDest(h)...)
+	argv = append(argv, evenerCommand(h.EvenerPath))
 	return append(argv, args...)
 }
 
 // channelArgv is the exact non-interactive bridge form:
 //
 //	ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
-//	    -o ServerAliveCountMax=<n> <dest> <evener_path> hub attach --stdio
+//	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
 func channelArgv(o Options, h hostreg.Host) []string {
 	return evenerCommandArgv(o, h, "hub", "attach", "--stdio")
 }

@@ -188,7 +188,7 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 		if isProtocolMismatchOutput(checkOut) {
 			return pf, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(checkOut))
 		}
-		return pf, fmt.Errorf("%w: host %q launch-check: %w: %s", ErrSSHStart, host.Name, err, tail(checkOut))
+		return pf, sshRunFailure(host.Name, "launch-check", err, tail(checkOut))
 	}
 	lc, err := parseLaunchCheck(checkOut)
 	if err != nil {
@@ -206,12 +206,12 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	return pf, nil
 }
 
-// runRemote runs a non-evener remote command and wraps a spawn/transport
-// failure as ErrSSHStart.
+// runRemote runs a non-evener remote command, classifying a failure as an auth
+// refusal or a transport failure.
 func (m *Manager) runRemote(ctx context.Context, host hostreg.Host, remote string) ([]byte, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 	if err != nil {
-		return out, fmt.Errorf("%w: host %q command %q: %w: %s", ErrSSHStart, host.Name, remote, err, tail(out))
+		return out, sshRunFailure(host.Name, fmt.Sprintf("command %q", remote), err, tail(out))
 	}
 	return out, nil
 }
@@ -246,4 +246,16 @@ func isAuthFailure(stderr string) bool {
 		}
 	}
 	return false
+}
+
+// sshRunFailure classifies a failed one-shot ssh invocation. An authentication
+// refusal is terminal (ErrSSHAuth): under BatchMode ssh never prompts, so
+// retrying only hammers a host that cannot let us in. Everything else is a
+// transport failure and stays retryable (ErrSSHStart). diag is carried either
+// way, because it names the cause.
+func sshRunFailure(hostName, what string, err error, diag string) error {
+	if isAuthFailure(diag) {
+		return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHAuth, hostName, what, err, diag)
+	}
+	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
 }
