@@ -352,3 +352,28 @@ test("eviction preserves a record while a pane still holds its ref", async () =>
   });
   expect(result.current?.text).toBe("kept");
 });
+
+test("an acknowledged draft is swept once no pane holds its ref", async () => {
+  const record = await persisted("B");
+  // The sync creates the clean record the persistence adoption upgrades
+  // into a submitted one (the retry-after-resume shape).
+  syncHumanNote("ref-a", "A");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+
+  // The pane is already gone, so the workspace-change sweep found the
+  // record while it was still submitted and preserved it.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: null });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(result.current?.submitted?.id).toBe(record.clientMutationId);
+
+  // The save lands. Nothing is pending anymore, so the acknowledgment
+  // itself must schedule the sweep that reclaims the record - no further
+  // workspace change will ever come to do it.
+  act(() => acknowledgeHumanNote(record, "B"));
+  await waitFor(() => expect(result.current).toBeUndefined());
+});
