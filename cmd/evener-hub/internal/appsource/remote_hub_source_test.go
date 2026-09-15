@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 type remoteCall struct {
@@ -414,6 +416,47 @@ func TestRemoteHubSourcePreservesSemanticWireError(t *testing.T) {
 	}
 	if !strings.Contains(wire.Message, "boom") {
 		t.Fatalf("message = %q, want it to preserve %q", wire.Message, "boom")
+	}
+}
+
+// A component-04 attach failure to start the SSH bridge is host unavailability,
+// not a generic internal error: the AppWire layer must see SessionUnavailable so
+// the fleet view and the auto-resume gate can attribute and recover it. The
+// terminal sshconn classes (authentication, protocol) stay raw so a host that
+// can never attach is not retried forever.
+func TestRemoteHubSourceMapsSSHAttachFailureToSessionUnavailable(t *testing.T) {
+	start := fmt.Errorf("%w: host %q: %w: %s", sshconn.ErrSSHStart, "host", errors.New("exit status 255"), "ssh: connect to host host port 22: Connection refused")
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, start
+	})
+	_, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err == nil {
+		t.Fatal("ListThreads succeeded despite an SSH start failure")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable || wireErrorInfo(wire) != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("ssh start failure = %T %v, want SessionUnavailable", err, err)
+	}
+
+	for _, terminal := range []struct {
+		name string
+		err  error
+	}{
+		{"authentication", fmt.Errorf("%w: host %q: %s", sshconn.ErrSSHAuth, "host", "Permission denied (publickey)")},
+		{"protocol", fmt.Errorf("%w: host %q", sshconn.ErrProtocolIncompatible, "host")},
+	} {
+		t.Run(terminal.name, func(t *testing.T) {
+			source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+				return nil, terminal.err
+			})
+			_, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+			if err == nil {
+				t.Fatal("ListThreads succeeded despite a terminal attach failure")
+			}
+			if _, mapped := errors.AsType[appwire.WireError](err); mapped {
+				t.Fatalf("%s failure = %v, want the raw terminal error", terminal.name, err)
+			}
+		})
 	}
 }
 
