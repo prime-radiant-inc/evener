@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/png"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -127,13 +128,7 @@ func TestEstimateMessagesInputTokens_RedactedThinkingBillsTextOnly(t *testing.T)
 // no replay metadata marks it. Before the provider-aware rule this was zero.
 func TestEstimateInputTokens_AnthropicReplaysUnsignedThinkingText(t *testing.T) {
 	rawText := strings.Repeat("t", 400)
-	req := Request{
-		Provider: "anthropic",
-		Model:    "claude-test",
-		Messages: []Message{{Role: RoleAssistant, Content: []ContentPart{
-			{Kind: ContentThinking, Thinking: &ThinkingData{Text: rawText}},
-		}}},
-	}
+	req := thinkingOnlyRequest("anthropic", "claude-test", rawText)
 
 	if got, want := EstimateInputTokens(req).Tokens, len(rawText)/4; got != want {
 		t.Fatalf("Tokens = %d, want %d: the Anthropic adapter replays unsigned thinking text", got, want)
@@ -432,6 +427,18 @@ func TestClient_CountInputTokens_FallsBackToLocalEstimate(t *testing.T) {
 	}
 }
 
+// testPNG1024 is the one image the image-accounting tests need. Encoding it per
+// call allocates 4 MiB for bytes that never change, so it is built once.
+var testPNG1024 = sync.OnceValue(func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1024, 1024))
+	img.Set(0, 0, color.RGBA{R: 255, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+})
+
 func pngImage(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -532,7 +539,7 @@ func TestEstimateInputTokens_ProviderNameDominatesTheClaudeModelFallback(t *test
 // names (the history entry point) must not fall back to the generic placeholder
 // for a row whose protocol has its own image-token rules.
 func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -556,7 +563,7 @@ func TestEstimateMessagesInputTokensForResolved_UsesTheResolvedMediaFamily(t *te
 // image must keep its own tokenizer family. The surface decides before the
 // protocol; without a surface the protocol still does.
 func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -587,7 +594,7 @@ func TestEstimateMessagesInputTokensForResolved_SurfaceBeatsTheWireProtocol(t *t
 // vendor's own, and with a generic surface the protocol alone would pick the
 // wrong tokenizer. An unrecognized family still falls through to the protocol.
 func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsTheWireProtocol(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -673,7 +680,7 @@ func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing
 // Mistral, OLMo, OpenChat or OPT model -- or a gateway path like openrouter/* or
 // ollama/* -- served over another protocol keeps that protocol's image rules.
 func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -695,7 +702,7 @@ func TestEstimateMessagesInputTokensForResolved_OPrefixIsNotAnOpenAIClaim(t *tes
 // while carrying an OpenAI provider surface still bills Anthropic's image rules,
 // because the surface describes where the row was reached, not what the model is.
 func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsProviderSurface(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -712,7 +719,7 @@ func TestEstimateMessagesInputTokensForResolved_ModelFamilyBeatsProviderSurface(
 // a row's instance alias: the resolved and name-based estimators must agree on a
 // row that carries no other facts.
 func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	req := Request{
 		Provider: "google", Model: "gateway-zz",
 		Messages: []Message{{Role: RoleUser, Content: []ContentPart{
@@ -730,7 +737,7 @@ func TestEstimateInputTokensForResolved_KeepsTheCallersProviderName(t *testing.T
 // not carry, or the request estimate and the history estimate disagree about one
 // row.
 func TestEstimateInputTokensForResolved_InstanceAliasDoesNotOutrankTheRowProtocol(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -749,7 +756,7 @@ func TestEstimateInputTokensForResolved_InstanceAliasDoesNotOutrankTheRowProtoco
 // protocol) must not claim a vendor's image rules for a row that does not carry
 // them.
 func TestLocalInputEstimateKeepsTheCallersProviderNotTheInstance(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentText, Text: "hello"},
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
@@ -768,7 +775,7 @@ func TestLocalInputEstimateKeepsTheCallersProviderNotTheInstance(t *testing.T) {
 // text-only input, so no image family is claimed for them -- not from the
 // protocol they are served over and not from anything else.
 func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -789,7 +796,7 @@ func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily
 // registry never classified, so a resolved target's family comes from the row's
 // own facts and the wire protocol, not from what its instance is called.
 func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}
@@ -809,7 +816,7 @@ func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(
 // own family → surface rule (llm/registry §6.1): claude, gemini/gemma, gpt and
 // the o family are recognized, and gpt-oss is deliberately generic.
 func TestEstimateMessagesInputTokensForResolved_NameIdentifiesTheFamilyWhenTheRowDoesNot(t *testing.T) {
-	data := pngImage(t, 1024, 1024)
+	data := testPNG1024()
 	messages := []Message{{Role: RoleUser, Content: []ContentPart{
 		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
 	}}}

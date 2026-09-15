@@ -349,19 +349,11 @@ func sameProfileTarget(a, b *provider.Profile) bool {
 	return sameEstimatorTarget(a.Resolved(), b.Resolved())
 }
 
-// sameEstimatorTarget compares the resolved fields the token estimator reads.
+// sameEstimatorTarget compares the resolved fields the token estimator reads. The
+// rules belong to the estimator, so the comparison lives with them
+// (llm.EstimatorTargetsEquivalent) and this only names what it is for here.
 func sameEstimatorTarget(a, b registry.Resolved) bool {
-	if a.Surface != b.Surface || a.Model.Family != b.Model.Family {
-		return false
-	}
-	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
-		return false
-	}
-	// Reasoning is compared as the estimator's own predicate, not as the raw bool:
-	// a nil capability means the row never said, which bills unsigned thinking
-	// text, while an explicit false disables reasoning and drops it -- and an
-	// explicit true bills exactly as nil does (see unsignedThinkingReplayed).
-	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
+	return llm.EstimatorTargetsEquivalent(a, b)
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race
@@ -393,6 +385,14 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
 	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, history, sysPromptChars)
+}
+
+// pressureWithProfile reads pressure and the profile it was measured against from
+// ONE snapshot, so a compaction layer's decision and that layer's before/after
+// diagnostics describe one model even if SetProfile lands in between.
+func (cm *Manager) pressureWithProfile(history *[]schema.Turn, sysPromptChars int) (float64, *provider.Profile) {
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
 }
 
 // pressureFromSnapshot is estimatePressure's core for callers that already hold a
@@ -588,12 +588,9 @@ func (cm *Manager) MaybeCompact(
 	}
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
-	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
-	// decide a layer by one model and describe it by another.
-	pressure := func() (float64, *provider.Profile) {
-		prof, lastTokens, measuredLen := cm.profileSnapshot()
-		return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
-	}
+	// snapshot (see pressureWithProfile), so a concurrent SetProfile cannot decide
+	// a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) { return cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := pressure()
 	compacted := false

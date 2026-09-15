@@ -62,10 +62,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 	// Each phase reads pressure and its before/after diagnostics from ONE
 	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
 	// decide a layer by one model and describe it by another.
-	pressure := func() (float64, *provider.Profile) {
-		prof, lastTokens, measuredLen := s.cm.profileSnapshot()
-		return s.cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
-	}
+	pressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := pressure()
 	compacted := false

@@ -395,6 +395,11 @@ func (t targetInfo) mediaFamily() string {
 	return ""
 }
 
+// gptOSSName is the family spelling the registry classifies as deliberately
+// generic: its rows declare text-only input, so neither the family map nor the
+// name rule may claim a vendor's image tokenizer for it.
+const gptOSSName = "gpt-oss"
+
 // mediaFamilyFromModelFamily maps the registry's model family to the image-token
 // family it bills as. The rule mirrors the registry's own family → surface rule
 // (llm/registry §6.1) so one classification serves both: claude* and
@@ -407,7 +412,7 @@ func mediaFamilyFromModelFamily(family string) string {
 	switch {
 	case strings.HasPrefix(f, "claude"):
 		return "anthropic"
-	case strings.HasPrefix(f, "gpt-oss"):
+	case genericModelFamily(f):
 		return ""
 	case strings.HasPrefix(f, "gpt"), f == "o", f == "o-mini", f == "o-pro":
 		return "openai"
@@ -422,7 +427,7 @@ func mediaFamilyFromModelFamily(family string) string {
 // deliberately generic -- a family whose rows carry no vendor tokenizer rules at
 // all, so no image family may be inferred for them from anywhere else.
 func genericModelFamily(family string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(family)), "gpt-oss")
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(family)), gptOSSName)
 }
 
 // targetFromNames builds the name-based view used by the exported entry points
@@ -565,7 +570,7 @@ func providerTokenFamily(provider, model string) string {
 	// invisible here: "gpt-" matches the OpenAI branch, and a gateway's
 	// openai/gpt-oss name matches the leading-"o" one, so without this the name
 	// stage re-claims the tokenizer the family map just declined.
-	if strings.Contains(m, "gpt-oss") {
+	if strings.Contains(m, gptOSSName) {
 		return ""
 	}
 	switch {
@@ -590,6 +595,20 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	estimateReq := req
 	estimateReq.Provider = callerProvider
 	return EstimateInputTokensForResolved(t.res, estimateReq)
+}
+
+// EstimatorTargetsEquivalent reports whether two resolved rows are one estimator
+// target: the fields the local estimate reads decide, so a caller that keeps a
+// measurement keyed to a target does not have to re-list them and drift when the
+// rules grow.
+func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
+	if a.Protocol != b.Protocol || a.Surface != b.Surface || a.Model.Family != b.Model.Family {
+		return false
+	}
+	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
+		return false
+	}
+	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
 }
 
 // oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"

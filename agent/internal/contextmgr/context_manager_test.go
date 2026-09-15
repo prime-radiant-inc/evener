@@ -972,6 +972,22 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 
 // --- Phase 6: MaybeCompact orchestrator ---
 
+// thinkingHeavyHistory is the shared input for the profile-read concurrency
+// tests: a long history whose turns are replayable thinking text, so the two
+// profiles' accounting differs across any window between their reads.
+func thinkingHeavyHistory() []schema.Turn {
+	history := make([]schema.Turn, 0, 3000)
+	for range 3000 {
+		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
+			},
+		}})
+	}
+	return history
+}
+
 // makeBigHistory creates a history where EstimateTokens returns approximately targetTokens.
 func makeBigHistory(targetTokens int) []schema.Turn {
 	cm := NewManager(testProfile("openai", "gpt-5.2", 1_000_000), nil, cheapmodel.New(nil))
@@ -1750,15 +1766,7 @@ func TestContextManager_UsageEstimatePairsOneProfilesWindow(t *testing.T) {
 
 	// A long history widens the window between the estimator's profile reads,
 	// and replayable thinking text makes the two profiles' accounting differ.
-	history := make([]schema.Turn, 0, 3000)
-	for range 3000 {
-		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
-			},
-		}})
-	}
+	history := thinkingHeavyHistory()
 
 	cm := NewManager(openai, nil, cheapmodel.New(nil))
 	wantOpenAI := NewManager(openai, nil, cheapmodel.New(nil)).EstimateUsage(history, 0)
@@ -2874,15 +2882,7 @@ func TestContextManager_UsageEstimateKeepsProfileAndMeasurementTogether(t *testi
 	openai := testProfile("openai", "gpt-5.2", 1_000_000)
 	anthropic := testProfile("anthropic", "claude-opus-4-6", 200_000)
 
-	history := make([]schema.Turn, 0, 3000)
-	for range 3000 {
-		history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
-			Role: llm.RoleAssistant,
-			Content: []llm.ContentPart{
-				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning the anthropic adapter replays and the responses adapter does not"}},
-			},
-		}})
-	}
+	history := thinkingHeavyHistory()
 
 	measured := func(prof *provider.Profile) schema.ContextMetrics {
 		cm := NewManager(prof, nil, cheapmodel.New(nil))
