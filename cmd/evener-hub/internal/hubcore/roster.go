@@ -183,14 +183,10 @@ type Roster struct {
 	ownershipRefreshRunning bool
 	queuedOwnershipRefresh  *rosterRefreshBatch
 
-	// procAlive reports whether a daemon PID is still running. A failed AppWire
-	// probe to a live process means the daemon is busy, not gone, so its session
-	// is kept; injectable for tests.
-	procAlive func(pid int) bool
-	// procIdentity reports whether the live process at an entry's PID is still
-	// the daemon that wrote the entry. Liveness alone cannot tell a daemon
-	// that is busy from a PID the kernel handed to something else after the
-	// daemon crashed; both fail the probe and both answer signal 0.
+	// procIdentity is what the host says about the process a rendezvous
+	// entry names: gone or verifiably another process (NotOwner, the crashed
+	// path), the daemon itself, or nothing it can vouch for. Consulted only
+	// when the probe did not answer for the entry's own session.
 	procIdentity func(rendezvous.Entry) ProcessIdentity
 
 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
@@ -232,7 +228,6 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		bySess:            make(map[string]LiveEntry),
 		byPID:             make(map[int]LiveEntry),
 		entryPublishedGen: make(map[int]uint64),
-		procAlive:         processAlive,
 		procIdentity:      processIdentity,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
@@ -250,11 +245,16 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 	return r
 }
 
-// SetProcessAlive overrides the process-liveness probe. Tests with synthetic
-// rendezvous claims must not depend on whether their PIDs exist on the host.
-func (r *Roster) SetProcessAlive(probe func(int) bool) *Roster {
-	r.procAlive = probe
-	return r
+// SetProcessAlive overrides process liveness alone: a PID the probe calls dead
+// is NotOwner, one it calls alive is Unknown. Tests with synthetic rendezvous
+// claims must not depend on whether their PIDs exist on the host.
+func (r *Roster) SetProcessAlive(alive func(pid int) bool) *Roster {
+	return r.SetProcessIdentity(func(entry rendezvous.Entry) ProcessIdentity {
+		if !alive(entry.PID) {
+			return ProcessNotOwner
+		}
+		return ProcessIdentityUnknown
+	})
 }
 
 // ProcessIdentity is what the host can say about the process behind a
@@ -529,30 +529,23 @@ func (r *Roster) refresh() error {
 	}
 	for _, res := range results {
 		e := res.entry
-		// A probe that answers proves that a daemon of this hub listens at
-		// the entry's endpoint (the token it presents is the hub's own,
-		// shared by every daemon the hub spawns), not that entry.PID is that
-		// daemon: a crashed daemon's file whose port another daemon re-bound
-		// would otherwise be published under a PID anything may have reused.
-		// The process behind the PID is asked whether or not the probe
-		// answered; verified not the owner, the entry takes the crashed path
-		// - never the unconfirmed one, which would park a reused PID with a
-		// closed socket forever (turns refused, deletion blocked, the stale
-		// file never cleaned).
-		// One verdict per entry per refresh, reused below: the probe is a
-		// real inspection of a process, and two calls in one pass could
-		// disagree. A roster built without a prober admits every entry as
-		// listed and asks the host nothing, so it asks nothing here either.
+		// An answering probe is bound to the entry's session (StatusProber),
+		// so it vouches for the entry. When it does not answer, the process
+		// behind the PID is asked, once per entry per refresh: gone, or verifiably another
+		// process, takes the crashed path (never the unconfirmed one, which
+		// would park a reused PID with a closed socket forever); a daemon that
+		// is still itself, or a host that cannot tell, is retained on
+		// liveness alone. A roster built without a prober admits every entry
+		// and asks the host nothing.
 		identity := ProcessIdentityUnknown
-		if r.prober != nil {
+		if r.prober != nil && !res.OK {
 			identity = r.procIdentity(e)
 		}
-		disowned := identity == ProcessNotOwner
-		if disowned {
+		if identity == ProcessNotOwner {
 			res.OK = false
 		}
 		if !res.OK {
-			alive := !disowned && r.procAlive(e.PID)
+			alive := identity != ProcessNotOwner
 			if alive {
 				for _, claim := range previousUnconfirmed {
 					if claim.PID == e.PID {

@@ -62,15 +62,13 @@ func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
 
 // And the positive case through the real verifier: a live process at the
 // entry's PID that started after the entry was written is another process
-// (a PID the kernel reused), so the entry is never published - whether the
-// socket is closed, as a crashed daemon's is, or still answers - and reads as
-// crashed rather than parking unconfirmed. Both orders, since the closed
-// socket is the one a reused PID actually presents.
+// (a PID the kernel reused), so once the socket stops answering the entry is
+// never published again - it reads as crashed rather than parking unconfirmed.
 func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
 	for _, order := range []struct {
 		name   string
 		probes []bool
-	}{{"socket closed first", []bool{false, true}}, {"socket answering first", []bool{true, false}}} {
+	}{{"socket closed", []bool{false, false}}} {
 		t.Run(order.name, func(t *testing.T) {
 			startedAt := time.Now().UTC()
 			time.Sleep(50 * time.Millisecond) // the reused PID's process starts after the entry
@@ -107,7 +105,7 @@ func TestRosterTreatsItsOwnPIDAsAnotherProcess(t *testing.T) {
 	dir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), SessionID: "01HUB", ThreadID: "01HUB", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01HUB"), StartedAt: time.Now().UTC()}
 	writeRendezvous(t, dir, entry)
-	roster := NewRoster(dir, &flakyProber{sessionID: "01HUB"})
+	roster := NewRoster(dir, &flakyProber{sessionID: "01HUB", fail: true})
 	roster.Refresh()
 	if roster.HasConfirmedEntry(entry) {
 		t.Fatal("a file naming the hub's own PID was published as a daemon")

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -20,7 +21,11 @@ import (
 type linuxProcess struct{ pid, fd int }
 
 // NewController creates the native daemon identity verifier.
-func NewController() Controller { return controller{bind: openLinuxProcess} }
+func NewController() Controller { return controller{bind: nativeBind} }
+
+// nativeBind opens this platform's generation-bound handle on a process.
+var nativeBind = openLinuxProcess
+
 func openLinuxProcess(pid int) (processHandle, error) {
 	fd, err := unix.PidfdOpen(pid, 0)
 	if errors.Is(err, unix.ESRCH) {
@@ -90,11 +95,7 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	auxv, err := os.ReadFile("/proc/self/auxv")
-	if err != nil {
-		return identity{}, err
-	}
-	hz, err := linuxClockTicks(auxv, int(unsafe.Sizeof(uintptr(0))))
+	hz, err := linuxClockHZ()
 	if err != nil {
 		return identity{}, err
 	}
@@ -197,6 +198,16 @@ func linuxOwnsLock(data []byte, pid int, dev, ino uint64) bool {
 	return writable && locked
 }
 
+// linuxClockHZ is the kernel's clock tick rate, read once from this
+// process's auxiliary vector (AT_CLKTCK).
+var linuxClockHZ = sync.OnceValues(func() (uint64, error) {
+	auxv, err := os.ReadFile("/proc/self/auxv")
+	if err != nil {
+		return 0, err
+	}
+	return linuxClockTicks(auxv, int(unsafe.Sizeof(uintptr(0))))
+})
+
 func linuxClockTicks(data []byte, word int) (uint64, error) {
 	for len(data) >= word*2 {
 		var tag, value uint64
@@ -219,12 +230,6 @@ func linuxClockTicks(data []byte, word int) (uint64, error) {
 		data = data[word*2:]
 	}
 	return 0, errors.New("process clock frequency unavailable")
-}
-
-// linuxStartOffset is the upper bound of the start tick: (ticks+1)/hz.
-func linuxStartOffset(ticks, hz uint64) (time.Duration, error) {
-	_, upper, err := linuxStartOffsetBounds(ticks, hz)
-	return upper, err
 }
 
 // linuxStartOffsetBounds is the tick's two bounds, ticks/hz and (ticks+1)/hz:

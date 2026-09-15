@@ -36,7 +36,11 @@ type darwinProcess struct {
 }
 
 // NewController creates the native daemon identity verifier.
-func NewController() Controller { return controller{bind: openDarwinProcess} }
+func NewController() Controller { return controller{bind: nativeBind} }
+
+// nativeBind opens this platform's generation-bound handle on a process.
+var nativeBind = openDarwinProcess
+
 func openDarwinProcess(pid int) (processHandle, error) {
 	unique, version, err := darwinGeneration(pid)
 	if err != nil {

@@ -15,24 +15,82 @@ import (
 // ErrExited means the bound process has been confirmed absent.
 var ErrExited = errors.New("daemon process exited")
 
-// ErrNotDaemon means verification positively found another process at the
-// daemon's PID: a fact that cannot hold for the daemon that wrote the entry -
-// another owner, a start after the entry was written, a generation change
-// under inspection. A refusal that only means the inspection could not vouch
-// for the process does not carry it: no generation or start time read, the
-// log descriptor not seen, an inspection error, or an argv that is not an
-// `evener serve` invocation - the entry does not record how its daemon was
-// launched, and a daemon run inside another binary (a test helper) is still
-// that daemon. Kill refuses on every failure alike; only the roster's reading
-// of a failure differs.
-var ErrNotDaemon = errors.New("process is not the daemon its rendezvous entry names")
+// Identity is what one inspection can say about the process at a daemon's
+// PID.
+type Identity int
 
-// notDaemonError keeps each refusal's own message and answers errors.Is for
-// ErrNotDaemon.
-type notDaemonError struct{ reason string }
+const (
+	// IdentityUnknown: the inspection could not vouch either way - it could
+	// not run, or a fact it read only fails to confirm the daemon (an argv
+	// that is not an `evener serve` invocation, the API log not seen, a start
+	// that may postdate the entry).
+	IdentityUnknown Identity = iota
+	// IdentityOwner: the process is the daemon the target names.
+	IdentityOwner
+	// IdentityNotOwner: the process is gone, or a fact that cannot hold for
+	// the daemon does - another owner, a start after the entry was written,
+	// an identity that changed under inspection.
+	IdentityNotOwner
+)
 
-func (e notDaemonError) Error() string        { return e.reason }
-func (e notDaemonError) Is(target error) bool { return target == ErrNotDaemon }
+// Identify reports whether the process at t.PID is the daemon t names, with
+// the reason when it is not Owner. Only positive evidence answers NotOwner;
+// this is the reading a roster deciding what to list needs. Kill refuses on
+// every failure alike (verify), owner or not.
+func Identify(t Target) (Identity, error) {
+	if err := t.validate(); err != nil {
+		return IdentityUnknown, err
+	}
+	h, err := nativeBind(t.PID)
+	if errors.Is(err, ErrExited) {
+		return IdentityNotOwner, nil
+	}
+	if err != nil {
+		return IdentityUnknown, err
+	}
+	defer func() { _ = h.close() }()
+	v, err := h.inspect(t)
+	if errors.Is(err, ErrExited) {
+		return IdentityNotOwner, nil
+	}
+	if err != nil {
+		return IdentityUnknown, err
+	}
+	return judge(v, t)
+}
+
+// judge applies the facts one inspection yields against the target.
+func judge(v identity, t Target) (Identity, error) {
+	if v.generation == "" {
+		return IdentityUnknown, errors.New("daemon process generation unknown")
+	}
+	if v.uid != os.Geteuid() {
+		return IdentityNotOwner, errors.New("daemon process belongs to another user")
+	}
+	if v.startedAt.IsZero() {
+		return IdentityUnknown, errors.New("daemon process start time unknown")
+	}
+	// Positive evidence needs the EARLIEST the process can have started to be
+	// after the entry; a start that merely may postdate the entry (Linux
+	// knows it to the tick) fails to vouch.
+	lower := v.startedAtLower
+	if lower.IsZero() {
+		lower = v.startedAt
+	}
+	if lower.After(t.StartedAt) {
+		return IdentityNotOwner, errors.New("daemon process started after its rendezvous identity")
+	}
+	if v.startedAt.After(t.StartedAt) {
+		return IdentityUnknown, errors.New("daemon process may have started after its rendezvous identity")
+	}
+	if len(v.argv) < 2 || v.argv[1] != "serve" {
+		return IdentityUnknown, errors.New("daemon process is not a serve command")
+	}
+	if !v.ownsLog {
+		return IdentityUnknown, errors.New("daemon process does not own the session API log")
+	}
+	return IdentityOwner, nil
+}
 
 // Target is the rendezvous identity and canonical session data location.
 type Target struct {
@@ -82,15 +140,23 @@ type process struct {
 	closed     bool
 }
 
-func (c controller) Open(t Target) (Process, error) {
+// validate refuses a target no inspection could be bound to.
+func (t Target) validate() error {
 	if t.PID <= 1 || t.PID > 1<<31-1 || t.PID == os.Getpid() {
-		return nil, errors.New("refuse invalid or self daemon PID")
+		return errors.New("refuse invalid or self daemon PID")
 	}
 	if t.SessionID == "" || t.SessionID == "." || t.SessionID == ".." || strings.ContainsAny(t.SessionID, "/\\\x00") {
-		return nil, errors.New("missing or invalid daemon session identity")
+		return errors.New("missing or invalid daemon session identity")
 	}
 	if !filepath.IsAbs(t.StateDir) || t.StartedAt.IsZero() {
-		return nil, errors.New("missing canonical state directory or rendezvous start time")
+		return errors.New("missing canonical state directory or rendezvous start time")
+	}
+	return nil
+}
+
+func (c controller) Open(t Target) (Process, error) {
+	if err := t.validate(); err != nil {
+		return nil, err
 	}
 	h, err := c.bind(t.PID)
 	if err != nil {
@@ -118,38 +184,11 @@ func (p *process) verify() error {
 		if err != nil {
 			return err
 		}
-		if v.generation == "" {
-			return errors.New("daemon process generation unknown")
-		}
 		if p.generation != "" && v.generation != p.generation {
-			return notDaemonError{"daemon process generation changed"}
+			return errors.New("daemon process generation changed")
 		}
-		if v.uid != os.Geteuid() {
-			return notDaemonError{"daemon process belongs to another user"}
-		}
-		if v.startedAt.IsZero() {
-			return errors.New("daemon process start time unknown")
-		}
-		// Positive evidence needs the EARLIEST the process can have started
-		// to be after the entry; a start that merely may postdate the entry
-		// (Linux knows it to the tick) refuses without claiming it.
-		lower := v.startedAtLower
-		if lower.IsZero() {
-			lower = v.startedAt
-		}
-		if lower.After(p.target.StartedAt) {
-			return notDaemonError{"daemon process started after its rendezvous identity"}
-		}
-		if v.startedAt.After(p.target.StartedAt) {
-			return errors.New("daemon process may have started after its rendezvous identity")
-		}
-		// The checks that only fail to vouch come after the ones that can
-		// prove another process, so a refusal reports the strongest fact.
-		if len(v.argv) < 2 || v.argv[1] != "serve" {
-			return errors.New("daemon process is not a serve command")
-		}
-		if !v.ownsLog {
-			return errors.New("daemon process does not own the session API log")
+		if id, reason := judge(v, p.target); id != IdentityOwner {
+			return reason
 		}
 		p.generation = v.generation
 	}

@@ -851,8 +851,7 @@ func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
 	})
 	prober := &crashingSubagentProber{sessionID: parentID, childID: childID}
 	// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
-	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() }).
-		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() })
 	roster.Refresh()
 	if !roster.IsSubagentActive(childID) {
 		t.Fatal("scripted live roster did not admit the delegate")

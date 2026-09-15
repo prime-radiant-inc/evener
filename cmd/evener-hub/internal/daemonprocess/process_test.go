@@ -207,85 +207,68 @@ func TestInspectionFailureAfterExitIsIdempotent(t *testing.T) {
 	}
 }
 
-// Refusals split by what they prove. A process whose owner or start time is
-// not the daemon's, or whose generation changed under inspection, is
-// positively another process: ErrNotDaemon. A refusal that only means the
-// inspection could not vouch for it (no generation read, no start time, the
-// log descriptor not seen, an inspection error, an argv that is not an
-// `evener serve` invocation - the skill guard's daemons run inside a test
-// binary and were disowned by exactly that check) carries no such claim.
-func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
-	positive := []struct {
-		name   string
-		change func(*identity)
-	}{
-		{"wrong owner", func(v *identity) { v.uid++ }},
-		{"newer start", func(v *identity) { v.startedAt = time.Unix(201, 0) }},
-	}
-	for _, tt := range positive {
-		t.Run("positive/"+tt.name, func(t *testing.T) {
-			k := &kernelProcess{facts: validIdentity()}
-			tt.change(&k.facts)
-			_, err := testController(k).Open(validTarget())
-			if !errors.Is(err, ErrNotDaemon) {
-				t.Fatalf("err = %v, want ErrNotDaemon", err)
-			}
-		})
-	}
-	indeterminate := []struct {
-		name   string
-		change func(*kernelProcess)
-	}{
-		{"wrong command", func(k *kernelProcess) { k.facts.argv = []string{"evener", "hub", "serve"} }},
-		{"missing argv", func(k *kernelProcess) { k.facts.argv = nil }},
-		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }},
-		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }},
-		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }},
-		{"inspection error", func(k *kernelProcess) { k.inspectErr = errors.New("fdinfo vanished") }},
-	}
-	for _, tt := range indeterminate {
-		t.Run("indeterminate/"+tt.name, func(t *testing.T) {
-			k := &kernelProcess{facts: validIdentity()}
-			tt.change(k)
-			_, err := testController(k).Open(validTarget())
-			if err == nil {
-				t.Fatal("unverified identity accepted")
-			}
-			if errors.Is(err, ErrNotDaemon) || errors.Is(err, ErrExited) {
-				t.Fatalf("err = %v claims positive evidence it does not have", err)
-			}
-		})
-	}
-	t.Run("positive/generation changed", func(t *testing.T) {
-		a := validIdentity()
-		b := a
-		b.generation = "generation-b"
-		k := &kernelProcess{facts: b, snapshots: []identity{a, b}}
-		if _, err := testController(k).Open(validTarget()); !errors.Is(err, ErrNotDaemon) {
-			t.Fatalf("err = %v, want ErrNotDaemon", err)
-		}
-	})
+// withFakeKernel binds Identify to a fake process for the test's duration.
+func withFakeKernel(t *testing.T, k *kernelProcess) {
+	t.Helper()
+	previous := nativeBind
+	nativeBind = func(int) (processHandle, error) { return k, nil }
+	t.Cleanup(func() { nativeBind = previous })
 }
 
-// On Linux a process start is known only to the tick: the inspection
-// carries a lower and an upper bound. Positive evidence that the process is
-// not the daemon needs the LOWER bound after the entry's start; an upper
-// bound after it merely fails to vouch, so force-stop still refuses while the
-// roster keeps the entry (review round 13 on #1325).
-func TestOpenSameTickStartRefusesWithoutPositiveEvidence(t *testing.T) {
+// Identify answers NotOwner only on positive evidence: the process is gone,
+// its owner or earliest possible start cannot be the daemon's. A fact that
+// merely fails to vouch (no generation or start read, the log not seen, an
+// argv that is not an `evener serve` invocation - the skill guard's daemons
+// run inside a test binary, a start that may postdate the entry to the tick)
+// is Unknown, with the reason; Open refuses on every one of them alike.
+func TestIdentifyAnswersNotOwnerOnlyOnPositiveEvidence(t *testing.T) {
 	target := validTarget() // StartedAt 200
-	sameTick := validIdentity()
-	sameTick.startedAtLower, sameTick.startedAt = time.Unix(199, 0), time.Unix(201, 0)
-	_, err := testController(&kernelProcess{facts: sameTick}).Open(target)
-	if err == nil {
-		t.Fatal("a start that may postdate the entry was accepted")
+	cases := []struct {
+		name   string
+		change func(*kernelProcess)
+		want   Identity
+	}{
+		{"owner", func(*kernelProcess) {}, IdentityOwner},
+		{"wrong owner", func(k *kernelProcess) { k.facts.uid++ }, IdentityNotOwner},
+		{"started after the entry", func(k *kernelProcess) { k.facts.startedAt = time.Unix(201, 0) }, IdentityNotOwner},
+		{"earliest start after the entry", func(k *kernelProcess) {
+			k.facts.startedAtLower, k.facts.startedAt = time.Unix(201, 0), time.Unix(202, 0)
+		}, IdentityNotOwner},
+		{"gone", func(k *kernelProcess) { k.inspectErr = ErrExited }, IdentityNotOwner},
+		{"same-tick start", func(k *kernelProcess) {
+			k.facts.startedAtLower, k.facts.startedAt = time.Unix(199, 0), time.Unix(201, 0)
+		}, IdentityUnknown},
+		{"wrong command", func(k *kernelProcess) { k.facts.argv = []string{"evener", "hub", "serve"} }, IdentityUnknown},
+		{"missing argv", func(k *kernelProcess) { k.facts.argv = nil }, IdentityUnknown},
+		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }, IdentityUnknown},
+		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }, IdentityUnknown},
+		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }, IdentityUnknown},
+		{"inspection error", func(k *kernelProcess) { k.inspectErr = errors.New("fdinfo vanished") }, IdentityUnknown},
 	}
-	if errors.Is(err, ErrNotDaemon) {
-		t.Fatalf("err = %v claims positive evidence from a same-tick start", err)
-	}
-	later := validIdentity()
-	later.startedAtLower, later.startedAt = time.Unix(201, 0), time.Unix(202, 0)
-	if _, err := testController(&kernelProcess{facts: later}).Open(target); !errors.Is(err, ErrNotDaemon) {
-		t.Fatalf("err = %v, want ErrNotDaemon for a lower bound after the entry", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			k := &kernelProcess{facts: validIdentity()}
+			tc.change(k)
+			withFakeKernel(t, k)
+			got, err := Identify(target)
+			if got != tc.want {
+				t.Fatalf("Identify = %v (%v), want %v", got, err, tc.want)
+			}
+			if got == IdentityOwner && err != nil {
+				t.Fatalf("Identify called the process the owner with a reason attached: %v", err)
+			}
+			if got == IdentityUnknown && err == nil {
+				t.Fatalf("Identify could not vouch and gave no reason")
+			}
+			if !k.closed {
+				t.Fatal("Identify leaked the process handle")
+			}
+			if tc.want != IdentityOwner {
+				if p, err := testController(k).Open(target); err == nil {
+					_ = p.Close()
+					t.Fatal("Open accepted a process Identify would not call the owner")
+				}
+			}
+		})
 	}
 }

@@ -9,7 +9,6 @@ import (
 	"syscall"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -25,39 +24,30 @@ func processAlive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// processIdentity asks the same verifier force-stop binds to
-// (daemonprocess.Controller): process generation, owner, a `serve` argv, a
-// start no later than the rendezvous start time, and possession of the
-// session's API log. Only positive evidence counts against the entry: the
-// process is gone (ErrExited) or is verifiably another process
-// (ErrNotDaemon). A verification that could not run or could not vouch - a
-// pidfd that will not open, a /proc read racing a closing descriptor on a
-// busy daemon, an entry a daemon wrote without the fields it needs - says
-// unknown, and liveness alone decides as it always has.
+// processIdentity is what the host can say about the process a rendezvous
+// entry names: gone (signal 0 fails) is NotOwner; a process that answers is
+// asked, through the verifier force-stop binds to, whether it is still the
+// daemon that wrote the entry. The hub is never a daemon, so a file naming
+// the hub's own PID is a stale one whose PID the hub reused. An entry a
+// daemon wrote without the fields verification needs, or a host that cannot
+// inspect, answers Unknown, and liveness alone decides as it always has.
 func processIdentity(entry rendezvous.Entry) ProcessIdentity {
-	target := daemonprocess.Target{
-		PID:       entry.PID,
-		SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID),
-		StateDir:  entry.StateDir,
-		StartedAt: entry.StartedAt,
+	if !processAlive(entry.PID) {
+		return ProcessNotOwner
 	}
+	target := DaemonTarget(entry)
 	if target.SessionID == "" || !filepath.IsAbs(target.StateDir) || target.StartedAt.IsZero() {
 		return ProcessIdentityUnknown
 	}
-	// The hub is never a daemon: a file naming the hub's own PID is a stale
-	// file whose PID the hub reused. The verifier refuses to bind its own
-	// process (rightly, for force-stop), which would read as unknown here and
-	// keep the file listed for as long as the hub ran.
 	if entry.PID == os.Getpid() {
 		return ProcessNotOwner
 	}
-	process, err := daemonprocess.NewController().Open(target)
-	if err != nil {
-		if errors.Is(err, daemonprocess.ErrExited) || errors.Is(err, daemonprocess.ErrNotDaemon) {
-			return ProcessNotOwner
-		}
+	switch identity, _ := daemonprocess.Identify(target); identity {
+	case daemonprocess.IdentityOwner:
+		return ProcessOwnsEntry
+	case daemonprocess.IdentityNotOwner:
+		return ProcessNotOwner
+	default:
 		return ProcessIdentityUnknown
 	}
-	_ = process.Close()
-	return ProcessOwnsEntry
 }

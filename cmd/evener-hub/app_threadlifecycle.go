@@ -639,11 +639,8 @@ func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durable
 	}
 	liveTarget := ""
 	for _, entry := range claims {
-		current := entry.SessionID
-		if current == "" {
-			current = entry.ThreadID
-		}
-		process, err := controller.Open(daemonprocess.Target{PID: entry.PID, SessionID: current, StateDir: entry.StateDir, StartedAt: entry.StartedAt})
+		target := hubcore.DaemonTarget(entry)
+		process, err := controller.Open(target)
 		if errors.Is(err, daemonprocess.ErrExited) {
 			continue
 		}
@@ -653,10 +650,10 @@ func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durable
 		if err := process.Close(); err != nil {
 			return "", fmt.Errorf("close retained daemon ownership: %w", err)
 		}
-		if liveTarget != "" && liveTarget != current {
-			return "", errors.New("multiple live daemons claim different current sessions")
+		if liveTarget != "" && liveTarget != target.SessionID {
+			return "", errors.New("multiple live daemons claim different target.SessionID sessions")
 		}
-		liveTarget = current
+		liveTarget = target.SessionID
 	}
 	if liveTarget != "" {
 		if durableTarget != "" && durableTarget != liveTarget {
@@ -1290,12 +1287,7 @@ func forkTargetSessionIDFor(cfg hubcore.WebConfig, threadID string, owner forkTh
 // resumeClaimTarget's conflict branch; that is accepted rather than threaded
 // through, since only a contested alias pays it.
 func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) (bool, error) {
-	process, err := controller.Open(daemonprocess.Target{
-		PID:       entry.PID,
-		SessionID: cmp.Or(entry.SessionID, entry.ThreadID),
-		StateDir:  entry.StateDir,
-		StartedAt: entry.StartedAt,
-	})
+	process, err := controller.Open(hubcore.DaemonTarget(entry))
 	if errors.Is(err, daemonprocess.ErrExited) {
 		return false, nil
 	}

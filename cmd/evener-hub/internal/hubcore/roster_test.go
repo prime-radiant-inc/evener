@@ -137,7 +137,7 @@ func fuzzScenarioRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 		Address: "127.0.0.1:50001",
 	})
 	r := NewRoster(dir, fakeProber{shouldFail: true})
-	r.procAlive = func(int) bool { return false } // process is gone → stale file
+	r.SetProcessAlive(func(int) bool { return false }) // process is gone → stale file
 	r.Refresh()
 	if got := r.List(); len(got) != 0 {
 		t.Fatalf("expected a dead daemon's stale rendezvous entry with no session id to be pruned, got %d", len(got))
@@ -166,7 +166,7 @@ func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
 
 	prober := &flakyProber{sessionID: "01CRASHED"}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true } // process starts out alive
+	r.SetProcessAlive(func(int) bool { return true }) // process starts out alive
 	r.Refresh()
 	if live, ok := r.Find("01CRASHED"); !ok || live.Crashed {
 		t.Fatalf("reachable entry = %+v, want present and not crashed", live)
@@ -174,7 +174,7 @@ func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
 
 	// kill -9: the probe now fails AND the process is confirmed gone.
 	prober.fail = true
-	r.procAlive = func(int) bool { return false }
+	r.SetProcessAlive(func(int) bool { return false })
 	r.Refresh()
 
 	got, ok := r.Find("01CRASHED")
@@ -215,7 +215,7 @@ func fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster(t *testing.T) {
 	})
 
 	r := NewRoster(dir, fakeProber{shouldFail: true})
-	r.procAlive = func(int) bool { return false } // never seen alive by THIS roster
+	r.SetProcessAlive(func(int) bool { return false }) // never seen alive by THIS roster
 	r.Refresh()
 
 	got, ok := r.Find("01ALREADYDEAD")
@@ -239,7 +239,7 @@ func TestRoster_FailedProbeDoesNotAdmitColdEntryWithReusedPID(t *testing.T) {
 		SessionID: "01STALE",
 	})
 	r := NewRoster(dir, fakeProber{shouldFail: true})
-	r.procAlive = func(int) bool { return true } // PID was reused by an unrelated process.
+	r.SetProcessAlive(func(int) bool { return true }) // PID was reused by an unrelated process.
 
 	r.Refresh()
 
@@ -264,7 +264,7 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	// First, a successful probe seeds the entry.
 	prober := &flakyProber{sessionID: "01ALIVE"}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true } // process stays alive throughout
+	r.SetProcessAlive(func(int) bool { return true }) // process stays alive throughout
 	r.Refresh()
 	if _, ok := r.Find("01ALIVE"); !ok {
 		t.Fatal("entry should be present after a successful probe")
@@ -283,7 +283,7 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	// When the process actually dies, the next failed probe retains it,
 	// marked "errored" (kata zm6s) rather than pruning it - a crash must
 	// read differently from a session that simply finished.
-	r.procAlive = func(int) bool { return false }
+	r.SetProcessAlive(func(int) bool { return false })
 	r.Refresh()
 	got := r.List()
 	if len(got) != 1 {
@@ -318,7 +318,7 @@ func fuzzScenarioRoster_GarbageCollectsStaleDeadRendezvousFiles(t *testing.T) {
 	})
 
 	r := NewRoster(dir, fakeProber{shouldFail: true})
-	r.procAlive = func(pid int) bool { return pid == 1004 }
+	r.SetProcessAlive(func(pid int) bool { return pid == 1004 })
 	r.Refresh()
 
 	fileExists := func(pid int) bool {
@@ -582,7 +582,7 @@ func TestRosterCrashedParentDoesNotOwnItsChildren(t *testing.T) {
 		OK:                    true,
 	}}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true }
+	r.SetProcessAlive(func(int) bool { return true })
 	r.Refresh()
 	if state, live := r.SubagentState("01CHILD"); !live || state != "active" {
 		t.Fatalf("SubagentState(01CHILD) = %q, %v while the parent daemon is alive, want active, true", state, live)
@@ -590,7 +590,7 @@ func TestRosterCrashedParentDoesNotOwnItsChildren(t *testing.T) {
 
 	// kill -9 the parent: its probe fails and the process is confirmed gone.
 	prober.result = ProbeResult{}
-	r.procAlive = func(int) bool { return false }
+	r.SetProcessAlive(func(int) bool { return false })
 	r.Refresh()
 
 	parent, ok := r.Find("01PARENT")
@@ -869,7 +869,7 @@ func fuzzScenarioRoster_ListStaysResponsiveDuringSlowProbe(t *testing.T) {
 	open := make(chan struct{})
 	close(open)
 	r := NewRoster(dir, &gateProber{sessionID: "01S", gate: open, started: started})
-	r.procAlive = func(int) bool { return true }
+	r.SetProcessAlive(func(int) bool { return true })
 	r.Refresh()
 	if _, ok := r.Find("01S"); !ok {
 		t.Fatal("seed refresh did not populate the roster")
@@ -1271,7 +1271,7 @@ func TestRosterUnconfirmedOwnershipClearsOnProbeOrExit(t *testing.T) {
 			writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, SessionID: "owner", Protocol: "evener-appwire-v3"})
 			roster := NewRoster(dir, fakeProber{shouldFail: true})
 			alive := true
-			roster.procAlive = func(int) bool { return alive }
+			roster.SetProcessAlive(func(int) bool { return alive })
 			roster.Refresh()
 			claims := roster.UnconfirmedEntries()
 			if len(claims) != 1 || claims[0].SessionID != "owner" {
@@ -1300,7 +1300,7 @@ func TestRosterUnconfirmedOwnershipClearsOnProbeOrExit(t *testing.T) {
 func TestRosterUnconfirmedOwnershipInvalidatesNavigation(t *testing.T) {
 	dir := t.TempDir()
 	roster := NewRoster(dir, fakeProber{shouldFail: true})
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
 	changes := 0
 	roster.SetOnChange(func() { changes++ })
@@ -1485,7 +1485,7 @@ func TestRosterLiveOwnerWinsOverCrashMarker(t *testing.T) {
 			}
 			prober := &survivingOwnerProber{livePID: livePID}
 			r := NewRoster(dir, prober)
-			r.procAlive = func(pid int) bool { return pid == livePID }
+			r.SetProcessAlive(func(pid int) bool { return pid == livePID })
 			for _, failProbe := range []bool{false, true} {
 				prober.fail = failProbe
 				r.Refresh()
@@ -1520,7 +1520,7 @@ func TestRosterRefreshEntryDoesNotSucceedWithoutRouteAfterNewerMiss(t *testing.T
 	writeRendezvous(t, dir, entry)
 	prober := &overlappingRefreshProber{firstStarted: make(chan struct{}), secondStarted: make(chan struct{}), releaseFirst: make(chan struct{}), failSecond: true}
 	roster := NewRoster(dir, prober)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	done := make(chan error, 1)
 	go func() { done <- roster.RefreshEntry(t.Context(), entry) }()
 	<-prober.firstStarted
@@ -1539,7 +1539,7 @@ func TestRosterRetainsChangedClaimAfterProbeFailure(t *testing.T) {
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "before"}
 	roster := NewRoster(dir, prober)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
 	previous := entry
 	prober.fail = true
@@ -1662,7 +1662,7 @@ func TestRosterDropsRetainedEntryWhoseProcessIsNoLongerItsDaemon(t *testing.T) {
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "01REUSED"}
 	roster := NewRoster(dir, prober)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessOwnsEntry })
 	roster.Refresh()
 	if !roster.HasConfirmedEntry(entry) {
@@ -1691,7 +1691,7 @@ func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
 		writeRendezvous(t, dir, entry)
 		prober := &flakyProber{sessionID: "01BUSY"}
 		roster := NewRoster(dir, prober)
-		roster.procAlive = func(int) bool { return true }
+		roster.SetProcessAlive(func(int) bool { return true })
 		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
 		roster.Refresh()
 		prober.fail = true
@@ -1703,38 +1703,6 @@ func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
 			if live, ok := roster.Find("01BUSY"); !ok || live.Crashed {
 				t.Fatalf("identity %d: a busy daemon reads as crashed: ok=%v entry=%+v", identity, ok, live)
 			}
-		}
-	}
-}
-
-// A probe that answers proves only that a daemon of this hub listens at the
-// entry's endpoint: the token it presents is the hub's own, shared by every
-// daemon the hub spawns, and the roster keys the answer by the session the
-// daemon reports, never by the entry. A crashed daemon's file whose port
-// another daemon re-bound and whose PID anything reused would be published
-// under that PID. The process behind the PID is asked on a successful probe
-// too; verified not the owner, the entry takes the crashed path (review
-// round 8 on #1325).
-func TestRosterDoesNotPublishASuccessfulProbeForAPIDThatIsNotItsDaemon(t *testing.T) {
-	dir := t.TempDir()
-	entry := rendezvous.Entry{PID: 1001, SessionID: "01ANSWERS", ThreadID: "01ANSWERS", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
-	writeRendezvous(t, dir, entry)
-	roster := NewRoster(dir, &flakyProber{sessionID: "01ANSWERS"})
-	roster.procAlive = func(int) bool { return true }
-	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessNotOwner })
-	roster.Refresh()
-	if roster.HasConfirmedEntry(entry) {
-		t.Fatal("a PID that is not the daemon was published on the strength of an answering socket")
-	}
-	live, ok := roster.Find("01ANSWERS")
-	if !ok || !live.Crashed {
-		t.Fatalf("the entry should read as crashed, got ok=%v entry=%+v", ok, live)
-	}
-	for _, identity := range []ProcessIdentity{ProcessOwnsEntry, ProcessIdentityUnknown} {
-		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
-		roster.Refresh()
-		if !roster.HasConfirmedEntry(entry) {
-			t.Fatalf("identity %d: an answering daemon that is (or may be) itself was not published", identity)
 		}
 	}
 }
@@ -1761,8 +1729,9 @@ func TestRosterWithoutProberDoesNotAskTheHostAboutAPID(t *testing.T) {
 	}
 }
 
-// One verdict per entry per refresh: the identity probe is a real inspection
-// of a process, and two calls in one pass could disagree with each other.
+// The identity probe is a real inspection of a process: never for an entry
+// whose probe answered for its own session, once per entry per refresh
+// otherwise (two calls in one pass could disagree with each other).
 func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
 	dir := t.TempDir()
 	entry := rendezvous.Entry{PID: 1001, SessionID: "01ONCE", ThreadID: "01ONCE", Protocol: appwire.ThreadStatusIdle, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
@@ -1770,7 +1739,7 @@ func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "01ONCE"}
 	roster := NewRoster(dir, prober)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	var calls atomic.Int32
 	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity {
 		calls.Add(1)
@@ -1780,8 +1749,12 @@ func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
 		prober.fail = fail
 		calls.Store(0)
 		roster.Refresh()
-		if got := calls.Load(); got != 1 {
-			t.Fatalf("refresh %d (probe fails=%v): identity probe called %d times, want 1", i, fail, got)
+		want := int32(0)
+		if fail {
+			want = 1
+		}
+		if got := calls.Load(); got != want {
+			t.Fatalf("refresh %d (probe fails=%v): identity probe called %d times, want %d", i, fail, got, want)
 		}
 		if !roster.HasConfirmedEntry(entry) {
 			t.Fatalf("refresh %d: an owning daemon lost its route", i)
@@ -1799,7 +1772,7 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "01GONE"}
 	roster := NewRoster(dir, prober)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	var announced []string
 	roster.SetOnSessionGone(func(gone LiveEntry) { announced = append(announced, gone.SessionID) })
 	roster.Refresh()
@@ -1829,7 +1802,7 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 
 	// The process dies: the crashed path announces once.
 	prober.fail = true
-	roster.procAlive = func(int) bool { return false }
+	roster.SetProcessAlive(func(int) bool { return false })
 	roster.Refresh()
 	roster.Refresh()
 	if len(announced) != 1 || announced[0] != "01GONE" {
@@ -1840,7 +1813,7 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 	// Confirmed again (the crashed path removed the stale file; a daemon
 	// writes a fresh one), then the file goes (a clean exit): announced once.
 	writeRendezvous(t, dir, entry)
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	prober.fail = false
 	roster.Refresh()
 	if err := os.Remove(filepath.Join(dir, "1001.json")); err != nil {

@@ -14,4 +14,9 @@ func processAlive(pid int) bool {
 
 // processIdentity: no generation-bound process inspection here, so liveness
 // alone decides, as it always has.
-func processIdentity(rendezvous.Entry) ProcessIdentity { return ProcessIdentityUnknown }
+func processIdentity(entry rendezvous.Entry) ProcessIdentity {
+	if !processAlive(entry.PID) {
+		return ProcessNotOwner
+	}
+	return ProcessIdentityUnknown
+}
