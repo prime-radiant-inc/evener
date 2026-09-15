@@ -1568,6 +1568,7 @@ export function Composer({ ref, focused }: ComposerProps) {
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
+                verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
                   <Textarea
                     ref={textareaRef}

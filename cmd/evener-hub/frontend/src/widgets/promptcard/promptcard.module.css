@@ -58,20 +58,19 @@
  * at 320px, 13px for 60px of facts (issue #1339). Two verbs fit exactly, which
  * is the budget statusrow.module.css's narrow-pane block was measured against,
  * so only a three-verb cluster takes its own line, right-aligned like the
- * cluster it was. The threshold is the status row's own phone-width one.
- * Each control contributes exactly one direct child (Tooltip's wrapper span),
- * so :nth-child(3) means three controls. */
+ * cluster it was. The threshold is the status row's own phone-width one. The
+ * count is the caller's declaration (PromptCard's `verbs`, data-verbs), not
+ * inferred from the children. */
 @container (max-width: 399px) {
-  /* Wrapping is enabled only for the row that holds three controls. A row
+  /* Wrapping is enabled only for the row declared to hold three verbs. A row
    * that may wrap breaks lines on its items' intrinsic widths before any
    * shrinking, so a content-sized leading slot could push a two-verb cluster
-   * onto a second line; with the wrap scoped to this cluster no other row can
-   * wrap at all. */
-  .controls:has(> .actions > :nth-child(3)) {
+   * onto a second line; with the wrap scoped to this row no other can wrap. */
+  .controls[data-verbs="3"] {
     flex-wrap: wrap;
   }
 
-  .actions:has(> :nth-child(3)) {
+  .controls[data-verbs="3"] > .actions {
     flex-basis: 100%;
     justify-content: flex-end;
   }
