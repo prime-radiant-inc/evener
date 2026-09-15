@@ -669,6 +669,24 @@ func TestEstimateInputTokensForResolvedPartialRowKeepsTheRequestNames(t *testing
 	}
 }
 
+// An instance name is an alias, not vendor identity: a generic row that happens
+// to be named "anthropic" must not bill Anthropic's image rules for a model the
+// registry never classified, so a resolved target's family comes from the row's
+// own facts and the wire protocol, not from what its instance is called.
+func TestEstimateMessagesInputTokensForResolved_InstanceNameIsNotVendorIdentity(t *testing.T) {
+	data := pngImage(t, 1024, 1024)
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: data, MediaType: "image/png"}},
+	}}}
+	aliased := registry.Resolved{
+		Instance: "anthropic", ModelID: "gateway-zz",
+		Protocol: registry.ProtocolOpenAIResponses,
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(aliased, messages).Tokens, estimateOpenAIImageTokens(1024, 1024, ""); got != want {
+		t.Fatalf("aliased row image history = %d, want %d: the protocol decides, not the instance alias", got, want)
+	}
+}
+
 // A resolved row the registry did not classify still honors a model name that
 // identifies the vendor: the name describes the model, where the wire protocol
 // describes only the endpoint, so a gateway row served over openai-chat must not

@@ -315,11 +315,26 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 // names the media estimates key on, and whether the target's adapter replays a
 // thinking part that carries text and no replay metadata.
 type targetInfo struct {
-	provider, model  string
-	protocol         string
-	surface          string
-	family           string
+	provider, model string
+	protocol        string
+	surface         string
+	family          string
+	// resolved marks a target built from a registry row. The row's instance is
+	// an alias it was reached through, not vendor identity, so the media-family
+	// name rule reads a resolved target's model name alone.
+	resolved         bool
 	unsignedThinking bool
+}
+
+// vendorNameBasis is the provider name the media-family name rule may read. A
+// resolved row's instance name says where the row was reached, not who made the
+// model -- any gateway can be called anything -- so a resolved target offers only
+// its model name; a caller that passed names alone has nothing else to go on.
+func (t targetInfo) vendorNameBasis() string {
+	if t.resolved {
+		return ""
+	}
+	return t.provider
 }
 
 // mediaFamily is the image-token family for the target, resolved from the most
@@ -343,7 +358,7 @@ func (t targetInfo) mediaFamily() string {
 	if f := mediaFamilyFromModelFamily(t.family); f != "" {
 		return f
 	}
-	if f := providerTokenFamily(t.provider, t.model); f != "" {
+	if f := providerTokenFamily(t.vendorNameBasis(), t.model); f != "" {
 		return f
 	}
 	switch t.protocol {
@@ -396,7 +411,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
+	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, resolved: true, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
