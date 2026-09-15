@@ -81,16 +81,19 @@ test("drops a query or fragment that could carry a token", () => {
 });
 
 // An opaque scheme form (`https:token@host/path`, no `//`) is neither a scheme
-// URL the parser can read nor something it should trust. The hub rejects it
-// outright; the parser's own reconstruction must not carry the token either.
-test("never carries a credential from an opaque scheme form into the repo url", () => {
-  const remote = parseRepoRemote("https:supersecret@github.com/owner/repo.git");
-  expect(remote?.repoUrl).toBe("https://github.com/owner/repo");
-  expect(remote?.repoUrl).not.toContain("supersecret");
+// URL the parser can read nor something it should trust, and the hub rejects it
+// outright. This side matches that contract rather than reconstructing a link
+// from input neither side can fully inspect.
+test("rejects an opaque scheme form", () => {
+  expect(parseRepoRemote("https:supersecret@github.com/owner/repo.git")).toBeNull();
+  expect(parseRepoRemote("file:/srv/git/repo.git")).toBeNull();
+});
 
-  // An empty authority (`https:///user:tok@host/path`) is rejected server-side,
-  // but the browser's own URL parser reads it with a real host; either way the
-  // credential must not reach repoUrl.
+// An empty authority (`https:///user:tok@host/path`) is rejected by the hub's
+// parser, which sees no host; the browser's parser collapses the slashes and
+// reads a real host. Either way the credential must never reach repoUrl, which
+// is the property that matters on this side.
+test("never carries a credential from an empty-authority form into the repo url", () => {
   const emptyAuthority = parseRepoRemote("https:///user:tok@github.com/owner/repo.git");
   expect(emptyAuthority?.repoUrl).toBe("https://github.com/owner/repo");
   expect(emptyAuthority?.repoUrl).not.toContain("tok");
