@@ -5292,7 +5292,6 @@ test("a local host choice omits source from the thread/start request", async () 
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params).not.toHaveProperty("source");
 });
-
 // A draft can name a remote host while the manifest is not (yet) readable: a
 // reconnect reseeds the navigation store and the manifest is back in flight,
 // and the draft - which outlives the pane - still holds the chosen host. The
@@ -5449,4 +5448,111 @@ test("a draft naming a host removed from the manifest shows local and omits sour
 
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params).not.toHaveProperty("source");
+});
+
+// --- remote target: discovery ownership (Component 06b, round four) --------
+
+// The working-directory preflight (evener/path/validate + evener/dirs/create) is
+// the CONTROLLER's own filesystem check. A remote launch's cwd belongs to the
+// selected source instead, so the local answer has no authority: a path that
+// exists only on the remote reads as missing here, and confirming "Create &
+// start" would create the directory on THIS host before the remote launch still
+// failed on its own cwd. The remote hub validates its own cwd via thread/start.
+test("a remote host submission skips the controller-local directory preflight", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // A cwd the local check calls a creatable missing directory: left ungated, the
+  // preflight opens the Create & start dialog and never reaches thread/start.
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/remote/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // No local "doesn't exist yet" offer, and nothing created on the controller.
+  expect(screen.queryByRole("button", { name: "Create & start" })).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+});
+
+// The gate is the TARGET, not the mere presence of a picker: a local submission
+// keeps the controller-local preflight and its Create & start offer.
+test("a local submission keeps the controller-local directory preflight", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/local/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(await screen.findByRole("button", { name: "Create & start" })).toBeTruthy();
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// Provider readiness is read from THIS controller (evener/instance/list). A
+// remote launch runs on the selected source's own hub, which resolves its own
+// credentials, so a controller-local "missing provider" must not disable Start
+// for a remote target - the remote hub's own thread/start error is the
+// authority until source-aware discovery lands.
+test("a remote host submission is not blocked by missing controller-local providers", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => f.on("evener/instance/list", () => ({ instances: [], availableProviders: [] })));
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-providers");
+  renderSpawn(fake);
+
+  // Local: the controller's missing provider disables Start and explains why.
+  await screen.findByRole("button", { name: "Connect provider" });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  // Remote: that same controller-local state must not block the launch.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  // Switching back restores the local block.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await screen.findByRole("button", { name: "Connect provider" });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+});
+
+// The form's catalogs and readiness are still fetched from THIS controller
+// (source-aware discovery needs the evener/host/request proxy, absent from this
+// branch), so selecting a remote host must SAY so rather than present the
+// controller's environment as the target's.
+test("a remote host selection discloses that discovery is controller-local", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  const notice = screen.getByTestId("spawn-remote-host-notice");
+  expect(notice.textContent).toContain("buildbox");
+  expect(notice.getAttribute("role")).toBe("status");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
 });
