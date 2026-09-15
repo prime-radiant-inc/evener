@@ -124,6 +124,16 @@ function delegateEntities(id: string, task: string) {
   return buildEntityView({ sessionRef: "ref_root", delegates: [delegate], turns: [], stale: false, ended: false });
 }
 
+// Every provider-wrapped delegate-line case below renders the same strip over
+// the same fixture map; only the assertions differ.
+function renderDelegateStrip() {
+  return render(
+    <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+    </EntityViewsProvider>,
+  );
+}
+
 // setupJobOutput spies the store method (not the module) so the preview's
 // fetch stays in-process; the default resolve is an empty tail, and tests
 // override it with mockResolvedValue/mockRejectedValue on the returned spy.
@@ -214,11 +224,7 @@ describe("ActivityRowDetail", () => {
   // the row's own treeitem control - ruling R13), and it adds no second open
   // control to a row that already carries one.
   test("the delegate id renders as an embedded entity card trigger, not plain text", () => {
-    const { container } = render(
-      <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
-        <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
-      </EntityViewsProvider>,
-    );
+    const { container } = renderDelegateStrip();
 
     const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
     const trigger = within(line).getByTestId("entity-trigger");
@@ -232,11 +238,7 @@ describe("ActivityRowDetail", () => {
   test("the delegate id's trigger opens the entity card", () => {
     vi.useFakeTimers();
     try {
-      render(
-        <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
-          <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
-        </EntityViewsProvider>,
-      );
+      renderDelegateStrip();
 
       fireEvent.focus(screen.getByTestId("entity-trigger"));
       act(() => {
@@ -255,11 +257,7 @@ describe("ActivityRowDetail", () => {
   // can become a trigger is the entity-map context, so a trigger here is proof
   // the provider is the path that resolves.
   test("the delegate id resolves through the entity provider with no entities prop", () => {
-    render(
-      <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
-        <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
-      </EntityViewsProvider>,
-    );
+    renderDelegateStrip();
 
     expect(screen.getByTestId("entity-trigger").textContent).toBe(DELEGATE_ID);
   });
