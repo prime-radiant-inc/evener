@@ -76,10 +76,13 @@ var embeddedSkillsCache struct {
 	fallbackUntil time.Time
 	// heldLeases keeps leases on fallback copies this process has moved on from.
 	// Sessions created while a fallback was current hold SkillFile paths inside
-	// it, so its lease is held until protectUntil, the same staleness window the
-	// age reaper uses; after that no session is plausibly still reading the copy.
-	// A copy is added only when the cache moves off a fallback it was serving, so
-	// a retry that keeps the same copy adds nothing.
+	// it and read them on demand, so its lease is retained rather than dropped
+	// when the cache moves on. Retention is bounded by protectUntil, the same
+	// staleness window the age reaper uses as its "no reader remains" assumption.
+	// That assumes a reader older than the window is gone; tracking exact reader
+	// lifetimes would mean wiring every session into this cache, which is the
+	// accepted tradeoff. A copy is added only when the cache moves off a fallback
+	// it was serving, so a retry that keeps the same copy adds nothing.
 	heldLeases []heldSkillsLease
 }
 
