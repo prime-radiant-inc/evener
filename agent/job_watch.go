@@ -2563,16 +2563,14 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 	if s == nil {
 		return nil
 	}
-	managers := make([]*jobManager, 0, 8)
-	if s.jobManager != nil {
-		managers = append(managers, s.jobManager)
+	// Answered from the same page walk the list path uses, so the two cannot
+	// disagree about which rows are this session's. nil stays reserved for a nil
+	// session: this helper's callers treat a non-nil empty answer as "no watches
+	// now", and TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer pins that.
+	if rows := s.LiveWatchRowsForSessions([]string{s.ID()})[s.ID()]; len(rows) != 0 {
+		return rows
 	}
-	for _, holder := range s.stableWatchSourceSessions() {
-		if holder != nil && holder.jobManager != nil {
-			managers = append(managers, holder.jobManager)
-		}
-	}
-	return aggregateWatchStatuses(s.ID(), managers)
+	return nil
 }
 
 // LiveWatchRowsForSessions resolves the supplied thread IDs to the live watch
@@ -2581,10 +2579,12 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 //
 // It is the batch form of LiveWatchesForSession, and the thread LIST path is why
 // it exists: that path knows every row ID before it samples any of them, and
-// resolving them one at a time searched the descendant tree once per row -- a
-// wide root scanned every sibling for each row and a nested one walked the
-// subtrees ahead of the target -- so a page of N live sessions paid up to N
-// searches. One walk now answers the whole page.
+// resolving them one at a time searched the descendant tree once per row and
+// asked every manager for its rows once per row -- a lock and a fresh slice per
+// manager per row -- so a page of N sessions against N managers paid up to N x N
+// of both. A page now takes one lock per manager: each manager appends its
+// watches once, keyed by the row each one belongs on, and every requested ID
+// reads its rows back out of that.
 //
 // An entry exists only for an ID this session can answer for: the root, or a
 // live descendant. A present entry with an empty non-nil slice is a real answer
@@ -2598,23 +2598,76 @@ func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]Wat
 	answerable := make(map[string]*Session, len(sessionIDs))
 	answerable[s.ID()] = s
 	for _, descendant := range s.liveDescendantSessions() {
-		if descendant != nil {
-			answerable[descendant.ID()] = descendant
+		if descendant == nil {
+			continue
+		}
+		answerable[descendant.ID()] = descendant
+	}
+	// The managers a row's watches can live in: every answerable session's own
+	// manager, plus the sessions a delegate controller lets hold a receiver watch
+	// for one of them -- a delegate session is not a subagent descendant, so its
+	// manager would otherwise be missed. One controller serves its whole tree, so
+	// its source list is asked for once, not once per row.
+	rows := make(map[string][]WatchStatusInfo, len(answerable))
+	seenManagers := make(map[*jobManager]struct{}, len(answerable))
+	seenControllers := make(map[*delegateTreeController]struct{}, 1)
+	appendManager := func(session *Session) {
+		if session == nil || session.jobManager == nil {
+			return
+		}
+		if _, ok := seenManagers[session.jobManager]; ok {
+			return
+		}
+		seenManagers[session.jobManager] = struct{}{}
+		session.jobManager.appendWatchStatusesByRow(rows)
+	}
+	for _, session := range answerable {
+		appendManager(session)
+		controller := session.delegateController
+		if controller == nil {
+			continue
+		}
+		if _, ok := seenControllers[controller]; ok {
+			continue
+		}
+		seenControllers[controller] = struct{}{}
+		for _, source := range session.stableWatchSourceSessions() {
+			appendManager(source)
 		}
 	}
 	out := make(map[string][]WatchStatusInfo, len(sessionIDs))
 	for _, sessionID := range sessionIDs {
-		target, ok := answerable[sessionID]
-		if !ok {
+		if _, ok := answerable[sessionID]; !ok {
 			continue
 		}
-		rows := target.liveWatchStatuses()
-		if rows == nil {
-			rows = []WatchStatusInfo{}
+		sessionRows := rows[sessionID]
+		if sessionRows == nil {
+			sessionRows = []WatchStatusInfo{}
 		}
-		out[sessionID] = rows
+		sortWatchStatuses(sessionRows)
+		out[sessionID] = sessionRows
 	}
 	return out
+}
+
+// appendWatchStatusesByRow appends this manager's live watches to rows, keyed by
+// the session whose row each one belongs on: its receiver's row when it has one,
+// and this manager's own session's row when it does not. A keyless watch belongs
+// to the session that owns the manager, which is what keeps a child's watch off
+// its ancestors' rows.
+func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if cfg == nil {
+			continue
+		}
+		row := cfg.receiverSessionID
+		if row == "" {
+			row = jm.sessionID
+		}
+		rows[row] = append(rows[row], watchStatusInfoFromConfig(cfg))
+	}
 }
 
 // LiveWatchesForDescendant returns the live watch rows visible to the descendant
