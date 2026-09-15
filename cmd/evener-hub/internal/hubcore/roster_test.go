@@ -1788,3 +1788,85 @@ func TestRosterAsksTheProcessIdentityOncePerEntryPerRefresh(t *testing.T) {
 		}
 	}
 }
+
+// Refresh announces a session gone once, and only when its daemon has left
+// for good: crashed (process gone) or exited (file gone). A claim parked
+// unresolved - a probe missed while the process answers - is not announced;
+// that daemon may still be there.
+func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "01GONE", ThreadID: "01GONE", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	writeRendezvous(t, dir, entry)
+	prober := &flakyProber{sessionID: "01GONE"}
+	roster := NewRoster(dir, prober)
+	roster.procAlive = func(int) bool { return true }
+	var announced []string
+	roster.SetOnSessionGone(func(gone LiveEntry) { announced = append(announced, gone.SessionID) })
+	roster.Refresh()
+	if len(announced) != 0 {
+		t.Fatalf("a confirmed daemon was announced gone: %v", announced)
+	}
+
+	// Unresolved: the claim changes identity while a probe is missed.
+	moved := entry
+	moved.SessionID, moved.ThreadID = "01MOVED", "01MOVED"
+	writeRendezvous(t, dir, moved)
+	prober.fail = true
+	roster.Refresh()
+	if len(roster.UnconfirmedEntries()) == 0 || len(announced) != 0 {
+		t.Fatalf("an unresolved claim was announced gone: announced=%v unconfirmed=%+v", announced, roster.UnconfirmedEntries())
+	}
+
+	// Confirmed again under its own identity: the moved claim that was parked
+	// has vanished without confirming, and is announced as gone.
+	writeRendezvous(t, dir, entry)
+	prober.fail = false
+	roster.Refresh()
+	if len(announced) != 1 || announced[0] != "01MOVED" {
+		t.Fatalf("the vanished unresolved claim should be the one announced, got %v", announced)
+	}
+	announced = nil
+
+	// The process dies: the crashed path announces once.
+	prober.fail = true
+	roster.procAlive = func(int) bool { return false }
+	roster.Refresh()
+	roster.Refresh()
+	if len(announced) != 1 || announced[0] != "01GONE" {
+		t.Fatalf("crashed daemon announced %v, want once", announced)
+	}
+	announced = nil
+
+	// Confirmed again (the crashed path removed the stale file; a daemon
+	// writes a fresh one), then the file goes (a clean exit): announced once.
+	writeRendezvous(t, dir, entry)
+	roster.procAlive = func(int) bool { return true }
+	prober.fail = false
+	roster.Refresh()
+	if err := os.Remove(filepath.Join(dir, "1001.json")); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	if len(announced) != 1 || announced[0] != "01GONE" {
+		t.Fatalf("exited daemon announced %v, want once", announced)
+	}
+	announced = nil
+
+	// Unresolved, then the claim vanishes altogether: the session that was
+	// parked is gone now, and is announced.
+	writeRendezvous(t, dir, entry)
+	roster.Refresh()
+	writeRendezvous(t, dir, moved)
+	prober.fail = true
+	roster.Refresh()
+	if len(announced) != 0 {
+		t.Fatalf("an unresolved claim was announced gone: %v", announced)
+	}
+	if err := os.Remove(filepath.Join(dir, "1001.json")); err != nil {
+		t.Fatal(err)
+	}
+	roster.Refresh()
+	if !slices.Contains(announced, "01GONE") {
+		t.Fatalf("a vanished unresolved claim was not announced gone: %v", announced)
+	}
+}

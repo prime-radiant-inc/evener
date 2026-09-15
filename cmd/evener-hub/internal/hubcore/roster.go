@@ -214,6 +214,11 @@ type Roster struct {
 	// past-index re-read (PastIndex.RefreshOne) instead of waiting for the
 	// next full rebuild.
 	onStatusChange func(sessionID string)
+	// onSessionGone, when set via SetOnSessionGone, is fired by Refresh for a
+	// session that left the listing for good: its daemon's process is gone
+	// (the crashed path) or its rendezvous file is (a clean exit). Never for
+	// a claim parked unresolved - that daemon may still be there.
+	onSessionGone func(gone LiveEntry)
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -302,6 +307,13 @@ func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
 // Refresh, whenever that session's Status transitions between two
 // consecutive snapshots. Nil disables the hook.
 func (r *Roster) SetOnStatusChange(fn func(sessionID string)) { r.onStatusChange = fn }
+
+// SetOnSessionGone registers a callback fired by Refresh, once, for each
+// session whose daemon has left for good. The relay uses it to tell that
+// session's subscribers to re-read: the daemon's own close frame is not
+// guaranteed to reach them (it may be revoked with the connection), and
+// nothing else would.
+func (r *Roster) SetOnSessionGone(fn func(gone LiveEntry)) { r.onSessionGone = fn }
 
 func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 	ids := make([]string, 0, len(bySess))
@@ -681,7 +693,9 @@ func (r *Roster) refresh() error {
 		}
 	}
 	sort.Strings(statusChanges)
+	gone := sessionsGone(prevBySess, previousUnconfirmed, bySess, unconfirmed)
 	onStatusChange := r.onStatusChange
+	onSessionGone := r.onSessionGone
 	onChange := r.onChange
 	r.mu.Unlock()
 
@@ -690,10 +704,52 @@ func (r *Roster) refresh() error {
 			onStatusChange(id)
 		}
 	}
+	if onSessionGone != nil {
+		for _, entry := range gone {
+			onSessionGone(entry)
+		}
+	}
 	if changed && onChange != nil {
 		onChange()
 	}
 	return nil
+}
+
+// sessionsGone is every session the previous publication still held - listed
+// live, or parked as an unresolved claim - that this one holds as neither:
+// crashed (its process gone) or absent (its file gone). A session whose claim
+// is parked unresolved now is not gone - a probe was missed while its process
+// answers - and a session already crashed was announced when it crashed.
+func sessionsGone(prev map[string]LiveEntry, prevUnconfirmed []rendezvous.Entry, cur map[string]LiveEntry, unconfirmed []rendezvous.Entry) []LiveEntry {
+	named := func(claims []rendezvous.Entry, id string) bool {
+		return slices.ContainsFunc(claims, func(claim rendezvous.Entry) bool {
+			return claim.SessionID == id || claim.ThreadID == id
+		})
+	}
+	held := map[string]LiveEntry{}
+	for id, was := range prev {
+		if !was.Crashed {
+			held[id] = was
+		}
+	}
+	for _, claim := range prevUnconfirmed {
+		id := envvars.FirstNonEmpty(claim.SessionID, claim.ThreadID)
+		if _, ok := held[id]; id != "" && !ok {
+			held[id] = LiveEntry{Entry: claim, SessionID: id}
+		}
+	}
+	var gone []LiveEntry
+	for id, was := range held {
+		if now, listed := cur[id]; listed && !now.Crashed {
+			continue
+		}
+		if named(unconfirmed, id) {
+			continue
+		}
+		gone = append(gone, cloneLiveEntry(was))
+	}
+	sort.Slice(gone, func(i, j int) bool { return gone[i].SessionID < gone[j].SessionID })
+	return gone
 }
 
 // OwnershipError reports an incomplete full scan. Individual daemon

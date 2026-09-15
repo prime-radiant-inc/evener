@@ -32,13 +32,10 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		return nil
 	}, http.DefaultClient)
 	if roster != nil {
-		// The claims the roster holds unresolved are off the listing on
-		// purpose; the relay must still tell them apart from a daemon that
-		// is gone.
-		local.SetClaims(func() appsource.LocalDaemonClaims {
-			scan := roster.Snapshot()
-			return appsource.LocalDaemonClaims{Live: localDaemonEntriesFromRoster(scan.Live), Unconfirmed: scan.Unconfirmed}
-		})
+		// A daemon that leaves for good is announced by the roster, the one
+		// place that sees its process or its file go; the relay tells that
+		// daemon's subscribers to re-read.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry) })
 	}
 	registry.Add(local)
 	return registry
