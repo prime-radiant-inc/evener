@@ -543,22 +543,27 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(workspaceStore.getState().focusedPaneId).toBeNull();
   });
 
-  test("restoreLayout returns false and clears the api when a restored panel's paneType isn't a real PaneTypeId", () => {
+  test("restoreLayout skips a restored panel whose paneType isn't a real PaneTypeId and recovers the rest", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
-      fake.panels = [{ id: "p1", params: { paneType: "not-a-real-type", paneParams: {} } }];
+      fake.panels = [
+        { id: "p1", params: { paneType: "not-a-real-type", paneParams: {} } },
+        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a" } } },
+      ];
       fake.activePanel = { id: "p1" };
     };
     registerDockviewApi(asDockviewApi(fake));
 
     const ok = workspaceStore.getState().restoreLayout({});
 
-    expect(ok).toBe(false);
-    expect(fake.cleared).toBe(true);
-    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(ok).toBe(true);
+    expect(fake.cleared).toBe(false);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "a" }, slot: "main" }]);
+    // The skipped panel was the active one; focus falls to the first survivor.
+    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
 
-  test("restoreLayout returns false and clears the api when a restored panel's paneType is a valid PaneTypeId but isn't registered", () => {
+  test("restoreLayout skips a restored panel whose paneType is a valid PaneTypeId but isn't registered", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
       // Every real PaneTypeId gets registered by its own production module at
@@ -569,27 +574,71 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
       // layout saved by a build that shipped a pane type this one never
       // registers, and is the only id guaranteed to stay unregistered
       // regardless of run order.
-      fake.panels = [{ id: "p1", params: { paneType: "not-a-real-pane-type", paneParams: { ref: "a" } } }];
-      fake.activePanel = { id: "p1" };
+      fake.panels = [
+        { id: "p1", params: { paneType: "not-a-real-pane-type", paneParams: { ref: "a" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { ref: "b" } } },
+      ];
+      fake.activePanel = { id: "p2" };
     };
     registerDockviewApi(asDockviewApi(fake));
 
     const ok = workspaceStore.getState().restoreLayout({});
 
-    expect(ok).toBe(false);
-    expect(fake.cleared).toBe(true);
+    expect(ok).toBe(true);
+    expect(fake.cleared).toBe(false);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "b" }, slot: "main" }]);
+    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
 
-  test("restoreLayout returns false when a restored panel has no params at all", () => {
+  test("restoreLayout skips a restored panel that has no params at all, keeping the rest", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
-      fake.panels = [{ id: "p1", params: undefined }];
-      fake.activePanel = { id: "p1" };
+      fake.panels = [
+        { id: "p1", params: undefined },
+        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a" } } },
+      ];
+      fake.activePanel = { id: "p2" };
     };
     registerDockviewApi(asDockviewApi(fake));
 
-    expect(workspaceStore.getState().restoreLayout({})).toBe(false);
-    expect(fake.cleared).toBe(true);
+    const ok = workspaceStore.getState().restoreLayout({});
+
+    expect(ok).toBe(true);
+    expect(fake.cleared).toBe(false);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "a" }, slot: "main" }]);
+    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+  });
+
+  // A REMOVED pane type is the one unregistered-type case registration can
+  // never fix: a layout saved while "sessionNotes" still existed restores a
+  // panel this build can't render. Skipping that panel (DockHost's structural
+  // reconciliation then removes its orphaned dockview panel) recovers every
+  // other pane instead of discarding the whole workspace.
+  test("restoreLayout skips a panel whose paneType this build no longer registers, keeping every other pane", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      // "sessionNotes" is no longer in the PaneTypeId union (removed with the
+      // notes sidebar pane); the cast simulates a layout persisted by a build
+      // that still shipped it.
+      fake.panels = [
+        { id: "p1", params: { paneType: "doc", paneParams: { ref: "a" } } },
+        { id: "p2", params: { paneType: "sessionNotes" as never, paneParams: { ref: "a" } } },
+        { id: "p3", params: { paneType: "doc", paneParams: { ref: "b" } } },
+      ];
+      fake.activePanel = { id: "p2" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({});
+
+    expect(ok).toBe(true);
+    expect(fake.cleared).toBe(false);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: "p1", type: "doc", params: { ref: "a" }, slot: "main" },
+      { id: "p3", type: "doc", params: { ref: "b" }, slot: "secondary" },
+    ]);
+    // The active panel was the skipped one; focus falls to the first survivor.
+    expect(workspaceStore.getState().focusedPaneId).toBe("p1");
   });
 
   // Restored ids come from a PREVIOUS page load's own independently-

@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
+import { resetHumanNoteDrafts } from "../../../stores/humanNoteDrafts";
 import { threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
 import { TopNotesPanel } from "./TopNotesPanel";
@@ -59,10 +60,17 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
 
 beforeEach(() => {
   topNotesStore.getState().resetForTests();
+  // Draft records persist across renders by design (unsaved edits survive a
+  // collapse); each test starts with none so a leftover draft from a
+  // previous test cannot answer this file's summary assertions.
+  resetHumanNoteDrafts();
 });
 
 afterEach(() => {
   cleanup();
+  // Typing leaves a dirty draft holding a 10s save timer; clear it so no
+  // stale save can fire after its test ends.
+  resetHumanNoteDrafts();
 });
 
 test("returns null if canReadSharedNotes is false", () => {
@@ -197,4 +205,46 @@ test("expanded view displays human note editor, agent note, and links with remov
   const removeBtn = screen.getByRole("button", { name: "Remove Example Docs" });
   await user.click(removeBtn);
   expect(removeURLSpy).toHaveBeenCalledWith(model.ref, "u1");
+});
+
+test("read-only sessions show a view-only empty state instead of a write invitation", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({
+    status: { type: "ended" },
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+  });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  const summary = screen.getByTestId("top-notes-summary");
+  expect(screen.getByText("No notes yet")).toBeTruthy();
+  expect(screen.queryByText("Add a note…")).toBeNull();
+  expect(summary.getAttribute("aria-label")).toBe("Session notes");
+  expect(summary.textContent).toContain("Click to view");
+
+  // Reading still works: the body expands, but a read-only session mounts
+  // no editor to type into.
+  await user.click(summary);
+  expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+});
+
+test("collapsed summary shows unsaved draft edits immediately, in phrasing content", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // Type without committing: model.humanNote stays "Saved note" until the
+  // 10s blur-save lands, but the summary must mirror the editor's draft the
+  // moment the panel collapses.
+  await user.click(screen.getByTestId("top-notes-summary"));
+  const textarea = screen.getByRole("textbox", { name: "Human note" }) as HTMLTextAreaElement;
+  await user.type(textarea, " plus edits");
+
+  await user.click(screen.getByTestId("top-notes-collapse-trigger"));
+  const summaryText = screen.getByText("Saved note plus edits");
+  // A button only admits phrasing content, so the clamped summary text is a
+  // span, not a div.
+  expect(summaryText.tagName).toBe("SPAN");
 });

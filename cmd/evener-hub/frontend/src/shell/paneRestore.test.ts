@@ -6,11 +6,12 @@
 // the first time a producer imports their opener (openDoc.ts / paneActions.ts).
 // A layout persisted with one of those panes open would, on the next page
 // load, reach DockHost's boot-time restoreLayout() BEFORE any such producer
-// ran, find the pane type unregistered, and - because readPanelParams() throws
-// on an unregistered type and restoreLayout()'s catch clears the whole api -
-// discard the user's ENTIRE saved workspace, not just the one pane
-// (workspace.ts:123-129,208-230; the sibling case is workspace.test.ts's
-// "valid PaneTypeId but isn't registered" test, which proves the discard).
+// ran and find the pane type unregistered - restoreLayout now SKIPS such a
+// panel (DockHost's structural reconciliation then removes its orphaned
+// dockview panel) rather than discarding the layout, but a skipped pane is
+// still a pane the user lost (workspace.ts:readPanelParams; the sibling
+// partial-recovery cases are workspace.test.ts's "skips a panel whose
+// paneType..." tests, which prove the skip).
 //
 // Importing AppShell here runs exactly those boot-time side-effect
 // registrations - the same module evaluation production performs - and the
@@ -19,9 +20,10 @@
 //
 // Mutation net: deleting either `import "../panes/doc"` or
 // `import "../panes/transcript"` from AppShell.tsx leaves that pane type
-// unregistered at boot, so restoreLayout discards the layout - and this test's
-// restoreLayout()===true / cleared===false / both-panes-present assertions all
-// fail. (Verified both ways during the wave-8 fix round.)
+// unregistered at boot, so restoreLayout skips it and this test's
+// both-panes-present assertions fail (restoreLayout()===true /
+// cleared===false still hold - the skip is graceful, which is exactly why
+// the pane-presence assertions are the ones that must carry the net).
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { paneFor } from "./paneRegistry";
