@@ -153,24 +153,34 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-// validateHostConfigs validates the [[hosts]] list by building a throwaway
-// registry, so name grammar, duplicate names, reserved "local", the ".." rule,
-// ssh presence, the user/ssh-user conflict, and empty roots are all checked by
-// the single source of truth in hostreg. No host is registered anywhere: this
-// is pure validation.
+// validateHostConfigs normalizes and validates the [[hosts]] list by building a
+// throwaway registry, so name grammar, duplicate names, reserved "local", the
+// ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
+// checked by the single source of truth in hostreg. No host is registered
+// anywhere: this is pure validation.
+//
+// It rewrites hosts IN PLACE with the normalized values. hostreg trims before it
+// stores, so validating a copy would let ssh = "  m4.local  " pass here and then
+// reach consumers untrimmed — exactly the unresolvable-host hazard the registry
+// normalization exists to prevent.
 func validateHostConfigs(hosts []HostConfig) error {
 	if len(hosts) == 0 {
 		return nil
 	}
 	entries := make([]hostreg.Host, 0, len(hosts))
-	for _, h := range hosts {
-		entries = append(entries, hostreg.Host{
+	for i, h := range hosts {
+		entry := hostreg.Normalize(hostreg.Host{
 			Name:       h.Name,
 			SSH:        h.SSH,
 			User:       h.User,
 			EvenerPath: h.EvenerPath,
 			Roots:      h.Roots,
 		})
+		hosts[i].SSH = entry.SSH
+		hosts[i].User = entry.User
+		hosts[i].EvenerPath = entry.EvenerPath
+		hosts[i].Roots = entry.Roots
+		entries = append(entries, entry)
 	}
 	_, err := hostreg.New(entries)
 	return err

@@ -76,15 +76,20 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// normalize returns entry with every whitespace-sensitive field trimmed, so the
+// Normalize returns entry with every whitespace-sensitive field trimmed, so the
 // registry stores exactly what it validated. Without this, ssh = "  m4.local  "
 // passes validation (which trims) and is then stored untrimmed, and every
 // consumer fails to resolve a host the registry called valid. It also gives the
 // entry its own Roots backing array, so the caller's slice is never aliased by
 // registry state.
-func normalize(entry Host) Host {
+//
+// It is exported because validation and storage have to agree: a config loader
+// that validates through this package must apply the same normalization to the
+// values it keeps, or it hands consumers what the registry refused to store.
+func Normalize(entry Host) Host {
 	entry.SSH = strings.TrimSpace(entry.SSH)
 	entry.User = strings.TrimSpace(entry.User)
+	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
 	entry.Roots = slices.Clone(entry.Roots)
 	for i, root := range entry.Roots {
 		entry.Roots[i] = strings.TrimSpace(root)
@@ -159,7 +164,7 @@ func (r *Registry) Add(entry Host) error {
 // A refusal leaves the registry unchanged: the candidate is not inserted and no
 // edge is recorded.
 func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
-	entry = normalize(entry)
+	entry = Normalize(entry)
 	if err := validateEntry(entry); err != nil {
 		return err
 	}

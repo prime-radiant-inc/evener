@@ -321,14 +321,14 @@ func TestValuesAreStoredTrimmed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := r.Add(Host{Name: "m4", SSH: "  m4.local  ", User: "  jesse  ", Roots: []string{"  /srv/a  "}}); err != nil {
+	if err := r.Add(Host{Name: "m4", SSH: "  m4.local  ", User: "  jesse  ", EvenerPath: "  /usr/local/bin/evener  ", Roots: []string{"  /srv/a  "}}); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	got, ok := r.Get("m4")
 	if !ok {
 		t.Fatal("Get(m4) missing")
 	}
-	if got.SSH != "m4.local" || got.User != "jesse" || got.Roots[0] != "/srv/a" {
+	if got.SSH != "m4.local" || got.User != "jesse" || got.EvenerPath != "/usr/local/bin/evener" || got.Roots[0] != "/srv/a" {
 		t.Fatalf("stored host = %+v, want trimmed values", got)
 	}
 }

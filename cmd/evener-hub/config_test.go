@@ -42,6 +42,23 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			},
 		},
 		{
+			// Validation trims, so the values LoadConfig hands out must be the
+			// trimmed ones: otherwise a padded ssh passes validation and then
+			// reaches consumers in a form they cannot resolve.
+			name: "padded values come back normalized",
+			toml: "[[hosts]]\nname = \"m4\"\nssh = \"  m4.local  \"\nuser = \"  jesse  \"\nevener_path = \"  /usr/local/bin/evener  \"\nroots = [\"  /Users/jesse/src  \"]\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 1 {
+					t.Fatalf("Hosts = %+v, want 1", cfg.Hosts)
+				}
+				got := cfg.Hosts[0]
+				if got.SSH != "m4.local" || got.User != "jesse" ||
+					got.EvenerPath != "/usr/local/bin/evener" || len(got.Roots) != 1 || got.Roots[0] != "/Users/jesse/src" {
+					t.Fatalf("LoadConfig returned an unnormalized host: %+v", got)
+				}
+			},
+		},
+		{
 			name:    "duplicate names",
 			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\n\n[[hosts]]\nname = \"m4\"\nssh = \"m4b.local\"\n",
 			wantErr: hostreg.ErrDuplicateHost,
