@@ -621,6 +621,80 @@ func TestHubRPCThreadReadNeutralizesRemoteImageRoutes(t *testing.T) {
 	}
 }
 
+// evener/subagentPreview returns a remote thread's items exactly as thread/read
+// does, so it must run the same origin-relative image neutralization. Without it
+// a remote item's root-relative route reaches the browser, which resolves it
+// against the controller origin (404, or another session's bytes on a collision).
+func TestHubRPCSubagentPreviewNeutralizesRemoteImageRoutes(t *testing.T) {
+	const external = "https://images.example.test/plot.png"
+	sha := strings.Repeat("a", 64)
+	remoteRoute := "/s/remote-session/images/" + sha
+	remoteThread := appwire.Thread{
+		ID:        "t1",
+		SessionID: "t1",
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID: "turn-1",
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "item-image",
+				TranscriptKey: "key-image",
+				Position:      &appwire.ThreadItemPosition{Entry: 0},
+				ToolName:      "shell",
+				CallID:        "call-image",
+				ArgumentsJSON: `{}`,
+				Status:        appwire.TurnStatusCompleted,
+				Images: []appwire.InputItem{
+					{Metadata: map[string]string{"sha": sha}, URL: remoteRoute},
+					{URL: external},
+				},
+			}},
+			Status: appwire.TurnStatusCompleted,
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: remoteThread}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var preview appwire.EvenerSubagentPreviewResponse
+	if err := rpc.Request(context.Background(), appwire.MethodEvenerSubagentPreview, appwire.EvenerSubagentPreviewParams{Ref: "h1:t1"}, &preview); err != nil {
+		t.Fatalf("SubagentPreview: %v", err)
+	}
+	if len(preview.Items) != 1 || len(preview.Items[0].Images) != 2 {
+		t.Fatalf("preview items = %+v, want the single remote image item with both input images", preview.Items)
+	}
+	if got := preview.Items[0].Images[0].URL; got != "" {
+		t.Fatalf("remote preview image route = %q, want it neutralized", got)
+	}
+	if got := preview.Items[0].Images[1].URL; got != external {
+		t.Fatalf("external preview image URL = %q, want %q preserved", got, external)
+	}
+}
+
 // A remote thread's CWD names the remote host's filesystem. When that path also
 // exists on the controller (a shared layout such as /home/<user>/<repo>), the
 // sidebar list must not resolve it locally and stamp a controller-local project

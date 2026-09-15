@@ -775,6 +775,10 @@ func registerThreadHandlers(
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
+		// A remote source returns the remote hub's origin-relative image routes,
+		// which only resolve against the remote origin; neutralization must run
+		// here exactly as it does on the thread/read path.
+		resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
