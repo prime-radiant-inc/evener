@@ -3,20 +3,18 @@
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
-  padding: var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-inset);
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
   color: var(--ink-hi);
-  font: inherit;
-  line-height: 1.5;
+  font-family: var(--font-sans);
+  font-size: max(var(--font-size-control), var(--font-size-body));
+  line-height: var(--line-height-body);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   outline: none;
-}
-
-.editor:focus-visible {
-  outline: var(--focus-ring);
 }
 
 .editor[data-empty="true"]::before {
