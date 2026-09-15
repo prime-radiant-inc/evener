@@ -14,11 +14,19 @@ import (
 // a RemoteHubSource reuses one long-lived client per host, so there is no
 // per-call dial or Initialize to run, and only the error mapping differs.
 func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clientMutationID string, params any, out any) error {
+	// A caller cancellation or deadline stays raw at every step, exactly as
+	// LocalDaemonSource.withClientCallMapper leaves ctx.Err(): the caller's own
+	// context ending is not host unavailability. On the request path this is
+	// load-bearing — mapping it through would become MutationOutcomeUnknown
+	// with an automatic retry, re-driving a mutation the caller abandoned.
 	if err := ctx.Err(); err != nil {
-		return s.mapCallError(err)
+		return err
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		// Acquiring the client dials/attaches the remote host; when that fails
 		// no request crossed the wire, so the outcome is known and this must
 		// stay a SessionUnavailable the auto-resume gate can act on. Only a
@@ -26,6 +34,9 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 		return s.mapCallError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return s.remoteHubMutationCallError(clientMutationID, err)
 	}
 	return s.translateOut(out)

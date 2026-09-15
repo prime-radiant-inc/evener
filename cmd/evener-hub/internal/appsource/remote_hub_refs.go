@@ -360,38 +360,8 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 	for index := range thread.Evener.PendingEscalations {
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
-	s.fromRemoteDiagnosticRefs(thread.Evener.Diagnostics)
+	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
 	return thread, nil
-}
-
-// fromRemoteDiagnosticRefs rewrites the nested transcript references the remote
-// hub put on a thread's diagnostics.
-//
-// Delegate refs are session refs in the remote hub's own "local:<session>"
-// namespace (agent/delegate_tree_start.go stamps encodeRef("", childSessionID)),
-// so an untranslated one collides with the controller's local source exactly
-// like Evener.Ref does: a client following it reads a controller-local session,
-// or fails, instead of the remote child. They are moved into this source's
-// namespace.
-//
-// Shell-job refs are "job:<id>" (agent.jobTranscriptRef names a job record in a
-// daemon-internal namespace, not a source-qualified thread ref), and a
-// project-scoped "proj:<project>:<session>" ref names a remote daemon object the
-// controller cannot address by source. Neither can collide with a controller
-// source the way "local:" does, so both pass through byte-for-byte: refusing
-// them would fail every remote read that carries a background shell job. A
-// client that tries to follow one still fails loudly at lookup ("source not
-// found: job"/"proj") rather than reaching the wrong host.
-func (s *RemoteHubSource) fromRemoteDiagnosticRefs(diagnostics *appwire.EvenerDiagnostics) {
-	if diagnostics == nil {
-		return
-	}
-	for index := range diagnostics.Delegates {
-		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Delegates[index].TranscriptRef)
-	}
-	for index := range diagnostics.Jobs {
-		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Jobs[index].TranscriptRef)
-	}
 }
 
 // fromRemoteNestedRef translates a nested diagnostic ref that names the remote
@@ -476,6 +446,42 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 		fields["evener"] = s.translateNestedRefs(encoded)
 	}
 	return json.Marshal(fields)
+}
+
+// fromRemoteDiagnostics rewrites the session-valued refs nested in a thread's
+// diagnostics tree. A delegate's TranscriptRef always names its child session,
+// and a delegate job's TranscriptRef names the same child session, so both live
+// in the remote hub's "local:" namespace and must move to "<host>:" or a
+// controller client would route a child-thread read to the local source. A
+// shell job's TranscriptRef is the opaque "job:<id>" ref, preserved
+// byte-for-byte, and every bare-id field (sessionId, ownerSessionId,
+// childSessionId, rootSessionId) is an id, not a ref, so none is touched.
+func (s *RemoteHubSource) fromRemoteDiagnostics(diagnostics *appwire.EvenerDiagnostics) {
+	if diagnostics == nil {
+		return
+	}
+	for index := range diagnostics.Delegates {
+		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Delegates[index].TranscriptRef)
+	}
+	for index := range diagnostics.Jobs {
+		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Jobs[index].TranscriptRef)
+	}
+}
+
+// fromRemoteRefOrOpaque maps a remote "local:<thread>" ref into the controller
+// namespace, but leaves a value this source cannot address — an opaque
+// "job:<id>" ref or a project-scoped ref — byte-for-byte rather than failing the
+// enclosing thread. It is the single-value counterpart of translateActivityRefs's
+// per-key policy.
+func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	translated, err := s.fromRemoteRefString(raw)
+	if err != nil {
+		return raw
+	}
+	return translated
 }
 
 // translateOut applies outbound ref translation to whichever response type

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -496,4 +498,124 @@ func activityMap(t *testing.T, value any, label string) map[string]any {
 		t.Fatalf("%s = %#v, want a JSON object", label, value)
 	}
 	return node
+}
+
+// TestRemoteHubMutationCallerContextStaysRaw asserts that a caller cancellation
+// or deadline reaching mutationCall never becomes SessionUnavailable or
+// MutationOutcomeUnknown: the caller's own context ending is not host
+// unavailability, and the mutation-unknown automatic-retry disposition would
+// re-drive a mutation the caller abandoned. It mirrors
+// LocalDaemonSource.withClientCallMapper, which returns ctx.Err() raw after the
+// dial and after fn.
+func TestRemoteHubMutationCallerContextStaysRaw(t *testing.T) {
+	t.Run("request deadline", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		clientConn, serverConn := net.Pipe()
+		server := appwire.NewStreamTransport(serverConn)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				if _, err := server.Recv(context.Background()); err != nil {
+					return
+				}
+				// Read the request but never answer, so the client waits on the
+				// caller context rather than on a response.
+			}
+		}()
+
+		client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+		client.Start(ctx)
+		defer func() {
+			_ = client.Close()
+			_ = serverConn.Close()
+			<-drained
+		}()
+
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer deadlineCancel()
+		_, err := source.StartTurn(deadlineCtx, appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-deadline"})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("client acquisition deadline", func(t *testing.T) {
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer deadlineCancel()
+		source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+			// Wait for the caller's context to end, then fail the attach, so the
+			// acquisition error's classification is unambiguous.
+			<-ctx.Done()
+			return nil, errors.New("attach failed")
+		})
+		_, err := source.StartTurn(deadlineCtx, appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-attach"})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+}
+
+func assertRawContextError(t *testing.T, err error, want error) {
+	t.Helper()
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %T %v, want %v", err, err, want)
+	}
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
+		t.Fatalf("error = %#v, want a raw context error, never a wire mutation outcome", wire)
+	}
+}
+
+// TestRemoteHubThreadDiagnosticsTranslateNestedRefs asserts fromRemoteThread
+// rewrites the session-valued refs nested in a thread's diagnostics — a
+// delegate's and a delegate job's transcriptRef — while leaving an opaque
+// "job:<id>" ref and every bare session id untouched.
+func TestRemoteHubThreadDiagnosticsTranslateNestedRefs(t *testing.T) {
+	thread := appwire.Thread{
+		ID:     "S",
+		Source: "local",
+		Evener: appwire.EvenerThread{
+			Ref:       testRemoteRef,
+			ParentRef: "local:P",
+			Diagnostics: &appwire.EvenerDiagnostics{
+				Jobs: []appwire.EvenerJobInfo{
+					{JobID: "dlg_job", JobType: "delegate", TranscriptRef: "local:child"},
+					{JobID: "job_a", JobType: "shell", TranscriptRef: "job:job_a"},
+				},
+				Delegates: []appwire.EvenerDelegateInfo{
+					{DelegateID: "dlg_1", OwnerSessionID: "child", ChildSessionID: "child", TranscriptRef: "local:child"},
+				},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: thread}}
+	})
+
+	resp, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef, ThreadID: testThreadID})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	diagnostics := resp.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		t.Fatal("ReadThread dropped the thread diagnostics")
+	}
+	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
+		t.Errorf("delegate transcriptRef = %q, want %q", got, "host:child")
+	}
+	if got := diagnostics.Delegates[0].ChildSessionID; got != "child" {
+		t.Errorf("delegate childSessionId = %q, want bare id %q", got, "child")
+	}
+	if got := diagnostics.Jobs[0].TranscriptRef; got != "host:child" {
+		t.Errorf("delegate job transcriptRef = %q, want %q", got, "host:child")
+	}
+	if got := diagnostics.Jobs[1].TranscriptRef; got != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %q, want opaque %q", got, "job:job_a")
+	}
 }
