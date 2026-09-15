@@ -292,34 +292,11 @@ func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
 	argv = append(argv, sshDest(h)...)
-	argv = append(argv, quoteRemoteWord(evenerCommand(h.EvenerPath)))
+	argv = append(argv, shellQuote(evenerCommand(h.EvenerPath)))
 	for _, a := range args {
-		argv = append(argv, quoteRemoteWord(a))
+		argv = append(argv, shellQuote(a))
 	}
 	return argv
-}
-
-// remoteShellSpecial lists the bytes that make a word unsafe to hand to a remote
-// login shell as-is. "~" is deliberately absent: it expands only at the start of
-// a word, and quoting it away would break the "~/bin/evener" spelling for no
-// safety gain.
-const remoteShellSpecial = " \t\n'\"\\$`;&|<>()*?[]{}!#"
-
-// quoteRemoteWord renders one word for the remote login shell. A word already
-// free of whitespace and shell metacharacters is returned unchanged, so the
-// ordinary argv keeps the exact form the spec documents; anything else is
-// single-quoted, with an embedded quote closed, escaped, and reopened ('\”, the
-// POSIX idiom). A quoted value is literal, so a leading "~" survives only when
-// the word did not need quoting: use an absolute path when the value itself
-// contains whitespace or a metacharacter.
-func quoteRemoteWord(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if !strings.ContainsAny(s, remoteShellSpecial) {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // channelArgv is the exact non-interactive bridge form:
@@ -328,19 +305,38 @@ func quoteRemoteWord(s string) string {
 //	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
 //	    [--config <path>] [--addr <addr>]
 //
-// The optional flags carry the host's own hub.toml and listen address. Without
-// them the bridge resolves defaults, so it would miss the host's token and
-// socket or address the wrong process (hostreg's EvenerPath/ConfigPath/Addr
-// docs; spec 04's corrected argv contract).
+// The optional flags carry the host's own hub.toml and the address the operator
+// configured for it (per-host Addr, else Options.HubAddr). Passing --addr from
+// the same resolution the restart and health probes use is what keeps a
+// manager-wide HubAddr from making the bridge dial a different port than the
+// probes address; with nothing configured the flag is omitted so the host
+// resolves its own hub.toml address (hostreg's EvenerPath/ConfigPath/Addr docs;
+// spec 04's corrected argv contract).
 func channelArgv(o Options, h hostreg.Host) []string {
 	args := []string{"hub", "attach", "--stdio"}
 	if p := strings.TrimSpace(h.ConfigPath); p != "" {
 		args = append(args, "--config", p)
 	}
-	if a := strings.TrimSpace(h.Addr); a != "" {
+	if a := explicitHostAddr(o, h); a != "" {
 		args = append(args, "--addr", a)
 	}
 	return evenerCommandArgv(o, h, args...)
+}
+
+// hubBootstrapArgv builds the argv for the ad hoc first-attach launch of a host
+// hub that is not running: the resolved executable (an absolute path, so the
+// launch does not depend on the non-interactive PATH), the hub subcommand, and
+// the host's configured config path / address so the started hub matches the one
+// the probes address. It mirrors channelArgv's optional flags.
+func hubBootstrapArgv(o Options, h hostreg.Host, target string) []string {
+	args := []string{target, "hub"}
+	if p := strings.TrimSpace(h.ConfigPath); p != "" {
+		args = append(args, "--config", p)
+	}
+	if a := explicitHostAddr(o, h); a != "" {
+		args = append(args, "--addr", a)
+	}
+	return args
 }
 
 // diagSink forwards ssh stderr to the configured diagnostic writer and keeps a

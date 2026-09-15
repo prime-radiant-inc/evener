@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -201,8 +202,16 @@ func cannedRun(overrides map[string][]byte) func(context.Context, []string, io.R
 			return []byte("x86_64\n"), nil
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			return []byte(goodLaunchCheck), nil
+		case strings.Contains(joined, "api/health"):
+			// A running hub matching the on-disk build, so Ensure attaches
+			// without deploying, restarting, or taking the first-attach
+			// bootstrap start. Tests that need "nothing answered" use their own
+			// runFn or a health override.
+			return []byte(`{"version":"dev"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -216,4 +225,59 @@ func testRegistry(t *testing.T, hosts ...hostreg.Host) *hostreg.Registry {
 		t.Fatalf("hostreg.New: %v", err)
 	}
 	return reg
+}
+
+// writeStageBinary is a BuildBinary seam that writes a stand-in binary to the
+// staging path the deploy opened.
+func writeStageBinary(_ context.Context, _, _, out string) error {
+	return os.WriteFile(out, []byte("staged-binary"), 0o755)
+}
+
+// deployRunner answers the whole ensure sequence for a linux host whose evener is
+// installed at /opt/evener/bin/evener: preflight, deploy target resolution and
+// push, a systemd restart, and /api/health. launch answers successive
+// launch-check calls by index (the last answer repeats), and health answers
+// successive health probes.
+func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
+	t.Helper()
+	launchCalls, healthCalls := 0, 0
+	return &fakeRunner{
+		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.HasSuffix(joined, "uname -s"):
+				return []byte("Linux\n"), nil
+			case strings.HasSuffix(joined, "uname -m"):
+				return []byte("x86_64\n"), nil
+			case strings.Contains(joined, "XDG_STATE_HOME"):
+				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+			case strings.HasSuffix(joined, "id -u"):
+				return []byte("1000\n"), nil
+			case strings.Contains(joined, "launch-check"):
+				out, err := launch(launchCalls)
+				launchCalls++
+				return out, err
+			case strings.Contains(joined, "test -d /opt/evener/bin"):
+				return nil, nil
+			case strings.Contains(joined, "evener_resolve"):
+				return []byte("/opt/evener/bin/evener\n"), nil
+			case strings.Contains(joined, "list-units"):
+				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+			case strings.Contains(joined, "systemctl restart"):
+				return nil, nil
+			case strings.Contains(joined, "api/health"):
+				out, err := health(healthCalls)
+				healthCalls++
+				return out, err
+			case strings.Contains(joined, "cat >"):
+				if stdin != nil {
+					_, _ = io.ReadAll(stdin)
+				}
+				return nil, nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		},
+		startFn: goodStartFn(t),
+	}
 }

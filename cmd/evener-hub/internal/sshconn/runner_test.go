@@ -182,32 +182,6 @@ func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
 	}
 }
 
-// ssh joins the remote argv and hands the result to the remote login shell, so a
-// value with a space would split into two arguments and a metacharacter would be
-// executed there. Ordinary words keep their documented, unquoted form.
-func TestQuoteRemoteWord(t *testing.T) {
-	cases := map[string]string{
-		"":                       "''",
-		"evener":                 "evener",
-		"/opt/evener/bin/evener": "/opt/evener/bin/evener",
-		"--stdio":                "--stdio",
-		"evener-appwire-v5":      "evener-appwire-v5",
-		"127.0.0.1:9180":         "127.0.0.1:9180",
-		"~/bin/evener":           "~/bin/evener",
-		"/home/dev/My Evener":    "'/home/dev/My Evener'",
-		"a;b":                    "'a;b'",
-		"$(id)":                  "'$(id)'",
-		"`id`":                   "'`id`'",
-		"it's":                   `'it'\''s'`,
-		"a\tb":                   "'a\tb'",
-	}
-	for in, want := range cases {
-		if got := quoteRemoteWord(in); got != want {
-			t.Errorf("quoteRemoteWord(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestChannelArgvQuotesHostValues(t *testing.T) {
 	host := hostreg.Host{
 		Name:       "alpha",
