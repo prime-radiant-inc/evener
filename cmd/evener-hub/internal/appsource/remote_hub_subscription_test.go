@@ -505,66 +505,139 @@ func stalledThreadReadAhead(t *testing.T, remote *pushableRemote, pushed int) <-
 	return out
 }
 
-// drainNotifications reads ch until it has been quiet for idle, returning how
-// many notifications arrived. The subscription never closes on its own, so a
-// quiet window is how the count terminates.
-func drainNotifications(ch <-chan appwire.Notification, idle time.Duration) int {
+// drainUntilClosed reads ch to channel end, returning how many notifications
+// arrived. A bounded timeout keeps a subscription that never ends from hanging
+// the test.
+func drainUntilClosed(t *testing.T, ch <-chan appwire.Notification) (int, bool) {
+	t.Helper()
 	count := 0
-	deadline := time.After(30 * time.Second)
+	deadline := time.After(15 * time.Second)
 	for {
 		select {
 		case _, ok := <-ch:
 			if !ok {
-				return count
+				return count, true
 			}
 			count++
-		case <-time.After(idle):
-			return count
 		case <-deadline:
-			return count
+			return count, false
 		}
 	}
 }
 
-// TestRemoteHubSourceDrainReadAheadIsBounded pins the round-five high finding:
-// while a thread consumer is backpressured the drain keeps reading the client's
-// stream (round four: so a client teardown is still observed), but its read-ahead
-// FIFO is bounded by remoteHubDrainReadAheadCap. Against the pre-fix drain every
-// pushed notification is retained and delivered once the consumer resumes; with
-// the bound the excess is dropped, so strictly fewer than were pushed arrive and
-// the drain does not grow without limit.
-func TestRemoteHubSourceDrainReadAheadIsBounded(t *testing.T) {
+// TestRemoteHubSourceDrainOverflowResetsStalledSubscription pins the round-six
+// medium finding. Round five bounded the drain's read-ahead but answered
+// overflow by silently dropping notifications while keeping the subscription
+// open, so a stalled consumer could be left showing a turn the remote had
+// already completed. Now a full per-subscription read-ahead buffer resets THAT
+// subscription: its relay-facing channel ends, so app_relay.go re-reads the
+// thread snapshot and re-syncs the browser. The bound is kept — strictly fewer
+// than the pushed burst is delivered — but recovery replaces the silent drop.
+func TestRemoteHubSourceDrainOverflowResetsStalledSubscription(t *testing.T) {
 	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		if method != appwire.MethodThreadRead {
 			t.Errorf("unexpected method %q", method)
 		}
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	const pushed = remoteHubSubBuffer * 12
+	const pushed = remoteHubDrainReadAheadCap * 3
 	out := stalledThreadReadAhead(t, remote, pushed)
 
-	delivered := drainNotifications(out, time.Second)
-	if delivered >= pushed {
-		t.Fatalf("drain delivered all %d pushed notifications; its read-ahead FIFO is unbounded", delivered)
+	delivered, closed := drainUntilClosed(t, out)
+	if !closed {
+		t.Fatalf("stalled subscription did not end after its read-ahead overflowed; the consumer is left silently behind (%d delivered)", delivered)
 	}
-	if delivered < remoteHubSubBuffer {
-		t.Fatalf("drain delivered only %d notifications; the bound must still deliver the buffered prefix", delivered)
+	if delivered >= pushed {
+		t.Fatalf("stalled subscription delivered all %d pushed notifications; the read-ahead is unbounded", delivered)
+	}
+	if dropped := remote.source.threadReadAheadDropped.Load(); dropped == 0 {
+		t.Fatal("no read-ahead overflow was counted against the stalled consumer that overflowed its buffer")
 	}
 }
 
-// TestRemoteHubSourceDrainReadAheadDropsAreCounted pins the observability half
-// of the overflow policy: the notifications the drain drops at the cap are
-// counted, so a stuck consumer's silent loss is at least visible.
-func TestRemoteHubSourceDrainReadAheadDropsAreCounted(t *testing.T) {
+// TestRemoteHubSourceDrainOverflowIsPerSubscription pins the other half of the
+// round-six medium finding: the read-ahead bound must be per subscription, so a
+// backpressured thread cannot evict a healthy thread's notifications. S stalls
+// and overflows; T, subscribed at the same time on the same client, receives
+// every notification addressed to it.
+func TestRemoteHubSourceDrainOverflowIsPerSubscription(t *testing.T) {
 	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
 		if method != appwire.MethodThreadRead {
 			t.Errorf("unexpected method %q", method)
 		}
 		return scriptedReply{result: appwire.ThreadReadResponse{}}
 	})
-	stalledThreadReadAhead(t, remote, remoteHubSubBuffer*12)
+	ctx := t.Context()
 
-	if dropped := remote.source.threadReadAheadDropped.Load(); dropped == 0 {
-		t.Fatal("no read-ahead drop was counted against a stalled consumer that overflowed the cap")
+	// Host sentinel: proves the drain consumed the whole burst. Thread
+	// notifications are filter-rejected, so the host buffer never parks the drain.
+	remote.source.SetHostNotificationFilter(func(method string) bool {
+		return method == appwire.NotifyEvenerAuthUpdated
+	})
+	hostCtx, cancelHost := context.WithCancel(ctx)
+	t.Cleanup(cancelHost)
+	sentinel, err := remote.source.SubscribeHostNotifications(hostCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+
+	outS, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("subscribe S: %v", err)
+	}
+	outT, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:T"})
+	if err != nil {
+		t.Fatalf("subscribe T: %v", err)
+	}
+
+	// Sustain S past its read-ahead (out 128 + in 512) while interleaving rare
+	// notifications for the healthy T at the same sequence positions.
+	const pushed = remoteHubDrainReadAheadCap * 3
+	wantT := 0
+	for i := range pushed {
+		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+			t.Fatalf("push S %d: %v", i, err)
+		}
+		if i%97 == 0 {
+			if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "T", Ref: "local:T"}); err != nil {
+				t.Fatalf("push T %d: %v", i, err)
+			}
+			wantT++
+		}
+	}
+	if err := remote.push(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"}); err != nil {
+		t.Fatalf("push sentinel: %v", err)
+	}
+	select {
+	case <-sentinel:
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain never read the sentinel; the burst was not fully consumed")
+	}
+
+	// T is untouched by S's overflow: every T notification is still delivered.
+	gotT := 0
+	for gotT < wantT {
+		select {
+		case n, ok := <-outT:
+			if !ok {
+				t.Fatalf("T subscription closed after %d notifications, want %d (cross-thread contamination)", gotT, wantT)
+			}
+			status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, n)
+			if status.ThreadID != "T" || status.Ref != "host:T" {
+				t.Fatalf("T subscriber got threadId=%q ref=%q, want T / host:T", status.ThreadID, status.Ref)
+			}
+			gotT++
+		case <-time.After(5 * time.Second):
+			t.Fatalf("T received only %d of %d notifications while S was backpressured", gotT, wantT)
+		}
+	}
+
+	// S itself overflowed and ended, which is the recovery path.
+	deliveredS, closedS := drainUntilClosed(t, outS)
+	if !closedS {
+		t.Fatal("stalled S subscription did not end after overflowing")
+	}
+	if deliveredS >= pushed {
+		t.Fatalf("stalled S subscription delivered all %d pushed notifications", deliveredS)
 	}
 }

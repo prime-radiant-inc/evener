@@ -66,12 +66,13 @@ type RemoteHubSource struct {
 	// stalled consumer cannot stall thread routing; this counter makes the
 	// tradeoff observable.
 	hostNotifyDropped atomic.Int64
-	// threadReadAheadDropped counts thread notifications the shared drain
-	// dropped because a stalled thread consumer had already parked it with
-	// remoteHubDrainReadAheadCap notifications read ahead. Reading ahead is what
-	// keeps the drain independent of a thread consumer (so a client teardown is
-	// still observed), but it must not buffer without bound; the counter makes
-	// the explicit overflow policy observable.
+	// threadReadAheadDropped counts thread notifications that overflowed a
+	// subscription's own read-ahead buffer (remoteHubDrainReadAheadCap) because
+	// that consumer had stalled. Each such overflow also resets the saturated
+	// subscription so the relay re-reads the thread snapshot (see
+	// routeNotification) — the frame counted here is lost from the buffer, but
+	// the subscription recovers instead of silently dropping terminal state. The
+	// counter makes the overflow policy observable.
 	threadReadAheadDropped atomic.Int64
 
 	// probeMu serializes HostCapabilities and guards probe, the last successful
