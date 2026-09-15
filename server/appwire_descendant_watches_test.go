@@ -220,6 +220,34 @@ func TestThreadListClearsRemovedDescendantWatchFromLiveSample(t *testing.T) {
 	}
 }
 
+// A known descendant with no watches of its own keeps the nil diagnostics block
+// its projection carries. The resolver answers every known session, so a row that
+// never had a block now receives an empty non-nil sample; materializing a block
+// for it would change the wire shape of every watchless subagent row and tell
+// consumers "has diagnostics" about a session that has none. The block is only
+// materialized when there is a watch to carry, or when the row already had one
+// to clear.
+func TestThreadListKeepsNilDiagnosticsForWatchlessDescendant(t *testing.T) {
+	srv := seedDescendantWatchServer(t, func([]string) map[string][]agent.WatchStatusInfo {
+		// Exactly what LiveWatchRowsForSessions answers for a known session with
+		// no watches: a present, empty, non-nil sample.
+		return map[string][]agent.WatchStatusInfo{"child": {}}
+	})
+
+	response, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	child := response.Data[1]
+	if child.Evener.Diagnostics != nil {
+		t.Fatalf("watchless child diagnostics = %+v, want the projection's nil block kept", child.Evener.Diagnostics)
+	}
+	// The root still gets its own envelope watch: the early return is per row.
+	if root := response.Data[0]; root.Evener.Diagnostics == nil || len(root.Evener.Diagnostics.Watches) != 1 || root.Evener.Diagnostics.Watches[0].ID != "watch-root" {
+		t.Fatalf("root diagnostics = %+v, want its own watch", root.Evener.Diagnostics)
+	}
+}
+
 // The descendant rows are rebuilt per call and the slices are copied, so a
 // caller mutating a response can never reach the agent state behind the seam.
 func TestThreadListDescendantWatchesDoNotAliasTheSource(t *testing.T) {

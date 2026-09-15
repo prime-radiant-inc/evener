@@ -2655,7 +2655,18 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 // diagnostics block is deep-copied through appwire.CloneEvenerDiagnostics, so
 // every other slice of the cached projection is out of reach too, not just
 // Watches.
+//
+// A row with no diagnostics block and no watches to attach keeps its nil block.
+// The live resolver answers every known session, so a watchless child reaches
+// this function with an empty sample; materializing a block for it would change
+// the wire shape of every watchless row and read as "has diagnostics" to a
+// consumer of the field. The block is materialized only when there is a watch to
+// carry, and it is kept when the row already had one, which is what lets a
+// cleared watch leave the row.
 func appThreadWithWatches(thread appwire.Thread, statuses []agent.WatchStatusInfo) appwire.Thread {
+	if thread.Evener.Diagnostics == nil && len(statuses) == 0 {
+		return thread
+	}
 	watches := make([]appwire.EvenerWatchInfo, 0, len(statuses))
 	for _, status := range statuses {
 		watches = append(watches, appWatchFromDetailedStatus(status))
