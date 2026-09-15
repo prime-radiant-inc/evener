@@ -1074,9 +1074,23 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 				stranded = append(stranded, sub)
 			}
 		}
+		var orphaned []*remoteHubHostSubscription
+		for sub := range s.hostSubs {
+			if sub.client == client {
+				delete(s.hostSubs, sub)
+				orphaned = append(orphaned, sub)
+			}
+		}
 		s.subMu.Unlock()
 		for _, sub := range stranded {
 			sub.cancel()
+		}
+		// Closing out here (never from the consumer's context watcher) keeps
+		// drainLoop the channel's only closer as well as its only sender, so a
+		// send can never race a close. The consumer sees the close and
+		// re-subscribes against the next client.
+		for _, sub := range orphaned {
+			close(sub.out)
 		}
 	}()
 	for {
@@ -1117,6 +1131,9 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // its contents had already been forwarded to the restored previous, where no
 // pump would ever read it and no resync would cover it.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
+	// Host-level consumers see every notification; the admin fan-out filters
+	// to the config methods it owns. Thread routing below is unchanged.
+	s.publishHostNotification(notification)
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
 		return

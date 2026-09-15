@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -79,6 +80,12 @@ type RemoteHubSource struct {
 	// default); the setter is called once at registration.
 	online func() bool
 
+	// hostSubs are host-level (non-thread) notification consumers registered
+	// through SubscribeHostNotifications, e.g. the component-07a remote-admin
+	// fan-out. They are fed by the same drainLoop that routes thread
+	// notifications, never by a second reader of Client.Notifications().
+	hostSubs map[*remoteHubHostSubscription]struct{}
+
 	// probeMu guards probe (the last successful probe, cached against the
 	// client it ran on) and facts (the preflight seam HostCapabilities reads
 	// while probing). It is never held across a wire call.
@@ -94,11 +101,12 @@ var (
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
 	return &RemoteHubSource{
-		id:     id,
-		roots:  roots,
-		client: client,
-		subs:   map[string]*remoteHubSubscription{},
-		drains: map[*appwire.Client]struct{}{},
+		id:       id,
+		roots:    roots,
+		client:   client,
+		subs:     map[string]*remoteHubSubscription{},
+		drains:   map[*appwire.Client]struct{}{},
+		hostSubs: map[*remoteHubHostSubscription]struct{}{},
 	}
 }
 
@@ -1351,5 +1359,99 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		ThreadRef:         key,
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
+	}
+}
+
+// AdminCall forwards one hub-scoped admin RPC to this remote host's hub over
+// the shared per-host client and returns that method's own result verbatim
+// (component 07a). It translates nothing: the caller has already decided the
+// method is one the proxy may forward, and the answer is the remote hub's
+// answer, not a re-shaped one.
+//
+// The client is resolved per call, so a component-04 reconnect that swaps the
+// underlying client is picked up automatically. Errors pass through exactly as
+// the client produced them: a remote WireError keeps its code and message (a
+// launch credential-env refusal or an auth Codex/gcp-adc refusal reaches the
+// browser unchanged), and a transport failure stays raw so the caller can tell
+// a refusal by the remote hub from a channel that died mid-call.
+func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		return err
+	}
+	return client.Request(ctx, method, params, out)
+}
+
+// remoteHubHostSubscription is one host-level notification consumer, e.g. the
+// component-07a remote-admin fan-out. out is written and closed only by the
+// owning client's drainLoop — its sole sender and, on client teardown, its
+// closer — so a consumer that stops reading can never race a close. stop is
+// closed when the consumer's context ends, releasing a delivery that is
+// blocked on a full buffer.
+type remoteHubHostSubscription struct {
+	client *appwire.Client
+	out    chan appwire.Notification
+	stop   chan struct{}
+}
+
+// SubscribeHostNotifications registers a consumer for this remote hub's
+// host-level notifications: every notification the shared client delivers —
+// including the config broadcasts (evener/auth/updated and friends) that carry
+// no thread route and are therefore dropped by thread routing.
+//
+// Registration starts the client's drain, so an admin-only consumer with no
+// thread subscribers still receives notifications. The returned channel is
+// closed when ctx ends or when the client's notification stream ends (a
+// reconnect or a dead channel), so the caller re-subscribes and binds whatever
+// client the connector returns next.
+//
+// This is deliberately not a second reader of Client.Notifications(): that
+// channel already has exactly one consumer (drainLoop), and a second reader
+// would race it and silently split the stream.
+func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-chan appwire.Notification, error) {
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		return nil, s.mapCallError(err)
+	}
+	sub := &remoteHubHostSubscription{
+		client: client,
+		out:    make(chan appwire.Notification, remoteHubSubBuffer),
+		stop:   make(chan struct{}),
+	}
+	s.subMu.Lock()
+	s.hostSubs[sub] = struct{}{}
+	s.ensureDrainLocked(client)
+	s.subMu.Unlock()
+	go func() {
+		<-ctx.Done()
+		s.subMu.Lock()
+		delete(s.hostSubs, sub)
+		s.subMu.Unlock()
+		close(sub.stop)
+	}()
+	return sub.out, nil
+}
+
+// publishHostNotification delivers one remote notification to every registered
+// host-level consumer. It runs on the drain goroutine only, which is also the
+// sole closer of each subscription's out channel, so no send can race a close.
+// Blocking rather than dropping is deliberate, as for thread routing: a dropped
+// config broadcast leaves a settings pane stale. A consumer whose context
+// ended is released by its stop channel instead.
+func (s *RemoteHubSource) publishHostNotification(notification appwire.Notification) {
+	s.subMu.Lock()
+	subs := make([]*remoteHubHostSubscription, 0, len(s.hostSubs))
+	for sub := range s.hostSubs {
+		subs = append(subs, sub)
+	}
+	s.subMu.Unlock()
+	for _, sub := range subs {
+		select {
+		case sub.out <- notification:
+		case <-sub.stop:
+		}
 	}
 }

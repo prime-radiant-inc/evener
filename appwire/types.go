@@ -137,6 +137,10 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
+	// remote host's hub (component 07a). Host is the component-03 source ID;
+	// Method must be in the proxy's exact allow-list. See HostRequestParams.
+	MethodEvenerHostRequest = "evener/host/request"
 )
 
 const (
@@ -192,6 +196,13 @@ const (
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
 	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
+	// NotifyEvenerHostNotification re-emits one host-owned config notification
+	// (evener/auth/updated, evener/launch/updated, evener/marketplace/updated,
+	// evener/plugin/updated, evener/settings/agentsDoc/changed) tagged with the
+	// source host (component 07a). Local notifications keep their own unwrapped
+	// methods; this wrapper is emitted only for remote hosts. See
+	// HostNotificationParams.
+	NotifyEvenerHostNotification = "evener/host/notification"
 )
 
 const (
@@ -3698,4 +3709,54 @@ type SettingsMCPServerEntry struct {
 type SettingsMCPOverview struct {
 	Servers []SettingsMCPServerEntry `json:"servers,omitempty"`
 	Error   string                   `json:"error,omitempty"`
+}
+
+// HostRequestParams is the evener/host/request payload (component 07a): one
+// hub-scoped admin RPC addressed to a named remote host. The controller's UI
+// sends this instead of calling the admin method directly when the selected
+// target is a remote host, so there is exactly one place that resolves the
+// host, decides whether the method may be forwarded at all, and refuses an
+// offline host rather than falling back to local execution.
+//
+// Host is a component-03 source ID. "local" is reserved for the controller's
+// own hub and is never a valid remote target.
+//
+// Method must name a method in the proxy's exact allow-list; an unlisted
+// method — including any catalog method added after that list was written —
+// is refused, and the proxy is never a generic hub-to-hub tunnel.
+//
+// Params is the forwarded method's own params, passed through unchanged. The
+// result of this call is likewise that method's own result, verbatim; the
+// proxy wraps it in no envelope of its own.
+type HostRequestParams struct {
+	Host   string          `json:"host"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// HostForwardedResult names evener/host/request's result in the protocol
+// catalog. The result is the forwarded method's own result, re-serialized
+// verbatim: there is no single Go shape to declare, so the catalog declares an
+// opaque object rather than fields the proxy does not add. The handler itself
+// returns json.RawMessage; this marker exists so the catalog and the generated
+// protocol reference (docs/appwire-protocol.md, types.gen.ts) name the
+// passthrough honestly instead of borrowing an unrelated type.
+type HostForwardedResult struct{}
+
+// HostNotificationParams is the evener/host/notification payload (component
+// 07a): one host-owned config notification re-emitted to the controller's
+// browser clients, tagged with the source host.
+//
+// Method and Params are the remote hub's own notification, unchanged:
+// evener/auth/updated, evener/launch/updated, evener/marketplace/updated,
+// evener/plugin/updated, or evener/settings/agentsDoc/changed. Local
+// notifications keep their existing, unwrapped methods; the wrapper is
+// emitted only for remote hosts, so a store that is not host-scoped never
+// sees remote traffic and cannot misapply it.
+//
+// Host is always present and is the only way a store tells two hosts apart.
+type HostNotificationParams struct {
+	Host   string          `json:"host"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
