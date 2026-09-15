@@ -229,16 +229,23 @@ func TestStreamTransportRejectsOversizeFrame(t *testing.T) {
 func TestStreamTransportRecvUnblocksOnCancel(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close() //nolint:errcheck // test cleanup
-
-	tr := NewStreamTransport(b)
-	ctx, cancel := context.WithCancel(context.Background())
+	reader := &signalingPipeEnd{Conn: b, entered: make(chan struct{}, 1)}
+	tr := NewStreamTransport(reader)
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {
 		_, err := tr.Recv(ctx)
 		done <- err
 	}()
-
+	// Cancel only once the read is provably inside the stream. Cancelling
+	// straight away would let Recv return from its entry check, which proves
+	// nothing about unblocking a read that is already in flight.
+	select {
+	case <-reader.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recv never reached the stream")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -255,16 +262,22 @@ func TestStreamTransportRecvUnblocksOnCancel(t *testing.T) {
 func TestStreamTransportSendUnblocksOnCancel(t *testing.T) {
 	a, b := net.Pipe()
 	defer b.Close() //nolint:errcheck // test cleanup
-
-	tr := NewStreamTransport(a)
-	ctx, cancel := context.WithCancel(context.Background())
+	writer := &signalingPipeEnd{Conn: a, entered: make(chan struct{}, 1)}
+	tr := NewStreamTransport(writer)
+	ctx, cancel := context.WithCancel(t.Context())
 
 	done := make(chan error, 1)
 	go func() {
 		done <- tr.Send(ctx, ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
 	}()
-
-	// net.Pipe writes block until the far end reads, which it never does.
+	// net.Pipe writes block until the far end reads, which it never does; wait
+	// until the write is in the stream before cancelling, so this proves the
+	// in-flight write is unblocked rather than that Send returned early.
+	select {
+	case <-writer.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send never reached the stream")
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -496,6 +509,14 @@ func (s *signalingPipeEnd) Read(p []byte) (int, error) {
 	default:
 	}
 	return s.Conn.Read(p)
+}
+
+func (s *signalingPipeEnd) Write(p []byte) (int, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	return s.Conn.Write(p)
 }
 
 // The parked-read test above uses a stream whose Close is a no-op, so it never

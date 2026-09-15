@@ -191,9 +191,12 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	}
 	if n != len(buf) {
 		// A short write leaves a partial frame on the wire; the stream cannot be
-		// resynchronized mid-frame, so the transport is done.
+		// resynchronized mid-frame, so the transport is done. Report whatever
+		// actually won the latch — a cancellation or a Close racing this write
+		// may have recorded its cause first — so this call's error agrees with
+		// the one every later call reports.
 		t.poison(io.ErrShortWrite)
-		return io.ErrShortWrite
+		return t.poisonErr()
 	}
 	// The frame is on the wire, but a cancellation that landed while it was being
 	// written has already closed the stream underneath: latch that, so later
