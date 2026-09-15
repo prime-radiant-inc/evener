@@ -613,8 +613,22 @@ function SpawnForm({
     textareaRef.current?.focus();
   }
 
+  // Every catalog and readiness signal this form reads - provider instances,
+  // the resolved default model, the harness list, plugin previews, the slash
+  // catalog, path validate/browse/create - is fetched from THIS controller. A
+  // remote launch instead runs on the selected source's own hub: appsource's
+  // RemoteHubSource.StartThread forwards thread/start (clearing the controller's
+  // source id) and that hub spawns on ITS host, resolving the model, credentials
+  // and plugins from its own configuration. So a controller-local "missing" is
+  // not evidence a remote launch cannot succeed, and must not BLOCK it - the
+  // remote hub's own thread/start error is the authority. (Source-aware
+  // discovery needs the evener/host/request proxy, which is not in this branch.)
+  const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
+  // The selected target's own label for the disclosure below; falls back to the
+  // raw source id while the manifest is still in flight (its labels are unknown).
+  const remoteSourceLabel = sources.find((candidate) => candidate.id === submittedSource)?.label ?? submittedSource;
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
-  const providerRequired = usesEvenerModels && providerSetup.status === "missing";
+  const providerRequired = usesEvenerModels && providerSetup.status === "missing" && !remoteLaunch;
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set. The onboarding scope is a second
@@ -629,7 +643,10 @@ function SpawnForm({
   // connector its model chip opens neither supplies nor replaces what this
   // pane would submit - requiring a choice there would disable Start, and
   // label the chip "Choose a model", over a model nothing launches with.
+  // A remote launch is exempt: the controller's model state says nothing about
+  // the host's, whose own thread/start error is the authority.
   const modelRequired =
+    !remoteLaunch &&
     usesEvenerModels &&
     model === "" &&
     advancedModel === "" &&
@@ -1441,20 +1458,31 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      const outcome = await preflightDir(client, cwd);
-      if (outcome.kind === "abort") {
-        toasts.push("error", outcome.message);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
-        return;
-      }
-      if (outcome.kind === "offer-create") {
-        setCreateDialogPath(outcome.path);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
-        return;
+      // The working-directory preflight is the CONTROLLER's own filesystem
+      // check: evener/path/validate and evener/dirs/create answer for this hub's
+      // host. A remote launch's cwd belongs to the selected source instead, so
+      // the local answer is not authoritative - a path that exists only on the
+      // remote reads as missing here, and "Create & start" would create the
+      // directory LOCALLY before the remote launch still failed on its own cwd.
+      // Skip it for a remote target and let that hub validate its own cwd via
+      // thread/start; source-aware preflight arrives with the evener/host/request
+      // proxy (Component 07a), not this branch.
+      if (!remoteLaunch) {
+        const outcome = await preflightDir(client, cwd);
+        if (outcome.kind === "abort") {
+          toasts.push("error", outcome.message);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+        if (outcome.kind === "offer-create") {
+          setCreateDialogPath(outcome.path);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
@@ -1590,6 +1618,22 @@ function SpawnForm({
               ))}
             </select>
           </FormRow>
+        )}
+
+        {/* A remote target's environment cannot yet be queried from here: the
+            working directory, models, providers and plugins below are read from
+            the controller, and the launch is sent to the selected source. Say so
+            rather than present the controller's environment as the target's - a
+            remote-only path or a remote-only model must not read as a fact about
+            the host the session will run on. Removed when source-aware discovery
+            (the evener/host/request proxy) lands. */}
+        {remoteLaunch && (
+          <div className={CLASS.notice} role="status" data-testid="spawn-remote-host-notice">
+            <span>
+              Running on {remoteSourceLabel}. The working directory, models, providers and plugins shown here come from
+              this controller; {remoteSourceLabel} resolves its own when the session starts.
+            </span>
+          </div>
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
