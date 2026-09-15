@@ -6,6 +6,7 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { FINGERPRINT_UNAVAILABLE_ERROR, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 import { ProviderConnection } from "./ProviderConnection";
 
@@ -78,6 +79,9 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
 beforeEach(() => {
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page identity on the wire now, so the exact
+  // call assertions below can pin a value that does not vary per run.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 test("popular Gemini uses the real google identity, independently of provider naming", async () => {
@@ -355,7 +359,12 @@ test("saves directly to the real public ID then reloads and checks before explic
   expect(client.calls.slice(1)).toEqual([
     {
       method: "evener/auth/apiKey/set",
-      params: { provider: "anthropic", value: "fixture-key", expectedEndpointFingerprint: "fp-anthropic" },
+      params: {
+        provider: "anthropic",
+        value: "fixture-key",
+        expectedEndpointFingerprint: "fp-anthropic",
+        originClientId: "test-tab",
+      },
     },
     { method: "evener/instance/list", params: {} },
     { method: "evener/auth/test", params: { provider: "anthropic", expectedEndpointFingerprint: "fp-anthropic" } },
@@ -466,6 +475,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
     provider: "google-vertex",
     value: '{"type":"service_account"}',
     expectedEndpointFingerprint: "fp-google-vertex",
+    originClientId: "test-tab",
   });
   expect(client.calls.some((c) => c.method === "evener/auth/apiKey/set")).toBe(false);
 });
@@ -542,8 +552,18 @@ test("settings saved then key failed repairs the actual named connection without
   expect(connected).toHaveBeenCalledWith("azure-team");
   expect(client.calls.filter((c) => c.method === "evener/instance/create")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set").map((c) => c.params)).toEqual([
-    { provider: "azure-team", value: "retained-draft", expectedEndpointFingerprint: "fp-azure-team" },
-    { provider: "azure-team", value: "retained-draft", expectedEndpointFingerprint: "fp-azure-team" },
+    {
+      provider: "azure-team",
+      value: "retained-draft",
+      expectedEndpointFingerprint: "fp-azure-team",
+      originClientId: "test-tab",
+    },
+    {
+      provider: "azure-team",
+      value: "retained-draft",
+      expectedEndpointFingerprint: "fp-azure-team",
+      originClientId: "test-tab",
+    },
   ]);
 });
 test.each(["save", "refresh", "check"])(
