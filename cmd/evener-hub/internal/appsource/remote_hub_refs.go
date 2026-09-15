@@ -196,29 +196,52 @@ func (s *RemoteHubSource) translateOut(out any) error {
 	return nil
 }
 
-// translateActivityRefs rewrites the session refs embedded in a decoded
-// activity tree returned by a remote hub's jobs/list.
+// translateActivityRefs rewrites the session refs embedded in a remote hub's
+// jobs/list response.
 //
-// JobsListResponse.Data is `any`, so the wire tree arrives as nested
-// map[string]any/[]any rather than typed appwire.JobActivity* nodes. The walk
-// therefore follows ONLY the structural containers JobActivityTree declares
-// (root, entries, job, delegate, delegate.child, delegate.turns) and rewrites
-// ONLY the ref fields those nodes declare (a session's ref; a job's ownerRef
-// and transcriptRef; a delegate's childRef and transcriptRef). No other key is
-// ever treated as a ref, so a key literally named "ref" or "transcriptRef"
-// inside an opaque payload — a delegate's message or structuredResult, which
-// are json.RawMessage on the typed struct — survives byte-for-byte.
+// The current shape is a decoded activity tree: JobsListResponse.Data is `any`,
+// so the wire tree arrives as nested map[string]any/[]any rather than typed
+// appwire.JobActivity* nodes. The walk follows ONLY the structural containers
+// JobActivityTree declares (root, entries, job, delegate, delegate.child,
+// delegate.turns) and rewrites ONLY the ref fields those nodes declare (a
+// session's ref; a job's ownerRef and transcriptRef; a delegate's childRef). No
+// other key is ever treated as a ref, so a key literally named "ref" or
+// "transcriptRef" inside an opaque payload — a delegate's message or
+// structuredResult, which are json.RawMessage on the typed struct, or an
+// undeclared key such as a delegate-level "transcriptRef" (JobActivityDelegate
+// has no such field) — survives byte-for-byte.
+//
+// An older daemon may still answer with the retired flat array of EvenerJobInfo
+// (docs/appwire-protocol.md, evener/jobs/list); that shape is translated by the
+// same declared-field policy as the tree's job nodes.
 //
 // A value that does not parse as a session ref (an opaque "job:" ref, a bare
 // id from an older daemon, or a nested non-local ref) is left untouched rather
 // than failing the whole list.
 func (s *RemoteHubSource) translateActivityRefs(value any) any {
-	tree, ok := value.(map[string]any)
-	if !ok {
-		return value
+	switch node := value.(type) {
+	case map[string]any:
+		s.translateActivitySession(node["root"])
+	case []any:
+		s.translateLegacyJobRefs(node)
 	}
-	s.translateActivitySession(tree["root"])
 	return value
+}
+
+// translateLegacyJobRefs rewrites the declared ref field of each element of the
+// retired flat jobs array. EvenerJobInfo's only ref-valued field is
+// transcriptRef: a session ref for a delegate turn and the opaque "job:<id>"
+// for a shell job. Every other key is an id, not an address, so only
+// transcriptRef is a candidate and translateActivityRefField leaves a value it
+// cannot address (a bare id, an opaque "job:" ref) untouched.
+func (s *RemoteHubSource) translateLegacyJobRefs(jobs []any) {
+	for _, job := range jobs {
+		entry, ok := job.(map[string]any)
+		if !ok {
+			continue
+		}
+		s.translateActivityRefField(entry, "transcriptRef")
+	}
 }
 
 // translateActivitySession rewrites one JobActivitySession node: its own ref,
@@ -257,15 +280,18 @@ func (s *RemoteHubSource) translateActivityJob(value any) {
 	s.translateActivityRefField(job, "transcriptRef")
 }
 
-// translateActivityDelegate rewrites a JobActivityDelegate node's childRef and
-// transcriptRef, then recurses into its child session and its delegate turns.
+// translateActivityDelegate rewrites a JobActivityDelegate node's childRef,
+// then recurses into its child session and its delegate turns. The delegate
+// node declares childRef as its only ref field (appwire.JobActivityDelegate),
+// so a delegate-level "transcriptRef" is not a declared address and is
+// deliberately left byte-for-byte; the turn nodes that DO declare transcriptRef
+// are rewritten by translateActivityJob.
 func (s *RemoteHubSource) translateActivityDelegate(value any) {
 	delegate, ok := value.(map[string]any)
 	if !ok {
 		return
 	}
 	s.translateActivityRefField(delegate, "childRef")
-	s.translateActivityRefField(delegate, "transcriptRef")
 	s.translateActivitySession(delegate["child"])
 	for _, turn := range activityChildren(delegate["turns"]) {
 		s.translateActivityJob(turn)

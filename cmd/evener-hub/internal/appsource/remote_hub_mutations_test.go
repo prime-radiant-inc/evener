@@ -402,9 +402,11 @@ func TestRemoteHubMutationClientAcquisitionFailureIsSessionUnavailable(t *testin
 }
 
 // TestRemoteHubJobsListTranslatesActivityRefs asserts the recursive activity
-// tree returned by a remote hub has every session ref moved from the remote
-// "local:" namespace into the controller's "host:" namespace, while the opaque
-// "job:<id>" transcript ref of a shell job is preserved byte-for-byte.
+// tree returned by a remote hub has every DECLARED session ref moved from the
+// remote "local:" namespace into the controller's "host:" namespace, while the
+// opaque "job:<id>" transcript ref of a shell job and an undeclared
+// delegate-level "transcriptRef" (JobActivityDelegate declares only childRef)
+// are preserved byte-for-byte.
 func TestRemoteHubJobsListTranslatesActivityRefs(t *testing.T) {
 	rawTree := map[string]any{
 		"revision": 3,
@@ -471,8 +473,11 @@ func TestRemoteHubJobsListTranslatesActivityRefs(t *testing.T) {
 	if delegate["childRef"] != "host:child" {
 		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
 	}
-	if delegate["transcriptRef"] != "host:child" {
-		t.Errorf("delegate transcriptRef = %v, want session ref %q", delegate["transcriptRef"], "host:child")
+	// JobActivityDelegate declares no transcriptRef; only childRef is a declared
+	// ref field, so this key is not a routed address and must reach the
+	// controller byte-for-byte like any other undeclared key.
+	if delegate["transcriptRef"] != "local:child" {
+		t.Errorf("delegate transcriptRef = %v, want untouched %q (undeclared key)", delegate["transcriptRef"], "local:child")
 	}
 	child := activityMap(t, delegate["child"], "child session")
 	if child["ref"] != "host:child" {
@@ -505,8 +510,11 @@ func activityMap(t *testing.T, value any, label string) map[string]any {
 // A delegate's message and structuredResult are opaque model-produced JSON
 // (json.RawMessage on the typed struct), so a key literally named "ref",
 // "ownerRef", or "transcriptRef" inside them is data, not a routed session
-// address, and must reach the controller byte-for-byte. The structural refs
-// alongside them must still translate.
+// address, and must reach the controller byte-for-byte. The same holds for a
+// key the enclosing node does not declare at all: a delegate-level
+// "transcriptRef" is not a JobActivityDelegate field (its only ref field is
+// childRef), so it survives untouched. The structural refs alongside them must
+// still translate.
 func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
 	rawTree := map[string]any{
 		"revision": 1,
@@ -560,8 +568,10 @@ func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
 	if delegate["childRef"] != "host:child" {
 		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
 	}
-	if delegate["transcriptRef"] != "host:child" {
-		t.Errorf("delegate transcriptRef = %v, want %q", delegate["transcriptRef"], "host:child")
+	// A delegate-level transcriptRef is not declared by JobActivityDelegate (its
+	// only ref field is childRef), so it is opaque data: untouched.
+	if delegate["transcriptRef"] != "local:child" {
+		t.Errorf("delegate transcriptRef = %v, want untouched %q (undeclared key)", delegate["transcriptRef"], "local:child")
 	}
 	turns, ok := delegate["turns"].([]any)
 	if !ok || len(turns) != 1 {
@@ -587,6 +597,76 @@ func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
 	nestedNode := activityMap(t, nested[0], "structuredResult.nested[0]")
 	if nestedNode["ownerRef"] != "local:main" || nestedNode["childRef"] != "local:main" {
 		t.Errorf("opaque nested payload was rewritten: %#v", nestedNode)
+	}
+}
+
+// TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs pins the retired flat-array
+// jobs/list shape an older daemon may still return (docs/appwire-protocol.md,
+// evener/jobs/list): a session-valued transcriptRef must move from the remote
+// "local:" namespace into the controller's "host:" namespace, while the opaque
+// "job:<id>" transcriptRef of a shell job and every bare-id key are preserved
+// byte-for-byte.
+func TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs(t *testing.T) {
+	legacy := []any{
+		map[string]any{"jobId": "turn_1", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": "local:child"},
+		map[string]any{"jobId": "job_a", "jobType": "shell", "ownerSessionId": "S", "transcriptRef": "job:job_a"},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: legacy}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	jobs, ok := resp.Data.([]any)
+	if !ok || len(jobs) != 2 {
+		t.Fatalf("Data = %#v, want the legacy flat array of two jobs", resp.Data)
+	}
+	delegateTurn := activityMap(t, jobs[0], "delegate turn")
+	if delegateTurn["transcriptRef"] != "host:child" {
+		t.Errorf("delegate turn transcriptRef = %v, want %q", delegateTurn["transcriptRef"], "host:child")
+	}
+	if delegateTurn["ownerSessionId"] != "S" {
+		t.Errorf("ownerSessionId = %v, want bare id %q", delegateTurn["ownerSessionId"], "S")
+	}
+	shellJob := activityMap(t, jobs[1], "shell job")
+	if shellJob["transcriptRef"] != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %v, want opaque %q", shellJob["transcriptRef"], "job:job_a")
+	}
+}
+
+// TestRemoteHubMutationPreservesRemoteSessionUnavailable pins the boundary the
+// mutation-unknown mapping must NOT cross: a sessionUnavailable that arrives as
+// an intact error frame from the remote hub is a semantic verdict ("the target
+// session is not available"), not a lost response, so it stays SessionUnavailable
+// for the auto-resume gate. Only a transport loss — which mapCallError turns
+// into a locally synthesized typed SessionUnavailable — is in doubt and becomes
+// MutationOutcomeUnknown (TestRemoteHubMutationOutcomeUnknownOnResponseLoss).
+// Converting this decoded-shape verdict would re-drive a mutation against a
+// session known to be absent.
+func TestRemoteHubMutationPreservesRemoteSessionUnavailable(t *testing.T) {
+	remoteErr := appwire.SessionUnavailable("session gone")
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{wireErr: &remoteErr}
+	})
+	_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-sem-unavail"})
+	if err == nil {
+		t.Fatal("StartTurn succeeded despite a remote sessionUnavailable")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d (a delivered verdict must not become an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+	}
+	if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", got, appwire.ErrorSessionUnavailable)
 	}
 }
 
