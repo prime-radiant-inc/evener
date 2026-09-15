@@ -72,7 +72,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
-	sources, cfg := newHubSourceRegistry(cfg)
+	sources := newHubSourceRegistry(cfg)
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
 	// triggered on either transport serializes a racing resume on the other.

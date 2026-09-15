@@ -64,7 +64,7 @@ func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
 			"sess_child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
 		},
 	})
-	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")
@@ -862,7 +862,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 		DeletionStore: store,
 		ResumeLocks:   hubcore.NewResumeLocks(),
 	}
-	sources, _ := newHubSourceRegistry(cfg)
+	sources := newHubSourceRegistry(cfg)
 
 	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
@@ -906,7 +906,7 @@ func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
 		ResumeLocks:   hubcore.NewResumeLocks(),
 		Past:          past,
 	}
-	sources, _ := newHubSourceRegistry(cfg)
+	sources := newHubSourceRegistry(cfg)
 	server := newHubAppServer(cfg, sources)
 	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
@@ -959,7 +959,7 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
 		Spawner:       spawner,
 	}
 
-	sources, _ := newHubSourceRegistry(cfg)
+	sources := newHubSourceRegistry(cfg)
 	_, err = hubThreadResume(context.Background(), cfg, sources, appwire.ThreadResumeParams{Ref: ref})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
@@ -2157,7 +2157,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
@@ -6491,7 +6491,7 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 			JobID: "job_shell", JobType: "shell", Status: "running",
 		}},
 	})
-	registry, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")
@@ -11640,8 +11640,22 @@ func newTestCredentialsStore(t *testing.T) *credentials.Store {
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
 // runMain's composed evener/tree/changed wiring in main.go) before the server
 // starts serving requests.
+// rosterOverRunDir is the roster a test hub gets when it names a rendezvous
+// directory and no roster: the production shape (main.go wires one over the
+// run dir with the status prober), refreshed once so the files already there
+// are listed. A test that adds daemons later refreshes it again.
+func rosterOverRunDir(t *testing.T, runDir string) *hubcore.Roster {
+	t.Helper()
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	return roster
+}
+
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	if cfg.Roster == nil && cfg.RunDir != "" {
+		cfg.Roster = rosterOverRunDir(t, cfg.RunDir)
+	}
 	// An unset root falls back to a HOME/XDG-derived default, which under this
 	// package's TestMain is the one throwaway root every test in the binary
 	// shares, so two parallel tests that both leave a root unset read each

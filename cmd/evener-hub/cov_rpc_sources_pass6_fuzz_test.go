@@ -75,7 +75,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 
 		switch seed % 3 {
 		case 0:
-			configured, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
+			configured := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
 			if local, ok := configured.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}

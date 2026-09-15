@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -413,13 +412,11 @@ func TestStampResyncTargetKeepsTheOtherFields(t *testing.T) {
 	}
 }
 
-// With no roster the hub lists daemons straight from the rendezvous files,
-// and a daemon that died leaves its file behind. The relay classifies a
-// daemon as gone only once it is no longer listed, so a dead daemon that
-// stays listed is dialled forever and the subscriber never hears it is gone
-// (review round 3 on #1325). The file alone must not keep a dead process
+// A daemon that died leaves its rendezvous file behind. The roster drops a
+// file whose process is gone, and that is what lets the relay tell the
+// subscriber the daemon is gone; the file alone must not keep a dead process
 // dialable.
-func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
+func TestHubRelayTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	daemon, upstream := newDaemonStandIn(t, "gone")
@@ -439,8 +436,10 @@ func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGon
 		ThreadID:  "gone",
 		SessionID: "gone",
 	})
-	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex("")}, sources)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
 	client := dialHubRPC(t, wire)
@@ -454,7 +453,8 @@ func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGon
 
 	// The daemon dies: its process is gone and its socket closes, but its
 	// rendezvous file stays. (httptest's CloseClientConnections skips
-	// hijacked WebSockets; the daemon server closes its own.)
+	// hijacked WebSockets; the daemon server closes its own.) The roster's
+	// watcher would refresh here; the test does it.
 	if err := process.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -462,6 +462,7 @@ func TestHubSourceRegistryWithoutRosterTellsSubscribersWhenTheDaemonProcessIsGon
 	if err := daemon.Shutdown(ctx); err != nil {
 		t.Fatalf("daemon shutdown: %v", err)
 	}
+	roster.Refresh()
 
 	deadline := time.After(10 * time.Second)
 	for {
@@ -522,35 +523,6 @@ func TestStampResyncTargetToleratesNullParams(t *testing.T) {
 	}
 }
 
-// Process liveness alone cannot vouch for a rendezvous file: the PID a
-// crashed daemon left behind can be reused by anything. Without a roster the
-// hub lists a file only once the process behind it answers for that entry,
-// the same probe the roster applies (review round 4 on #1325).
-func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnALivePID(t *testing.T) {
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   "127.0.0.1:1",
-		Endpoint:  "ws://127.0.0.1:1/rpc",
-		SourceID:  "local",
-		ThreadID:  "stale",
-		SessionID: "stale",
-	})
-	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
-	local, ok := sources.Source("local")
-	if !ok {
-		t.Fatal("no local source")
-	}
-	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("ListThreads: %v", err)
-	}
-	if len(listed.Data) != 0 {
-		t.Fatalf("a stale file on a live PID was listed as a daemon: %+v", listed.Data)
-	}
-}
-
 // The roster keeps a confirmed daemon through a probe miss as long as its PID
 // answers signal 0, so a daemon that crashed and had its PID reused stayed
 // listed, the relay kept dialling the dead endpoint, and the subscriber was
@@ -581,7 +553,7 @@ func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
 	if _, ok := roster.Find("reused"); !ok {
 		t.Fatal("the stand-in daemon was not confirmed into the roster")
 	}
-	sources, _ := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
@@ -704,76 +676,6 @@ func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
 	}
 }
 
-// A hub configured without a roster lists daemons through one it makes for
-// itself; that roster must be the hub's roster, not a private one the local
-// source alone can see, or every other consumer of cfg.Roster (restart
-// verification, ownership, navigation) still runs roster-less (review round
-// 9 on #1325).
-func TestHubWithoutRosterSharesItsFallbackRosterWithEveryConsumer(t *testing.T) {
-	_, upstream := newDaemonStandIn(t, "shared")
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "shared",
-		SessionID: "shared",
-	})
-	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
-	if web.cfg.Roster == nil {
-		t.Fatal("a roster-less hub left cfg.Roster nil for its other consumers")
-	}
-	// A roster-less hub's roster is refreshed by the local source's lookups;
-	// what that lookup confirmed is what every other consumer then reads.
-	local, ok := web.sources.Source("local")
-	if !ok {
-		t.Fatal("no local source")
-	}
-	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("ListThreads: %v", err)
-	}
-	if len(listed.Data) != 1 || listed.Data[0].ID != "shared" {
-		t.Fatalf("local source lists %+v, want the one shared daemon", listed.Data)
-	}
-	if _, ok := web.cfg.Roster.Find("shared"); !ok {
-		t.Fatal("cfg.Roster is not the roster the local source lists through")
-	}
-	if _, required, err := restartRequiredDaemon(context.Background(), web.cfg, "local:shared", ""); err != nil || required {
-		t.Fatalf("restartRequiredDaemon through cfg.Roster: required=%v err=%v", required, err)
-	}
-}
-
-// A roster-less hub's roster has no watcher; the local source refreshed it
-// before listing, and nothing else did, so navigation (and every other direct
-// reader of cfg.Roster) could read it empty or stale unless a thread listing
-// happened to run first. The roster refreshes on every read in that mode, so
-// a daemon that appears after startup is there for whichever consumer asks
-// first (review round 11 on #1325).
-func TestHubWithoutRosterListsALateDaemonInNavigationWithoutAThreadListingFirst(t *testing.T) {
-	runDir := t.TempDir()
-	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
-	if web.cfg.Roster == nil {
-		t.Fatal("a roster-less hub left cfg.Roster nil")
-	}
-	_, upstream := newDaemonStandIn(t, "late")
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "late",
-		SessionID: "late",
-	})
-	snapshot := web.navigationSnapshotInputs(context.Background())
-	if len(snapshot.live) != 1 || snapshot.live[0].SessionID != "late" {
-		t.Fatalf("navigation read the fallback roster as %+v, want the daemon that appeared after startup", snapshot.live)
-	}
-}
-
 // The hub wires the roster's unresolved claims to the local source. A daemon
 // whose rendezvous claim changes identity mid-transition while a probe is
 // missed is parked unconfirmed, off the listing; the relay must keep dialling
@@ -801,8 +703,8 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 	if _, ok := roster.Find("before"); !ok {
 		t.Fatal("the stand-in daemon was not confirmed into the roster")
 	}
-	sources, cfg := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
-	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: cfg.Roster}, sources)
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
 	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer wire.Close()
 	client := dialHubRPC(t, wire)
@@ -849,135 +751,6 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 		case <-deadline:
 			t.Fatal("no resync once the claim was gone altogether")
 		}
-	}
-}
-
-// countingProber answers for the entry's own session and counts probe passes.
-type countingProber struct{ probes atomic.Int32 }
-
-func (p *countingProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
-	p.probes.Add(1)
-	return hubcore.ProbeResult{SessionID: entry.SessionID, Status: appwire.ThreadStatusIdle, OK: true}
-}
-
-// The hub is never a daemon: a stale file naming the hub's own PID, even one
-// whose endpoint another daemon answers, is not listed (review round 13 on
-// #1325).
-func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnItsOwnPID(t *testing.T) {
-	_, upstream := newDaemonStandIn(t, "stale")
-	runDir := t.TempDir()
-	stateDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "sessions", "stale.api.jsonl"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "stale",
-		SessionID: "stale",
-		StateDir:  stateDir,
-		StartedAt: time.Now().UTC(),
-	})
-	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
-	local, ok := sources.Source("local")
-	if !ok {
-		t.Fatal("no local source")
-	}
-	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
-	if err != nil {
-		t.Fatalf("ListThreads: %v", err)
-	}
-	if len(listed.Data) != 0 {
-		t.Fatalf("a stale file on the hub's own PID was listed as a daemon: %+v", listed.Data)
-	}
-}
-
-// One logical read is one scan. Navigation asks the roster three questions
-// (ownership error, live list, unresolved claims); on a roster that refreshes
-// on read they must come from one pass, or the answers can describe three
-// different moments (review round 13 on #1325).
-func TestHubNavigationReadsTheRosterInOneScan(t *testing.T) {
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID: 4242, Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc",
-		SourceID: "local", ThreadID: "one", SessionID: "one",
-	})
-	prober := &countingProber{}
-	roster := hubcore.NewRoster(runDir, prober).RefreshOnRead().
-		SetProcessAlive(func(int) bool { return true }).
-		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
-	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Roster: roster, Past: hubcore.NewPastIndex("")}, nil)
-	prober.probes.Store(0)
-	snapshot := web.navigationSnapshotInputs(context.Background())
-	if len(snapshot.live) != 1 {
-		t.Fatalf("navigation live = %+v, want the one daemon", snapshot.live)
-	}
-	if got := prober.probes.Load(); got != 1 {
-		t.Fatalf("one navigation read ran %d roster scans, want 1", got)
-	}
-}
-
-// A roster-less hub's roster refreshes on read, but navigation caches its
-// snapshot by the source revision, and the roster's listing was not part of
-// that revision: after the first navigation read, a daemon appearing or
-// leaving stayed invisible until something else invalidated. The roster's
-// listing generation is part of the revision, so a plain read sees the
-// change with no other invalidation (review round 14 on #1325).
-func TestHubWithoutRosterNavigationSeesALateDaemonOnThePlainNextRead(t *testing.T) {
-	runDir := t.TempDir()
-	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
-	// The live section renders a roster entry joined with its saved session
-	// meta; the meta is present from the start, the daemon is what appears.
-	web.injectMetasForTest([]schema.SessionMeta{{ID: "late", UpdatedAt: time.Now().UTC()}})
-	live := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
-	readLiveRefs := func() []string {
-		t.Helper()
-		result, err := web.navigation.readV2(t.Context(), live, nil)
-		if err != nil {
-			t.Fatalf("navigation live read: %v", err)
-		}
-		// The v2 snapshot is normalized: session rows are entities of kind
-		// "session" whose value carries the ref.
-		var snapshot struct {
-			Entities []struct {
-				Kind  string `json:"kind"`
-				Value struct {
-					Ref string `json:"ref"`
-				} `json:"value"`
-			} `json:"entities"`
-		}
-		if err := json.Unmarshal(result.Response.Data, &snapshot); err != nil {
-			t.Fatalf("decode live section: %v", err)
-		}
-		var refs []string
-		for _, entity := range snapshot.Entities {
-			if entity.Kind == "session" {
-				refs = append(refs, entity.Value.Ref)
-			}
-		}
-		return refs
-	}
-	if refs := readLiveRefs(); len(refs) != 0 {
-		t.Fatalf("live section before any daemon: %v", refs)
-	}
-	_, upstream := newDaemonStandIn(t, "late")
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       os.Getpid(),
-		Protocol:  appwire.ProtocolVersion,
-		Address:   strings.TrimPrefix(upstream.URL, "http://"),
-		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
-		SourceID:  "local",
-		ThreadID:  "late",
-		SessionID: "late",
-	})
-	if refs := readLiveRefs(); len(refs) != 1 || refs[0] != "local:late" {
-		t.Fatalf("live section after the daemon appeared = %v, want [local:late] on a plain read", refs)
 	}
 }
 

@@ -865,7 +865,7 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			}
 			mutation := make(chan error, 1)
 			started := make(chan struct{})
-			sources, _ := newHubSourceRegistry(cfg)
+			sources := newHubSourceRegistry(cfg)
 			go func() {
 				close(started)
 				if method == appwire.MethodThreadModelSet {

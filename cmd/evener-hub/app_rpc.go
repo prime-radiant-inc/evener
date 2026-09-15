@@ -20,23 +20,11 @@ import (
 	"primeradiant.com/evener/internal/plugins"
 )
 
-// newHubSourceRegistry builds the hub's sources. A hub configured without a
-// roster still lists daemons through one, over the same rendezvous directory
-// and the same probe, refreshed on every read instead of by a watcher: a
-// rendezvous file names a daemon only once the process behind it answers for
-// that entry. Liveness alone cannot vouch for a file - a crashed daemon's PID
-// can be reused by anything - and the relay classifies a daemon as gone only
-// once it is no longer listed, so an unverified file would keep a dead daemon
-// dialable. The returned configuration carries that roster, so every other
-// consumer of cfg.Roster (restart verification, ownership, navigation) reads
-// the one the local source lists through, and reads it as fresh.
-func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.WebConfig) {
+// newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
+// wires a roster (main.go); without one the local source lists nothing.
+func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
 	roster := cfg.Roster
-	if roster == nil && cfg.RunDir != "" {
-		roster = hubcore.NewRoster(cfg.RunDir, &hubcore.StatusProber{}).RefreshOnRead()
-		cfg.Roster = roster
-	}
 	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		if roster != nil {
 			return localDaemonEntriesFromRoster(roster.List())
@@ -53,7 +41,7 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) (*appsource.Registry, hubcore.W
 		})
 	}
 	registry.Add(local)
-	return registry, cfg
+	return registry
 }
 
 // localDaemonEntriesFromRoster is the local source's view of a roster's live
