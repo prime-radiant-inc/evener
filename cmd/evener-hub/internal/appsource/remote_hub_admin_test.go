@@ -357,6 +357,68 @@ func TestRemoteHubSourceHostSubscriptionClosesWhenClientStreamEndsWhilePumpBlock
 	}
 }
 
+// TestRemoteHubSourceHostSubscriptionClosesWhenThreadDeliveryBackpressures pins
+// the round-four lifecycle fix: the shared drain goroutine must keep observing
+// the client's own notification stream while a thread subscription's consumer is
+// backpressured, so the client's teardown still runs the drain's deferred cleanup
+// and closes every host subscription. Without that, a full thread in buffer parks
+// the drain on the thread send, clientDone is never closed, and the 07a host
+// fan-out stays attached to a dead client across reconnect.
+func TestRemoteHubSourceHostSubscriptionClosesWhenThreadDeliveryBackpressures(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodThreadRead:
+			return scriptedReply{result: appwire.ThreadReadResponse{}}
+		case appwire.MethodModelList:
+			// Fired on demand, once the drain is parked, to close the pipe.
+			return scriptedReply{closeConn: true}
+		default:
+			t.Errorf("unexpected method %q", method)
+			return scriptedReply{result: appwire.EmptyResponse{}}
+		}
+	})
+	ctx := t.Context()
+
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Reject every notification at publish time: this test is about the returned
+	// channel closing, not about which host notifications are delivered, and a
+	// rejecting filter keeps the host pump from parking on its own out buffer
+	// first.
+	remote.source.SetHostNotificationFilter(func(string) bool { return false })
+	notifications, err := remote.source.SubscribeHostNotifications(subCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+
+	// A live thread subscription whose consumer is deliberately never read.
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	_ = out
+
+	// Fill the thread pump's out buffer and then its in buffer, so the drain
+	// goroutine parks on the thread send.
+	for i := range remoteHubSubBuffer*2 + 16 {
+		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+
+	// Kill the client's connection while the drain is parked on the thread send.
+	_, _ = remote.source.ListModels(context.Background(), appwire.ModelListParams{})
+
+	select {
+	case _, ok := <-notifications:
+		if ok {
+			t.Fatal("received a notification, want the subscription to close")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("host subscription was not closed after the client died while thread delivery was backpressured")
+	}
+}
+
 // TestRemoteHubSourceHostNotificationFilterShortCircuitsBeforeSnapshot pins the
 // publish-time filter's contract and the hot-path ordering it depends on: the
 // filter is what keeps the high-frequency thread/streaming families — the

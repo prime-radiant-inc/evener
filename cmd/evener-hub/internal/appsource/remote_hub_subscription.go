@@ -1099,6 +1099,12 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 		if !ok {
 			return
 		}
+		// Host-level consumers see the notifications their filter accepts;
+		// delivery is scoped to the owning client so one connection's traffic
+		// never reaches another's subscriptions. It is prompt (non-blocking) and
+		// stays in read order: it happens before this notification's thread
+		// routing.
+		s.publishHostNotification(client, notification)
 		s.routeNotification(client, notification)
 	}
 }
@@ -1132,10 +1138,6 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // its contents had already been forwarded to the restored previous, where no
 // pump would ever read it and no resync would cover it.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
-	// Host-level consumers see the notifications their filter accepts; delivery
-	// is scoped to the owning client so one connection's traffic never reaches
-	// another's subscriptions. Thread routing below is unchanged.
-	s.publishHostNotification(client, notification)
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
 		return
