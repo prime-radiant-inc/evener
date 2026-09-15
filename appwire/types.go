@@ -3728,6 +3728,15 @@ type SettingsMCPOverview struct {
 // Params is the forwarded method's own params, passed through unchanged. The
 // result of this call is likewise that method's own result, verbatim; the
 // proxy wraps it in no envelope of its own.
+//
+// A forwarded method that mutates the remote host — the non-idempotent half of
+// the proxy's allow-list — is answered with an explicit outcome-unknown error
+// when the response is lost after the request was sent: the change may or may
+// not have been applied. That error carries
+// evenerErrorInfo "mutationOutcomeUnknown" and retryDisposition "blocked"
+// instead of the SessionUnavailable a read-only forward reports, so a caller
+// knows not to retry a mutation with no idempotency key. A refusal the remote
+// itself sends keeps its own code and message on both paths.
 type HostRequestParams struct {
 	Host   string          `json:"host"`
 	Method string          `json:"method"`

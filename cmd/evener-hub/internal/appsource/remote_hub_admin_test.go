@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,100 @@ func TestRemoteHubSourceAdminCallTransportFailureBecomesSessionUnavailable(t *te
 	}
 	if info := wireErrorInfo(wire); info != string(appwire.ErrorSessionUnavailable) {
 		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallReturnsRemoteResultVerbatim pins the
+// success path of the mutating twin: params and result pass through exactly as
+// AdminCall passes them.
+func TestRemoteHubSourceAdminMutationCallReturnsRemoteResultVerbatim(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerPluginInstall {
+			t.Errorf("method = %q, want %q", method, appwire.MethodEvenerPluginInstall)
+		}
+		return scriptedReply{result: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{{Name: "openai"}}}}
+	})
+
+	var out json.RawMessage
+	if err := source.AdminMutationCall(context.Background(), appwire.MethodEvenerPluginInstall, json.RawMessage(`{"name":"p"}`), &out); err != nil {
+		t.Fatalf("AdminMutationCall: %v", err)
+	}
+	if got := string(lastMethodCall(t, calls(), appwire.MethodEvenerPluginInstall)); got != `{"name":"p"}` {
+		t.Fatalf("forwarded params = %s, want the caller's params unchanged", got)
+	}
+	if len(out) == 0 {
+		t.Fatal("result is empty, want the remote's result verbatim")
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown pins the
+// round-three retry-safety contract: a non-idempotent forwarded admin mutation
+// whose response is lost must NOT reach the proxy as SessionUnavailable (which
+// invites a blind retry), but as an explicit outcome-unknown error that says
+// the change may or may not have been applied. The read path keeps the
+// SessionUnavailable mapping pinned by
+// TestRemoteHubSourceAdminCallTransportFailureBecomesSessionUnavailable.
+func TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{closeConn: true}
+	})
+
+	var out json.RawMessage
+	err := source.AdminMutationCall(context.Background(), appwire.MethodEvenerPluginInstall, nil, &out)
+	if err == nil {
+		t.Fatal("AdminMutationCall succeeded after the remote closed the pipe")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMutationOutcomeUnknown)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+		t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+	}
+	// Blocked, not Automatic: unlike a forwarded thread mutation, an admin
+	// forward carries no clientMutationId (HostRequestParams has none) and no
+	// admin method dedups, so the caller must not retry automatically.
+	if data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
+	}
+	if !strings.Contains(wire.Message, "host") {
+		t.Fatalf("message = %q, want it to name the host", wire.Message)
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallPreservesSemanticWireError pins that the
+// mutating twin launders nothing: a refusal the remote itself sends keeps its
+// code and message, exactly as on AdminCall.
+func TestRemoteHubSourceAdminMutationCallPreservesSemanticWireError(t *testing.T) {
+	refusal := appwire.InvalidParams("refused by the host")
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{wireErr: &refusal}
+	})
+
+	var out json.RawMessage
+	err := source.AdminMutationCall(context.Background(), appwire.MethodEvenerAuthApiKeySet, nil, &out)
+	if err == nil {
+		t.Fatal("AdminMutationCall succeeded despite the remote's refusal")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeInvalidParams)
+	}
+	if !strings.Contains(wire.Message, "refused by the host") {
+		t.Fatalf("message = %q, want the remote's own text", wire.Message)
 	}
 }
 
@@ -259,6 +354,65 @@ func TestRemoteHubSourceHostSubscriptionClosesWhenClientStreamEndsWhilePumpBlock
 		case <-deadline:
 			t.Fatal("subscription channel was not closed while its pump was parked on a full out")
 		}
+	}
+}
+
+// TestRemoteHubSourceHostNotificationFilterShortCircuitsBeforeSnapshot pins the
+// publish-time filter's contract and the hot-path ordering it depends on: the
+// filter is what keeps the high-frequency thread/streaming families — the
+// overwhelming majority of the shared drain goroutine's traffic — from building
+// a per-notification snapshot of the host subscriptions.
+//
+// A rejected notification must not reach a consumer, must not count as a drop,
+// and must leave the reject path allocation-free with a live subscription. (The
+// snapshot slice is stack-allocated in this function — escape analysis reports
+// "does not escape" — so the allocation check guards the property rather than
+// pinning a heap regression; see the round-three PR comment.) An accepted
+// notification still delivers.
+func TestRemoteHubSourceHostNotificationFilterShortCircuitsBeforeSnapshot(t *testing.T) {
+	client, _ := newScriptedClient(t, func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{}
+	})
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostNotificationFilter(func(method string) bool {
+		return method == appwire.NotifyEvenerAuthUpdated
+	})
+
+	subCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	notifications, err := source.SubscribeHostNotifications(subCtx)
+	if err != nil {
+		t.Fatalf("SubscribeHostNotifications: %v", err)
+	}
+
+	// A subscription is live, so a snapshot of it is real work rather than an
+	// empty iteration.
+	rejected := appwire.Notification{Method: appwire.NotifyThreadStatusChanged}
+	if allocs := testing.AllocsPerRun(100, func() {
+		source.publishHostNotification(client, rejected)
+	}); allocs > 0 {
+		t.Fatalf("publishHostNotification allocated %v per call for a filtered-out notification; want 0", allocs)
+	}
+	if dropped := source.hostNotifyDropped.Load(); dropped != 0 {
+		t.Fatalf("hostNotifyDropped = %d after filtered-out publishes, want 0 (a filter rejection is not a drop)", dropped)
+	}
+	select {
+	case notification := <-notifications:
+		t.Fatalf("subscription received filtered-out notification %q", notification.Method)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// The accepted family still reaches the consumer.
+	source.publishHostNotification(client, appwire.Notification{Method: appwire.NotifyEvenerAuthUpdated})
+	select {
+	case notification := <-notifications:
+		if notification.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("notification method = %q", notification.Method)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the accepted notification")
 	}
 }
 

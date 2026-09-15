@@ -28,6 +28,9 @@ type hostAdminCall struct {
 type hostAdminReply struct {
 	result  any
 	wireErr *appwire.WireError
+	// closeConn closes the connection instead of answering, simulating a
+	// response lost after the remote may or may not have applied the request.
+	closeConn bool
 }
 
 // recordingBroadcaster captures the controller's browser fan-out instead of
@@ -101,6 +104,10 @@ func newScriptedRemoteClient(
 				continue
 			}
 			reply := handle(msg.Request.Method, msg.Request.Params)
+			if reply.closeConn {
+				_ = serverConn.Close()
+				return
+			}
 			if reply.wireErr != nil {
 				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, *reply.wireErr)); err != nil {
 					return
@@ -784,5 +791,125 @@ func assertWireCode(t *testing.T, err error, want int) {
 	}
 	if wire.Code != want {
 		t.Fatalf("wire code = %d (%s), want %d", wire.Code, wire.Message, want)
+	}
+}
+
+// TestHostAdminRequestMapsLostResponseByMutationSafety pins the round-three
+// retry-safety split at the proxy boundary. A lost response for a read-only
+// forwarded method is SessionUnavailable, which the browser may retry. The same
+// loss for a non-idempotent forwarded method must instead report the outcome as
+// unknown — neither claiming the method failed nor inviting a blind retry that
+// could create a second instance or a second install.
+func TestHostAdminRequestMapsLostResponseByMutationSafety(t *testing.T) {
+	t.Run("read stays session-unavailable", func(t *testing.T) {
+		controller, _, _ := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+			return hostAdminReply{closeConn: true}
+		})
+		_, err := controller.Request(context.Background(), appwire.HostRequestParams{
+			Host:   "m4",
+			Method: appwire.MethodEvenerInstanceList,
+		})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (a read loss must stay retryable)", wire.Code, appwire.CodeUnavailable)
+		}
+		data, ok := wire.Data.(appwire.ErrorData)
+		if !ok {
+			t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
+		}
+	})
+
+	t.Run("mutation reports unknown outcome", func(t *testing.T) {
+		controller, _, _ := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+			return hostAdminReply{closeConn: true}
+		})
+		_, err := controller.Request(context.Background(), appwire.HostRequestParams{
+			Host:   "m4",
+			Method: appwire.MethodEvenerPluginInstall,
+			Params: json.RawMessage(`{"name":"p"}`),
+		})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code == appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want an explicit outcome-unknown error, not a retryable SessionUnavailable", wire.Code)
+		}
+		data, ok := wire.Data.(appwire.ErrorData)
+		if !ok {
+			t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMutationOutcomeUnknown)
+		}
+		if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+			t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+		}
+		if data.RetryDisposition != appwire.RetryDispositionBlocked {
+			t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
+		}
+	})
+}
+
+// TestHostAdminMutationClassificationMatchesAllowList forces a retry-safety
+// decision for every allow-listed method, the same way
+// TestHostAdminAllowListMatchesCatalog forces an allow/deny decision: each
+// allow-listed method must be classified exactly once, as a non-idempotent
+// mutation (remoteHostAdminMutationMethods) or as an explicit read (readOnly,
+// below). A method in neither, or in both, fails. A future allow-list addition
+// therefore cannot silently inherit the read path's retryable error mapping.
+func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
+	// readOnly names every allow-listed method whose effect is a lookup or a
+	// refetch, so an identical retry is safe and SessionUnavailable is the
+	// honest error. Everything else allow-listed is a mutation.
+	readOnly := map[string]bool{
+		appwire.MethodEvenerInstanceList:         true,
+		appwire.MethodEvenerLaunchResolve:        true,
+		appwire.MethodEvenerLaunchSchema:         true,
+		appwire.MethodEvenerLaunchGetLayer:       true,
+		appwire.MethodEvenerMarketplaceList:      true,
+		appwire.MethodEvenerMarketplaceBrowse:    true,
+		appwire.MethodEvenerMarketplaceRefresh:   true,
+		appwire.MethodEvenerPluginList:           true,
+		appwire.MethodEvenerPluginPreview:        true,
+		appwire.MethodEvenerPluginCheckNow:       true,
+		appwire.MethodEvenerAuthStatus:           true,
+		appwire.MethodEvenerAuthTest:             true,
+		appwire.MethodEvenerAuthList:             true,
+		appwire.MethodEvenerSettingsAgentsDocGet: true,
+		appwire.MethodEvenerPathsComplete:        true,
+		appwire.MethodEvenerPathValidate:         true,
+		appwire.MethodEvenerProjectsRecent:       true,
+		appwire.MethodEvenerHarnessesList:        true,
+		appwire.MethodEvenerSpawnSlashCatalog:    true,
+		appwire.MethodEvenerGitHead:              true,
+		appwire.MethodModelList:                  true,
+	}
+
+	for name := range remoteHostAdminMethods {
+		_, mutating := remoteHostAdminMutationMethods[name]
+		_, read := readOnly[name]
+		switch {
+		case mutating && read:
+			t.Errorf("allow-listed method %q is classified as both a mutation and a read", name)
+		case !mutating && !read:
+			t.Errorf("allow-listed method %q has no retry-safety classification; add it to remoteHostAdminMutationMethods or to this test's readOnly set", name)
+		}
+	}
+	for name := range remoteHostAdminMutationMethods {
+		if _, ok := remoteHostAdminMethods[name]; !ok {
+			t.Errorf("mutation set names %q, which is not on the proxy allow-list", name)
+		}
+	}
+	for name := range readOnly {
+		if _, ok := remoteHostAdminMethods[name]; !ok {
+			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
+		}
 	}
 }
