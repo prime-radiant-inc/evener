@@ -59,6 +59,15 @@ const intentTailMode = params.get("intenttail") === "1";
 // the cluster is Stop + Send, the one the status row's narrow-pane budget was
 // measured against (statusrow.module.css). The guard sweeps both.
 const steerMode = params.get("steer") === "1";
+
+// The width a container query or a flex line resolves against: the element's
+// content box, which clientWidth includes padding in.
+function contentBoxWidth(element: Element): number {
+  const style = getComputedStyle(element);
+  return (
+    element.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0)
+  );
+}
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
@@ -753,12 +762,7 @@ function measureCanvas(canvas: HTMLElement): PreviewCanvasMeasurement {
   const card = canvas.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
   const cardId = card?.dataset.testid ?? "";
   const section = card?.querySelector<HTMLElement>(`section[aria-labelledby="${cardId}-example-heading"]`);
-  const sectionStyle = section ? getComputedStyle(section) : null;
-  const availableWidth = section
-    ? section.clientWidth -
-      (Number.parseFloat(sectionStyle?.paddingLeft ?? "0") || 0) -
-      (Number.parseFloat(sectionStyle?.paddingRight ?? "0") || 0)
-    : 0;
+  const availableWidth = section ? contentBoxWidth(section) : 0;
   return {
     layout,
     testId,
@@ -1024,11 +1028,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   ];
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
-  const editorStyle = getComputedStyle(editor);
-  const editorContainerWidth =
-    editor.clientWidth -
-    (Number.parseFloat(editorStyle.paddingLeft) || 0) -
-    (Number.parseFloat(editorStyle.paddingRight) || 0);
+  const editorContainerWidth = contentBoxWidth(editor);
   const columnLefts: number[] = [];
   for (const box of fieldsetBoxes) {
     if (!columnLefts.some((left) => Math.abs(left - box.left) <= 0.5)) columnLefts.push(box.left);
@@ -1149,9 +1149,7 @@ function disclosureContract(target: DisclosureTarget): DisclosureContract | null
 
   const summaryBox = summary.getBoundingClientRect();
   const bodyBox = body.getBoundingClientRect();
-  const detailsStyle = getComputedStyle(details);
-  const expectedWidth =
-    details.clientWidth - Number.parseFloat(detailsStyle.paddingLeft) - Number.parseFloat(detailsStyle.paddingRight);
+  const expectedWidth = contentBoxWidth(details);
   const result = {
     kind,
     originalOpen,
@@ -1539,6 +1537,7 @@ function measure() {
       overflow: style.overflow,
     };
   }
+  const statusBox = statusGeometry(status);
   return {
     width,
     scrollers,
@@ -1573,7 +1572,7 @@ function measure() {
       statusScrollWidth: status?.scrollWidth ?? 0,
       modelClientWidth: model?.clientWidth ?? 0,
       geometry: {
-        status: statusGeometry(status),
+        status: statusBox,
         identity: statusGeometry(pane.querySelector<HTMLElement>('[data-testid="status-row-identity"]')),
         model: statusGeometry(model),
         effort: statusGeometry(effort),
@@ -1607,15 +1606,14 @@ function measure() {
         while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
           container = container.parentElement;
         }
-        const containerStyle = container ? getComputedStyle(container) : null;
         return {
           controls: verbs.length,
+          // The verbs this fixture draws while active: Send always, Stop with
+          // the interrupt capability, Steer with the steer capability.
+          expectedVerbs: 1 + (CAPABILITIES.interrupt ? 1 : 0) + (CAPABILITIES.steer ? 1 : 0),
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
-          statusRowBottom: status ? status.getBoundingClientRect().bottom : null,
-          containerWidth:
-            container && containerStyle
-              ? container.clientWidth - parseFloat(containerStyle.paddingLeft) - parseFloat(containerStyle.paddingRight)
-              : null,
+          statusRowBottom: statusBox?.bottom ?? null,
+          containerWidth: container ? contentBoxWidth(container) : null,
         };
       })(),
       sharedPaneWithoutOverflow:

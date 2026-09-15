@@ -57,10 +57,11 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // reading measure and STOPS growing - which is exactly where a few px of
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
-// 399..699 bracket the composer card's 399px container threshold (the
+const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
+// Pane widths that bracket the composer card's 399px container threshold (the
 // three-verb wrap, promptcard.module.css): the container is the pane minus its
-// footer padding, so pane widths landing either side of it are measured.
-const DEFAULT_WIDTHS = [320, 390, 399, 400, 420, 480, 600, 699, 700, 899, 900, 1024, 1400];
+// footer padding. Swept only by the verb-cluster check.
+const VERB_WRAP_WIDTHS = [399, 400, 420, 480, 600, 699];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
   { theme: "dark", fontSize: "m" },
@@ -73,7 +74,10 @@ const NARROW_DESKTOP_SEND_GEOMETRY = {
   xl: { width: 82.109375, height: 24 },
 };
 
-async function measureAt(cdpEndpoint, url, width) {
+// lite: window.measure() only, for a check that reads one geometry off the
+// settled page (the verb cluster) and needs none of the disclosure exception
+// probe, the Verbosity detail inspection or the trusted-focus pass.
+async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
@@ -118,6 +122,11 @@ async function measureAt(cdpEndpoint, url, width) {
     // after the tree settles, because document.fonts.ready re-arms for each new
     // face and only a mounted tree has asked for the ones being measured.
     await waitForFonts(send);
+
+    if (lite) {
+      const measurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+      return { ...measurement, viewport: { ...viewport, mobile: realizedLayout.mobile } };
+    }
 
     const exceptionSafety = await evaluate(
       send,
@@ -608,6 +617,45 @@ function assertFieldsets(detail, label) {
   if (!detail.fieldsetsNonOverlapping) failures.push(`${label} fieldsets overlap`);
   if (expectedColumns === 1 && !detail.fieldsetStacked)
     failures.push(`${label} one-column fieldsets are not vertically stacked`);
+  return failures;
+}
+
+// measureVerbCluster reads the harness's verb-cluster geometry for one width
+// and one fixture (steer advertised or not) off a lite measurement.
+async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
+  const result = await measureAt(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
+    width,
+    { lite: true },
+  );
+  return result.currentWork.verbCluster;
+}
+
+function verbClusterWrapped(cluster) {
+  return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
+}
+
+// assertVerbCluster: the wrap rule itself. At a card container of 399px or
+// less a three-verb cluster sits below the status row; two verbs stay beside
+// it there, and three stay beside it above. The threshold is the container's,
+// measured by the harness, and the verb count is the fixture's own
+// (expectedVerbs, from its capabilities).
+function assertVerbCluster(cluster, steer) {
+  if (!Number.isFinite(cluster.containerWidth)) {
+    return [`card container width unmeasured (${cluster.containerWidth})`];
+  }
+  const failures = [];
+  if (cluster.controls !== cluster.expectedVerbs) {
+    failures.push(`expected ${cluster.expectedVerbs} verbs, got ${cluster.controls}`);
+  }
+  const expectWrapped = steer && cluster.containerWidth <= 399;
+  if (verbClusterWrapped(cluster) !== expectWrapped) {
+    failures.push(
+      `expected the verbs ${expectWrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px), ` +
+        `got top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+    );
+  }
   return failures;
 }
 
@@ -1187,216 +1235,203 @@ async function main() {
       );
     }
 
-    // The width sweep runs twice: once with the fixture advertising no steer
-    // capability (Stop + Send beside the status row, the cluster the row's
-    // narrow-pane budget was measured against) and once advertising it (Stop +
-    // Send + Steer, every busy session on a harness that can steer; at phone
-    // width the three verbs take their own line, promptcard.module.css).
-    for (const steer of [false, true]) {
-      for (const width of sweep) {
-        const label = steer ? `${width}px steer` : `${width}px`;
-        const result = await measureAt(
-          cdpEndpoint,
-          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
-          width,
+    for (const width of sweep) {
+      const result = await measureAt(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+        width,
+      );
+      let widthFailed = false;
+      if (
+        result.exceptionSafety.found !== 2 ||
+        !result.exceptionSafety.threw ||
+        JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+      ) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure exception safety: ` +
+            `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
+            `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
+            `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
         );
-        let widthFailed = false;
+      }
+      if (result.disclosures.length !== 2) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+        );
+      }
+      // The footer checks below are only worth what the predicate behind them
+      // is worth, so the predicate is exercised against its own fixture first
+      // (kata bsq9). A fact under a display:none ancestor must read as missing;
+      // an intentionally visually-hidden one must not.
+      // One expectation per clause of the shared predicate
+      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+      // no fixture of its own, so this is the only place either guard proves
+      // what "visible" means.
+      const probe = result.visibility;
+      const expected = {
+        rendered: true,
+        ancestorHidden: false,
+        visuallyHidden: true,
+        visibilityHiddenAncestor: false,
+        zeroArea: false,
+      };
+      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+      if (wrong.length > 0) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
+        );
+      }
+      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer facts missing: ` +
+            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+        );
+      }
+      if (result.footer.queueLabel !== "12 queued") {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+        );
+      }
+      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - footer status facts are internally clipped: ` +
+            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+        );
+      }
+      if (result.footer.modelClientWidth <= 0) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+            JSON.stringify(result.footer.geometry),
+        );
+      }
+      if (
+        !result.currentWork.found ||
+        !result.currentWork.composerCardFound ||
+        !result.currentWork.controlsFound ||
+        !result.currentWork.controlsContained ||
+        !result.currentWork.controlsDoNotOverlap ||
+        !result.currentWork.sharedPaneWithoutOverflow ||
+        !result.currentWork.orderedAboveComposer
+      ) {
+        widthFailed = true;
+        console.log(
+          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
+        );
+      }
+      if (
+        width === 390 &&
+        (!result.subagentCard.found ||
+          !result.subagentCard.contained ||
+          !result.subagentCard.quoteWrapped ||
+          !result.subagentCard.statsContained)
+      ) {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
+      }
+      for (const disclosure of result.disclosures) {
+        if (!disclosure.openDuringOverflowScan) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+        }
+        if (disclosure.restoredOpen !== disclosure.originalOpen) {
+          widthFailed = true;
+          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+        }
+        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+          widthFailed = true;
+          console.log(
+            `${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
+          );
+        }
+        const fullWidth =
+          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
         if (
-          result.exceptionSafety.found !== 2 ||
-          !result.exceptionSafety.threw ||
-          JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
+          disclosure.summaryDisplay !== "list-item" ||
+          disclosure.markerDisplay === "none" ||
+          !fullWidth ||
+          !stacked ||
+          !aligned
         ) {
           widthFailed = true;
           console.log(
-            `${label} ... FAIL - disclosure exception safety: ` +
-              `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
-              `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
-              `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
+            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
           );
         }
-        if (result.disclosures.length !== 2) {
-          widthFailed = true;
+      }
+      // Never silent about what was excluded: a 1px-wide box is a
+      // visually-hidden clip container (the standard screen-reader recipe),
+      // not a pane anyone can scroll - but it is reported, not dropped.
+      if (result.ignored.length > 0) {
+        console.log(
+          `${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
+        );
+      }
+      if (result.scrollers.length === 0) {
+        if (!widthFailed)
+          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+      } else {
+        widthFailed = true;
+        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+        for (const s of result.scrollers) {
           console.log(
-            `${label} ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
+            `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
           );
-        }
-        // The footer checks below are only worth what the predicate behind them
-        // is worth, so the predicate is exercised against its own fixture first
-        // (kata bsq9). A fact under a display:none ancestor must read as missing;
-        // an intentionally visually-hidden one must not.
-        // One expectation per clause of the shared predicate
-        // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
-        // no fixture of its own, so this is the only place either guard proves
-        // what "visible" means.
-        const probe = result.visibility;
-        const expected = {
-          rendered: true,
-          ancestorHidden: false,
-          visuallyHidden: true,
-          visibilityHiddenAncestor: false,
-          zeroArea: false,
-        };
-        const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
-        if (wrong.length > 0) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
-              wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
-          );
-        }
-        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - pressured footer facts missing: ` +
-              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
-          );
-        }
-        if (result.footer.queueLabel !== "12 queued") {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
-          );
-        }
-        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - footer status facts are internally clipped: ` +
-              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
-          );
-        }
-        if (result.footer.modelClientWidth <= 0) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - pressured footer model has zero visible width: ` +
-              JSON.stringify(result.footer.geometry),
-          );
-        }
-        if (
-          !result.currentWork.found ||
-          !result.currentWork.composerCardFound ||
-          !result.currentWork.controlsFound ||
-          !result.currentWork.controlsContained ||
-          !result.currentWork.controlsDoNotOverlap ||
-          !result.currentWork.sharedPaneWithoutOverflow ||
-          !result.currentWork.orderedAboveComposer
-        ) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
-          );
-        }
-        // The wrap rule itself (promptcard.module.css): at a card container of
-        // 399px or less a three-verb cluster sits below the status row; two
-        // verbs stay inline there, and three stay inline above it. The
-        // threshold is the container's, measured by the harness, not the pane's.
-        const cluster = result.currentWork.verbCluster;
-        const expectedVerbs = steer ? 3 : 2;
-        // The expectation is meaningless without the container's measured
-        // width: a missing container (the harness found no inline-size
-        // ancestor) is a guard defect, not a pass.
-        if (!Number.isFinite(cluster.containerWidth)) {
-          widthFailed = true;
-          console.log(`${label} ... FAIL - verb cluster: card container width unmeasured (${cluster.containerWidth})`);
-        }
-        const expectWrapped =
-          Number.isFinite(cluster.containerWidth) && cluster.containerWidth <= 399 && expectedVerbs === 3;
-        const wrapped =
-          cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
-        if (cluster.controls !== expectedVerbs || wrapped !== expectWrapped) {
-          widthFailed = true;
-          console.log(
-            `${label} ... FAIL - verb cluster: expected ${expectedVerbs} verbs ${expectWrapped ? "below" : "beside"} the status row ` +
-              `(card container ${cluster.containerWidth}px), got ${cluster.controls} verbs at top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
-          );
-        } else {
-          console.log(
-            `${label} verbs ... PASS - ${cluster.controls} verbs ${wrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
-          );
-        }
-        if (
-          width === 390 &&
-          (!result.subagentCard.found ||
-            !result.subagentCard.contained ||
-            !result.subagentCard.quoteWrapped ||
-            !result.subagentCard.statsContained)
-        ) {
-          widthFailed = true;
-          console.log(`${label} ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
-        }
-        for (const disclosure of result.disclosures) {
-          if (!disclosure.openDuringOverflowScan) {
-            widthFailed = true;
-            console.log(`${label} ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
-          }
-          if (disclosure.restoredOpen !== disclosure.originalOpen) {
-            widthFailed = true;
-            console.log(`${label} ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
-          }
-          if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
-            widthFailed = true;
-            console.log(
-              `${label} ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
-            );
-          }
-          const fullWidth =
-            disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
-            disclosure.bodyWidth >= disclosure.expectedWidth - 1;
-          const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
-          const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
-          if (
-            disclosure.summaryDisplay !== "list-item" ||
-            disclosure.markerDisplay === "none" ||
-            !fullWidth ||
-            !stacked ||
-            !aligned
-          ) {
-            widthFailed = true;
-            console.log(
-              `${label} ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
-                `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
-                `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
-                `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
-            );
+          // Deepest first: the innermost escapee is the element actually too
+          // wide; its ancestors are only carrying that width upward.
+          for (const e of s.escapees) {
+            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
           }
         }
-        // Never silent about what was excluded: a 1px-wide box is a
-        // visually-hidden clip container (the standard screen-reader recipe),
-        // not a pane anyone can scroll - but it is reported, not dropped.
-        if (result.ignored.length > 0) {
-          console.log(
-            `${label} ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
-          );
-        }
-        if (result.scrollers.length === 0) {
-          if (!widthFailed)
-            console.log(`${label} ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
-        } else {
-          widthFailed = true;
-          console.log(`${label} ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
-          for (const s of result.scrollers) {
-            console.log(
-              `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
-            );
-            // Deepest first: the innermost escapee is the element actually too
-            // wide; its ancestors are only carrying that width upward.
-            for (const e of s.escapees) {
-              console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
-            }
-          }
-        }
-        if (widthFailed) failed++;
+      }
+      if (widthFailed) failed++;
 
-        const detailFailures = assertDetail(result, width);
-        if (detailFailures.length > 0) {
+      const detailFailures = assertDetail(result, width);
+      if (detailFailures.length > 0) {
+        failed++;
+        console.log(`${width}px Verbosity ... FAIL - ${detailFailures.join("; ")}`);
+      } else {
+        console.log(
+          `${width}px Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
+            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
+            `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
+            `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
+            `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
+        );
+      }
+    }
+
+    // The verb cluster (Stop, Send, Steer against the status row) on its own
+    // lite pass, for both fixtures the harness can draw: without the steer
+    // capability (Stop + Send, the cluster the status row's narrow-pane budget
+    // was measured against) and with it (Stop + Send + Steer, every busy
+    // session on a harness that can steer). Every swept width plus the widths
+    // that bracket the card's 399px threshold, where the three verbs take
+    // their own line (promptcard.module.css).
+    for (const steer of [false, true]) {
+      for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
+        const label = `${width}px${steer ? " steer" : ""} verbs`;
+        const cluster = await measureVerbCluster(cdpEndpoint, vitePort, width, steer);
+        const failures = assertVerbCluster(cluster, steer);
+        if (failures.length > 0) {
           failed++;
-          console.log(`${label} Verbosity ... FAIL - ${detailFailures.join("; ")}`);
+          console.log(`${label} ... FAIL - ${failures.join("; ")}`);
         } else {
           console.log(
-            `${label} Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
-              `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
-              `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
-              `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
-              `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
+            `${label} ... PASS - ${cluster.controls} verbs ${verbClusterWrapped(cluster) ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
           );
         }
       }
