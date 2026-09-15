@@ -292,6 +292,16 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			// Absent or invalid: no reload is authorized. Reserve the complete
 			// typed metadata notification — every inventory entry — and never
 			// enqueue bodies here.
+			//
+			// The reminder turn IS the admission, so a publication whose
+			// reminder the history already holds was admitted by an earlier
+			// attempt whose metadata consumption then failed. That consumption
+			// is what retries; appending a second turn saying the same thing
+			// would deliver the same inventory twice for one handoff.
+			if s.skillReloadReminderRecorded(publicationID) {
+				reminderPublications[publicationID] = true
+				continue
+			}
 			summary, diagnostics := s.skillInventorySummary(ctx)
 			if len(summary) == 0 {
 				// No skill is loaded: the complete reminder is an empty list
@@ -358,23 +368,59 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 	return batch, outcomes, stagedTokens, nil
 }
 
+// skillReloadReminderRecorded reports whether the history already holds the
+// reminder turn for publicationID — which, because the reminder is appended
+// through the durable pair, means the transcript holds it too.
+func (s *Session) skillReloadReminderRecorded(publicationID string) bool {
+	if publicationID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		state := turn.SkillState
+		if state == nil || state.ReloadReminder == nil {
+			continue
+		}
+		if state.ReloadReminder.PublicationID == publicationID {
+			return true
+		}
+	}
+	return false
+}
+
 // consumeSkillReloadReminders retires the handoffs whose reminders were already
 // durably admitted, so neither a retry nor a restart can deliver the same
 // inventory notification twice. Only the named publications are removed.
+//
+// The consumption only happened once the metadata recording it is durable, so
+// removal, save and rollback are one critical section under metaSaveMu: a
+// concurrent autosave must not snapshot the transient removal and persist a
+// meta.json that has forgotten a reminder no restart can then deliver. A
+// failed save puts back exactly the receipts this call removed. It does not
+// restore a pre-removal snapshot wholesale, because s.mu is not held while the
+// save runs and a fold publishing in that window can have recorded a handoff
+// of its own, which a wholesale restore would discard.
 func (s *Session) consumeSkillReloadReminders(publications map[string]bool) error {
 	if len(publications) == 0 {
 		return nil
 	}
+	s.metaSaveMu.Lock()
+	defer s.metaSaveMu.Unlock()
 	s.mu.Lock()
 	removed := s.removeSkillCompactionHandoffsLocked(publications)
-	if removed {
+	if len(removed) > 0 {
 		s.skillLifecycle.Revision++
 	}
 	s.mu.Unlock()
-	if !removed {
+	if len(removed) == 0 {
 		return nil
 	}
-	if err := s.saveMeta(); err != nil {
+	if err := s.autoSaveMetaLocked(); err != nil {
+		s.mu.Lock()
+		s.restoreSkillCompactionHandoffsLocked(removed)
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
 		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
 		return err
 	}
@@ -512,7 +558,7 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	priorHandoffs := append([]schema.SkillCompactionReceipt(nil), s.skillLifecycle.PendingHandoffs...)
 	priorRevision := s.skillLifecycle.Revision
 	publications := s.consumedReloadPublicationsLocked(outcomes)
-	removed := s.removeSkillCompactionHandoffsLocked(publications)
+	removed := len(s.removeSkillCompactionHandoffsLocked(publications)) > 0
 	if len(obligations) > 0 {
 		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligations...)
 	}

@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2004,5 +2005,170 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 	}
 	if got := countReloadOutcomes(s, invocationID); got != 1 {
 		t.Fatalf("reuse notices after the retry = %d, want 1: the durable notice must not be re-appended", got)
+	}
+}
+
+// plantReminderReceipt stages one delivered handoff whose selection authorized
+// no reload, the shape preparation answers with a complete inventory reminder.
+func plantReminderReceipt(s *Session, publicationID string) {
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
+		Phase: skillCompactionReceiptDelivered,
+		Operation: schema.SkillCompactionOperation{
+			Generation:    1,
+			Selection:     schema.SkillReloadSelection{State: "absent"},
+			PublicationID: publicationID,
+		},
+	}}
+	s.mu.Unlock()
+}
+
+// TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff: consuming a
+// reminder receipt is only real once the metadata that records the consumption
+// is durable. Dropping the handoff from memory before the save means a failed
+// save loses it to the next autosave, which writes a snapshot that has
+// forgotten a reminder no restart can then deliver.
+func TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot())
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	const publication = "pub-consumption-save-failure"
+	plantReminderReceipt(s, publication)
+
+	repair := breakSessionMetaPath(t, s)
+	err := s.consumeSkillReloadReminders(map[string]bool{publication: true})
+	repair()
+	if err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	handoffs := pendingHandoffsSnapshot(s)
+	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != publication {
+		t.Fatalf("handoffs after the failed save = %+v, want the reminder's receipt still pending", handoffs)
+	}
+}
+
+// failRenameDuringMetaSaveFS fails the metadata save's final rename, and runs
+// during just before it — the window in which the save holds no session lock
+// and another publication can record a handoff of its own.
+type failRenameDuringMetaSaveFS struct {
+	afero.Fs
+	during func()
+}
+
+func (fs *failRenameDuringMetaSaveFS) Rename(oldname, newname string) error {
+	if fs.during != nil {
+		fs.during()
+	}
+	return errors.New("injected meta save failure")
+}
+
+// TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff: the
+// save runs without s.mu, so a fold publishing in that window records a handoff
+// of its own. Restoring a pre-removal snapshot wholesale discards it — the
+// reload it authorizes is then owed to nobody. Only the receipts this
+// consumption removed come back.
+func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *testing.T) {
+	t.Parallel()
+	const consumed = "pub-consumed-reminder"
+	const arrived = "pub-arrived-mid-save"
+	metaFS := &failRenameDuringMetaSaveFS{Fs: afero.NewMemMapFs()}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+	plantReminderReceipt(s, consumed)
+	metaFS.during = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+				PublicationID: arrived,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	if err := s.consumeSkillReloadReminders(map[string]bool{consumed: true}); err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	pending := map[string]bool{}
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		pending[handoff.Operation.PublicationID] = true
+	}
+	if !pending[arrived] {
+		t.Fatalf("handoffs after the failed save = %v, want the handoff recorded while the save ran kept", pending)
+	}
+	if !pending[consumed] {
+		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reminder receipt back", pending)
+	}
+}
+
+// countRecordedReminders reports how many reminder turns the history holds for
+// one publication.
+func countRecordedReminders(s *Session, publicationID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, turn := range s.history {
+		state := turn.SkillState
+		if state != nil && state.ReloadReminder != nil && state.ReloadReminder.PublicationID == publicationID {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn:
+// the reminder turn IS the admission, and keeping the receipt when its metadata
+// consumption fails is what makes the retry possible. What the retry must retry
+// is that consumption — appending a second turn saying the same thing delivers
+// the same inventory twice for one handoff.
+func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_reminder_retry", nil))
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	const publication = "pub-reminder-retry"
+	plantReminderReceipt(s, publication)
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	repair := breakSessionMetaPath(t, s)
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	repair()
+	if got := countRecordedReminders(s, publication); got != 1 {
+		t.Fatalf("reminders after the failed save = %d, want exactly one", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
+		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
+	}
+
+	if _, _, staged, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	} else if staged != 0 {
+		t.Fatalf("the retry staged %d input tokens for a reminder it appended nothing for, want 0", staged)
+	}
+	if got := countRecordedReminders(s, publication); got != 1 {
+		t.Fatalf("reminders after the retry = %d, want 1: the transcript already holds the only reminder this handoff is owed", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("handoffs after the retry = %+v, want the receipt consumed", handoffs)
 	}
 }
