@@ -392,26 +392,6 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 	}
 }
 
-// A copy names its route; the rest of what the relay session put in the
-// frame passes through, the way stampClosedThreadCapabilities replaces one
-// key and leaves the payload alone (review round 3 on #1325).
-func TestStampResyncTargetKeepsTheOtherFields(t *testing.T) {
-	stamped := stampResyncTarget(appwire.Notification{
-		Method: appwire.NotifyEvenerThreadResync,
-		Params: json.RawMessage(`{"reason":"daemon gone"}`),
-	}, "gone-child", "local:gone-child")
-	var params map[string]any
-	if err := json.Unmarshal(stamped.Params, &params); err != nil {
-		t.Fatalf("stamped params: %v", err)
-	}
-	if params["ref"] != "local:gone-child" || params["threadId"] != "gone-child" {
-		t.Fatalf("stamped params name ref=%v threadId=%v, want local:gone-child/gone-child", params["ref"], params["threadId"])
-	}
-	if params["reason"] != "daemon gone" {
-		t.Fatalf("stamping dropped the frame's other field: %v", params)
-	}
-}
-
 // A daemon that died leaves its rendezvous file behind. The roster drops a
 // file whose process is gone, and that is what lets the relay tell the
 // subscriber the daemon is gone; the file alone must not keep a dead process
@@ -504,23 +484,6 @@ func newDaemonStandIn(t *testing.T, sessionID string) (*appserver.Server, *httpt
 	upstream := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	t.Cleanup(upstream.Close)
 	return daemon, upstream
-}
-
-// A daemon frame is the daemon's to shape; "params": null decodes into a nil
-// map, and writing the route into it would take the hub down (review round 4
-// on #1325).
-func TestStampResyncTargetToleratesNullParams(t *testing.T) {
-	stamped := stampResyncTarget(appwire.Notification{
-		Method: appwire.NotifyEvenerThreadResync,
-		Params: json.RawMessage(`null`),
-	}, "gone-child", "local:gone-child")
-	var params appwire.ThreadResyncParams
-	if err := json.Unmarshal(stamped.Params, &params); err != nil {
-		t.Fatalf("stamped params: %v", err)
-	}
-	if params.Ref != "local:gone-child" || params.ThreadID != "gone-child" {
-		t.Fatalf("stamped params = %+v, want local:gone-child/gone-child", params)
-	}
 }
 
 // The roster keeps a confirmed daemon through a probe miss as long as its PID

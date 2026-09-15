@@ -755,7 +755,7 @@ func (s *relaySession) publishLoop() {
 				s.publishMu.Unlock()
 				pending = s.pruneDeliveryWaits(pending)
 				for _, notification := range job.notifications {
-					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification, job.daemonGone)...)
+					pending = append(pending, s.publishNotification(job, notification)...)
 				}
 				if job.done != nil {
 					waits := append([]relayDeliveryWait(nil), pending...)
@@ -770,7 +770,7 @@ func (s *relaySession) publishLoop() {
 	}
 }
 
-func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification, daemonGone bool) []relayDeliveryWait {
+func (s *relaySession) publishNotification(job relayPublishJob, notification appwire.Notification) []relayDeliveryWait {
 	s.mu.Lock()
 	listeners := make([]*relayListener, 0, len(s.listeners))
 	for _, listener := range s.listeners {
@@ -780,7 +780,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 
 	waits := make([]relayDeliveryWait, 0, len(listeners))
 	for _, listener := range listeners {
-		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification, daemonGone)
+		published, wait := s.dispatchToListenerAtEpoch(job, listener, notification)
 		if wait != nil {
 			waits = append(waits, *wait)
 		}
@@ -792,7 +792,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 }
 
 func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
-	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification, false)
+	published, wait := s.dispatchToListenerAtEpoch(relayPublishJob{}, listener, notification)
 	if wait != nil {
 		return s.waitForDelivery(*wait)
 	}
@@ -800,11 +800,9 @@ func (s *relaySession) publishToListener(listener *relayListener, notification a
 }
 
 func (s *relaySession) dispatchToListenerAtEpoch(
-	epoch uint64,
-	fence *relayPublicationFence,
+	job relayPublishJob,
 	listener *relayListener,
 	notification appwire.Notification,
-	daemonGone bool,
 ) (bool, *relayDeliveryWait) {
 	ack := make(chan struct{})
 	proceed := make(chan struct{})
@@ -812,14 +810,14 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	var proceedOnce sync.Once
 	delivery := RelayDelivery{
 		Notification: notification,
-		DaemonGone:   daemonGone,
+		DaemonGone:   job.daemonGone,
 		Acknowledge: func() {
 			ackOnce.Do(func() { close(ack) })
 		},
 		Proceed: func() { proceedOnce.Do(func() { close(proceed) }) },
 	}
 	s.publishBoundary.RLock()
-	if epoch != 0 && (s.publicationEpoch != epoch || s.publicationFence != fence) {
+	if job.epoch != 0 && (s.publicationEpoch != job.epoch || s.publicationFence != job.fence) {
 		s.publishBoundary.RUnlock()
 		return false, nil
 	}
@@ -835,7 +833,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	case <-listener.done:
 		s.publishBoundary.RUnlock()
 		return false, nil
-	case <-fenceRevoked(fence):
+	case <-fenceRevoked(job.fence):
 		s.publishBoundary.RUnlock()
 		return false, nil
 	case <-s.ctx.Done():

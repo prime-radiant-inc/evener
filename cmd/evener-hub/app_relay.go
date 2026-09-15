@@ -226,42 +226,17 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	return notification
 }
 
-// stampResyncTarget names the route a fanned-out resync is being delivered to.
-// The daemon-gone resync (appsource.DaemonGoneResync) carries no target so it
-// reaches every route the relay serves - a read-only child alias shares the
-// root's relay session - and each subscriber acts on the ref it names, so
-// each copy names the subscriber's own.
-//
-// Two keys are set, the rest of the payload is passed through as raw JSON, the
-// way stampClosedThreadCapabilities replaces one key: re-minting the frame
-// from the fields this hub understands would drop anything else the relay
-// session put in it.
+// stampResyncTarget names the route a fanned-out daemon-gone resync is being
+// delivered to. The relay publishes that frame with no target so it reaches
+// every route the relay serves (a read-only child alias shares the root's
+// relay session), and each subscriber acts on the ref it names, so each copy
+// names the subscriber's own.
 func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
-	if notification.Method != appwire.NotifyEvenerThreadResync {
-		return notification
-	}
-	params := map[string]json.RawMessage{}
-	if len(notification.Params) != 0 && json.Unmarshal(notification.Params, &params) != nil {
-		return notification
-	}
-	if params == nil { // "params": null decodes into a nil map
-		params = map[string]json.RawMessage{}
-	}
-	threadIDValue, err := json.Marshal(threadID)
+	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
 	if err != nil {
 		return notification
 	}
-	refValue, err := json.Marshal(ref)
-	if err != nil {
-		return notification
-	}
-	params["threadId"] = threadIDValue
-	params["ref"] = refValue
-	stamped, err := json.Marshal(params)
-	if err != nil {
-		return notification
-	}
-	notification.Params = stamped
+	notification.Params = params
 	return notification
 }
 
