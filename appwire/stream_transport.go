@@ -142,7 +142,11 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		// stop above can cancel the AfterFunc that would otherwise have closed
 		// it. Consulting the context first left a desynchronized stream open and
 		// let the next Send append a whole frame after the orphaned bytes.
-		if n != len(buf) {
+		// Only a write that actually put bytes on the wire is a SHORT write. A
+		// zero-byte failure — a broken pipe, a reset, an already-closed stream —
+		// is the underlying error, and reporting it as a short write would both
+		// discard the real cause and claim part of a frame reached the peer.
+		if n > 0 && n != len(buf) {
 			t.poison(io.ErrShortWrite)
 		} else {
 			t.poison(err)
@@ -161,6 +165,13 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 		t.poison(io.ErrShortWrite)
 		return io.ErrShortWrite
 	}
+	// The frame is on the wire, but a cancellation that landed while it was being
+	// written has already closed the stream underneath: latch that, so later
+	// calls report the cancellation instead of a bare close error.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		t.poison(ctxErr)
+		return ctxErr
+	}
 	return nil
 }
 
@@ -176,6 +187,10 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 	line, err := t.readLine()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			// Cancellation tears the transport down, and that has to be latched:
+			// the stream is closed underneath, so leaving the poison unset makes
+			// a later Recv report an orderly io.EOF for a local cancellation.
+			t.poison(ctxErr)
 			return Message{}, ctxErr
 		}
 		// readLine poisons when it consumes part of a frame, and a concurrent
@@ -186,6 +201,13 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 			return Message{}, pErr
 		}
 		return Message{}, err
+	}
+	// A complete line can still arrive after the context was canceled — bufio
+	// may have prefetched it — and cancellation still wins: the caller asked to
+	// stop and the stream is being closed under this call.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		t.poison(ctxErr)
+		return Message{}, ctxErr
 	}
 	var msg Message
 	if err := unmarshalWSMessage(line, &msg); err != nil {

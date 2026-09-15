@@ -398,6 +398,107 @@ func (s *cancelOnWriteStream) Write(p []byte) (int, error) {
 
 func (s *cancelOnWriteStream) Close() error { return nil }
 
+// zeroWriteErrorStream fails without putting a byte on the wire, the way a
+// broken pipe, a reset, or an already-closed stream does.
+type zeroWriteErrorStream struct{ err error }
+
+func (s *zeroWriteErrorStream) Read([]byte) (int, error)  { return 0, io.EOF }
+func (s *zeroWriteErrorStream) Write([]byte) (int, error) { return 0, s.err }
+func (s *zeroWriteErrorStream) Close() error              { return nil }
+
+// fullWriteErrorStream reports an error after writing the whole frame, which
+// io.Writer permits.
+type fullWriteErrorStream struct{ err error }
+
+func (s *fullWriteErrorStream) Read([]byte) (int, error)    { return 0, io.EOF }
+func (s *fullWriteErrorStream) Write(p []byte) (int, error) { return len(p), s.err }
+func (s *fullWriteErrorStream) Close() error                { return nil }
+
+// A zero-byte write failure must surface the real cause: calling it a short
+// write would discard EPIPE/net.ErrClosed and claim part of a frame was sent.
+func TestStreamTransportZeroByteWriteErrorIsNotShortWrite(t *testing.T) {
+	writeErr := errors.New("broken pipe")
+	tr := NewStreamTransport(&zeroWriteErrorStream{err: writeErr})
+
+	err := tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Send err = %v, want the underlying write error", err)
+	}
+	if errors.Is(err, io.ErrShortWrite) {
+		t.Fatal("a zero-byte write failure was reported as a short write")
+	}
+}
+
+// A write that reports an error after landing the whole frame is still sticky:
+// the caller cannot tell whether the peer flushed it, so the transport is done.
+func TestStreamTransportFullWriteWithErrorPoisons(t *testing.T) {
+	writeErr := errors.New("write failed")
+	tr := NewStreamTransport(&fullWriteErrorStream{err: writeErr})
+
+	msg := ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`))
+	if err := tr.Send(context.Background(), msg); !errors.Is(err, writeErr) {
+		t.Fatalf("Send err = %v, want the write error", err)
+	}
+	if err := tr.Send(context.Background(), msg); !errors.Is(err, writeErr) {
+		t.Fatalf("second Send err = %v, want the sticky write error", err)
+	}
+}
+
+// A canceled Recv closes the stream underneath itself, so the cancellation has
+// to latch: otherwise a later Recv reports a clean io.EOF for a local stop.
+func TestStreamTransportCanceledRecvLatches(t *testing.T) {
+	stream := &parkedReadStream{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	tr := NewStreamTransport(stream)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := tr.Recv(ctx)
+		done <- err
+	}()
+	// Wait until Recv is provably parked inside Read, so the cancellation below
+	// cannot land before the call that has to latch it.
+	select {
+	case <-stream.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recv never reached the stream")
+	}
+	cancel()
+	close(stream.release)
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Recv err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Recv did not return after cancellation")
+	}
+
+	// The stream ends here; a non-latching transport would report a clean EOF.
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Recv after a canceled Recv = %v, want the latched context.Canceled", err)
+	}
+}
+
+// parkedReadStream signals when a Read has started and then blocks until
+// released, so a test can cancel provably in the middle of a read.
+type parkedReadStream struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *parkedReadStream) Read([]byte) (int, error) {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.release
+	return 0, io.EOF
+}
+
+func (s *parkedReadStream) Write(p []byte) (int, error) { return len(p), nil }
+func (s *parkedReadStream) Close() error                { return nil }
+
 // Close latches: a frame bufio already prefetched must not be delivered by a
 // Recv after the caller closed the transport.
 func TestStreamTransportCloseLatchesClosedState(t *testing.T) {
