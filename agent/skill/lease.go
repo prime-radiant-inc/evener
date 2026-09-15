@@ -90,12 +90,17 @@ func pruneObsoleteLocks(base string, now time.Time) {
 		}
 		// Re-check under the lease: a publisher can create the cache directory
 		// between the check above and the lock, and unlinking its guard after
-		// that would leave the new copy unprotected.
+		// that would leave the new copy unprotected. The lease must also still
+		// name the file it locked, or the path was replaced underneath it.
 		if _, err := os.Lstat(filepath.Join(base, name)); !errors.Is(err, fs.ErrNotExist) {
 			_ = lease.Release()
 			continue
 		}
 		if info, err := os.Lstat(path); err != nil || now.Sub(info.ModTime()) < staleStagingMaxAge {
+			_ = lease.Release()
+			continue
+		}
+		if !lease.Valid() {
 			_ = lease.Release()
 			continue
 		}

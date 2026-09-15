@@ -749,9 +749,13 @@ func walkSkillsFS(fsys fs.FS, visit func(path string, d fs.DirEntry, isDir bool)
 	return walk(".", 0)
 }
 
-// readDirBounded lists one directory in lexical order without ever holding more
-// than the entry bound, so a directory with a hostile number of entries is
-// rejected instead of read into memory.
+// readDirBounded lists one directory in lexical order. A directory file that
+// supports incremental reads is read in chunks and rejected as soon as it
+// exceeds the entry bound; an fs.FS whose opened directory cannot be read
+// incrementally falls back to fs.ReadDir, which lists the whole directory first
+// and is only bounded after the fact, so for those filesystems the bound is a
+// post-check rather than a guarantee. Every untrusted path this package reads
+// (os.DirFS, embed.FS) supports incremental reads.
 func readDirBounded(fsys fs.FS, name string) ([]fs.DirEntry, error) {
 	file, err := fsys.Open(name)
 	if err != nil {
