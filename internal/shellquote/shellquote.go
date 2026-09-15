@@ -8,8 +8,12 @@
 // backslashes, the substitution and redirection operators, glob and comment
 // syntax, and any byte outside the list such as non-ASCII — is wrapped in
 // single quotes. An embedded single quote is emitted with the POSIX splice
-// '\” (close the quote, backslash-escape one quote, reopen), which is the only
-// byte that needs care inside single quotes. An empty string becomes ”.
+// (close the quote, backslash-escape one quote, reopen), which is the only byte
+// that needs care inside single quotes. An empty string becomes an empty quoted
+// word:
+//
+//	'\''   the splice for a literal single quote
+//	''     an empty string
 //
 // This is an allow-list rather than a deny-list on purpose: a byte nobody
 // thought to deny is quoted rather than trusted.
