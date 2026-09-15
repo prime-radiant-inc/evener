@@ -190,6 +190,9 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "local path", in: "/srv/git/repo.git", want: ""},
 		{name: "relative path", in: "../sibling/repo.git", want: ""},
 		{name: "scp-like without a path", in: "git@github.com:", want: ""},
+		// The frontend needs owner AND repository to build a link, so a
+		// single-segment path is not a remote worth putting on the wire.
+		{name: "scp-like single segment", in: "git@github.com:repo.git", want: ""},
 		{name: "scp-like without a user", in: "github.com:owner/repo.git", want: ""},
 		// A scheme with no authority cannot be parsed for which part is a
 		// credential, so it fails closed. Neither shape is renderable by the

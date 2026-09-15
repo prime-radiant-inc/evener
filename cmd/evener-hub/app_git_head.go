@@ -114,10 +114,11 @@ func sanitizeGitRemote(raw string) string {
 }
 
 // looksLikeScpRemote reports whether value is git's scheme-less scp-like remote
-// syntax, `user@host:path`. It mirrors the frontend parser's own SCP_LIKE
-// pattern - a user with no path separator or whitespace, a host with no
-// separator, and a non-empty path - so the hub never emits a shape the browser
-// cannot turn into a link, and never mistakes a local path for a remote.
+// syntax, `user@host:owner/repo.git`. It mirrors the frontend parser's own
+// SCP_LIKE pattern and its owner/repository requirement - a user with no path
+// separator or whitespace, a host with no separator, and at least two path
+// segments - so the hub never emits a shape the browser cannot turn into a
+// link, and never mistakes a local path for a remote.
 func looksLikeScpRemote(value string) bool {
 	const separatorOrSpace = "/ \t\n\v\f\r"
 	user, rest, found := strings.Cut(value, "@")
@@ -128,7 +129,14 @@ func looksLikeScpRemote(value string) bool {
 	if !found || host == "" || strings.ContainsAny(host, separatorOrSpace) {
 		return false
 	}
-	return strings.TrimSpace(path) != ""
+	// A repo page needs an owner and a repository; `host:repo.git` is not one.
+	segments := 0
+	for segment := range strings.SplitSeq(path, "/") {
+		if segment != "" {
+			segments++
+		}
+	}
+	return segments >= 2
 }
 
 // hasOpaqueScheme reports whether value starts with a URL scheme (RFC 3986:
