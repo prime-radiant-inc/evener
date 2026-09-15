@@ -155,12 +155,12 @@ test("the trigger shows a bare 'Tasks' label when no aggregate has arrived yet",
   expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
 });
 
-test("the trigger shows the done/total counts once the aggregate has arrived", () => {
+test("the trigger shows what is left once the aggregate has arrived", () => {
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 7, done: 3 } })} />);
-  expect(screen.getByRole("button", { name: "Tasks 3/7" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "4 of 7 tasks left" })).toBeTruthy();
 });
 
-test("outcome aggregates show terminal counts instead of done/total", async () => {
+test("outcome aggregates condense to what is left in the trigger and the body head", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
   const model = testModel({ tasks: { total: 7, done: 1, cancelled: 5, remaining: 1 } });
@@ -172,27 +172,27 @@ test("outcome aggregates show terminal counts instead of done/total", async () =
     </>,
   );
 
-  expect(screen.getByRole("button", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "1 of 7 tasks left" })).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
-  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 5 cancelled, 1 remaining (7 total)");
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 of 7 tasks left");
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-test("outcome aggregates infer an omitted zero outcome for labels", async () => {
+test("outcome aggregates infer an omitted remaining for labels", async () => {
   const fake = connectFakeClient();
   fake.on("evener/tasks/list", () => ({ data: [] }));
   const cancelledOnly = testModel({ tasks: { total: 7, done: 1, cancelled: 5 } });
   const { unmount } = render(<TasksPanelBody sessionRef="ref_cancelled" model={cancelledOnly} />);
 
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
-  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 5 cancelled, 0 remaining (7 total)");
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 of 7 tasks left");
   expect(screen.queryByRole("meter")).toBeNull();
   unmount();
 
   const remainingOnly = testModel({ tasks: { total: 7, done: 1, remaining: 5 } });
   render(<TasksPanelBody sessionRef="ref_remaining" model={remainingOnly} />);
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
-  expect(screen.getByTestId("tasks-body-head").textContent).toContain("1 done, 0 cancelled, 5 remaining (7 total)");
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("5 of 7 tasks left");
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
@@ -358,7 +358,7 @@ test("the body header shows the count when the aggregate is known, with no progr
     </>,
   );
   await waitFor(() => expect(screen.getByTestId("tasks-body-head")).toBeTruthy());
-  expect(screen.getByTestId("tasks-body-head").textContent).toContain("16/20 done");
+  expect(screen.getByTestId("tasks-body-head").textContent).toContain("4 of 20 tasks left");
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
@@ -654,7 +654,7 @@ test("re-fetches automatically when the live aggregate changes WHILE the panel s
   const user = userEvent.setup();
 
   const { rerender } = render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 0 } })} />);
-  await user.click(screen.getByRole("button", { name: "Tasks 0/3" }));
+  await user.click(screen.getByRole("button", { name: "3 of 3 tasks left" }));
   await screen.findAllByTestId("task-row");
   expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1);
 
@@ -835,7 +835,7 @@ async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEve
     </>
   );
   const { rerender } = render(panel(0));
-  await user.click(screen.getByRole("button", { name: "Tasks 0/3" }));
+  await user.click(screen.getByRole("button", { name: "3 of 3 tasks left" }));
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/tasks/list")).toHaveLength(1));
 
   rerender(panel(1));
@@ -964,12 +964,12 @@ test("closing then re-opening after the daemon exits keeps the rows already show
   });
 
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
-  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
   await screen.findAllByTestId("task-row");
   await user.keyboard("{Escape}");
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
-  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
   await screen.findByTestId("tasks-daemon-gone");
   expect(screen.getAllByTestId("task-row")).toHaveLength(2);
@@ -995,7 +995,7 @@ test("thread-not-found with a known aggregate but no rows ever fetched shows a t
   });
 
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
-  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
   await screen.findByText("This session has ended");
   expect(screen.queryByText("No tasks yet")).toBeNull();
@@ -1014,7 +1014,7 @@ test("no toast for a dead-daemon rejection - it's not a bug, it's an expected te
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+  await user.click(screen.getByRole("button", { name: "2 of 3 tasks left" }));
 
   await screen.findByText("This session has ended");
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
