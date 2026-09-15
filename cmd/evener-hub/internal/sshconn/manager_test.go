@@ -635,6 +635,7 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 	authFail := false
 	starts := 0
 	canned := cannedRun(nil)
+	sshExit := exitStatus(t, 255)
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			mu.Lock()
@@ -642,7 +643,7 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 			mu.Unlock()
 			if fail {
 				auth := "bob@alpha.example: Permission denied (publickey).\n"
-				return []byte(auth), &RunError{Stderr: []byte(auth), Err: errors.New("exit status 255")}
+				return []byte(auth), &RunError{Stderr: []byte(auth), Err: sshExit}
 			}
 			return canned(ctx, argv, stdin)
 		},
@@ -1189,6 +1190,201 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	}
 }
 
+// Manager.Close tears every channel down, and a consumer installed a source on
+// each Attached it saw. Shutdown must therefore emit the matching Detached under
+// the host lock, or that source outlives the channel it was built for.
+func TestCloseDetachesAnnouncedChannels(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) { events <- ev },
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Close is synchronous: every event it emitted is buffered by the time it
+	// returns, and a supervisor on a canceled manager emits nothing more.
+	var kinds []EventKind
+	for {
+		select {
+		case ev := <-events:
+			if ev.Host != "alpha" {
+				t.Fatalf("event for the wrong host: %+v", ev)
+			}
+			kinds = append(kinds, ev.Kind)
+			continue
+		default:
+		}
+		break
+	}
+	detaches := 0
+	for _, k := range kinds {
+		if k == EventDetached {
+			detaches++
+		}
+	}
+	if detaches != 1 {
+		t.Fatalf("detach events on Close = %d, want exactly 1: %v", detaches, kinds)
+	}
+	if len(kinds) == 0 || kinds[len(kinds)-1] != EventDetached {
+		t.Fatalf("the Close Detached is not the last event: %v", kinds)
+	}
+}
+
+// A terminal failure announced by a concurrent Ensure must also end the
+// supervisor that retired its own channel and is waiting out a backoff.
+// Otherwise that supervisor repeats the terminal outcome and announces a second
+// EventFailed for a host consumers were already told was finished.
+func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	mismatch := false
+	failures := 0
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			refuse := mismatch
+			mu.Unlock()
+			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	events := make(chan Event, 256)
+	// Park the supervisor inside its backoff sleep, so it has already retired the
+	// dropped channel and released the host lock when Ensure runs.
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent: func(ev Event) {
+			events <- ev
+			if ev.Kind == EventFailed {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
+		},
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep: func(context.Context, time.Duration) error {
+			enterOnce.Do(func() { close(sleepEntered) })
+			<-release
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+
+	defer releaseOnce.Do(func() { close(release) })
+
+	mu.Lock()
+	mismatch = true
+	mu.Unlock()
+	ch1.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never entered its backoff sleep")
+	}
+
+	// No channel is mapped now, so this Ensure is a fresh attempt: it finds the
+	// terminal protocol mismatch and must stop the parked supervisor with it.
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("Ensure = %v, want the terminal ErrProtocolIncompatible", err)
+	}
+	releaseOnce.Do(func() { close(release) })
+
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	got := failures
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("EventFailed announcements = %d, want exactly 1: the terminal failure did not stop the supervisor", got)
+	}
+}
+
+// ssh forwards the remote command's stderr onto the same stream as its own
+// diagnostics, so a remote program's error text must not be read as ssh
+// refusing the key: only ssh's own exit status makes an auth refusal terminal.
+func TestRemoteCommandStderrPermissionDeniedIsNotAuthFailure(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	remoteExit := exitStatus(t, 1)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			if strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return nil, &RunError{
+					Stderr: []byte("evener: Permission denied (publickey).\n"),
+					Err:    remoteExit,
+				}
+			}
+			return cannedRun(nil)(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	_, err := m.Ensure(context.Background(), "alpha")
+	if errors.Is(err, ErrSSHAuth) {
+		t.Fatalf("a remote program's stderr was read as an ssh auth refusal: %v", err)
+	}
+	if !errors.Is(err, ErrSSHStart) {
+		t.Fatalf("err = %v, want the retryable ErrSSHStart class", err)
+	}
+}
+
+// A hung Initialize handshake must end at initTimeout, not run to the attempt
+// limit: Ensure and reconnectOnce always hand attach a context that already
+// carries the attempt deadline, so a deadline check there never applies it.
+func TestInitializeHandshakeIsBoundedByInitTimeout(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			return newSilentBridge().stdio, nil
+		},
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		initializeTimeout: 50 * time.Millisecond,
+		attemptTimeout:    10 * time.Second,
+	})
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Ensure succeeded against a silent Initialize handshake")
+		}
+		if !errors.Is(err, ErrSSHStart) {
+			t.Fatalf("err = %v, want ErrSSHStart", err)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("handshake took %v; initTimeout was not applied", elapsed)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Ensure never returned: the Initialize handshake is not bounded by initTimeout")
+	}
+}
+
 // A mapped channel is owned even when its link has dropped: its own supervisor is
 // reconnecting, so a second one must stand down rather than attach alongside it
 // and clobber the entry without ever detaching it.
@@ -1202,7 +1398,7 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 	if !m.publishChannel("alpha", ch) {
 		t.Fatal("publishChannel refused a live manager")
 	}
-	if got := m.reconnectOnce(host, m.hostLock("alpha")); got {
+	if got := m.reconnectOnce(context.Background(), host, m.hostLock("alpha")); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {

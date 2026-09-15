@@ -22,8 +22,14 @@ const requiredLaunchFlag = "api-log"
 
 // Preflight is what one non-interactive probe learns about a host. It records
 // the resolved roots verbatim from the host environment (never inventing XDG
-// values the host does not have) so the controller knows where the host's
-// auth-token and hub.lock live.
+// values the host does not have).
+//
+// ConfigRoot and StateRoot are the host's *default* evener roots: the same
+// HOME/XDG chain the host binary uses when it has no config override. A host
+// hub.toml that sets hub_state_root (or a config root) moves the running hub to
+// a different directory, and `evener hub attach` — which reads its own config —
+// follows it there, so these fields are not where that hub's token and lock
+// necessarily live.
 type Preflight struct {
 	Host         string
 	OS           string // GOOS
@@ -31,11 +37,15 @@ type Preflight struct {
 	UnameOS      string // raw `uname -s`
 	UnameMachine string // raw `uname -m`
 	Home         string
-	ConfigRoot   string
-	StateRoot    string
-	Version      string
-	Protocol     string
-	LaunchFlags  []string
+	// ConfigRoot is the default evener config root (~/.config/evener or
+	// XDG_CONFIG_HOME/evener), not a hub.toml override.
+	ConfigRoot string
+	// StateRoot is the default evener state root (~/.local/state/evener or
+	// XDG_STATE_HOME/evener), not a hub.toml hub_state_root override.
+	StateRoot   string
+	Version     string
+	Protocol    string
+	LaunchFlags []string
 }
 
 // osArchTargetsSupported reports whether a build ships for this target. Only
@@ -260,10 +270,28 @@ func isAuthFailure(stderr string) bool {
 // transport failure and stays retryable (ErrSSHStart). diag is carried either
 // way, because it names the cause.
 func sshRunFailure(hostName, what string, err error, diag string) error {
-	if isAuthFailure(sshDiagnostic(err, diag)) {
+	if isSSHAuthFailure(err, diag) {
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHAuth, hostName, what, err, diag)
 	}
 	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
+}
+
+// isSSHAuthFailure decides an authentication refusal. A one-shot Run keeps its
+// streams apart only at the process level: ssh forwards the remote command's own
+// stderr onto the same stream as its diagnostics, so a remote program printing a
+// marker would otherwise read as ssh refusing the key and end the reconnect loop
+// for good. ssh marks its own failure with exit status 255, and a failed remote
+// command carries its own status, so a Run needs that status as well as the
+// marker. A failed Start never spawned a process and has no status to read, so
+// there the marker alone decides.
+func isSSHAuthFailure(err error, diag string) bool {
+	if !isAuthFailure(sshDiagnostic(err, diag)) {
+		return false
+	}
+	if _, ok := errors.AsType[*RunError](err); ok {
+		return sshOwnFailure(err)
+	}
+	return true
 }
 
 // sshDiagnostic narrows a failure to what ssh itself reported. The remote

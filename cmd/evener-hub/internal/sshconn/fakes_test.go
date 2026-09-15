@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +111,40 @@ func newFakeBridge(initProtocol string) *fakeBridge {
 	}
 	go b.serve(inR, outW)
 	return b
+}
+
+// newSilentBridge models a hub whose AppWire handshake never answers: it drains
+// the framed request stream and never writes a response, so a client's
+// Initialize can only end at its own deadline.
+func newSilentBridge() *fakeBridge {
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	b := &fakeBridge{
+		stdio: &fakeStdio{inW: inW, outR: outR, inR: inR, outW: outW, waitDone: make(chan struct{})},
+	}
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := inR.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	return b
+}
+
+// exitStatus returns a real *exec.ExitError carrying code, the fixture for a
+// child that exited with that status. ssh(1) exits 255 when ssh itself fails
+// (a refused connection, an authentication refusal) and otherwise reports the
+// remote command's own status.
+func exitStatus(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+strconv.Itoa(code)).Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != code {
+		t.Fatalf("building an exit-status-%d fixture: %v", code, err)
+	}
+	return err
 }
 
 func (b *fakeBridge) serve(inR *io.PipeReader, outW *io.PipeWriter) {

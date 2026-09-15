@@ -172,3 +172,50 @@ func TestIsAuthFailure(t *testing.T) {
 		}
 	}
 }
+
+// A failed Run keeps ssh's diagnostics and the remote command's stderr on the
+// same stream, so the text alone cannot separate them. ssh marks its own failure
+// with exit status 255; a failed remote command carries its own status.
+func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
+	const marker = "bob@alpha.example: Permission denied (publickey).\n"
+	sshExit := exitStatus(t, 255)
+	remoteExit := exitStatus(t, 1)
+	cases := []struct {
+		name string
+		err  error
+		diag string
+		want error
+	}{
+		{
+			name: "ssh exit 255 with the marker is an auth refusal",
+			err:  &RunError{Stderr: []byte(marker), Err: sshExit},
+			diag: marker,
+			want: ErrSSHAuth,
+		},
+		{
+			name: "the remote command's own exit with the marker stays retryable",
+			err:  &RunError{Stderr: []byte(marker), Err: remoteExit},
+			diag: marker,
+			want: ErrSSHStart,
+		},
+		{
+			name: "ssh exit 255 without the marker stays retryable",
+			err:  &RunError{Stderr: []byte("ssh: connect to host alpha port 22: refused\n"), Err: sshExit},
+			diag: "ssh: connect to host alpha port 22: refused",
+			want: ErrSSHStart,
+		},
+		{
+			name: "a failed Start has no exit status, so the marker decides",
+			err:  errors.New("fork/exec ssh: no such file or directory"),
+			diag: marker,
+			want: ErrSSHAuth,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sshRunFailure("alpha", "preflight", tc.err, tc.diag); !errors.Is(err, tc.want) {
+				t.Fatalf("sshRunFailure = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}

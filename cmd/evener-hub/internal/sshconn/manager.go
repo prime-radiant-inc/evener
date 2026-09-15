@@ -192,6 +192,13 @@ type Manager struct {
 	closed bool
 	locks  map[string]*sync.Mutex
 	chans  map[string]*Channel
+	// supervisors holds each host's live reconnect loop cancel func, so a terminal
+	// failure can end that loop even while it waits out a backoff.
+	supervisors map[string]context.CancelFunc
+	// announced records, per host, the channel whose Attached has no matching
+	// Detached yet. Close reads it to pair the events for the channel it tears
+	// down without emitting a Detached for one already paired.
+	announced map[string]*Channel
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -199,13 +206,15 @@ type Manager struct {
 func New(reg *hostreg.Registry, opts Options) *Manager {
 	baseCtx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		reg:     reg,
-		opts:    opts,
-		runner:  opts.runner(),
-		baseCtx: baseCtx,
-		cancel:  cancel,
-		locks:   map[string]*sync.Mutex{},
-		chans:   map[string]*Channel{},
+		reg:         reg,
+		opts:        opts,
+		runner:      opts.runner(),
+		baseCtx:     baseCtx,
+		cancel:      cancel,
+		locks:       map[string]*sync.Mutex{},
+		chans:       map[string]*Channel{},
+		supervisors: map[string]context.CancelFunc{},
+		announced:   map[string]*Channel{},
 	}
 }
 
@@ -287,6 +296,10 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 			// ownership: its supervisor would treat the host as its own and repeat a
 			// failure that cannot succeed. The deferred close reaps it.
 			m.clearChannel(name)
+			// A supervisor that retired its own channel and is waiting out a
+			// backoff must stop too: otherwise it repeats the terminal outcome
+			// (a second EventFailed for a host already announced as finished).
+			m.stopSupervisor(name)
 		}
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
@@ -328,8 +341,8 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	if stale != nil {
 		m.detachEvent(name, StateReconnecting)
 	}
-	m.attachEvent(name, StateAttached)
-	go m.supervise(host, ch, lock)
+	m.attachEvent(name, ch, StateAttached)
+	m.startSupervise(host, ch, lock)
 	if m.isClosed() || ch.isClosed() {
 		// Close landed between announcing and returning. Consumers must be able to
 		// drop what they just installed, so pair the Attached with a Detached while
@@ -393,6 +406,14 @@ func (m *Manager) Close() error {
 		// announced as usable after its teardown has begun.
 		lock := m.hostLock(e.name)
 		lock.Lock()
+		// Pair the Attached a consumer saw with a Detached, under the same lock
+		// that ordered them: the supervisor returns on the canceled base context
+		// without emitting one, so shutdown is where that channel's source is
+		// dropped. claimAnnounced makes this a no-op for a channel whose Detached
+		// was already emitted (a replacement retired as Close raced it).
+		if m.claimAnnounced(e.name, e.ch) {
+			m.detachEvent(e.name, StateDisconnected)
+		}
 		err := e.ch.Close()
 		lock.Unlock()
 		if err != nil && first == nil {
@@ -447,11 +468,12 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	// transport is closed (Channel.Close or the link dying).
 	client.Start(m.baseCtx)
 
-	initCtx := ctx
-	cancel := func() {}
-	if _, ok := ctx.Deadline(); !ok {
-		initCtx, cancel = context.WithTimeout(ctx, m.opts.initTimeout())
-	}
+	// Bound the handshake by initTimeout, never by the caller's or the attempt's
+	// deadline: both Ensure and reconnectOnce hand attach a context that always
+	// carries the attempt limit (default 70s), so the old deadline check meant a
+	// hung Initialize ran to that limit instead of stopping at initTimeout
+	// (default 30s). WithTimeout keeps whichever deadline is earlier.
+	initCtx, cancel := context.WithTimeout(ctx, m.opts.initTimeout())
 	defer cancel()
 
 	if _, err := client.Initialize(initCtx, appwire.InitializeParams{
@@ -524,10 +546,10 @@ func (t *lossWatchingTransport) Recv(ctx context.Context) (appwire.Message, erro
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	select {
 	case <-ch.lost:
-	case <-m.baseCtx.Done():
+	case <-ctx.Done():
 		return
 	}
 
@@ -537,7 +559,7 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	// supervisor owns the host now. A channel that was closed while still mapped is
 	// still ours to reconnect — Ensure may have retired a dropped one, and the host
 	// must not be left unsupervised because of that.
-	if m.baseCtx.Err() != nil || m.currentChannel(host.Name) != ch {
+	if ctx.Err() != nil || m.currentChannel(host.Name) != ch {
 		lock.Unlock()
 		return
 	}
@@ -552,7 +574,7 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 
 	delay := m.opts.backoffBase()
 	for {
-		if err := m.opts.waitSleep(m.baseCtx, m.jitterFor(delay)); err != nil {
+		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
 			// Every transition is emitted under the lock, so a concurrent Ensure
 			// cannot interleave its Preflighting with this Disconnected.
 			lock.Lock()
@@ -560,21 +582,48 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 			lock.Unlock()
 			return
 		}
-		if !m.reconnectOnce(host, lock) {
+		if !m.reconnectOnce(ctx, host, lock) {
 			return
 		}
 		delay = nextBackoff(delay, m.opts.backoffMax())
 	}
 }
 
+// startSupervise launches the reconnect loop that owns host's channel. The
+// supervisor gets its own context, derived from baseCtx, so a terminal failure
+// can end it even while it waits out a backoff.
+func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
+	ctx, cancel := context.WithCancel(m.baseCtx)
+	m.mu.Lock()
+	m.supervisors[host.Name] = cancel
+	m.mu.Unlock()
+	go m.supervise(ctx, host, ch, lock)
+}
+
+// stopSupervisor ends host's reconnect loop, if one is running. Without it a
+// terminal failure announced by Ensure would leave the supervisor that retired
+// its own channel still looping, to repeat the same terminal outcome — a second
+// EventFailed for a host consumers were already told was finished — or, for a
+// terminal class the next attempt happens to pass, to announce an Attached after
+// that Failed.
+func (m *Manager) stopSupervisor(name string) {
+	m.mu.Lock()
+	cancel := m.supervisors[name]
+	delete(m.supervisors, name)
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sync.Mutex) bool {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if m.baseCtx.Err() != nil {
+	if ctx.Err() != nil {
 		m.stateEvent(host.Name, StateDisconnected)
 		return false
 	}
@@ -585,7 +634,7 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 		// loser's channel was clobbered without ever being detached.
 		return false
 	}
-	attemptCtx, cancel := context.WithTimeout(m.baseCtx, m.opts.attemptLimit())
+	attemptCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
 	defer cancel()
 	nch, err := m.ensureOnce(attemptCtx, host)
 	if err == nil {
@@ -603,13 +652,14 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 			m.stateEvent(host.Name, StateDisconnected)
 			return false
 		}
-		m.attachEvent(host.Name, StateAttached)
-		go m.supervise(host, nch, lock)
+		m.attachEvent(host.Name, nch, StateAttached)
+		m.startSupervise(host, nch, lock)
 		return false
 	}
 	if isTerminal(err) {
 		m.failedEvent(host.Name, err)
 		m.stateEvent(host.Name, StateDisconnected)
+		m.stopSupervisor(host.Name)
 		return false
 	}
 	m.stateEvent(host.Name, StateReconnecting)
@@ -722,12 +772,34 @@ func (m *Manager) stateEvent(name string, s State) {
 	m.emit(Event{Host: name, Kind: EventState, State: s})
 }
 
-func (m *Manager) attachEvent(name string, s State) {
+func (m *Manager) attachEvent(name string, ch *Channel, s State) {
+	// Record the outstanding Attached before the callback runs: Close has to see
+	// it as soon as a consumer does, so it can pair the events.
+	m.mu.Lock()
+	m.announced[name] = ch
+	m.mu.Unlock()
 	m.emit(Event{Host: name, Kind: EventAttached, State: s})
 }
 
 func (m *Manager) detachEvent(name string, s State) {
+	m.mu.Lock()
+	delete(m.announced, name)
+	m.mu.Unlock()
 	m.emit(Event{Host: name, Kind: EventDetached, State: s})
+}
+
+// claimAnnounced clears and reports whether ch is the channel whose Attached has
+// no matching Detached yet. Close uses it so a channel it tears down after its
+// Detached was already emitted (a replacement retired as Close raced it) is not
+// announced as detached twice.
+func (m *Manager) claimAnnounced(name string, ch *Channel) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.announced[name] != ch {
+		return false
+	}
+	delete(m.announced, name)
+	return true
 }
 
 func (m *Manager) failedEvent(name string, err error) {
