@@ -1,24 +1,8 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import "../testing/editorGeometry";
 import { SkillEditor, type SkillEditorHandle, type SkillEditorProps, type SkillEditorValue } from "./SkillEditor";
-
-// jsdom has no Range layout APIs. Supply geometry only; all editor, selection,
-// transaction and history behavior remains real. Browser layout is a separate gate.
-const rangeDescriptors = Object.getOwnPropertyDescriptors(Range.prototype);
-beforeAll(() => {
-  Object.defineProperties(Range.prototype, {
-    getClientRects: { configurable: true, value: () => [] },
-    getBoundingClientRect: { configurable: true, value: () => new DOMRect() },
-  });
-});
-afterAll(() => {
-  for (const name of ["getClientRects", "getBoundingClientRect"]) {
-    const descriptor = rangeDescriptors[name];
-    if (descriptor) Object.defineProperty(Range.prototype, name, descriptor);
-    else Reflect.deleteProperty(Range.prototype, name);
-  }
-});
 
 afterEach(cleanup);
 

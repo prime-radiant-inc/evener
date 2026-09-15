@@ -4,6 +4,7 @@ import { keymap } from "prosemirror-keymap";
 import { type Command, EditorState, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { forwardRef, type HTMLAttributes, useImperativeHandle, useLayoutEffect, useRef } from "react";
+import { flushSync } from "react-dom";
 import {
   documentPositionToTextOffset,
   parseSkillDocument,
@@ -144,6 +145,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             const dom = document.createElement("span");
             dom.className = styles.skill ?? "";
             dom.dataset.skillName = node.attrs.name;
+            dom.dataset.testid = "composer-skill-chip";
             dom.setAttribute("contenteditable", "false");
             dom.setAttribute("role", "note");
             dom.textContent = `/${node.attrs.name}`;
@@ -191,8 +193,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         role: "textbox",
         "aria-multiline": "true",
         "aria-label": props["aria-label"] ?? "Message",
-        "aria-controls": props["aria-controls"] ?? "",
-        "aria-activedescendant": props["aria-activedescendant"] ?? "",
+        ...(props["aria-controls"] ? { "aria-controls": props["aria-controls"] } : {}),
+        ...(props["aria-activedescendant"] ? { "aria-activedescendant": props["aria-activedescendant"] } : {}),
         "data-placeholder": props.placeholder ?? "",
         "data-empty": String(view.state.doc.content.size === 0),
       },
@@ -216,7 +218,11 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         if (!viewRef.current?.composing && !event.nativeEvent.isComposing && event.keyCode !== 229)
           props.onKeyDown?.(event);
       }}
-      onPasteCapture={props.onPaste}
+      onPasteCapture={(event) => {
+        // Attachment markers and their restored cursor must reach the view
+        // before its native paste handler inserts the text portion.
+        flushSync(() => props.onPaste?.(event));
+      }}
       onFocus={props.onFocus}
       onBlur={props.onBlur}
     />

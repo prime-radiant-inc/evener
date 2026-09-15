@@ -15,6 +15,7 @@ export const skillSchema = new Schema({
       inline: true,
       group: "inline",
       atom: true,
+      selectable: false,
       attrs: { name: {} },
       toDOM: (node) => [
         "span",

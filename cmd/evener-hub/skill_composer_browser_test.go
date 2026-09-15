@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -138,17 +139,55 @@ func (c skillGuardLLMCall) allText() string {
 	return b.String()
 }
 
-// lastUserText returns the text of the FINAL user message — the request's
-// own input. History replays every earlier input verbatim, so a prose match
-// over the whole request counts later turns too; the last user message is
-// the only honest identity for "this request was dispatched FOR this input".
+// lastUserText returns the final operative user message, skipping only complete
+// skill-context carriers appended by skill.Render. History replays earlier
+// inputs verbatim, so searching the whole request would count later turns too.
 func (c skillGuardLLMCall) lastUserText() string {
 	for i := len(c.Messages) - 1; i >= 0; i-- {
-		if c.Messages[i].Role == "user" {
+		if c.Messages[i].Role == "user" && !c.Messages[i].skillContextOnly() {
 			return c.Messages[i].text()
 		}
 	}
 	return ""
+}
+
+// A user message containing prose, an image, or malformed/incomplete envelope
+// data is still operative input. Render emits all five string fields, including
+// empty description/instructions, and may contribute several separate carriers.
+func (m skillGuardMessage) skillContextOnly() bool {
+	for _, part := range m.Content {
+		if part.Kind != "text" {
+			return false
+		}
+	}
+	text := strings.TrimSpace(m.text())
+	if text == "" {
+		return false
+	}
+	for text != "" {
+		body, ok := strings.CutPrefix(text, "<skill-context>")
+		if !ok {
+			return false
+		}
+		encoded, rest, ok := strings.Cut(body, "</skill-context>")
+		if !ok {
+			return false
+		}
+		var fields map[string]*string
+		if err := json.Unmarshal([]byte(encoded), &fields); err != nil {
+			return false
+		}
+		for _, key := range []string{"name", "description", "source", "base_directory", "instructions"} {
+			if fields[key] == nil {
+				return false
+			}
+		}
+		if *fields["name"] == "" || *fields["source"] == "" || *fields["base_directory"] == "" {
+			return false
+		}
+		text = strings.TrimSpace(rest)
+	}
+	return true
 }
 
 func (c skillGuardLLMCall) imagePartCount() int {
@@ -1264,14 +1303,14 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	} else {
 		chip := labels.ChipDetails[0]
 		if chip.Text != "/"+skillGuardSkillName || chip.Editable != "false" ||
-			!strings.Contains(chip.Title, skillGuardSkillName) || !strings.Contains(chip.Label, skillGuardSkillName) ||
+			!strings.Contains(chip.Label, skillGuardSkillName) ||
 			!strings.Contains(chip.Title, skillGuardSkillDescription) || !strings.Contains(chip.Label, skillGuardSkillDescription) {
 			t.Errorf("inline atom lost its canonical label, details, or indivisibility: %+v", chip)
 		}
 	}
 
 	// The durable transcript records the canonical selection with its names.
-	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseCanonical), []string{skillGuardSkillName}); err != nil {
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseCanonical), []string{skillGuardSkillName}, schema.TurnUserInput); err != nil {
 		t.Errorf("canonical selection missing from helper alpha's transcript: %v", err)
 	}
 
@@ -1304,15 +1343,21 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	if deliveries != 1 {
 		t.Errorf("two-reference sentence dispatched %d times, want 1", deliveries)
 	}
-	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], proseTwoSkills, []string{"skill-1", "skill-2"}); err != nil {
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], proseTwoSkills, []string{"skill-1", "skill-2"}, schema.TurnUserInput); err != nil {
 		t.Errorf("two-reference sentence or metadata missing from transcript: %v", err)
 	}
 	var twoSkills skillGuardComposerSnapshot
 	if !skillGuardMilestoneDetail(t, milestones, "submitted-two-skills", &twoSkills) || twoSkills.Text != proseTwoSkills || strings.Join(twoSkills.Chips, ",") != "/skill-1,/skill-2" {
 		t.Errorf("two-reference browser submission changed: %+v", twoSkills)
 	}
-	for _, text := range []string{proseQueueSecond, proseSteer, proseTransport} {
-		if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(text), []string{skillGuardSkillName}); err != nil {
+	// Queue drains and direct steers both reach consumeSteeringMessage, which
+	// records STEERING plus its paired SkillState.Input (agent/session_queue.go).
+	// Transport retry here is still a turn/start and must remain USER_INPUT.
+	for _, input := range []struct {
+		text string
+		kind schema.TurnKind
+	}{{proseQueueSecond, schema.TurnSteering}, {proseSteer, schema.TurnSteering}, {proseTransport, schema.TurnUserInput}} {
+		if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(input.text), []string{skillGuardSkillName}, input.kind); err != nil {
 			t.Errorf("inline queue/steer/recovery transcript: %v", err)
 		}
 	}
@@ -1452,7 +1497,7 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 	// recorded with its names, and the ONLY provider request carrying its
 	// prose was dispatched after the failure was observed — proving no
 	// dependent request ran at the failed claim.
-	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseFail), []string{skillGuardSkillName}); err != nil {
+	if err := skillGuardRequireTranscriptInput(t, fixture.stateDir[0], skillGuardInline(proseFail), []string{skillGuardSkillName}, schema.TurnUserInput); err != nil {
 		t.Errorf("the failed input record is missing from helper alpha's transcript: %v", err)
 	}
 	var failObservedAt, failRequestAt string
@@ -1603,17 +1648,10 @@ func durableInputHasSkill(record skillGuardDurableRecord, name string) bool {
 }
 
 // skillGuardRequireTranscriptInput asserts a durable transcript input turn
-// exists with exactly the given prose and canonical skill names. The
-// transcript is the daemon's own record, not the browser's.
-func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, names []string) error {
+// exists with exactly the expected kind, prose and canonical skill names, all
+// paired on the same entry. The transcript is the daemon's own record.
+func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, names []string, kind schema.TurnKind) error {
 	t.Helper()
-	count, err := skillGuardCountTranscriptInputs(t, stateDir, prose)
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return fmt.Errorf("no transcript input turn carries %q", prose)
-	}
 	sessionDir := filepath.Join(stateDir, "sessions")
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
@@ -1653,7 +1691,7 @@ func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, name
 			if err := json.Unmarshal([]byte(line), &record); err != nil {
 				continue
 			}
-			if record.Turn.Kind != "USER_INPUT" || record.Turn.SkillState == nil || record.Turn.SkillState.Input == nil {
+			if record.Turn.Kind != string(kind) || record.Turn.SkillState == nil || record.Turn.SkillState.Input == nil {
 				continue
 			}
 			if record.Turn.SkillState.Input.OriginalText != prose {
@@ -1672,7 +1710,7 @@ func skillGuardRequireTranscriptInput(t *testing.T, stateDir, prose string, name
 			return nil
 		}
 	}
-	return fmt.Errorf("no transcript input turn carries skill_state for %q", prose)
+	return fmt.Errorf("no transcript %s turn carries paired text and skill_state for %q", kind, prose)
 }
 
 func skillGuardCountTranscriptInputs(t *testing.T, stateDir, prose string) (int, error) {

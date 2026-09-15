@@ -196,7 +196,7 @@ function editorText(root) {
 // an atom: its complete label contributes to plain-text offsets, but its DOM
 // boundary is the only selectable location.
 function selectEditorRange(editor, start, end) {
-  const positions = new Map();
+  const positions = new Map([[0, [editor, 0]]]);
   let offset = 0;
   const walk = (node) => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -347,7 +347,8 @@ export class Driver {
       const anchor = offset(selection.anchorNode, selection.anchorOffset);
       const focus = offset(selection.focusNode, selection.focusOffset);
       return { value: (${editorText.toString()})(editor),
-        start: Math.min(anchor, focus), end: Math.max(anchor, focus),
+        start: anchor === null || focus === null ? null : Math.min(anchor, focus),
+        end: anchor === null || focus === null ? null : Math.max(anchor, focus),
         focused: document.activeElement === editor };
     })()`;
   }
@@ -358,34 +359,42 @@ export class Driver {
   async typeText(ref, text) {
     const before = await evaluate(this.send, this.composerEditStateExpr(ref));
     check(before?.focused, `typeText(${ref}): editor is not focused`);
+    check(before.start !== null && before.end !== null, `typeText(${ref}): selection is outside the editor`);
     const want = before.value.slice(0, before.start) + text + before.value.slice(before.end);
     const caret = before.start + text.length;
     await this.send("Input.insertText", { text });
-    await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
-      return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
-      { label: `native edit ${JSON.stringify(want)} with caret ${caret}` });
+    try {
+      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+        return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
+        { label: `native edit ${JSON.stringify(want)} with caret ${caret}` });
+    } catch (error) {
+      const after = await evaluate(this.send, this.composerEditStateExpr(ref));
+      throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
+    }
   }
 
   async selectRange(ref, start, end = start) {
-    const selected = await evaluate(this.send, `(() => {
+    const selected = await evaluate(this.send, `(async () => {
       const editor = ${this.editorExpr(ref)};
       if (!editor) return false;
+      const changed = new Promise((resolve) => document.addEventListener("selectionchange", resolve, { once: true }));
       (${selectEditorRange.toString()})(editor, ${start}, ${end});
+      await changed;
       return true;
     })()`);
     check(selected, `selectRange(${ref}): editor missing`);
   }
 
+  async moveCaret(ref, key) {
+    const changed = evaluate(this.send, `new Promise((resolve) => document.addEventListener("selectionchange", () => resolve(true), { once: true }))`);
+    await this.press(ref, key);
+    await changed;
+  }
+
   async selectAll(ref) {
-    const selected = await evaluate(this.send, `(() => {
-      const editor = ${this.editorExpr(ref)};
-      if (!editor) return false;
-      editor.focus();
-      const range = document.createRange(); range.selectNodeContents(editor);
-      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-      return true;
-    })()`);
-    check(selected, `selectAll(${ref}): editor missing`);
+    const state = await evaluate(this.send, this.composerEditStateExpr(ref));
+    check(state, `selectAll(${ref}): editor missing`);
+    await this.selectRange(ref, 0, state.value.length);
   }
 
   // press sends a real key to one session's composer. The CDP event goes to
@@ -777,11 +786,8 @@ export class Driver {
 
   async focusComposer(ref) {
     await this.click(`${this.composerSelector(ref)} ${EDITOR}`);
-    await evaluate(this.send, `(() => {
-      const editor = ${this.editorExpr(ref)};
-      const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
-      const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
-    })()`);
+    const state = await this.composerState(ref);
+    await this.selectRange(ref, state.text.length);
   }
 
   async selectSkillChip(ref) {
@@ -1500,13 +1506,15 @@ async function runInlineEditing(driver) {
   await driver.focusComposer(ref);
   // Resolve the first reference with an EXISTING whitespace suffix: completion
   // must not add a second separator or shift the surrounding sentence.
-  await driver.typeText(ref, TWO_SKILLS);
+  await driver.typeText(ref, "Run  and then ");
   const firstStart = TWO_SKILLS.indexOf("/skill-1");
   const firstEnd = firstStart + "/skill-1".length;
-  await driver.selectRange(ref, firstEnd);
+  await driver.selectRange(ref, firstStart);
+  await driver.typeText(ref, "/skill-1");
   await driver.completeSkill(ref, "skill-1");
-  check((await driver.composerState(ref)).text === TWO_SKILLS, "completion doubled the existing separator");
-  await driver.focusComposer(ref);
+  check((await driver.composerState(ref)).text === "Run /skill-1 and then ", "completion doubled the existing separator");
+  await driver.selectRange(ref, TWO_SKILLS.indexOf("/skill-2"));
+  await driver.typeText(ref, "/skill-2");
   await driver.completeSkill(ref, "skill-2");
   await driver.assertComposerDraft(ref, "completion separator at end", { ...two, text: `${TWO_SKILLS} ` });
   await driver.press(ref, "Backspace");
@@ -1515,10 +1523,10 @@ async function runInlineEditing(driver) {
   // A caret can cross the atom but cannot enter its label. Inserting on each
   // side must leave the complete canonical reference intact.
   await driver.selectRange(ref, firstStart);
-  await driver.press(ref, "ArrowRight");
+  await driver.moveCaret(ref, "ArrowRight");
   let caret = await evaluate(driver.send, driver.composerEditStateExpr(ref));
   check(caret.start === firstEnd && caret.end === firstEnd, `right arrow entered an atom: ${JSON.stringify(caret)}`);
-  await driver.press(ref, "ArrowLeft");
+  await driver.moveCaret(ref, "ArrowLeft");
   caret = await evaluate(driver.send, driver.composerEditStateExpr(ref));
   check(caret.start === firstStart && caret.end === firstStart, `left arrow entered an atom: ${JSON.stringify(caret)}`);
 
@@ -1585,17 +1593,15 @@ async function runInlineEditing(driver) {
     const rect = editor.getBoundingClientRect();
     const range = document.createRange(); range.selectNodeContents(editor);
     const lines = [...range.getClientRects()];
-    let scroll = editor;
-    while (scroll && !(scroll.scrollHeight > scroll.clientHeight && /auto|scroll/.test(getComputedStyle(scroll).overflowY))) scroll = scroll.parentElement;
-    if (!scroll) return null;
-    scroll.scrollTop = scroll.scrollHeight;
+    editor.scrollTop = editor.scrollHeight;
     return { wrapped: lines.some((r) => r.top > lines[0].top),
       chipWrapped: chips.length === 2 && chips[1].getBoundingClientRect().top > chips[0].getBoundingClientRect().top,
       horizontalOverflow: editor.scrollWidth > editor.clientWidth + 1,
+      heightBounded: rect.height <= window.innerHeight * 0.5,
       atoms: chips.map((chip) => ({ rects: chip.getClientRects().length, width: chip.getBoundingClientRect().width, inside: chip.getBoundingClientRect().right <= rect.right + 1 })),
-      scrollTop: scroll.scrollTop, scrollHeight: scroll.scrollHeight, clientHeight: scroll.clientHeight };
+      scrollTop: editor.scrollTop, scrollHeight: editor.scrollHeight, clientHeight: editor.clientHeight };
   })()`, { label: "composer wrapping and scrollable overflow" });
-  check(layout.wrapped && layout.chipWrapped && layout.atoms.length === 2 && !layout.horizontalOverflow && layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) && layout.scrollTop > 0,
+  check(layout.wrapped && layout.chipWrapped && layout.heightBounded && layout.atoms.length === 2 && !layout.horizontalOverflow && layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) && layout.scrollTop > 0,
     `inline wrap/scroll layout failed: ${JSON.stringify(layout)}`);
   driver.milestone("inline-layout", layout);
   // Remove only the wrapping prose, retaining both original atoms.

@@ -14,7 +14,7 @@
 // that come and go. Keyboard chords live in each control's Tooltip rather than
 // as boxed <kbd> runs inside the buttons.
 //
-// T2 (this file): the Textarea, send-vs-steer-vs-queue-vs-drain routing via
+// T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
 // protocol/sendQueueAvailability's deriveSendQueueAvailability +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
@@ -66,7 +66,6 @@ import {
   IconButton,
   PromptCard,
   SendIcon,
-  Textarea,
   Tooltip,
   useToasts,
 } from "../../../widgets";
@@ -110,8 +109,9 @@ import {
 import { consumeQuoteInsert, type QuoteInsertPlacement, useQuoteInsertRequest } from "./quoteInsert";
 import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import { addSkillSelection, removeSkillSelection } from "./skillSelections";
+import { parseSkillDocument, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
 import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
@@ -199,7 +199,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const pendingSendEntries = usePendingTurnEntries(ref, "send");
   const toasts = useToasts();
   const isMobile = useIsMobile();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<SkillEditorHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
@@ -306,23 +306,6 @@ export function Composer({ ref, focused }: ComposerProps) {
   const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
   const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
-  // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
-  // prop - it's a shared widget outside this stream's manifest - so this
-  // component sets both directly on the native node it already refs for
-  // cursor restoration below, the same imperative-DOM idiom the cursor-
-  // restore layout effect already uses on the identical ref.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    if (slashActiveId) {
-      el.setAttribute("aria-controls", slashListboxId);
-      el.setAttribute("aria-activedescendant", slashActiveId);
-    } else {
-      el.removeAttribute("aria-controls");
-      el.removeAttribute("aria-activedescendant");
-    }
-  }, [slashActiveId, slashListboxId]);
-
   // A freshly (re)matched token always starts highlighted at its first
   // option - an index carried over from the PREVIOUS token's list is not a
   // meaningful position once the list itself has changed shape.
@@ -332,8 +315,8 @@ export function Composer({ ref, focused }: ComposerProps) {
   }, [slashToken?.start, slashToken?.query]);
 
   // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
-  // unlike `text` itself (a plain per-render const) or the textarea DOM
-  // node's own `.value` (only updated once React actually commits),
+  // unlike `text` itself (a plain per-render const) or an editor read
+  // before React commits a programmatic replacement,
   // textRef.current is correct the INSTANT any text-changing path runs,
   // regardless of which render's closure is asking or whether React has
   // had a chance to re-render yet. Both properties matter: useAttachments'
@@ -402,13 +385,6 @@ export function Composer({ ref, focused }: ComposerProps) {
     [ref],
   );
 
-  // Chip-only edits persist the structured draft directly; the text half comes
-  // from textRef, which every chip edit leaves untouched.
-  const persistDraftSelections = useCallback((): void => {
-    writeComposerDraft(ref, { text: textRef.current, skillNames: skillNamesRef.current });
-    ownedDraftRevisionRef.current = readDraftRevision(ref);
-  }, [ref]);
-
   useLayoutEffect(() => {
     mountedRef.current = true;
     // Re-read at subscription time so a commit between render and mount
@@ -470,41 +446,21 @@ export function Composer({ ref, focused }: ComposerProps) {
     };
   }, [ref, setActiveRecoveryId, updateText, updateSkillNames, persistDraft]);
 
-  // Bridges useAttachments' pure string-splice logic to this component's
-  // own controlled `text` state, instead of a direct DOM `.value` mutation
-  // - see useAttachments.ts's TextEditor doc comment for the React
-  // controlled-input restoration bug that direct mutation ran into. Also
-  // keeps the draft in sync with attachment-driven edits (marker insert on
-  // ingest, marker strip on remove/decode-failure), not just typing -
-  // otherwise a decode failure's stripped marker would leave a stale,
-  // now-invalid "[image N]" fragment sitting in the stored draft even
-  // though the visible textarea correctly no longer shows it.
-  //
-  // read()'s cursor prefers cursorToRestoreRef.current (this component's
-  // OWN pending, not-yet-committed cursor intent) over the DOM's live
-  // selectionStart - reusing that ref rather than adding a parallel one,
-  // since it already means exactly "the last write() call's intended
-  // cursor, whenever the layout effect hasn't applied it to the DOM yet".
-  // Needed for the identical reason textRef is: a second ingestFiles call
-  // landing before any render (e.g. two attachment gestures fired back to
-  // back - Composer.test.tsx's own regression test) would otherwise read
-  // the DOM's selectionStart, which the browser hasn't moved yet because
-  // the layout effect that moves it hasn't run - inserting the second
-  // marker at the FIRST marker's stale pre-insertion position instead of
-  // chaining after it. Once the layout effect actually applies a cursor
-  // and clears this ref (back to null), read() correctly falls back to the
-  // live DOM value - which is what must be trusted for genuine user-driven
-  // cursor movement (clicking, arrow keys) that this component has no
-  // other hook into.
+  // Attachment marker edits update controlled text, selected references and
+  // the persisted draft together. Prefer a pending cursor restoration over
+  // the live editor selection so two attachment gestures before React commits
+  // insert consecutive markers rather than reusing the first position.
   const textEditor: TextEditor = {
     read: () => ({
       text: textRef.current,
-      cursor: cursorToRestoreRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
+      cursor: cursorToRestoreRef.current ?? editorRef.current?.getCursor() ?? textRef.current.length,
     }),
     write: (nextText, cursor, source) => {
       // Submission cleanup retires this mount's markers without claiming a
       // shared draft that another composer has edited in the meantime.
       const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
+      const next = serializeSkillDocument(parseSkillDocument({ text: nextText, skillNames: skillNamesRef.current }));
+      updateSkillNames(next.skillNames);
       if (source === "submission") updateText(nextText);
       else editText(nextText);
       if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
@@ -752,11 +708,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     const cursor = cursorToRestoreRef.current;
     if (cursor === null) return;
     cursorToRestoreRef.current = null;
-    const el = textareaRef.current;
-    if (el) {
-      el.selectionStart = cursor;
-      el.selectionEnd = cursor;
-    }
+    editorRef.current?.setSelection(cursor);
   }, [cursorRestoreSeq]);
 
   // SelectionQuote's "Quote in reply" seam (quoteInsert.ts): a sibling
@@ -786,7 +738,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     const merged = mergeDraftText(textRef.current, quoteInsertRequest.text, quoteInsertRequest.placement);
     const cursor = quoteInsertRequest.placement === "prefix" ? quoteInsertRequest.text.length : merged.length;
     textEditor.write(merged, cursor);
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
     consumeQuoteInsert(ref);
   }, [quoteInsertRequest, ref, textEditor.write]);
 
@@ -800,7 +752,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const consumedComposerFocusIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
-    const textarea = textareaRef.current;
+    const textarea = editorRef.current;
     if (!textarea) return;
     textarea.focus();
     consumedComposerFocusIdRef.current = composerFocusRequest.id;
@@ -810,7 +762,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Loading a session lands keyboard focus in its composer: writing the next
   // message is what the pane is for. Mount-only, gated on the pane being
   // focused at mount (see useMountAutofocus for the full rationale).
-  useMountAutofocus(textareaRef, focused);
+  useMountAutofocus(editorRef, focused);
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -945,14 +897,14 @@ export function Composer({ ref, focused }: ComposerProps) {
   // own menu mount - this must never become a second owner there.
   const discoveryOnlyChrome = ended && !followUpEngaged && canSendWhenEnded;
 
-  function handleTextChange(event: { target: { value: string; selectionStart?: number | null } }): void {
-    editText(event.target.value);
-    if (activeRecoveryIdRef.current === null) persistDraft(event.target.value);
+  function handleTextChange(value: SkillEditorValue, caret: number): void {
+    editSkillNames(value.skillNames);
+    editText(value.text);
+    if (activeRecoveryIdRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
-    const caret = event.target.selectionStart ?? event.target.value.length;
-    setSlashToken(parseSlashToken(event.target.value, caret));
+    setSlashToken(parseSlashToken(value.text, caret));
   }
 
   // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse
@@ -971,22 +923,18 @@ export function Composer({ ref, focused }: ComposerProps) {
   // interception, below.
   function commitSlashCompletion(item: SlashMenuItem): void {
     if (!slashToken) return;
-    // A skill selection is canonical, not prose: choosing a skill row removes
-    // ONLY the active completion token from the text and adds the skill's
-    // canonical chip, leaving surrounding text and attachment anchors
-    // untouched. Commands keep the splice behavior below verbatim.
+    // The editor replaces this range with one atomic mention and records the
+    // text and activation metadata together in its undo history.
     if (item.kind === "skill" && item.canonicalName !== undefined) {
-      editSkillNames(addSkillSelection(skillNamesRef.current, item.canonicalName));
-      const nextText = textRef.current.slice(0, slashToken.start) + textRef.current.slice(slashToken.end);
-      textEditor.write(nextText, slashToken.start);
+      editorRef.current?.insertSkill(slashToken.start, slashToken.end, item.canonicalName);
       setSlashToken(null);
-      textareaRef.current?.focus();
+      editorRef.current?.focus();
       return;
     }
     const spliced = spliceSlashCommand(textRef.current, slashToken, item.invocation);
     textEditor.write(spliced.text, spliced.caret);
     setSlashToken(null);
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
   }
 
   // Equal text can belong to a newer edit, including a reused image marker.
@@ -1028,15 +976,6 @@ export function Composer({ ref, focused }: ComposerProps) {
     attachments.clearSubmitted(markers);
   }
 
-  // removeSkillChip is a chip's remove button: drops exactly that canonical
-  // name from the selection list and persists the structured draft. The
-  // accessible label on the button itself explains the chip's contract (the
-  // skill applies to the request, not to the words around it).
-  function removeSkillChip(name: string): void {
-    editSkillNames(removeSkillSelection(skillNamesRef.current, name));
-    if (activeRecoveryIdRef.current === null) persistDraftSelections();
-  }
-
   // A chip's details: the skill's own description, or - when the live catalog
   // report no longer backs the selection - the name plus why it cannot be
   // found. Command rows never render here, so these details are skill-only by
@@ -1075,16 +1014,9 @@ export function Composer({ ref, focused }: ComposerProps) {
     restoredSkillNames?: readonly string[],
   ): void {
     const merged = mergeDraftText(textRef.current, restoredText);
+    if (restoredSkillNames?.length) editSkillNames([...skillNamesRef.current, ...restoredSkillNames]);
     textEditor.write(merged, merged.length);
-    if (restoredSkillNames && restoredSkillNames.length > 0) {
-      let selections = skillNamesRef.current;
-      for (const name of restoredSkillNames) {
-        selections = addSkillSelection(selections, name);
-      }
-      editSkillNames(selections);
-      if (activeRecoveryIdRef.current === null) persistDraftSelections();
-    }
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
   }
 
   function activateRecovery(record: MutationRecoveryRecord): void {
@@ -1107,7 +1039,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     editSkillNames(merged.skillNames);
     attachments.replaceWithSettled(merged.attachments);
     scheduleCursorRestore(merged.text.length);
-    textareaRef.current?.focus();
+    editorRef.current?.focus();
 
     const ownerId = currentRecoveryId ?? record.clientMutationId;
     const replacementEpoch = recoveryReplacementEpochRef.current;
@@ -1327,7 +1259,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       (event.nativeEvent as SubmitEvent).submitter === initiator &&
       initiator.ownerDocument.activeElement === initiator
     ) {
-      textareaRef.current?.focus();
+      editorRef.current?.focus();
     }
     void submitAction(route);
   }
@@ -1345,7 +1277,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       queueDepth: liveThreadModel(ref)?.queue?.depth ?? queueDepth,
     });
     if (route === "none") {
-      textareaRef.current?.focus();
+      editorRef.current?.focus();
       return;
     }
     // Readiness is sessionControls' (submitRouting.ts), read from the store at
@@ -1388,7 +1320,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // for "iframe" across src turns up nothing) - the whole concept this
   // legacy gate defended against doesn't exist here, so there is no
   // isInPane()-equivalent check to port.
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>): void {
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // Inline slash-completion's own keyboard mechanics, ported from
     // Beautiful UI's prompt-bar (slashCompletion.ts's own header comment):
     // ArrowUp/Down move the highlighted option (wrapping at both ends) OVER
@@ -1479,7 +1411,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // option never reaches this handler in the first place - see that
   // component's own comment - so this only ever fires for a genuine
   // "focus left the field" (Tab away, click elsewhere, blur()).
-  function handleTextareaBlur(): void {
+  function handleEditorBlur(): void {
     if (ended) setFollowUpFocused(false);
     setSlashToken(null);
   }
@@ -1538,39 +1470,6 @@ export function Composer({ ref, focused }: ComposerProps) {
           ))}
         </div>
       )}
-      {/* Staged canonical skill selections - one chip per canonical name (the
-          canonical name IS the React key: two sources can't produce the same
-          canonical name twice, because addSkillSelection deduplicates it).
-          Same one-rendering-for-every-state rule as the tiles above: chips
-          swap content, never element types. The remove button's accessible
-          label says the skill applies to the request independently of later
-          prose edits, because that is the contract a user needs explained
-          before removing one; the Tooltip carries the skill's own details
-          and any live-catalog diagnostic. */}
-      {skillNames.length > 0 && (
-        <div
-          className={CLASS.attachments}
-          data-testid="composer-skill-selections"
-          hidden={askPending}
-          inert={askPending}
-        >
-          {skillNames.map((name) => (
-            <span key={name} data-testid="composer-skill-chip">
-              <Tooltip label={skillChipDetails(name)}>
-                <span>{name}</span>
-              </Tooltip>
-              <IconButton
-                label={`Remove skill ${name}. The skill applies to your request regardless of edits to the message text.`}
-                icon={<span aria-hidden="true">×</span>}
-                variant="quiet"
-                size="xs"
-                type="button"
-                onClick={() => removeSkillChip(name)}
-              />
-            </span>
-          ))}
-        </div>
-      )}
       {!askPending && (
         <>
           <TasksPanel ref={tasksPanelRef} sessionRef={ref} model={model} hideTrigger />
@@ -1622,25 +1521,18 @@ export function Composer({ ref, focused }: ComposerProps) {
                 hidden={askPending}
                 verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
-                  <Textarea
-                    ref={textareaRef}
-                    value={text}
+                  <SkillEditor
+                    ref={editorRef}
+                    value={{ text, skillNames }}
+                    skillDetails={skillChipDetails}
                     onChange={handleTextChange}
                     onKeyDown={handleKeyDown}
                     onPaste={handlePaste}
-                    autoGrow
-                    // The PromptCard around it draws the one border this field
-                    // needs, and owns the focus ring via :focus-within.
-                    seamless
-                    // A finished session's card is one line of invitation at
-                    // rest, opening to a real writing surface once it has focus.
-                    // Driven from React state rather than a :focus-within CSS
-                    // rule because the floor has to reach the field's own `rows`
-                    // to take effect at all (see widgets/textarea's rows
-                    // comment), and only the prop can do that.
+                    aria-controls={slashActiveId ? slashListboxId : undefined}
+                    aria-activedescendant={slashActiveId ?? undefined}
                     minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
                     onFocus={ended ? () => setFollowUpFocused(true) : undefined}
-                    onBlur={handleTextareaBlur}
+                    onBlur={handleEditorBlur}
                     placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                     aria-label="Message"
                   />
