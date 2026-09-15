@@ -2341,18 +2341,26 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 	return formatRecentWatchSummaries(jm.visibleWatchHistorySnapshots(jm.sessionID))
 }
 
-// visibleWatchHistorySnapshots copies the history-ring entries visible to
-// sessionID, latest first. Both the ring walk and the visibility predicate run
-// inside jm.mu; the projection that formats the copies runs outside it. A
-// watchHistoryEntry holds only value fields (strings, ints, and a time.Time), so
-// the value copy is already private and needs no ring copy of its own.
+// visibleWatchHistorySnapshots is the history ring's locked collector for the
+// session-facing projection: it gathers the entries visible to sessionID, latest
+// first, and returns with jm.mu released.
 func (jm *jobManager) visibleWatchHistorySnapshots(sessionID string) []watchHistoryEntry {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	out := make([]watchHistoryEntry, 0, len(jm.watchHistory))
-	for i := range slices.Backward(jm.watchHistory) {
-		h := jm.watchHistory[i]
-		if !watchHistoryVisibleToSession(h, sessionID) {
+	return watchHistorySnapshotsLocked(jm.watchHistory, func(h watchHistoryEntry) bool {
+		return watchHistoryVisibleToSession(h, sessionID)
+	})
+}
+
+// watchHistorySnapshotsLocked copies the ring entries satisfying visibleHistory,
+// latest first. The caller holds jm.mu. A watchHistoryEntry holds only value
+// fields (strings, ints, and a time.Time), so the value copy is already private
+// and needs no ring copy of its own.
+func watchHistorySnapshotsLocked(history []watchHistoryEntry, visibleHistory func(watchHistoryEntry) bool) []watchHistoryEntry {
+	out := make([]watchHistoryEntry, 0, len(history))
+	for i := range slices.Backward(history) {
+		h := history[i]
+		if !visibleHistory(h) {
 			continue
 		}
 		out = append(out, h)
@@ -2416,14 +2424,7 @@ func (jm *jobManager) watchInspectSnapshots(visible func(*watchConfig) bool, vis
 		}
 		pending = append(pending, pendingInspectWatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true})
 	}
-	history := make([]watchHistoryEntry, 0, len(jm.watchHistory))
-	for i := range slices.Backward(jm.watchHistory) {
-		h := jm.watchHistory[i]
-		if !visibleHistory(h) {
-			continue
-		}
-		history = append(history, h)
-	}
+	history := watchHistorySnapshotsLocked(jm.watchHistory, visibleHistory)
 	return pending, history
 }
 
@@ -2438,7 +2439,7 @@ func formatWatchListInspectResult(pending []pendingInspectWatch, history []watch
 			watches = append(watches, inspectResultFromDetachedWatchConfig(&pending[i].cfg))
 			continue
 		}
-		watches = append(watches, inspectResultFromWatchConfig(watchKey{}, &pending[i].cfg))
+		watches = append(watches, inspectResultFromWatchConfig(&pending[i].cfg))
 	}
 	sort.SliceStable(watches, func(i, j int) bool {
 		if watches[i].Source != watches[j].Source {
@@ -2497,7 +2498,7 @@ func (m watchInspectMatch) result() jobWatchInspectToolResult {
 	case m.detached:
 		return inspectResultFromDetachedWatchConfig(&m.cfg)
 	default:
-		return inspectResultFromWatchConfig(watchKey{}, &m.cfg)
+		return inspectResultFromWatchConfig(&m.cfg)
 	}
 }
 
@@ -2556,11 +2557,10 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 	return jobWatchInspectToolResult{}, false
 }
 
-func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspectToolResult {
+func inspectResultFromWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
 	if cfg == nil {
 		return jobWatchInspectToolResult{Watching: false}
 	}
-	_ = key
 	return jobWatchInspectToolResult{
 		WatchID:    cfg.watchID,
 		Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
@@ -2573,7 +2573,7 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 }
 
 func inspectResultFromDetachedWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
-	result := inspectResultFromWatchConfig(watchKey{SendTo: watchSendTo(cfg)}, cfg)
+	result := inspectResultFromWatchConfig(cfg)
 	result.Watching = false
 	return result
 }
