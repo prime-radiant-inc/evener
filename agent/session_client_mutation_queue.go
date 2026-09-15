@@ -1223,6 +1223,20 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			record.ExecutionState = "accepted"
 			snapshot.Journal[id] = record
 		}
+		// Compatibility, and the only such rule: a store written before steers
+		// were accepted until recorded can hold a steer the old popSteeringHead
+		// marked "claimed". It is accepted again here, so the table below
+		// decides it like any other: recorded, it is finalized; unrecorded, it
+		// never landed and is queued once.
+		for _, id := range snapshot.SteeringOrder {
+			if pending, ok := snapshot.PendingExecutions[id]; ok && pending.ExecutionState == "claimed" {
+				pending.ExecutionState = "accepted"
+				snapshot.PendingExecutions[id] = pending
+				record := snapshot.Journal[id]
+				record.ExecutionState = "accepted"
+				snapshot.Journal[id] = record
+			}
+		}
 		// Client steering: the transcript is the record of delivery. A steer
 		// it holds (by id and reserved turn) was delivered by a turn that died
 		// before the store's incorporation write and is finalized; one it does
