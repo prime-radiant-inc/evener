@@ -32,7 +32,7 @@ badges.
 3. Confirm OpenAI shows `Configured via OAuth (<email>)` (NOT
    "Configured via environment variable", even if `$OPENAI_API_KEY`
    is set — that's `f824379`). The email is parenthesised, not
-   em-dashed (`panes/settings/sections/credentials/credentialLabels.ts:32`);
+   em-dashed (`appwire-client/typescript/credentialLabels.ts:50`);
    with no stored email the row reads bare `Configured via OAuth`.
 4. Confirm at least one env-only provider (anthropic, google) shows
    `Configured via environment variable`.
