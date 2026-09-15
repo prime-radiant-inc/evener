@@ -589,3 +589,93 @@ func TestLiveWatchSummariesProjectionMatchesPureFormatter(t *testing.T) {
 		}
 	}
 }
+
+// TestAppendWatchStatusesByRowKeepsRowKeysAndFormatterOutput pins the hub thread
+// list's per-manager fan-out after its formatting moved outside jm.mu: every live
+// config is still appended to its receiver's row when it has one and to the
+// manager's own session's row when it does not, and each row carries what the
+// projection always carried.
+func TestAppendWatchStatusesByRowKeepsRowKeysAndFormatterOutput(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	const receiver = "session_other"
+	jm.mu.Lock()
+	jm.watches[watchKey{Target: "job_own"}] = &watchConfig{
+		id: "watch-own", watchID: "watch-own", sourcePublic: "self", target: "job_own",
+		createdAt: frozenTestTime,
+	}
+	jm.watches[watchKey{Target: "job_receiver", ReceiverSessionID: receiver}] = &watchConfig{
+		id: "watch-receiver", watchID: "watch-receiver", sourcePublic: "self", target: "job_receiver",
+		receiverSessionID: receiver, createdAt: frozenTestTime,
+	}
+	jm.mu.Unlock()
+
+	rows := map[string][]WatchStatusInfo{}
+	jm.appendWatchStatusesByRow(rows)
+
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want exactly the manager's own row and the receiver's", rows)
+	}
+	for row, wantID := range map[string]string{jm.sessionID: "watch-own", receiver: "watch-receiver"} {
+		got := rows[row]
+		if len(got) != 1 || got[0].ID != wantID {
+			t.Fatalf("rows[%q] = %+v, want the single %s watch", row, got, wantID)
+		}
+		if got[0].Source != "self" || got[0].CreatedAt != frozenTestTime.Format(time.RFC3339Nano) || !got[0].Active {
+			t.Fatalf("rows[%q][0] = %+v, want the watch's projected row", row, got[0])
+		}
+	}
+}
+
+// TestWatchProjectionCollectsUnderTheLockAndFormatsWithoutIt pins the seam the
+// fix turns on without timing anything. After the collector returns, jm.mu is
+// free -- a non-blocking TryLock proves it, and formatting that ran under the
+// lock could not leave it free -- and the configs it hands back are private
+// copies, not the live configs whose delivery ring the delivery path rewrites in
+// place under jm.mu. Formatting therefore runs outside the lock on state the
+// delivery path cannot be mutating concurrently.
+func TestWatchProjectionCollectsUnderTheLockAndFormatsWithoutIt(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	jm.mu.Lock()
+	jm.watches[watchKey{Target: "job_one"}] = &watchConfig{
+		id: "watch-one", watchID: "watch-one", sourcePublic: "self", target: "job_one",
+		createdAt: frozenTestTime, deliveries: 3,
+		deliveryTimes: []time.Time{frozenTestTime, frozenTestTime.Add(time.Second)},
+	}
+	jm.mu.Unlock()
+
+	cfgs := jm.visibleWatchConfigSnapshots(jm.sessionID)
+	if len(cfgs) != 1 {
+		t.Fatalf("collector returned %d configs, want the one installed", len(cfgs))
+	}
+	if !jm.mu.TryLock() {
+		t.Fatal("visibleWatchConfigSnapshots returned with jm.mu still held: the formatting that follows would run under the lock")
+	}
+	jm.mu.Unlock()
+
+	jm.mu.Lock()
+	var live *watchConfig
+	for _, cfg := range jm.watches {
+		live = cfg
+	}
+	var liveRing []time.Time
+	if live != nil {
+		liveRing = live.deliveryTimes
+	}
+	jm.mu.Unlock()
+	if live == nil {
+		t.Fatal("test setup: the installed watch left jm.watches")
+	}
+	if cfgs[0] == live {
+		t.Fatalf("collector returned the live config %p; formatting it after the lock is released would race the delivery path", cfgs[0])
+	}
+	if len(cfgs[0].deliveryTimes) != 2 || len(liveRing) != 2 || &cfgs[0].deliveryTimes[0] == &liveRing[0] {
+		t.Fatalf("collector's delivery ring = %v shares the live ring %v; an at-cap delivery rewrites it in place", cfgs[0].deliveryTimes, liveRing)
+	}
+
+	rows := formatWatchStatuses(cfgs)
+	if len(rows) != 1 || rows[0].ID != "watch-one" || rows[0].Deliveries != 3 || len(rows[0].DeliveryTimes) != 2 {
+		t.Fatalf("formatWatchStatuses(collector's copies) = %+v, want the watch's row", rows)
+	}
+}

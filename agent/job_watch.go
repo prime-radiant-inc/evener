@@ -2762,9 +2762,18 @@ func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]Wat
 // and this manager's own session's row when it does not. A keyless watch belongs
 // to the session that owns the manager, which is what keeps a child's watch off
 // its ancestors' rows.
+//
+// The map walk and its row keying run under jm.mu; the projection that formats
+// each row runs outside it, so the hub's thread-list read does not hold the lock
+// the delivery path needs for work that reads no shared state. The walk order is
+// preserved, so each row is appended in the same order as before.
 func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo) {
+	type watchRow struct {
+		row string
+		cfg watchConfig
+	}
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	pending := make([]watchRow, 0, len(jm.watches))
 	for _, cfg := range jm.watches {
 		if cfg == nil {
 			continue
@@ -2773,7 +2782,11 @@ func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo
 		if row == "" {
 			row = jm.sessionID
 		}
-		rows[row] = append(rows[row], watchStatusInfoFromConfig(cfg))
+		pending = append(pending, watchRow{row: row, cfg: snapshotWatchConfigForProjection(cfg)})
+	}
+	jm.mu.Unlock()
+	for i := range pending {
+		rows[pending[i].row] = append(rows[pending[i].row], watchStatusInfoFromConfig(&pending[i].cfg))
 	}
 }
 
