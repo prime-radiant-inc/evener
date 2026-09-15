@@ -367,11 +367,11 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 }
 
 // A durable append whose sync fails and whose rollback cannot truncate the
-// entry back out leaves that entry in the file. The writer's own bookkeeping
-// has to agree with what a later reader of the file sees: the seq the entry
-// took is spent, so the next append must not reuse it, and the failure the
-// entry settles is one that reader counts. Indices: entry Sync 6 (fault),
-// rollback Truncate 7 (fault).
+// entry back out leaves that entry in the file, and stops the writer over the
+// unsynced tail it left. The bookkeeping has to agree with what a later reader
+// of the file sees: the seq the entry took is spent, so no writer coming back
+// to this file reuses it, and the failure the entry settles is one that reader
+// counts. Indices: entry Sync 6 (fault), rollback Truncate 7 (fault).
 func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T) {
 	plan := bytes.Repeat([]byte{0x01}, 128)
 	plan[6] = 0x00 // entry Sync
@@ -387,11 +387,24 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	if err := w.AppendDurable(retained); !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("append error = %v, want a rollback failure leaving the entry in the file", err)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
-		t.Fatalf("append after retained entry: %v", err)
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("refused"))); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("append after retained entry = %v, want ErrWriterPoisoned: nothing may run onto an unsynced tail", err)
 	}
+	count, ok := w.FailedToolCalls()
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	// A writer that comes back to the file reseeds from what is on disk, which
+	// is where the spent seq has to be visible.
+	reopened, _, err := OpenWriterForSessionWithFS(base, faultTranscriptPath, faultTestHeader().SessionID)
+	if err != nil {
+		t.Fatalf("OpenWriterForSessionWithFS: %v", err)
+	}
+	if err := reopened.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+		t.Fatalf("append after reopening: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatalf("Close (reopened): %v", err)
 	}
 
 	entries := faultTestEntries(t, base)
@@ -406,7 +419,6 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	for _, entry := range entries {
 		reader.Observe(entry.Turn)
 	}
-	count, ok := w.FailedToolCalls()
 	if !ok || count != reader.Count() {
 		t.Fatalf("writer failure count = %d (counted=%v), want the %d a reader of the transcript counts", count, ok, reader.Count())
 	}

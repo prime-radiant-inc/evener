@@ -242,3 +242,196 @@ func TestWriterDoesNotCountAFailureTwiceBecauseAFoldCopiedIt(t *testing.T) {
 		t.Fatalf("failures after a genuinely new result = %d, want 2", got)
 	}
 }
+
+// syncFailsRollbackRefusedFS lets the line land, fails the sync that would make
+// it durable, and then refuses the truncate that would take it back out — the
+// one shape where the durable door reports an entry it can neither make durable
+// nor remove.
+type syncFailsRollbackRefusedFS struct {
+	afero.Fs
+	armed atomic.Bool
+}
+
+func (fs *syncFailsRollbackRefusedFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &syncFailsRollbackRefusedFile{File: file, fs: fs}, nil
+}
+
+func (fs *syncFailsRollbackRefusedFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &syncFailsRollbackRefusedFile{File: file, fs: fs}, nil
+}
+
+type syncFailsRollbackRefusedFile struct {
+	afero.File
+	fs *syncFailsRollbackRefusedFS
+}
+
+func (file *syncFailsRollbackRefusedFile) Sync() error {
+	if file.fs.armed.Load() {
+		return errors.New("injected sync failure after the record landed")
+	}
+	return file.File.Sync()
+}
+
+func (file *syncFailsRollbackRefusedFile) Truncate(size int64) error {
+	if file.fs.armed.Load() {
+		return errors.New("injected truncate failure: the line stays in the file")
+	}
+	return file.File.Truncate(size)
+}
+
+// A durable append whose sync failed and whose rollback could not take the line
+// back out leaves a readable entry on a file nothing synced. The entry is a
+// record — ErrEntryRetained says so, and every returning reader finds it — but
+// the writer must stop there: a later append running onto that tail would
+// announce work over a file whose last record may not survive the crash this
+// sync failure is warning about.
+func TestDurableAppendStopsTheWriterWhenItCanNeitherSyncNorRollBack(t *testing.T) {
+	fs := &syncFailsRollbackRefusedFS{Fs: afero.NewMemMapFs()}
+	w, err := NewWriterWithFS(fs, "/retained-durable.jsonl", Header{SessionID: "sess-retained-durable"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	fs.armed.Store(true)
+
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("the line no sync made durable"))
+	appendErr := w.AppendDurable(turn)
+	if !errors.Is(appendErr, ErrEntryRetained) {
+		t.Fatalf("AppendDurable error = %v, want it to carry ErrEntryRetained", appendErr)
+	}
+	data, readErr := afero.ReadFile(fs, "/retained-durable.jsonl")
+	if readErr != nil {
+		t.Fatalf("read transcript: %v", readErr)
+	}
+	if !bytes.Contains(data, []byte("the line no sync made durable")) {
+		t.Fatalf("test setup: the line is not in the file, so nothing was retained: %q", data)
+	}
+	if !w.Poisoned() {
+		t.Fatal("the writer still accepts appends over an unsynced tail it could not roll back")
+	}
+	next := schema.NewTurn(schema.TurnUserInput, llm.User("the record after it"))
+	if err := w.AppendDurable(next); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("the next durable append = %v, want ErrWriterPoisoned: nothing further may be written or announced", err)
+	}
+	if err := w.Append(next); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("the next buffered append = %v, want ErrWriterPoisoned", err)
+	}
+}
+
+// partialLineFS stops a write midway, leaving bytes at the tail that are the
+// remains of a record rather than a record.
+type partialLineFS struct {
+	afero.Fs
+	armed atomic.Bool
+}
+
+func (fs *partialLineFS) Create(name string) (afero.File, error) {
+	file, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &partialLineFile{File: file, fs: fs}, nil
+}
+
+func (fs *partialLineFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &partialLineFile{File: file, fs: fs}, nil
+}
+
+type partialLineFile struct {
+	afero.File
+	fs *partialLineFS
+}
+
+func (file *partialLineFile) Truncate(size int64) error {
+	if file.fs.armed.Load() {
+		return errors.New("injected truncate failure: the half line stays in the file")
+	}
+	return file.File.Truncate(size)
+}
+
+func (file *partialLineFile) Write(p []byte) (int, error) {
+	if !file.fs.armed.Load() || len(p) < 4 {
+		return file.File.Write(p)
+	}
+	written, err := file.File.Write(p[:len(p)/2])
+	if err != nil {
+		return written, err
+	}
+	return written, errors.New("injected write failure partway through the line")
+}
+
+// A whole line the writer could neither sync nor take back out stops it because
+// nothing made that line durable. A barrier that fsyncs the whole file is
+// exactly the thing it was missing: the record at the tail becomes
+// authoritative, and the writer goes back to work.
+func TestDurabilityBarrierRestartsAWriterStoppedByARetainedLine(t *testing.T) {
+	fs := &syncFailsRollbackRefusedFS{Fs: afero.NewMemMapFs()}
+	w, err := NewWriterWithFS(fs, "/barrier-clears.jsonl", Header{SessionID: "sess-barrier"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	fs.armed.Store(true)
+	retained := schema.NewTurn(schema.TurnUserInput, llm.User("the retained line"))
+	if err := w.AppendDurable(retained); !errors.Is(err, ErrEntryRetained) {
+		t.Fatalf("AppendDurable error = %v, want it to carry ErrEntryRetained", err)
+	}
+	if !w.Poisoned() {
+		t.Fatal("test setup: the retained line did not stop the writer")
+	}
+
+	fs.armed.Store(false) // the barrier's own fsync succeeds
+	if err := w.EstablishDurability(); err != nil {
+		t.Fatalf("EstablishDurability: %v", err)
+	}
+	if w.Poisoned() {
+		t.Fatal("a barrier that made the whole file durable left the writer stopped over a record that is now durable")
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnUserInput, llm.User("the record after it"))); err != nil {
+		t.Fatalf("append after the barrier: %v", err)
+	}
+}
+
+// Half a line is not a record, and no fsync makes it one: a barrier must leave
+// a writer stopped by a partial append exactly where it is, or the next append
+// lands on bytes no reader can parse.
+func TestDurabilityBarrierLeavesAWriterStoppedByAPartialLineStopped(t *testing.T) {
+	fs := &partialLineFS{Fs: afero.NewMemMapFs()}
+	w, err := NewWriterWithFS(fs, "/barrier-keeps.jsonl", Header{SessionID: "sess-barrier-partial"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	fs.armed.Store(true)
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnUserInput, llm.User("the line that stopped partway"))); err == nil {
+		t.Fatal("AppendDurable reported success; the injected partial write never reached it")
+	} else if errors.Is(err, ErrEntryRetained) {
+		t.Fatalf("AppendDurable error = %v, want no ErrEntryRetained: half a line is not a record", err)
+	}
+	if !w.Poisoned() {
+		t.Fatal("test setup: the partial write did not stop the writer")
+	}
+
+	fs.armed.Store(false)
+	if err := w.EstablishDurability(); err != nil {
+		t.Fatalf("EstablishDurability: %v", err)
+	}
+	if !w.Poisoned() {
+		t.Fatal("a barrier restarted a writer whose file ends in half a record")
+	}
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnUserInput, llm.User("refused"))); !errors.Is(err, ErrWriterPoisoned) {
+		t.Fatalf("append after the barrier = %v, want ErrWriterPoisoned", err)
+	}
+}

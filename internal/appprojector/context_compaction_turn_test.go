@@ -354,3 +354,68 @@ func TestAppEventProjectorAFoldsWarningDoesNotEndItsBatch(t *testing.T) {
 		t.Fatalf("a compaction between turns claimed the session was working: %+v", out)
 	}
 }
+
+// A standalone announcement that owns a durable identity — the environment
+// block, a compaction layer — opens a turn on that identity and then hands the
+// reservation it borrowed back to the input that was waiting for it. The
+// reservation's PROVENANCE has to come back with it: a stable id the counter
+// mistakes for one it minted spends no number, so every turn the projector
+// names after it lands one short of where a reload numbers the same
+// conversation.
+func TestAppEventProjectorAnnouncementsKeepAPendingStableReservationStable(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		event       events.SessionEvent
+		record      schema.Turn
+		recordIsEnv bool
+	}{
+		{
+			name:   "compaction layer",
+			event:  events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{Layer: "summarize", TurnsBefore: 20, TurnsAfter: 8}},
+			record: compactionRecord(events.ContextCompactionData{Layer: "summarize", TurnsBefore: 20, TurnsAfter: 8}),
+		},
+		{
+			name:        "environment block",
+			event:       events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{Text: "env block", TurnID: "turn_env_stable"}},
+			recordIsEnv: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := tc.record
+			if tc.recordIsEnv {
+				record = schema.NewTurn(schema.TurnEnvironment, llm.System("env block"))
+				record.StableTurnID = "turn_env_stable"
+			}
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			// The client's durable input identity is advertised before the
+			// announcement arrives, which is the window this is about.
+			projector.ReserveStableTurnID("turn_stable_input")
+			var live []appwire.Turn
+			project := func(event events.SessionEvent) {
+				for _, notification := range projector.Project(event) {
+					live = applyLiveNotification(t, live, notification)
+				}
+			}
+			project(tc.event)
+			// No id on the event: the reservation is what names this turn,
+			// which is the whole point of reserving it.
+			project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "first"}})
+			project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "second"}})
+
+			firstInput := schema.NewTurn(schema.TurnUserInput, llm.User("first"))
+			firstInput.StableTurnID = "turn_stable_input"
+			entries := []transcript.Entry{
+				{Turn: record},
+				{Turn: firstInput},
+				{Turn: schema.NewTurn(schema.TurnUserInput, llm.User("second"))},
+			}
+			cold, err := apptranscript.ItemTurnsFromEntries(transcript.Header{SessionID: "th_1"}, entries, coldCompactionProjector)
+			if err != nil {
+				t.Fatalf("cold projection: %v", err)
+			}
+			if got, want := turnShapes(live), turnShapes(cold); !reflect.DeepEqual(got, want) {
+				t.Fatalf("live and reload disagree after an announcement crossed a pending stable reservation:\nlive: %v\ncold: %v", got, want)
+			}
+		})
+	}
+}

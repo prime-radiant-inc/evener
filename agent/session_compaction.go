@@ -369,12 +369,13 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision int, folded []sch
 	}
 	s.attentionMu.Unlock()
 	for _, err := range mergedTailWriteErrs {
-		// The not-anchored clause describes the FOLD, not this copy: a write
-		// that kept its whole line is a record the anchor stands on, so
-		// reporting the failure must not also tell a reader the compaction is
-		// gone when it is on disk.
+		// The not-anchored clause describes the FOLD, not this copy, so it is
+		// said exactly when the fold has no anchor on disk. A copy that kept
+		// its whole line IS a record the anchor could stand on; whether the
+		// anchor then landed is a separate question, and the one this clause
+		// answers.
 		message := fmt.Sprintf("transcript write failed: %v", err)
-		if !tailComplete {
+		if commit.anchored != nil && !commit.anchored() {
 			message += "; this compaction was not anchored on disk, so a restart replays the transcript from before it"
 		}
 		s.emit(events.EventWarning, events.WarningData{Message: message})
@@ -559,6 +560,11 @@ type foldCommit struct {
 	// history and the transcript already name the same marker, and for a
 	// commit nobody staged. Answerable only after commitTranscriptsLocked.
 	adoptedAnchor func() *schema.Turn
+	// anchored reports whether a returning reader finds a marker for this
+	// fold. False when the fold withheld its anchor and when every marker it
+	// tried to write failed. Answerable only after commitTranscriptsLocked;
+	// nil for a commit nobody staged.
+	anchored func() bool
 	// foldID tags every record this fold writes; see schema.Turn.
 	foldID                       string
 	flush                        func()
@@ -828,19 +834,17 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// reader will anchor on. Nil whenever the two already agree.
 	var adoptedAnchor *schema.Turn
 	var compactionEventWriteErrs []error
+	// compactionEventLanded reports, per layer, whether that layer's
+	// CONTEXT_COMPACTION record is in the transcript — false for one withheld
+	// with the anchor, and false for one whose own write failed.
+	var compactionEventLanded []bool
 	var steeringWriteErrs []error
 	// anchor is false when a replay copy could not be written: the fold's own
 	// records still land, but the marker that would discard everything before
 	// them does not. See publishFoldTransaction.
 	commitTranscriptsLocked := func(anchor bool) {
 		compactionEventWriteErrs = make([]error, len(pendingCompactionEvents))
-		for i, event := range pendingCompactionEvents {
-			payload := event.Compaction()
-			turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
-			turn.ContextCompaction = &payload
-			turn.CompactionFoldID = foldID
-			compactionEventWriteErrs[i] = s.writeTranscriptLocked(turn)
-		}
+		compactionEventLanded = make([]bool, len(pendingCompactionEvents))
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
 				state := pendingCompactionTurns[i].SkillState.Clone()
@@ -902,6 +906,27 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			adopted.CompactionFoldID = ""
 			adoptedAnchor = &adopted
 		}
+		// Each layer's CONTEXT_COMPACTION record goes with the anchor too, and
+		// for the same reason: it announces a shrink, and with no marker on
+		// disk the transcript did not keep that shrink. Writing it anyway
+		// leaves a resume rebuilding the whole pre-fold history with records
+		// in it claiming a compaction that history never had.
+		//
+		// RESIDUAL, deliberate: when no marker lands the live session keeps the
+		// compacted history while a restart resumes the full pre-fold history.
+		// No turns are lost — a restart comes back with MORE context, not less
+		// — and the next fold that anchors re-converges the two. The
+		// alternative, rolling the live publication back, throws away a model
+		// call whose work is done.
+		if foldAnchored {
+			for i, event := range pendingCompactionEvents {
+				payload := event.Compaction()
+				turn := schema.NewTurn(schema.TurnContextCompaction, llm.System(payload.Announcement()))
+				turn.ContextCompaction = &payload
+				turn.CompactionFoldID = foldID
+				compactionEventLanded[i], compactionEventWriteErrs[i] = s.writeFoldRecordLocked(turn)
+			}
+		}
 		// The fold's own steering is WRITTEN with the anchor. A resume that
 		// finds no anchor drops the fold's copies and keeps everything else,
 		// so steering describing a compaction that resume cannot see is stale
@@ -918,6 +943,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	// marker will not claim them, and with no anchor at all they are dropped
 	// as the duplicates they are.
 	commit.adoptedAnchor = func() *schema.Turn { return adoptedAnchor }
+	commit.anchored = func() bool { return foldAnchored }
 	commit.writesCompactionMarker = func() bool {
 		// The kinds ResumeHistory anchors on, and only those: a
 		// TurnContextCompaction record moves no anchor.
@@ -951,13 +977,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			if i < len(compactionEventWriteErrs) {
 				writeErr = compactionEventWriteErrs[i]
 			}
-			recorded, report := entryOutcome(writeErr)
+			_, report := entryOutcome(writeErr)
 			if report != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", report)})
 			}
-			if !recorded {
-				// The record is not in the transcript, so the announcement
-				// would describe a compaction layer no reload can show.
+			if i >= len(compactionEventLanded) || !compactionEventLanded[i] {
+				// The record is not in the transcript — withheld with the
+				// anchor, or its own write failed — so the announcement would
+				// describe a compaction layer no reload can show.
 				continue
 			}
 			s.emit(events.EventContextCompaction, event)

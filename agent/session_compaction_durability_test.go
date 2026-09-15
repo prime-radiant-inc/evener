@@ -22,12 +22,15 @@ type compactionAppendFailFile struct {
 	attempted *atomic.Bool
 }
 
+// Only the layer's own CONTEXT_COMPACTION record fails: its marker has to land,
+// or the fold withholds the record with the anchor and never attempts the write
+// this test is about.
 func (f *compactionAppendFailFile) Write(p []byte) (int, error) {
 	if f.fail.Load() {
 		if entry, err := transcript.DecodeEntry(bytes.TrimSpace(p)); err == nil && entry.Turn.Kind == schema.TurnContextCompaction {
 			f.attempted.Store(true)
+			return 0, errors.New("injected compaction transcript write failure")
 		}
-		return 0, errors.New("injected compaction transcript write failure")
 	}
 	return f.File.Write(p)
 }

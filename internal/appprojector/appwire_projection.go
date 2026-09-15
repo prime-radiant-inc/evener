@@ -283,6 +283,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// Environment context is a standalone saved turn, not a runnable
 		// work carrier. Close its group before the following user input.
 		reserved := p.reservedTurnID
+		// The environment's own stable id goes through openTurn, and opening a
+		// turn on a stable id clears the flag. Restoring the reservation
+		// without it would hand the following input a stable id the counter
+		// then treats as one it minted, skipping the increment that stable id
+		// owes -- and live turn_N drifts from what a reload numbers.
+		reservedIsStable := p.reservedTurnIDIsStable
 		wasRealTurnStarted := p.anyTurnStarted
 		p.reservedTurnID = ""
 		_, out := p.openTurn(data.TurnID, event.Timestamp)
@@ -294,6 +300,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// The environment has its own durable identity and cannot consume
 		// the runnable identity already advertised for the following input.
 		p.reservedTurnID = reserved
+		p.reservedTurnIDIsStable = reservedIsStable
 		return out
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
@@ -1600,6 +1607,7 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 // s8x8) must not be left there by the last of the batch.
 func (p *AppEventProjector) compactionAnnouncement(event events.SessionEvent, eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage) []AppNotification {
 	reserved := p.reservedTurnID
+	reservedIsStable := p.reservedTurnIDIsStable
 	wasRealTurnStarted := p.anyTurnStarted
 	interrupted := p.activeTurnID != "" || p.compactionBatchInterrupted
 	p.reservedTurnID = ""
@@ -1618,6 +1626,7 @@ func (p *AppEventProjector) compactionAnnouncement(event events.SessionEvent, ev
 		out = append(out, p.threadStatus(appwire.ThreadStatusActive))
 	}
 	p.reservedTurnID = reserved
+	p.reservedTurnIDIsStable = reservedIsStable
 	return out
 }
 

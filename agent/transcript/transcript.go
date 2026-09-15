@@ -71,6 +71,24 @@ var ErrEntryRetained = errors.New("transcript entry landed and could not be remo
 // the file still holds.
 var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
 
+// poisonCause is why a writer stopped, which is also what says whether it can
+// be restarted. Both causes leave bytes at the tail that nothing synced; they
+// differ in whether those bytes are a record.
+type poisonCause uint8
+
+const (
+	poisonNone poisonCause = iota
+	// poisonPartialLine: a write stopped midway, so the tail is the remains of
+	// a record rather than a record. Permanent — no later operation can make
+	// half a line whole, and an append running onto it would be unreadable.
+	poisonPartialLine
+	// poisonRetainedLine: a whole line is in the file and nothing made it
+	// durable. The danger is only the missing fsync, so a barrier that fsyncs
+	// the whole file (EstablishDurability) resolves it exactly, and the writer
+	// goes back to work over a tail that is now a durable record.
+	poisonRetainedLine
+)
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -263,11 +281,10 @@ type Writer struct {
 	dirty    bool
 	lastSync time.Time
 
-	// poisoned records an append that failed partway and could not be rolled
-	// back: the file's tail may be the remains of a record rather than a
-	// record, and nothing this writer could append after it would be readable.
-	// See ErrWriterPoisoned.
-	poisoned bool
+	// poisonedBy records the append that stopped this writer, and why, because
+	// why decides whether anything can restart it. See poisonCause and
+	// ErrWriterPoisoned.
+	poisonedBy poisonCause
 
 	// positionUnknown records a rollback that removed the entry but could not
 	// seek back to the file's new end, leaving this writer's position past it.
@@ -430,7 +447,9 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 
 // EstablishDurability fsyncs the transcript's current complete contents
 // without appending another entry. Recovery callers use it before treating a
-// readable record from an earlier ambiguous write as authoritative.
+// readable record from an earlier ambiguous write as authoritative — and a
+// barrier that succeeds also restarts a writer stopped by such a record, since
+// the fsync it just did is the thing that record was missing.
 func (w *Writer) EstablishDurability() error {
 	if w == nil || w.file == nil {
 		return errors.New("transcript writer is nil")
@@ -445,6 +464,13 @@ func (w *Writer) EstablishDurability() error {
 	}
 	w.lastSync = time.Now()
 	w.dirty = false
+	if w.poisonedBy == poisonRetainedLine {
+		// The barrier just made the whole file durable, the retained line
+		// included, so the record at the tail is now authoritative and the
+		// reason this writer stopped is gone. A partial line is not a record
+		// and no fsync makes it one, so that poison stands.
+		w.poisonedBy = poisonNone
+	}
 	return nil
 }
 
@@ -459,7 +485,7 @@ func (w *Writer) Poisoned() bool {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.poisoned
+	return w.poisonedBy != poisonNone
 }
 
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
@@ -475,7 +501,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w.closed.Load() {
 		return nil
 	}
-	if w.poisoned {
+	if w.poisonedBy != poisonNone {
 		return ErrWriterPoisoned
 	}
 	if w.positionUnknown {
@@ -532,9 +558,15 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 			if forceSync {
 				if removed, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
 					if !removed {
-						// The line is whole and still in the file: a reader
-						// will find this entry, so say so.
-						w.countAppendedEntryLocked(turn)
+						// The line is whole and still in the file, so a reader
+						// will find this entry — and nothing synced it. That
+						// is the same unsynced tail a failed write leaves, and
+						// it stops the writer for the same reason: an append
+						// running onto it would announce later work over a
+						// file whose last record may not survive the crash
+						// this sync failure is warning about. The entry is
+						// still a record, and ErrEntryRetained still says so.
+						w.poisonLandedBytesLocked(turn, len(data), len(data))
 						return fmt.Errorf("sync transcript entry: %w; %w: %w; %w", err, ErrRollbackFailed, rollbackErr, ErrEntryRetained)
 					}
 					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
@@ -556,9 +588,11 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	return nil
 }
 
-// poisonLandedBytesLocked stops the writer when a failed write left bytes at
+// poisonLandedBytesLocked stops the writer when a failed append left bytes at
 // the tail of the file that no later append may run onto, and marks those bytes
-// for Close to flush. A write that transferred nothing left nothing to guard:
+// for Close to flush. Two failures leave such bytes: a write that stopped
+// partway, and a durable append whose sync failed and whose rollback could not
+// take the line back out. A write that transferred nothing left nothing to guard:
 // the file and the position are as they were, so the writer stays usable and a
 // retry still lands. A whole line that landed is a record a reader will see, so
 // it spends its sequence number and counts the failures it settles before the
@@ -575,7 +609,11 @@ func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int)
 		w.countAppendedEntryLocked(turn)
 		retained = true
 	}
-	w.poisoned = true
+	if retained {
+		w.poisonedBy = poisonRetainedLine
+	} else {
+		w.poisonedBy = poisonPartialLine
+	}
 	return retained
 }
 

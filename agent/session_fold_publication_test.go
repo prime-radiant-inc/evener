@@ -3418,6 +3418,16 @@ func TestFoldPublication_ATurnRetainedByItsWriteSurvivesTheNextMarker(t *testing
 	if indexOfTurnText(currentHistory(t, s), retained) < 0 {
 		t.Fatal("the turn is in the transcript and not in the history: a reader would find a turn the session never had")
 	}
+	// The retained line stopped the writer, because nothing synced it. A
+	// barrier over the whole file is what that record was missing, and the
+	// only thing that lets this session write anything else — including the
+	// fold below.
+	if !writer.Poisoned() {
+		t.Fatal("test setup: the retained line left the writer accepting appends over an unsynced tail")
+	}
+	if err := writer.EstablishDurability(); err != nil {
+		t.Fatalf("EstablishDurability: %v", err)
+	}
 
 	// The fold's marker discards everything before it, so the turn survives
 	// only if the fold had its persisted form to copy.
@@ -3493,11 +3503,12 @@ func TestFoldPublication_InjectedSteeringSurvivesTheFoldAfterIt(t *testing.T) {
 }
 
 // A replay copy whose write kept its whole line is a record every returning
-// reader finds, so it carries its turn past the marker exactly like a clean
-// one. Withholding the anchor over it loses the compaction for a tail the
-// transcript actually holds — the fold's work done, its summary real in
-// memory, and nothing on disk that says so.
-func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testing.T) {
+// reader finds — and nothing synced it, so the writer stops there. The fold
+// raises no durability barrier, so its marker is refused and the anchor is
+// withheld, which is the crash-consistent outcome: copies with no marker are
+// ignored by every reader, and the resume replays the whole pre-fold
+// transcript rather than one a half-durable anchor cut down.
+func TestFoldPublication_ATailCopyRetainedByItsWriteWithholdsTheAnchor(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "retained-copy-cheap", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
@@ -3530,32 +3541,26 @@ func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testi
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	marker := false
+	if !writer.Poisoned() {
+		t.Fatal("the retained copy left the writer accepting appends over a tail nothing synced")
+	}
 	for _, entry := range data.Entries {
 		if isSessionNameCompactionTurn(entry.Turn) {
-			marker = true
+			t.Fatal("a marker landed on a writer that had already stopped: the anchor must be withheld")
 		}
 	}
-	if !marker {
-		t.Fatal("the fold withheld its anchor over a replay copy the transcript holds: the compaction is lost to every reload")
-	}
+	// Nothing anchored, so nothing was discarded: every turn the fold
+	// summarized away is still what a restart replays.
 	resumed := ResumeHistory(data.Entries)
-	if indexOfTurnText(resumed, "recorded turn 0") >= 0 {
-		t.Fatal("the marker did not discard the turns it summarized away, so nothing anchored")
-	}
-	// The preserved suffix still comes back exactly once: the retained copy is
-	// the record that carries it past the marker.
-	counts := map[string]int{}
-	for _, turn := range resumed {
-		counts[turn.Message.Text()]++
-	}
-	if got := counts[fmt.Sprintf("recorded turn %d", recorded-1)]; got != 1 {
-		t.Fatalf("the last preserved turn appears %d times in the resumed history, want once", got)
+	for i := range recorded {
+		text := fmt.Sprintf("recorded turn %d", i)
+		if indexOfTurnText(resumed, text) < 0 {
+			t.Fatalf("%q is missing from the resumed history, and no marker discarded it", text)
+		}
 	}
 
-	// The failure is still reported — and says only what is true. The
-	// not-anchored clause describes a compaction a restart cannot see, which
-	// is exactly what this one is not.
+	// The failure is reported, and the not-anchored clause is true of this
+	// fold, so it is said.
 	s.Close()
 	<-drained
 	warningsMu.Lock()
@@ -3566,13 +3571,12 @@ func TestFoldPublication_ATailCopyRetainedByItsWriteStillAnchorsTheFold(t *testi
 		if event.Kind != events.EventWarning || !ok || !strings.Contains(warning.Message, "transcript write failed") {
 			continue
 		}
-		reported = true
 		if strings.Contains(warning.Message, "not anchored on disk") {
-			t.Fatalf("the retained copy's warning says the compaction was not anchored, and the marker is in the transcript: %q", warning.Message)
+			reported = true
 		}
 	}
 	if !reported {
-		t.Fatal("the retained copy's write failure was never reported")
+		t.Fatal("no warning said the fold was left un-anchored on disk")
 	}
 }
 
@@ -3644,5 +3648,70 @@ func TestFoldPublication_UnanchoredFoldsSteeringSurvivesTheNextFold(t *testing.T
 	}
 	if got := countSteering(ResumeHistory(data.Entries), noteHandoffPrefix); got != 1 {
 		t.Fatalf("the un-anchored fold's steering appears %d times in the resumed history, want once: the live conversation still holds it", got)
+	}
+}
+
+// A fold whose every marker write fails anchors nothing, so a restart replays
+// the whole pre-fold transcript. Its CONTEXT_COMPACTION records must not be in
+// that replay: each announces a shrink — "Turns: 12 -> 7" — that the history
+// around it never had, so a resumed conversation would carry records of a
+// compaction that did not happen in it.
+//
+// The residual this pins is deliberate: the live session keeps the compacted
+// history while a restart resumes the full pre-fold history. No turns are lost,
+// and the next fold that anchors re-converges the two.
+func TestFoldPublication_AFoldThatAnchoredNothingLeavesNoCompactionRecords(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "no-anchor-no-records-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	if err := s.closeAttachedTranscript(); err != nil {
+		t.Fatalf("close default transcript: %v", err)
+	}
+	faultFS := &failMarkerWriteFS{Fs: afero.NewOsFs()}
+	writer, err := transcript.NewWriterWithFS(faultFS, transcriptPath(s.stateDir, s.id), transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("create transcript: %v", err)
+	}
+	s.attachTranscript(writer)
+	const recorded = 12 // > PreserveRecentTurns(6): forces an actual fold
+	for i := range recorded {
+		msg := llm.User(fmt.Sprintf("recorded turn %d", i))
+		if err := s.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, msg, msg); err != nil {
+			t.Fatalf("durable append %d: %v", i, err)
+		}
+	}
+	go func() {
+		for range s.Events() {
+		}
+	}()
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if !faultFS.failed.Load() {
+		t.Fatal("test setup: no marker write was attempted, so nothing failed")
+	}
+	// The live session keeps the fold: its work is done and the model has the
+	// summary. That is the other half of the residual.
+	if got := len(currentHistory(t, s)); got >= recorded {
+		t.Fatalf("live history = %d turns, want the fold's published history", got)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	for _, turn := range resumed {
+		if turn.Kind == schema.TurnContextCompaction {
+			t.Fatalf("a fold that anchored nothing left a compaction record in the resumed history: %q", turn.Message.Text())
+		}
+	}
+	for i := range recorded {
+		text := fmt.Sprintf("recorded turn %d", i)
+		if indexOfTurnText(resumed, text) < 0 {
+			t.Fatalf("%q is missing from the resumed history, and no marker discarded it", text)
+		}
 	}
 }

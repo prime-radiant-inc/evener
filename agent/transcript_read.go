@@ -211,7 +211,15 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	foldStart, foldEnd := foldRun(entries, compactionIdx)
 	result := make([]schema.Turn, 0, len(entries)-foldStart)
 	for i := compactionIdx; i < foldEnd; i++ {
-		if entries[i].Turn.ContextReplay || entries[i].Turn.Kind == schema.TurnSteering {
+		// A CONTEXT_COMPACTION record is a record OF the fold, not a turn the
+		// fold published: the history it describes is the one this anchor
+		// already represents. Skipping it by kind keeps the resumed history
+		// independent of where in its run the fold wrote it — the fold writes
+		// those records after its markers so it can withhold them with the
+		// anchor, and before the markers it never reached this loop at all.
+		if entries[i].Turn.ContextReplay ||
+			entries[i].Turn.Kind == schema.TurnSteering ||
+			entries[i].Turn.Kind == schema.TurnContextCompaction {
 			continue
 		}
 		result = append(result, resumedTurn(entries[i].Turn))

@@ -84,11 +84,13 @@ func countTurnsWithText(t *testing.T, s *Session, text string) int {
 	return n
 }
 
-// The client-mutation recovery turn: a write that kept its entry left the
-// restore reporting failure, so a session whose own transcript holds the
-// recovery record could not be loaded at all — and the retry that followed
-// wrote the record a second time.
-func TestRetainedWrite_ClientMutationRecoveryCompletes(t *testing.T) {
+// The client-mutation recovery writes two records back to back and raises no
+// durability barrier between them. Its first record is retained — a record
+// every returning reader finds, so it is committed to history and written
+// exactly once — and the unsynced tail it leaves stops the writer, so the
+// diagnostic that would follow is refused and the recovery says so. The retry
+// that once wrote the input a second time is now refused by the writer itself.
+func TestRetainedWrite_ClientMutationRecoveryRecordsItsInputAndStops(t *testing.T) {
 	t.Parallel()
 	const input = "the input a client mutation failed on"
 	s, fs := retainingSession(t, "client-mutation", input)
@@ -102,11 +104,14 @@ func TestRetainedWrite_ClientMutationRecoveryCompletes(t *testing.T) {
 	if !fs.failed.Load() {
 		t.Fatal("test setup: no write was retained")
 	}
-	if err != nil {
-		t.Fatalf("recovery reported failure for a record the transcript holds: %v", err)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("recovery error = %v, want the refusal of the record it could not add", err)
 	}
 	if got := countTurnsWithText(t, s, input); got != 1 {
-		t.Fatalf("the recovery turn appears %d times in history, want once", got)
+		t.Fatalf("the recovery turn appears %d times in history, want once: the transcript holds it", got)
+	}
+	if got := countTranscriptTurnsWithText(t, s, input); got != 1 {
+		t.Fatalf("the recovery turn appears %d times in the transcript, want once", got)
 	}
 }
 

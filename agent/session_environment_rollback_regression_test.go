@@ -571,11 +571,14 @@ func TestEnvironmentUnreadableTranscriptReemitsForTheModel(t *testing.T) {
 	assertEnvironmentReemittedForModel(t, sess)
 }
 
-// TestEnvironmentUnestablishedDurabilityReemitsForTheModel: reconciliation
+// TestEnvironmentUnestablishedDurabilityStandsTheSessionDown: reconciliation
 // reads the transcript back only once it has raised a durability barrier over
-// it, and a barrier that cannot be raised leaves the same unknown. The model is
-// owed the observation either way.
-func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
+// it, and the barrier is also what restarts a writer stopped by a whole line
+// nothing synced. A barrier that cannot be raised leaves both undone: the entry
+// is still unknown, and the writer that holds it stays stopped — so the model
+// is owed an observation no turn can now record, and the session says so on
+// every turn rather than proceeding without it.
+func TestEnvironmentUnestablishedDurabilityStandsTheSessionDown(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -586,7 +589,13 @@ func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
 	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
 		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
 	}
-	assertEnvironmentReemittedForModel(t, sess)
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("model history environment turns after the unresolved append = %d, want none claimed", got)
+	}
+	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn after the unresolvable append = %v, want transcript.ErrWriterPoisoned", err)
+	}
 }
 
 // assertEnvironmentReemittedForModel requires an unresolved append to leave the
