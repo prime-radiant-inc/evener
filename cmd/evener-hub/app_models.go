@@ -11,10 +11,17 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
-var liveModelLoadClient = cmdutil.LoadClient
+var liveModelLoadClient = func(string) (*llm.Client, error) {
+	r, _, err := cmdutil.LoadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return LiveRegistryClient(r), nil
+}
 
 // hubModelList is the single server-side entry point for every ModelList
 // RPC — the appwire dispatch (app_rpc.go) routes every harness's call here,
@@ -304,8 +311,13 @@ func withDisplayNames(models []appwire.ModelDescriptor) []appwire.ModelDescripto
 }
 
 func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescriptor {
+	// Generation-gated: every holder Reload or live re-apply bumps the
+	// generation, so a mutation or refresh between fill and read misses
+	// the cache automatically — no explicit invalidation call sites to
+	// keep in sync with every mutation path.
+	gen, ok := liveModelsGeneration(s)
 	s.liveModels.mu.Lock()
-	if time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
+	if ok && s.liveModels.gen == gen && time.Now().Before(s.liveModels.expires) && s.liveModels.models != nil {
 		out := append([]appwire.ModelDescriptor(nil), s.liveModels.models...)
 		s.liveModels.mu.Unlock()
 		return out
@@ -321,7 +333,11 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		if inst.Hidden {
 			continue
 		}
-		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		// The listing is an authenticated request like every other hub
+		// fetch: bind this client's own registry root (see
+		// withScopedCodexAuth) so a custom root reads its own Codex
+		// record instead of the process default's.
+		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), 8*time.Second)
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		if listErr != nil {
@@ -332,11 +348,26 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		}
 	}
 	sortModelDescriptors(out)
+	// A nil holder (bare test servers) skips the cache: with no
+	// generation clock the entry could never be invalidated.
+	if !ok {
+		return out
+	}
 	s.liveModels.mu.Lock()
 	s.liveModels.models = append([]appwire.ModelDescriptor(nil), out...)
 	s.liveModels.expires = time.Now().Add(liveModelsTTL)
+	s.liveModels.gen = gen
 	s.liveModels.mu.Unlock()
 	return out
+}
+
+// liveModelsGeneration reports the holder generation the model cache is
+// gated on. False when the server has no holder: caching is disabled.
+func liveModelsGeneration(s *WebServer) (uint64, bool) {
+	if s == nil || s.cfg.Registry == nil {
+		return 0, false
+	}
+	return s.cfg.Registry.Generation(), true
 }
 
 func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwire.ModelListDiagnostic {
