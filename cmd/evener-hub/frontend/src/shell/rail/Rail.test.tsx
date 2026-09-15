@@ -224,6 +224,25 @@ function sectionRoot(name: string | RegExp): HTMLElement {
   return section;
 }
 
+/** jsdom implements no scrollIntoView at all, so any reveal that reaches its
+ * row throws unless the page stubs it. Returns the restore. */
+function stubScrollIntoView(): () => void {
+  const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+  if (!original) {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: () => undefined,
+      writable: true,
+    });
+  }
+  const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
+  return () => {
+    scroll.mockRestore();
+    if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
+    else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  };
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetNavigationStoreForTests();
@@ -422,6 +441,80 @@ describe("resource-backed Rail", () => {
       scroll.mockRestore();
       if (originalScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
       else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    }
+  });
+
+  test("a reveal opens the Projects section it lands in", async () => {
+    const restoreScroll = stubScrollIntoView();
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:projects": false, "projectnode:p": true }));
+    installState([
+      catalogResource([{ key: "p", name: "Proj", session_count: 1 }]),
+      projectResource("p", [summary({ ref: "local:target", title: "Target row" })]),
+      resource(
+        { kind: "location", ref: "local:target" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:target",
+          top_level_ref: "local:target",
+          top_level: true,
+          project_key: "p",
+          tier: "current",
+          session: summary({ ref: "local:target", title: "Target row" }),
+        },
+      ),
+    ]);
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="local:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(sectionDisclosure("Projects").getAttribute("aria-expanded")).toBe("true");
+      expect(within(sectionRoot("Projects")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
+  });
+
+  test("a reveal opens a pinned section it lands in", async () => {
+    const restoreScroll = stubScrollIntoView();
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "pinsection:pins": false }));
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          sessions: [summary({ ref: "pin-ref", title: "Pinned row" })],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "location", ref: "pin-ref" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "pin-ref",
+          top_level_ref: "pin-ref",
+          top_level: true,
+          pin_section_id: "pins",
+          session: summary({ ref: "pin-ref" }),
+        },
+      ),
+    ]);
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="pin-ref" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(sectionDisclosure("Pins").getAttribute("aria-expanded")).toBe("true");
+      expect(within(sectionRoot("Pins")).getByText("Pinned row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
     }
   });
 

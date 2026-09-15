@@ -262,10 +262,8 @@ function RailSection({
     </section>
   );
 }
-interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes" | "open" | "onToggleOpen"> {
+interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
   section: RailPinSection;
-  open: boolean;
-  onToggleOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
   isExpanded: ReturnType<typeof overrideLookup>;
@@ -327,10 +325,8 @@ function PinnedRailSection({
     </section>
   );
 }
-interface ArchivedSectionProps extends Omit<RailSectionProps, "title" | "open" | "onToggleOpen"> {
+interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
   count: number;
-  open: boolean;
-  onToggleOpen: () => void;
   projectRetryCallback: (key: string) => () => void;
 }
 function ArchivedSection({
@@ -945,6 +941,24 @@ function NavigationRail({
     },
     [expandedOverrides],
   );
+  // A reveal lands on a row that may be sitting inside a section fold the
+  // reader closed (or that starts closed, like Archived). Open it and report
+  // that the caller should re-run rather than scroll to a hidden row.
+  const openRevealSection = useCallback(
+    (key: string, defaultOpen: boolean) => {
+      if (isExpanded(key, defaultOpen)) return true;
+      setExpanded(key, true);
+      return false;
+    },
+    [isExpanded, setExpanded],
+  );
+  // The section a project's row renders in. Archived is the tier that folds
+  // under "Archived sessions"; test-run projects fold under "Test runs".
+  const projectSectionKey = useCallback(
+    (projectKey: string) =>
+      resources.testRuns.some((project) => project.key === projectKey) ? TEST_RUNS_SECTION_KEY : PROJECTS_SECTION_KEY,
+    [resources],
+  );
   const rootLoadsInFlight = useRef(new Set<string>());
   const rootGeneration = useRef("");
   const loadProjectRoot = useCallback((key: string) => {
@@ -1063,7 +1077,14 @@ function NavigationRail({
         setExpanded(projectID, true);
         return;
       }
-      const catalog = location.tier === "archived" ? "archived_projects" : "projects";
+      // Archived is the one section that starts closed, so the default an
+      // untouched section resolves to depends on which one this is.
+      const archivedTier = location.tier === "archived";
+      if (
+        !openRevealSection(archivedTier ? ARCHIVED_SECTION_KEY : projectSectionKey(location.project_key), !archivedTier)
+      )
+        return;
+      const catalog = archivedTier ? "archived_projects" : "projects";
       requestRevealResource(revealTarget, `catalog:${catalog}`, () => navigationStore.getState().loadCatalog(catalog));
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
@@ -1071,6 +1092,7 @@ function NavigationRail({
       return;
     }
     if (location.pin_section_id) {
+      if (!openRevealSection(pinSectionDisclosureID(location.pin_section_id), true)) return;
       requestRevealResource(revealTarget, "pin_catalog", () => navigationStore.getState().loadPinCatalog());
       requestRevealResource(revealTarget, `pin:${location.pin_section_id}`, () =>
         navigationStore.getState().loadPinSection(location.pin_section_id as string),
@@ -1078,16 +1100,20 @@ function NavigationRail({
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
-    // A row cannot be revealed inside a fold the reader closed. Only an
-    // EXPLICIT collapse is opened here: an absent key means the section's own
-    // default (open), and rewriting it would just churn the map on a reveal
-    // that needs nothing.
-    if (section === "live" && expandedOverrides.get(LIVE_SECTION_KEY) === false) {
-      setExpanded(LIVE_SECTION_KEY, true);
-      return;
-    }
+    // needs_you renders no section of its own, so Live is the only fold that
+    // can be hiding this row.
+    if (section === "live" && !openRevealSection(LIVE_SECTION_KEY, true)) return;
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
-  }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
+  }, [
+    revealTarget,
+    resources,
+    expandedOverrides,
+    consumeReveal,
+    setExpanded,
+    requestRevealResource,
+    openRevealSection,
+    projectSectionKey,
+  ]);
 
   function handleToggle(node: RailNode) {
     if (isPassiveRailNode(node)) return;
@@ -1552,9 +1578,7 @@ function NavigationRail({
                 key={section.id}
                 section={section}
                 open={isExpanded(pinSectionDisclosureID(section.id), true)}
-                onToggleOpen={() =>
-                  setExpanded(pinSectionDisclosureID(section.id), !isExpanded(pinSectionDisclosureID(section.id), true))
-                }
+                onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
                 onRename={() => openSectionRename(section)}
                 onDelete={() => void requestSectionDelete(section)}
                 isExpanded={isExpanded}
@@ -1598,7 +1622,7 @@ function NavigationRail({
               <ArchivedSection
                 count={archivedCount(resources.archivedProjects, unarchived)}
                 open={archivedOpen}
-                onToggleOpen={() => setExpanded(ARCHIVED_SECTION_KEY, !archivedOpen)}
+                onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
                 nodes={archivedNodes}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
