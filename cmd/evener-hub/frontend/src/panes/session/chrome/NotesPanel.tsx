@@ -329,8 +329,8 @@ export const NotesPanel = forwardRef<NotesPanelHandle, NotesPanelProps>(function
   return (
     <>
       {/* Omitted while hideTrigger is set (SessionChrome collapses this into
-          the "..." menu instead). The palette's /notes toggles the
-          sessionNotes workspace pane (shell/palette/commands.ts). */}
+          the "..." menu instead). The palette's /notes toggles the top notes
+          panel (shell/palette/commands.ts -> topNotesStore.toggleAndFocus). */}
       {!hideTrigger && canReadNotes && (
         <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
           Notes

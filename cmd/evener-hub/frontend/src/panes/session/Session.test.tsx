@@ -368,6 +368,10 @@ test("mounts TopNotesPanel at the top of the session content once hydrated", asy
   );
 
   await waitFor(() => expect(screen.getByTestId("top-notes-panel")).toBeTruthy());
+  // "Top" is DOM order, not just presence: the panel sits above the
+  // transcript area below it in the pane scaffold.
+  const below = screen.getByText("Send the first message");
+  expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
 test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
+import { canWriteHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, useTopNotesExpanded, useTopNotesFocusEpoch } from "../../../stores/topNotes";
 import { Chevron, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -29,6 +30,13 @@ export interface TopNotesPanelProps {
 export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const focusEpoch = useTopNotesFocusEpoch(sessionRef);
+  // The summary must read the SAME text the editor does: edits land in the
+  // draft store immediately while model.humanNote lags until the 10s
+  // blur-save commits, so collapsing right after typing would otherwise show
+  // the pre-edit note (or "Add a note…") for up to ten seconds. Subscribed
+  // before the canReadSharedNotes guard below so the early return can never
+  // skip a hook (Rules of Hooks).
+  const draftState = useHumanNoteDraft(sessionRef);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const prevEpoch = useRef(focusEpoch);
 
@@ -43,7 +51,10 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
 
   if (!canReadSharedNotes(model)) return null;
 
-  const hasHumanNote = model.humanNote.trim() !== "";
+  const humanNote = draftState?.text ?? model.humanNote;
+  const canWrite = canWriteHumanNote(model);
+
+  const hasHumanNote = humanNote.trim() !== "";
   const hasAgentNote = model.agentNote.trim() !== "";
   const hasUrls = model.sessionUrls.length > 0;
 
@@ -53,7 +64,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
 
   if (hasHumanNote) {
     sourceIconKind = "person";
-    summaryText = model.humanNote;
+    summaryText = humanNote;
   } else if (hasAgentNote) {
     sourceIconKind = "skill";
     summaryText = model.agentNote;
@@ -62,7 +73,9 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
     summaryText = `${model.sessionUrls.length} ${model.sessionUrls.length === 1 ? "link" : "links"}`;
   } else {
     isPlaceholder = true;
-    summaryText = "Add a note…";
+    // Read-only sessions (ended/closed/fenced) have no editor to write in, so
+    // the empty bar must not invite typing it can't accept.
+    summaryText = canWrite ? "Add a note…" : "No notes yet";
   }
 
   const toggle = () => {
@@ -79,10 +92,10 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
         className={expanded ? CLASS.expandedHeader : CLASS.summary}
         onClick={toggle}
         aria-expanded={expanded}
-        aria-label={expanded ? "Collapse session notes" : isPlaceholder ? "Add a note" : "Session notes"}
+        aria-label={expanded ? "Collapse session notes" : isPlaceholder && canWrite ? "Add a note" : "Session notes"}
         data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
       >
-        <div className={CLASS.summaryLeft}>
+        <span className={CLASS.summaryLeft}>
           <span className={CLASS.chevron} data-open={expanded}>
             <Chevron size={16} />
           </span>
@@ -95,12 +108,18 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
                   <ToolIcon kind={sourceIconKind} size={14} />
                 </span>
               )}
-              <div className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</div>
+              <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
             </>
           )}
-        </div>
+        </span>
         <span className={CLASS.hint} aria-hidden="true">
-          {expanded ? "Click to collapse" : isPlaceholder ? "Click to write" : "Click to expand"}
+          {expanded
+            ? "Click to collapse"
+            : isPlaceholder
+              ? canWrite
+                ? "Click to write"
+                : "Click to view"
+              : "Click to expand"}
         </span>
       </button>
       {expanded && (
