@@ -16,14 +16,16 @@
 // (roborev round 1, F3): the input is labeled by the env name (what the
 // docs tell users to set) but keyed by the template name, since that is
 // what the registry actually substitutes.
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
+import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 import { useEditorLifetime } from "./useEditorLifetime";
 
@@ -33,6 +35,29 @@ const CLASS = {
   error: requireClass(styles.error, "instanceDialogs.module.css", "error"),
   textarea: requireClass(styles.textarea, "instanceDialogs.module.css", "textarea"),
 };
+
+// The endpoint a credential dialog was opened against is the one the typed
+// value belongs to. A concurrent change can put a different instance under the
+// same name while the field holds the secret - re-resolving the name at submit
+// time and asserting whatever it now points at would send that value to an
+// endpoint the user never reviewed. The dialog compares the row's current
+// fingerprint against the one captured when it opened, refuses the write, and
+// clears the field; the same refusal the guided flow and the instance sheet
+// make when their destination moves. The refusal is actionable rather than
+// terminal: it re-anchors the dialog's expectation to the row now on screen,
+// so the re-entry the message asks for saves against the destination the user
+// can see.
+const ENDPOINT_CHANGED_ERROR =
+  "This connection changed to a different endpoint. Check its destination and enter the value again.";
+
+// The same refusal whose re-read finds no row for the name: the destination is
+// not merely different, it is gone from the listing, so there is nothing on
+// screen to re-anchor the assertion to. The value is dropped and said so. The
+// assertion itself stays where the user last reviewed it rather than being
+// emptied - an empty one would let the retype land on whatever the name
+// resolves to next, unverified, which is the save the guard above refuses.
+const ENDPOINT_VANISHED_ERROR =
+  "This connection changed and is no longer in the provider list, so the value was not saved. Reopen this editor from the current list to continue.";
 
 // nonEmptyVars trims and drops blank entries before they reach the wire -
 // InstanceCreateParams.Vars only carries variables the user actually set
@@ -47,13 +72,36 @@ function nonEmptyVars(vars: Record<string, string>): Record<string, string> | un
 
 export interface AddInstanceDialogProps {
   availableProviders: ProviderDescriptor[];
+  initialBase?: string;
   onCancel: () => void;
-  onSuccess: () => void;
+  onSuccess: (name: string) => void;
+  // A create whose reconciled listing did not show the instance is NOT a
+  // success. A consumer that has its own recovery for a missing row (the
+  // guided flow's not-ready/reload state) takes it through this callback,
+  // without a success toast; a consumer without one gets the dialog's own
+  // error and re-confirm action.
+  onUnconfirmedCreate?: (name: string) => void;
+}
+
+// The create this dialog issues authors the row it writes, so that row is
+// explicit. An implicit row carries the name because the user has a credential
+// or an environment variable for a curated provider, not because this create
+// landed anything. Matching by name alone would confirm a create the host never
+// reflected and steer the caller to a row it never wrote, so only a non-implicit
+// row that carries the name confirms the create.
+function matchesCreatedInstance(instances: InstanceEntry[], name: string): boolean {
+  return instances.some((instance) => instance.name === name && !instance.implicit);
 }
 
 /** The global "+ Add provider instance" form (parity-m7-settings.md §7f). */
-export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: AddInstanceDialogProps) {
-  const [base, setBase] = useState("");
+export function AddInstanceDialog({
+  availableProviders,
+  initialBase = "",
+  onCancel,
+  onSuccess,
+  onUnconfirmedCreate,
+}: AddInstanceDialogProps) {
+  const [base, setBase] = useState(initialBase);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [protocol, setProtocol] = useState("");
@@ -63,8 +111,16 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
   const [credentialHeader, setCredentialHeader] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Set when the create succeeded but the listing could not be confirmed to
+  // contain it: the dialog stays open and offers a re-confirm rather than
+  // re-issuing a create that already landed on the host.
+  const [unconfirmedName, setUnconfirmedName] = useState<string | null>(null);
   const toast = useToasts();
   const active = useEditorLifetime();
+
+  function confirmCreate(instanceName: string): Promise<boolean> {
+    return confirmListingState((instances) => matchesCreatedInstance(instances, instanceName));
+  }
 
   const baseOptions: SelectOption[] = [
     { value: "", label: "" },
@@ -83,6 +139,12 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    // While a create still needs confirming, a submit (the button or Enter)
+    // re-confirms instead of re-issuing a create the host already accepted.
+    if (unconfirmedName) {
+      await handleCheckAgain();
+      return;
+    }
     if (!base) {
       setError("Base provider is required.");
       return;
@@ -100,7 +162,7 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     setError(null);
     setBusy(true);
     try {
-      await credentialsStore.getState().create({
+      const applied = await credentialsStore.getState().create({
         name: trimmedName,
         base,
         baseUrl: baseUrl.trim(),
@@ -110,9 +172,41 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
         apiKeyEnv: apiKeyEnv.trim() || undefined,
         credentialHeader: trimmedCredentialHeader || undefined,
       });
+      // The listing a superseded create answered with was discarded by the
+      // store's generation guard - reconcile before steering on the create,
+      // and require the listing that applied to actually contain the new
+      // instance. A resolved fetch is not confirmation (a newer read
+      // supersedes it, a failed read lands its error in the store), and
+      // neither is a listing that never reflected the create: reporting
+      // success there would close the editor on an instance the host may not
+      // have. A consumer with its own missing-row recovery (the guided flow's
+      // not-ready/reload state) takes over without a success claim; otherwise
+      // the dialog stays open with a re-confirm path rather than re-issuing
+      // the create. Data refresh deliberately survives an unmount: the dialog
+      // is gone, but the store still owes the caller a current listing.
+      // The store's own listing IS the applied response when the write won the
+      // race, so it can be checked directly; only a superseded write has to be
+      // re-read. Either way the row must be visible before the create is
+      // reported, or the editor would close on an instance the listing never
+      // showed.
+      const confirmed = applied
+        ? matchesCreatedInstance(credentialsStore.getState().instances, trimmedName)
+        : await confirmCreate(trimmedName);
+      if (!confirmed) {
+        if (!active.current) return;
+        if (onUnconfirmedCreate) {
+          onUnconfirmedCreate(trimmedName);
+          return;
+        }
+        setUnconfirmedName(trimmedName);
+        setError(
+          `The connection was saved on the host, but the provider list could not confirm ${trimmedName}. Check again.`,
+        );
+        return;
+      }
       if (!active.current) return;
       toast.push("success", `Created instance ${trimmedName}`);
-      onSuccess();
+      onSuccess(trimmedName);
     } catch (err) {
       if (!active.current) return;
       const message = errorText(err);
@@ -121,6 +215,33 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
     } finally {
       if (active.current) setBusy(false);
     }
+  }
+
+  // Re-confirms a create whose first reconcile could not see the instance.
+  // Only the listing read is retried: the create itself already succeeded on
+  // the host, so re-issuing it could fail on an instance that exists.
+  // confirmCreate cannot reject - confirmListingState owns a lost read (no
+  // client) as one more unapplied attempt - so the only outcomes here are
+  // confirmed and not-confirmed.
+  async function handleCheckAgain(): Promise<void> {
+    const instanceName = unconfirmedName;
+    if (!instanceName) return;
+    setBusy(true);
+    const confirmed = await confirmCreate(instanceName);
+    if (!active.current) return;
+    setBusy(false);
+    if (!confirmed) {
+      // "Could not confirm", never "does not show": a read that never applied
+      // (a dropped connection) says nothing about what the listing holds. The
+      // connection banner owns that story, and the unconfirmed name is kept so
+      // Check again still works once the host is back.
+      setError(`The provider list could not confirm ${instanceName}. Check again.`);
+      return;
+    }
+    setError(null);
+    setUnconfirmedName(null);
+    toast.push("success", `Created instance ${instanceName}`);
+    onSuccess(instanceName);
   }
 
   return (
@@ -210,9 +331,15 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
           </p>
         )}
         <div className={CLASS.actions}>
-          <Button type="submit" disabled={busy}>
-            Create
-          </Button>
+          {unconfirmedName ? (
+            <Button type="button" disabled={busy} onClick={() => void handleCheckAgain()}>
+              Check again
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy}>
+              Create
+            </Button>
+          )}
           <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>
@@ -224,12 +351,27 @@ export function AddInstanceDialog({ availableProviders, onCancel, onSuccess }: A
 
 export interface ApiKeyDialogProps {
   instance: InstanceEntry;
+  /** The endpoint fingerprint the dialog was opened against, captured from the
+   * row the user acted on. A submit asserts this value, so a concurrent
+   * endpoint change cannot re-target the already-entered secret.
+   * When a change is detected the dialog re-anchors to the row now on screen,
+   * the destination the user reviews before re-entering the value; see
+   * CredentialValueDialog.handleSubmit.
+   * Required (and explicitly undefined when the row showed no endpoint, which
+   * is the legitimate "nothing was shown, nothing to assert" case) rather than
+   * optional, so a caller that forgets to capture it is a build error instead
+   * of a save that silently asserts nothing. Only a capture and a row that are
+   * both undefined compare equal: a row that gained a fingerprint is a change
+   * to refuse like any other, since an empty assertion carries no endpoint for
+   * the hub to check and would land the value unverified. */
+  expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface CredentialValueDialogProps {
   instance: InstanceEntry;
+  expectedEndpointFingerprint: string | undefined;
   onCancel: () => void;
   onSuccess: () => void;
   title: string;
@@ -240,7 +382,11 @@ interface CredentialValueDialogProps {
   /** "password" for a single-line secret (ApiKeyDialog); "textarea" for a
    * multi-line paste (CredentialJsonDialog). */
   input: "password" | "textarea";
-  submit: (name: string, value: string) => Promise<AuthStatusResponse>;
+  /** Writes the typed value, asserting the endpoint this submit belongs to.
+   * Handed the dialog's effective expectation rather than closing over the
+   * captured prop, so a value re-entered after a refusal asserts the row now
+   * on screen. */
+  submit: (name: string, value: string, expectedEndpointFingerprint: string | undefined) => Promise<AuthStatusResponse>;
 }
 
 // CredentialValueDialog is the submit/refresh/toast/error flow shared by
@@ -252,6 +398,7 @@ interface CredentialValueDialogProps {
 // store method `submit` calls - never a second copy of this flow.
 function CredentialValueDialog({
   instance,
+  expectedEndpointFingerprint,
   onCancel,
   onSuccess,
   title,
@@ -267,6 +414,15 @@ function CredentialValueDialog({
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
+  // The expectation the next submit asserts. Seeded from the caller's capture
+  // - the endpoint the row showed when the editor opened - and re-anchored to
+  // the row now on screen when the guard refuses (see handleSubmit). Resynced
+  // when the prop changes: a caller that re-captures while this component
+  // stays mounted starts from its new capture, not a refusal from before.
+  const expected = useRef(expectedEndpointFingerprint);
+  useLayoutEffect(() => {
+    expected.current = expectedEndpointFingerprint;
+  }, [expectedEndpointFingerprint]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -275,23 +431,107 @@ function CredentialValueDialog({
       onCancel(); // empty submit silently cancels, no RPC
       return;
     }
+    // The typed value belongs to the endpoint this dialog opened against. If
+    // the name now resolves to a different one, refuse before any RPC, drop
+    // the value, and say why: a save here would assert an endpoint the user
+    // never reviewed and could write the secret somewhere they did not choose.
+    // The refusal re-anchors the expectation to the row now on screen, so the
+    // re-entry the error asks for saves against the destination the user can
+    // see instead of being refused forever against the endpoint that is gone.
+    // Re-anchoring is safe: that row is the destination the dialog renders,
+    // the value was cleared so proceeding takes a deliberate retype of the
+    // secret, and the hub re-checks the assertion under its credential lock at
+    // write time, so a second change refuses again.
+    // An undefined capture is no exemption: a row that gained a fingerprint
+    // while the dialog sat open is a change to refuse too. An empty assertion
+    // carries no endpoint for the hub to check - it accepts one while it can
+    // key a fingerprint of its own, so a row that cannot produce one would
+    // otherwise save unverified - and the same local refusal re-anchors the
+    // expectation to the row now on screen, so the retype saves against the
+    // destination the user can see. A capture and a row that are both undefined
+    // still compare equal, so the "nothing shown, nothing to assert" case is
+    // unchanged.
+    const expectedFingerprint = expected.current;
+    if (instance.endpointFingerprint !== expectedFingerprint) {
+      expected.current = instance.endpointFingerprint;
+      setValue("");
+      setError(ENDPOINT_CHANGED_ERROR);
+      return;
+    }
+    // The hub serves a fingerprint only while it can key one, so a row that
+    // carries an endpoint and shows none is a destination the hub cannot
+    // describe right now - the state a key outage leaves, and the state a form
+    // opened during one keeps if the listing has not refreshed since. Submitting
+    // here would assert nothing against an endpoint nobody checked, so it is
+    // refused locally, with the same "review its destination" remedy: the
+    // listing that carries the fingerprint again is what makes the save work.
+    // The wire omits an unavailable fingerprint (omitempty), so "shows none"
+    // arrives as undefined as well as ""; both spellings are checked, the
+    // absent-is-empty convention InstanceSheet.fieldValue documents. baseUrl is
+    // the row's "has a destination" field: the listing suppresses it for a
+    // hidden or destinationless row, so an empty baseUrl means there is nothing
+    // for the hub to check and the save may proceed with no assertion.
+    if ((instance.baseUrl ?? "") !== "" && (instance.endpointFingerprint ?? "") === "") {
+      setError(FINGERPRINT_UNAVAILABLE_ERROR);
+      return;
+    }
     setError(null);
     setBusy(true);
     try {
-      await submit(instance.name, trimmed);
+      await submit(instance.name, trimmed, expectedFingerprint);
       if (!active.current) return;
-      await credentialsStore.getState().fetch();
+      await refreshListingAfterMutation();
       if (!active.current) return;
       toast.push("success", successText);
       onSuccess();
     } catch (err) {
       if (!active.current) return;
+      // A hub refusal of the asserted destination is the change the guard above
+      // makes locally when the client's listing already reflects it - the
+      // window the client cannot see is the one between that listing and this
+      // write. It is not a save failure, and the value must not be sent again
+      // against the endpoint that is gone: drop it, re-read the listing, and
+      // re-anchor to the row now on screen, so the retype the message asks for
+      // saves against the destination the user can review. ProviderConnection
+      // recovers a refused assertion the same way.
+      if (isEndpointConflict(err)) {
+        await recoverChangedEndpoint();
+        return;
+      }
       const message = errorText(err);
       setError(message);
       toast.push("error", `Save failed: ${message}`);
     } finally {
       if (active.current) setBusy(false);
     }
+  }
+
+  // The recovery a refused assertion gets, mirroring the guided flow's
+  // recoverChangedEndpoint: re-read the listing, drop the value typed for the
+  // endpoint that is gone, and re-anchor the expectation to the row the
+  // listing now holds for this name. The read owns its own failure
+  // (refreshListingAfterMutation), so a dropped connection leaves the last
+  // listing this client saw in place - the only expectation it can honestly
+  // re-anchor to. The re-anchor is safe for the same reason the local guard's
+  // is: the row it names is the destination the dialog renders, the value was
+  // cleared so proceeding takes a deliberate retype, and the hub re-checks the
+  // assertion under its credential lock at write time, so a second change is
+  // refused again instead of landing anywhere new.
+  async function recoverChangedEndpoint(): Promise<void> {
+    await refreshListingAfterMutation();
+    if (!active.current) return;
+    setValue("");
+    const row = credentialsStore.getState().instances.find((candidate) => candidate.name === instance.name);
+    if (!row) {
+      // No row to re-anchor to: the name is gone from the listing, so there is
+      // no destination on screen to assert and nothing this dialog can retry
+      // against. Report the change and the dropped value rather than keep a
+      // stale assertion or dress the refusal up as a failed save.
+      setError(ENDPOINT_VANISHED_ERROR);
+      return;
+    }
+    expected.current = row.endpointFingerprint;
+    setError(ENDPOINT_CHANGED_ERROR);
   }
 
   return (
@@ -341,10 +581,11 @@ function CredentialValueDialog({
 /** Set/Replace API key (parity-m7-settings.md §7d) - never echoes any
  * stored value; the field is write-only. Unaffected by the registry
  * cut-over: it only ever reads instance.name. */
-export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+export function ApiKeyDialog({ instance, expectedEndpointFingerprint, onCancel, onSuccess }: ApiKeyDialogProps) {
   return (
     <CredentialValueDialog
       instance={instance}
+      expectedEndpointFingerprint={expectedEndpointFingerprint}
       onCancel={onCancel}
       onSuccess={onSuccess}
       title={`Set API key for ${instance.name}`}
@@ -353,7 +594,9 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
       placeholder="paste key"
       successText={`API key saved for ${instance.name}`}
       input="password"
-      submit={(name, value) => credentialsStore.getState().setApiKey(name, value)}
+      submit={(name, value, expectedFingerprint) =>
+        credentialsStore.getState().setApiKey(name, value, expectedFingerprint)
+      }
     />
   );
 }
@@ -364,10 +607,16 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
  * evener/auth/credentialJson/set. The hub validates the paste before it is
  * stored, so a server error here is the parse failure, shown inline.
  */
-export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProps) {
+export function CredentialJsonDialog({
+  instance,
+  expectedEndpointFingerprint,
+  onCancel,
+  onSuccess,
+}: ApiKeyDialogProps) {
   return (
     <CredentialValueDialog
       instance={instance}
+      expectedEndpointFingerprint={expectedEndpointFingerprint}
       onCancel={onCancel}
       onSuccess={onSuccess}
       title={`Set Google credential JSON for ${instance.name}`}
@@ -376,7 +625,9 @@ export function CredentialJsonDialog({ instance, onCancel, onSuccess }: ApiKeyDi
       placeholder="paste a service-account key or application_default_credentials.json"
       successText={`Credential JSON saved for ${instance.name}`}
       input="textarea"
-      submit={(name, value) => credentialsStore.getState().setCredentialJson(name, value)}
+      submit={(name, value, expectedFingerprint) =>
+        credentialsStore.getState().setCredentialJson(name, value, expectedFingerprint)
+      }
     />
   );
 }

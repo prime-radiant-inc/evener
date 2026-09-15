@@ -307,6 +307,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthApiKeySetParams`
@@ -315,6 +317,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthCredentialJsonSetParams`
@@ -323,6 +327,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollParams`
@@ -331,6 +337,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollResponse`
@@ -374,6 +381,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
 | `redirectUrl` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLoginCompleteResponse`
@@ -404,6 +412,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLogoutResponse`
@@ -448,6 +458,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthTestResponse`
@@ -497,6 +508,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `provider` | `string` | yes |  |
 | `activeSource` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `EvenerDelegateInfo`
@@ -743,6 +755,7 @@ _(no fields)_
 | `surface` | `string` | yes |  |
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
+| `endpointFingerprint` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
@@ -776,6 +789,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`

@@ -1,20 +1,7 @@
-import {
-  Children,
-  cloneElement,
-  isValidElement,
-  type ReactElement,
-  type ReactNode,
-  useCallback,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { createPortal } from "react-dom";
+import type { ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
-import { computeTooltipPosition, type TooltipPosition, TRIGGER_GAP } from "../tooltip/computePosition";
+import { describeChild, FloatingBubblePortal, useFloatingBubble } from "./floatingBubble";
 import styles from "./hovercard.module.css";
-import { useFloatingLabel } from "./useFloatingLabel";
 
 export interface HoverCardProps {
   label: ReactNode;
@@ -30,68 +17,29 @@ const CLASS = {
   bubble: requireClass(styles.bubble, "hovercard.module.css", "bubble"),
 };
 
-interface DescribableProps {
-  "aria-describedby"?: string;
-}
-
 /** Rich, non-interactive description composed on the shared floating-label lifecycle. */
 export function HoverCard({ label, children }: HoverCardProps) {
-  const bubbleRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<TooltipPosition | null>(null);
-  const cardId = useId();
+  const { visible, wrapperRef, triggerProps, setBubbleRef, bubbleStyle, bubbleID, describedBy } = useFloatingBubble();
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: wrapperRef comes from the hook below and is stable for this component's lifetime
-  const measure = useCallback(() => {
-    const wrapperEl = wrapperRef.current;
-    const bubbleEl = bubbleRef.current;
-    if (!wrapperEl || !bubbleEl) return;
-    setPosition(
-      computeTooltipPosition(
-        wrapperEl.getBoundingClientRect(),
-        { width: bubbleEl.offsetWidth, height: bubbleEl.offsetHeight },
-        { width: window.innerWidth, height: window.innerHeight },
-      ),
-    );
-  }, []);
-
-  const { visible, wrapperRef, triggerProps } = useFloatingLabel({ measure, observe: bubbleRef });
-
-  useLayoutEffect(() => {
-    if (!visible) {
-      setPosition(null);
-      return;
-    }
-    measure();
-  }, [measure, visible]);
-
-  const describedBy = visible ? cardId : undefined;
-  const singleChild =
-    typeof children !== "function" && Children.count(children) === 1 && isValidElement(children) ? children : null;
+  // A card's label is arbitrary content, so unlike the tooltip it also accepts a
+  // function child: a caller rendering the trigger itself places the
+  // association where it belongs instead of being cloned.
   const describedChild =
-    typeof children === "function"
-      ? children({ describedBy })
-      : singleChild
-        ? cloneElement(singleChild as ReactElement<DescribableProps>, {
-            "aria-describedby": describedBy,
-          })
-        : children;
+    typeof children === "function" ? children({ describedBy }) : describeChild(children, describedBy);
 
   return (
     <span ref={wrapperRef} className={CLASS.wrapper} {...triggerProps}>
       {describedChild}
-      {visible &&
-        createPortal(
-          <div
-            ref={bubbleRef}
-            role="tooltip"
-            id={cardId}
-            className={CLASS.bubble}
-            style={position ?? { top: TRIGGER_GAP, left: TRIGGER_GAP }}
-          >
-            {label}
-          </div>,
-          document.body,
-        )}
+      <FloatingBubblePortal
+        as="div"
+        show={visible}
+        id={bubbleID}
+        className={CLASS.bubble}
+        style={bubbleStyle}
+        setRef={setBubbleRef}
+      >
+        {label}
+      </FloatingBubblePortal>
     </span>
   );
 }

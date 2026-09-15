@@ -7,12 +7,18 @@ package hub
 // and environment, so nothing here reads the developer's machine.
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,6 +41,25 @@ type instancesFixture struct {
 	store     *credentials.Store
 }
 
+// testProbeRegistryOptions is the registry composition the instances fixture
+// and the credential-probe override share - everything except the config layer,
+// which each caller picks (a path, or no user layer at all). Keeping the shared
+// options in one place means a new option cannot land on only one of them and
+// silently probe a different composition than the fixture builds.
+func testProbeRegistryOptions(
+	stateDir string,
+	store *credentials.Store,
+	env func(string) (string, bool),
+) []registry.Option {
+	return []registry.Option{
+		registry.WithOffline(true),
+		registry.WithoutCache(),
+		registry.WithStateRoot(stateDir),
+		registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
+		registry.WithEnv(env),
+	}
+}
+
 // newTestInstancesController builds an instances controller whose registry
 // reads tomlPath as its user layer, with credentials at credsDir and OAuth
 // state at stateDir.
@@ -52,17 +77,13 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	auth.stateDir = stateDir
 	auth.providersConfigPath = tomlPath
 	auth.reg = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-		opts := []registry.Option{
-			registry.WithOffline(true),
-			registry.WithoutCache(),
-			registry.WithConfigPath(tomlPath),
-			registry.WithStateRoot(stateDir),
-			registry.WithCredentials(cmdutil.StoreCredentialSource{Store: store}),
-			registry.WithEnv(func(name string) (string, bool) {
+		opts := append(
+			testProbeRegistryOptions(stateDir, store, func(name string) (string, bool) {
 				v, ok := lookup[name]
 				return v, ok
 			}),
-		}
+			registry.WithConfigPath(tomlPath),
+		)
 		r, err := registry.Load(append(opts, extra...)...)
 		return r, store, err
 	})
@@ -70,6 +91,33 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	// refusal is what several tests are about.
 	_ = auth.reg.Reload()
 	return &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth}
+}
+
+// unkeyableStateRoot puts an obstacle where the fingerprint key file belongs: a
+// non-empty directory, which cannot be read as a key, created around, or
+// removed, so the hub has none and omits every fingerprint. An *empty*
+// directory would not do - the key loader repairs a state root it can reach.
+func unkeyableStateRoot(t *testing.T, stateDir string) {
+	t.Helper()
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", path, err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+}
+
+// pinEndpointFingerprintKey gives a state root a fixed fingerprint key, so a
+// corpus that compares a committed file byte for byte has the same digests on
+// every run. A state root without one gets its own key, created there and
+// different from every other root's.
+func pinEndpointFingerprintKey(t *testing.T, stateDir string) {
+	t.Helper()
+	path := filepath.Join(stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(path, []byte("pinned-test-endpoint-fingerprint-key"), 0o600); err != nil {
+		t.Fatalf("pin %s: %v", path, err)
+	}
 }
 
 // newInstancesFixture is one isolated instances pane over a fresh temp dir.
@@ -98,6 +146,19 @@ func entry(t *testing.T, resp appwire.InstanceListResponse, name string) appwire
 	}
 	t.Fatalf("List has no instance %q; got %+v", name, resp.Instances)
 	return appwire.InstanceEntry{}
+}
+
+// assertKeyFileMode0600 pins the mode the hub writes its key with, where the
+// platform records POSIX permission bits at all: Windows synthesizes 0666 for
+// every file (0444 when read-only), so there is no 0600 there to assert.
+func assertKeyFileMode0600(t *testing.T, info os.FileInfo, what string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("%s is %v, want 0600", what, perm)
+	}
 }
 
 // authoredEntry re-reads providers.toml and returns the authored entry, which
@@ -640,6 +701,645 @@ func TestInstances_RemoveDeletesEntryStoreKeyAndOAuthRecord(t *testing.T) {
 	}
 }
 
+// A removal that cannot clean up the credentials filed under the name must not
+// report success: a stored key or OAuth record left behind sits under a name
+// nothing curates, and the next instance to hold that name inherits it. The
+// failed cleanup also has to leave the removal itself undone, so the caller
+// can retry it rather than being told a deletion happened that did not.
+func TestInstances_RemoveFailsWhenTheStoredCredentialCannotBeCleared(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	f.ctl.auth.clearCredential = func(string) error { return errors.New("clear refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "clear refused") {
+		t.Fatalf("Remove = %v, want the stored-key cleanup failure", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want it retained by the failed removal", v)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was removed even though its credential could not be cleared")
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the registry no longer resolves work after a failed removal")
+	}
+}
+
+func TestInstances_RemoveFailsWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the OAuth-record cleanup failure", err)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record did not survive the failed removal: %v", loadErr)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was removed even though its OAuth record could not be deleted")
+	}
+}
+
+// The other side of the same rule: a removal that fails before it can write
+// the config must not have deleted anything. The instance is still authored,
+// so it still resolves, and its credential has to still be there - a caller
+// told the removal failed would otherwise be holding an instance that quietly
+// lost its key.
+func TestInstances_RemoveKeepsCredentialsWhenTheConfigCannotBeRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := os.WriteFile(f.tomlPath, []byte("this is not toml\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config read failure")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("the failed removal deleted the stored key: %q", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the failed removal deleted the OAuth record: %v", loadErr)
+	}
+}
+
+// TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails: the write
+// happens after the cleanup, so a failure there would otherwise leave the
+// instance authored with its credential already durable-deleted. The path is
+// swapped for a directory from inside a cleanup seam, which is what makes the
+// rename-based write fail without depending on permissions or uid; it stands
+// in for any write that cannot land (a full disk, a read-only config root).
+func TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed removal to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", loadErr)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the instance left the registry even though the removal failed")
+	}
+}
+
+// The cleanup is two destructive steps, so its own failure has the same
+// asymmetry the config write has: the stored key is deleted before the OAuth
+// record is even attempted, and a failure on the second step leaves the
+// instance authored with the key already durable-gone. A retry cannot recover
+// it - creds.Get is empty by then - so the failed removal has to put it back.
+func TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the OAuth-record cleanup failure", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed removal to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record did not survive the failed removal: %v", loadErr)
+	}
+	if _, ok := f.ctl.reg.Get().Instance("work"); !ok {
+		t.Fatal("the instance left the registry even though the removal failed")
+	}
+}
+
+// The destructive confirmations carry the endpoint assertion the credential
+// writes do, and for the same reason: the user confirmed an action on the row
+// the pane listed, so a name another client has re-pointed since must not have
+// its replacement instance removed or its replacement's key cleared. A stale
+// assertion is refused and nothing moves; the current one acts.
+func TestInstances_DestructiveConfirmationsCarryTheEndpoint(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		act  func(f *instancesFixture, fingerprint string) error
+	}{
+		{"remove", func(f *instancesFixture, fingerprint string) error {
+			return f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work", ExpectedEndpointFingerprint: fingerprint})
+		}},
+		{"clear the stored key", func(f *instancesFixture, fingerprint string) error {
+			_, err := f.ctl.auth.ApiKeyClear(appwire.AuthApiKeyClearParams{Provider: "work", ExpectedEndpointFingerprint: fingerprint})
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, nil)
+			if err := f.ctl.Create(appwire.InstanceCreateParams{
+				Name:    "work",
+				Base:    "openai",
+				BaseURL: "https://a.example.test/v1",
+			}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := f.store.Set("work", "sk-keep"); err != nil {
+				t.Fatalf("Set: %v", err)
+			}
+			stale := f.ctl.auth.endpointFingerprintFor("work")
+			if stale == "" {
+				t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+			}
+			// What another client does while the confirmation is open.
+			if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+				t.Fatalf("Edit: %v", err)
+			}
+			current := f.ctl.auth.endpointFingerprintFor("work")
+			if current == "" || current == stale {
+				t.Fatalf("fixture drift: the edit must move the endpoint (stale=%q current=%q)", stale, current)
+			}
+
+			if err := tt.act(f, stale); err == nil {
+				t.Fatal("the action landed for a confirmation given against a different endpoint")
+			}
+			if v, ok := f.store.Get("work"); !ok || v != "sk-keep" {
+				t.Fatalf("stored key = %q/%v, want it untouched by the refused action", v, ok)
+			}
+			if _, still := f.ctl.reg.Get().Instance("work"); !still {
+				t.Fatal("the refused action removed the instance anyway")
+			}
+
+			if err := tt.act(f, current); err != nil {
+				t.Fatalf("action for the endpoint the name resolves to now: %v", err)
+			}
+		})
+	}
+}
+
+// unwritableCredentialsPath puts a directory where credentials.toml belongs, so
+// the store's next persist cannot land: the shape of a credentials path that is
+// gone, read-only, or on a filesystem that has stopped taking writes.
+func unwritableCredentialsPath(t *testing.T, credsPath string) {
+	t.Helper()
+	if err := os.RemoveAll(credsPath); err != nil {
+		t.Fatalf("RemoveAll(%s): %v", credsPath, err)
+	}
+	if err := os.Mkdir(credsPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", credsPath, err)
+	}
+	if err := os.WriteFile(filepath.Join(credsPath, "obstacle"), []byte("in the way"), 0o600); err != nil {
+		t.Fatalf("WriteFile(obstacle): %v", err)
+	}
+}
+
+// A removal with no credential to clear must not depend on the credentials
+// path: Store.Clear persists the file it holds, so clearing an entry that was
+// never there is a rewrite of state the instance does not have, and on an
+// unwritable path that rewrite fails a removal for nothing. The control in the
+// same test keeps the injection honest: a removal that does have a key to clear
+// still fails, which is what the store's persist failing there means.
+func TestInstances_RemoveDoesNotNeedACredentialsPathWithNothingToClear(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	for _, name := range []string{"work", "work2"} {
+		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: name, Base: "openai"}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+	// Stored while the path still works, so the control has something to clear.
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	unwritableCredentialsPath(t, f.credsPath)
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil || !strings.Contains(err.Error(), "clear stored credential") {
+		t.Fatalf("Remove(work) = %v, want the store's failure for the key it has to clear", err)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work"); !still {
+		t.Fatal("the refused removal lost the instance it could not clean up")
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work2"}); err != nil {
+		t.Fatalf("Remove(work2) = %v, want a removal that has no credential to clear", err)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work2"); still {
+		t.Fatal("the removed instance still resolves")
+	}
+}
+
+// An OAuth record the hub cannot parse is still one DeleteAuth deletes by
+// path, so a rollback that re-encoded a parsed record could not put it back.
+// The capture is the file's bytes, which is what makes this case restorable.
+func TestInstances_RemoveRestoresACorruptOAuthRecordWhenTheConfigWriteFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(f.stateDir, "work")
+	corrupt := []byte("this is not an auth record\n")
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(authPath, corrupt, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure")
+	}
+	restored, readErr := os.ReadFile(authPath)
+	if readErr != nil {
+		t.Fatalf("the corrupt OAuth record was not restored: %v", readErr)
+	}
+	if !bytes.Equal(restored, corrupt) {
+		t.Fatalf("OAuth record bytes = %q, want the original %q", restored, corrupt)
+	}
+}
+
+// A create whose config parses but cannot resolve is the hazard Edit's and
+// Remove's rollbacks exist for, one step earlier: the entry it just wrote would
+// stay in providers.toml while the registry sits on the implicit-only fallback
+// and refuses every instance write, leaving hand-editing the file as the only
+// way back. The create restores the file and reports what it could not load.
+func TestInstances_CreateRollsBackWhenTheReloadFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	before, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711: no base and no
+	// base_url of its own): the registry loaded before it appeared, so the
+	// create still starts, and the layer the create writes still carries it, so
+	// the reload that follows fails.
+	raw := append(slices.Clone(before), []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Create(appwire.InstanceCreateParams{Name: "second", Base: "openai"})
+	if err == nil {
+		t.Fatal("Create = nil, want the reload failure")
+	}
+	// Pins the branch: a write-loadable refusal never carries this text, so a
+	// fixture that stopped parsing before the write would not pass as a
+	// reload-rollback test.
+	if !strings.Contains(err.Error(), "cannot be loaded") {
+		t.Fatalf("Create = %v, want the create to name the config it could not load", err)
+	}
+	// The rollback re-serializes the layer, so the check is what the file holds,
+	// not its bytes: the entry this create wrote must be gone and everything it
+	// found must still be there.
+	after, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile after the rollback: %v", err)
+	}
+	if _, ok := after.Providers["second"]; ok {
+		t.Fatal("the instance whose config cannot load is still in providers.toml")
+	}
+	for _, name := range []string{"work", "standalone"} {
+		if _, ok := after.Providers[name]; !ok {
+			t.Fatalf("the rollback lost the %q entry this create found", name)
+		}
+	}
+	if _, ok := f.ctl.reg.Get().Instance("second"); ok {
+		t.Fatal("the instance whose config cannot load still resolves")
+	}
+}
+
+// A reload failure is the last way a removal can fail after it has deleted
+// things. It drops the registry to implicit-only and refuses every instance
+// write until the file loads again, so leaving the removal in place would have
+// the file, the hub's view and every client's listing disagreeing about an
+// instance only some of them still have - with nothing but hand-editing the
+// file to get back. The removal rolls back instead.
+func TestInstances_RemoveRollsBackWhenTheReloadFails(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711: no base and
+	// no base_url of its own): the registry loaded before it appeared, so the
+	// removal still starts, and the layer the removal writes still carries it,
+	// so the reload that follows fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	// Pins the branch: a write-loadable refusal never carries this text, so a
+	// fixture that stopped parsing before the write would not pass as a
+	// reload-rollback test.
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the reload rollback", err)
+	}
+	// The file the rollback put back is the same unresolvable one, so the reload
+	// this branch runs fails too and the registry stays on the implicit-only
+	// view a failed load leaves: instance writes are refused until the file
+	// loads (registry.go's WritesRefused, spec §10), and the pane's diagnostics
+	// already say so. That is the honest reading of a config that cannot be
+	// loaded - reinstating the registry's previous view would have the hub serve
+	// and rewrite a file it cannot read - but the failure has to say it: a
+	// caller told only that the removal "was rolled back" would read the hub as
+	// healthy.
+	if !strings.Contains(err.Error(), "does not load either") {
+		t.Fatalf("Remove = %v, want the rollback to name the config it could not load", err)
+	}
+	if !f.ctl.reg.WritesRefused() {
+		t.Fatal("the registry accepts instance writes over a config it cannot load")
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; !still {
+		t.Fatal("[providers.work] was not restored by the rollback")
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the rollback to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored by the rollback: %v", loadErr)
+	}
+}
+
+// The test above covers a rollback file that does not load either. This one
+// covers the branch where it does: the removal's reload fails, the rollback
+// lands, and the reload that follows it succeeds. The file the rollback puts
+// back is the pre-removal one, and the removal's own failed load read a file
+// that was not - which the real ones can only differ by if an external writer
+// replaced providers.toml between Remove's two reads (before and l are
+// adjacent statements), so the failure is injected at the loader instead: that
+// is what makes the ordering deterministic, and the error is still the real
+// registry error a load of an unresolvable layer produces (#711).
+func TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	// A bearer base, so the stored key is the credential this instance
+	// resolves: the Codex transport reads an OAuth record and ignores the
+	// store (spec §5.1).
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// The layer the removal's reload is made to fail on: an entry that parses
+	// but cannot resolve an endpoint.
+	brokenPath := filepath.Join(filepath.Dir(f.tomlPath), "broken.toml")
+	if err := os.WriteFile(brokenPath, []byte("[providers.standalone]\nprotocol = \"openai-chat\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var loads int
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		// Credentials from disk, the way cmdutil.LoadRegistry loads them: the
+		// registry then resolves each instance's credential from
+		// credentials.toml as it stood at that moment. The fixture's shared
+		// in-memory store would hide the order this test is about - the store
+		// object the controller restores into is not the one a reload builds
+		// its registry over.
+		store, err := credentials.LoadStore(f.credsPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		path := f.tomlPath
+		if loads == 2 {
+			path = brokenPath
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(path),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+	// Load 1 primes it over the clean file; load 2 is the removal's reload,
+	// load 3 is the implicit-only fallback that failure takes, and load 4 is
+	// the rollback's reload.
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	if !strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the reload rollback", err)
+	}
+	// Pins the branch: this rollback's reload succeeded, so the failure must not
+	// claim a config that does not load.
+	if strings.Contains(err.Error(), "does not load either") {
+		t.Fatalf("Remove = %v, want a rollback whose reload succeeded", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the rollback to have restored it", v)
+	}
+	// A reload resolves each instance's credential from the stores, so the key
+	// has to be back before it runs: this is what a launch reads
+	// (spawn.go's validateProviderCredentials) and what the pane shows as the
+	// active source. Reloading first caches "none" here, and restoring the key
+	// afterwards does not rebuild the view.
+	inst, ok := replacement.Get().Instance("work")
+	if !ok {
+		t.Fatal("the reloaded registry has no work instance")
+	}
+	if inst.CredentialSource != "store" {
+		t.Fatalf("the restored instance resolves CredentialSource = %q, want store", inst.CredentialSource)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.ActiveSource != "store" || !got.HasStoredFile {
+		t.Fatalf("list row = activeSource %q hasStoredFile %v, want store/true", got.ActiveSource, got.HasStoredFile)
+	}
+}
+
+// The rollback write is itself a write, so it can fail too, and then there is
+// nothing left that can put the entry back while the file still refuses to
+// load. The removal stands, but the credentials the cleanup deleted belong to
+// the name the caller re-authors after being told the removal failed, so they
+// still go back - losing them would report the failure and take the secret too.
+func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	// The reload failure is arranged the way the sibling test arranges it; the
+	// rollback write is what has to fail here. It is broken through the
+	// registry's own load callback, so no stub stands in for the write: the
+	// removal's reload is the second load the replacement registry serves (the
+	// first primes it over the clean file) and it turns the writer's temp path
+	// into a directory, which is the same disk that refuses any full disk or
+	// read-only root. The first write's temp file is gone once its rename
+	// landed, so the removal's own write still succeeds and only the rollback
+	// after it cannot land.
+	var loads int
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		if loads == 2 {
+			resolved, err := filepath.EvalSymlinks(f.tomlPath)
+			if err != nil {
+				t.Errorf("EvalSymlinks(%s): %v", f.tomlPath, err)
+			}
+			if err := os.Mkdir(resolved+".tmp", 0o700); err != nil {
+				t.Errorf("Mkdir(%s): %v", resolved+".tmp", err)
+			}
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(f.tomlPath),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, f.store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+	// Primed before the unresolvable entry lands, so the removal still starts
+	// from a registry that holds work.
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+
+	// An entry that parses but cannot resolve an endpoint (#711: no base and no
+	// base_url of its own): the layer the removal writes carries it, so the
+	// reload that follows the write fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure")
+	}
+	// Failing here first is the red-first symptom: the early return skipped the
+	// restore, so the secret the cleanup deleted never came back.
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("stored key = %q, want the failed rollback to have restored it", v)
+	}
+	if _, loadErr := authopenai.LoadAuth(f.stateDir, "work"); loadErr != nil {
+		t.Fatalf("the OAuth record was not restored: %v", loadErr)
+	}
+	// The removal stands, so the error must say so and must not claim a
+	// rollback that never landed.
+	if strings.Contains(err.Error(), "was rolled back") {
+		t.Fatalf("Remove = %v, want the failed rollback reported as standing", err)
+	}
+	if !strings.Contains(err.Error(), "removal stands in the config") {
+		t.Fatalf("Remove = %v, want the removal named as still applied", err)
+	}
+	l, _, readErr := registry.ReadConfigFile(f.tomlPath)
+	if readErr != nil {
+		t.Fatalf("ReadConfigFile: %v", readErr)
+	}
+	if _, still := l.Providers["work"]; still {
+		t.Fatal("[providers.work] is in the config, want the failed rollback to have left the removal applied")
+	}
+}
+
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	if err := f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "groq"}); err != nil {
@@ -712,6 +1412,943 @@ base = "anthropic"
 	}
 	if v, _ := f.store.Get("openai"); v != "sk-stored" {
 		t.Fatalf("the credential of the instance now under the name was deleted: openai = %q", v)
+	}
+}
+
+// TestInstances_RemoveWaitsForAnInFlightCredentialWrite pins the other half of
+// the removal's atomicity: the credential cleanup, the providers.toml write
+// and the reload are one step against credential writers. Holding the read
+// side is what an in-flight evener/auth/apiKey/set does, and a removal that
+// runs through it clears the store before the writer has written, leaving the
+// key behind under a name it just deleted.
+func TestInstances_RemoveWaitsForAnInFlightCredentialWrite(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	f.ctl.auth.credMu.RLock()
+	done := make(chan error, 1)
+	go func() { done <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) }()
+	select {
+	case err := <-done:
+		f.ctl.auth.credMu.RUnlock()
+		t.Fatalf("the removal ran through a credential write still in flight (err = %v)", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	f.ctl.auth.credMu.RUnlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the removal never finished after the credential write released the lock")
+	}
+	if v, ok := f.store.Get("work"); ok || v != "" {
+		t.Fatalf("credential remains after Remove: value=%q present=%v", v, ok)
+	}
+}
+
+// Every instance mutation that rewrites providers.toml and reloads is one step
+// with the credential writes: a client's endpoint assertion is checked inside
+// the credential lock, so a mutation that landed between that check and the
+// store would put the secret on an endpoint the client never reviewed. A
+// reload is not just a read either - it commits what it read, so one that
+// overlapped a credential clear could publish a view the clear had already
+// invalidated. Each mutation below holds credMu exclusively across its write
+// and reload, so it cannot run through a credential write still in flight.
+func TestInstances_MutationsWaitForAnInFlightCredentialWrite(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		run  func(f *instancesFixture) error
+	}{
+		{"edit moves the endpoint", func(f *instancesFixture) error {
+			return f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://moved.example.test/v1"})
+		}},
+		{"create authors a shadowing entry", func(f *instancesFixture) error {
+			return f.ctl.Create(appwire.InstanceCreateParams{Name: "work2", Base: "openai"})
+		}},
+		{"set default rewrites the file", func(f *instancesFixture) error {
+			return f.ctl.SetDefault(appwire.InstanceSetDefaultParams{Name: "work"})
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newInstancesFixture(t, nil)
+			if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			f.ctl.auth.credMu.RLock()
+			done := make(chan error, 1)
+			go func() { done <- tt.run(f) }()
+			select {
+			case err := <-done:
+				f.ctl.auth.credMu.RUnlock()
+				t.Fatalf("the mutation ran through a credential write still in flight (err = %v)", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			f.ctl.auth.credMu.RUnlock()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("mutation: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the mutation never finished after the credential write released the lock")
+			}
+		})
+	}
+}
+
+// The race the lock exists for, end to end: a credential write that starts
+// before the removal (it has already read the registry and passed its checks)
+// must not leave its key behind. The removal holds the credential lock
+// exclusively, so the write lands first and the cleanup that follows it
+// removes what it wrote.
+func TestInstances_RemoveClearsACredentialItsRacerWrote(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	originalSet := f.ctl.auth.setCredential
+	setEntered := make(chan struct{})
+	releaseSet := make(chan struct{})
+	f.ctl.auth.setCredential = func(name, value string) error {
+		close(setEntered)
+		<-releaseSet
+		return originalSet(name, value)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-race"})
+		writeDone <- err
+	}()
+	<-setEntered
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}) }()
+	// Only so the removal has reached the credential lock: what the test
+	// asserts does not depend on the wait.
+	time.Sleep(100 * time.Millisecond)
+	close(releaseSet)
+
+	if err := <-writeDone; err != nil {
+		t.Fatalf("ApiKeySet: %v", err)
+	}
+	select {
+	case err := <-removeDone:
+		if err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Remove never finished after the credential write completed")
+	}
+	if v, ok := f.store.Get("work"); ok || v != "" {
+		t.Fatalf("a credential written across the removal survived it: value=%q present=%v", v, ok)
+	}
+	if _, still := f.ctl.reg.Get().Instance("work"); still {
+		t.Fatal("the removed instance still resolves")
+	}
+}
+
+// A key is only worth storing under a name something reads. The pane offers
+// that write for the rows its listing had, so a name that is neither an
+// instance nor a curated provider is one an instance was removed from since -
+// and storing the key there would leave it under a name nothing curates until
+// a later instance of that name inherited it, which is the orphan credential
+// the removal's own cleanup exists to prevent.
+func TestInstances_ApiKeySetRefusesAKeyForARemovedInstance(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-orphan"})
+
+	if err == nil {
+		t.Fatal("ApiKeySet stored a key under a name no instance or provider has")
+	}
+	// The name the caller sent is theirs to fix, like every other refusal of an
+	// unknown instance (#717/#748).
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("ApiKeySet = %v, want an InvalidParams wire error", err)
+	}
+	if v, ok := f.store.Get("work"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for a name nothing curates", v)
+	}
+	// The hazard the refusal removes: the name comes back as an instance and
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := entry(t, f.ctl.List(), "work"); got.ActiveSource != "none" || got.HasStoredFile {
+		t.Fatalf("recreated instance = activeSource %q hasStoredFile %v, want none/false", got.ActiveSource, got.HasStoredFile)
+	}
+	// Positive control: the names the pane does offer still take a key - a
+	// curated implicit provider here, an authored instance above.
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-ant-live"}); err != nil {
+		t.Fatalf("ApiKeySet(anthropic): %v", err)
+	}
+	if v, _ := f.store.Get("anthropic"); v != "sk-ant-live" {
+		t.Fatalf("stored key for anthropic = %q, want it stored", v)
+	}
+}
+
+// An endpoint's identity includes what the displayed URL leaves out: a query
+// parameter can name a different endpoint (an API version, a deployment) and
+// can carry a token, so it must not cross the wire as text but must still be
+// comparable. The fingerprint is what lets a client tell a query-only endpoint
+// change from no change at all.
+func TestInstances_ListExposesAnEndpointFingerprint(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work")
+	if first.BaseURL != "https://gateway.test/v1" {
+		t.Fatalf("displayed BaseURL = %q, want the query parameter kept off the wire", first.BaseURL)
+	}
+	if len(first.EndpointFingerprint) != 64 {
+		t.Fatalf("EndpointFingerprint = %q, want a digest", first.EndpointFingerprint)
+	}
+	if again := entry(t, f.ctl.List(), "work"); again.EndpointFingerprint != first.EndpointFingerprint {
+		t.Fatalf("the fingerprint moved between listings: %q then %q", first.EndpointFingerprint, again.EndpointFingerprint)
+	}
+
+	// A change the displayed URL cannot show: the sanitized copy stays put and
+	// the fingerprint is what moves.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{
+		Name:    "work",
+		BaseURL: "https://gateway.test/v1?api-version=2025-01-01",
+	}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	second := entry(t, f.ctl.List(), "work")
+	if second.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", second.BaseURL)
+	}
+	if second.EndpointFingerprint == first.EndpointFingerprint {
+		t.Fatal("a query-parameter-only endpoint change left the fingerprint unchanged, so a client cannot see it")
+	}
+}
+
+// A row's displayed URL and its endpoint fingerprint have to come from one
+// snapshot of the registry. Pairing a URL read from one state of providers.toml
+// with a fingerprint computed against a later one would serve a client a
+// destination that never existed, and a credential write asserting that pair
+// would be checked against it.
+func TestInstances_ListingRowFingerprintsTheSnapshotItCameFrom(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://a.example.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	served := entry(t, f.ctl.List(), "work")
+	stale := f.ctl.reg.Get()
+	staleInst, ok := stale.Instance("work")
+	if !ok {
+		t.Fatal("the fixture registry has no work instance")
+	}
+
+	// Another client moves the endpoint while the snapshot above is what a
+	// listing would have been built from.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://b.example.test/v1"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	moved := f.ctl.reg.Get()
+	movedInst, ok := moved.Instance("work")
+	if !ok {
+		t.Fatal("the fixture registry has no work instance after the edit")
+	}
+
+	got := f.ctl.entryFor(stale, staleInst, nil, endpointFingerprintKey(f.ctl.authStateDir()))
+	if got.BaseURL != served.BaseURL || got.EndpointFingerprint != served.EndpointFingerprint {
+		t.Fatalf("a row built from the snapshot = %q/%q, want the %q/%q that snapshot served",
+			got.BaseURL, got.EndpointFingerprint, served.BaseURL, served.EndpointFingerprint)
+	}
+	if movedFP := destinationFingerprint(f.ctl.authStateDir(), moved, movedInst); got.EndpointFingerprint == movedFP {
+		t.Fatal("the row was fingerprinted against the current registry instead of the snapshot it came from")
+	}
+}
+
+// The digest covers the whole destination a credential-bearing request is built
+// from, not only the URL the listing displays: a protocol switch or a change to
+// a request path template sends the secret somewhere else while every visible
+// field of the row stays byte-identical, so a form comparing only what it can
+// see would carry a key to a destination nobody reviewed.
+func TestInstances_EndpointFingerprintCoversTheResolvedTransport(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work")
+	if first.EndpointFingerprint == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// The protocol selects which request templates apply. Both are supported for
+	// this provider, and the displayed URL is the same either way.
+	next := "openai-responses"
+	if first.Protocol == next {
+		next = "openai-chat"
+	}
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", Protocol: next}); err != nil {
+		t.Fatalf("Edit(protocol=%s): %v", next, err)
+	}
+	second := entry(t, f.ctl.List(), "work")
+	if second.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", second.BaseURL)
+	}
+	if second.EndpointFingerprint == first.EndpointFingerprint {
+		t.Fatal("a protocol change left the fingerprint unchanged, so a client cannot see where the request now goes")
+	}
+
+	// And a request path template authored by hand, which the edit form cannot
+	// reach: the same visible row, a different path.
+	if err := os.WriteFile(f.tomlPath, []byte(`[providers.work]
+base = "openai"
+base_url = "https://gateway.test/v1"
+protocol = "`+next+`"
+endpoint = "/somewhere-else"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", f.tomlPath, err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	third := entry(t, f.ctl.List(), "work")
+	if third.BaseURL != first.BaseURL {
+		t.Fatalf("displayed BaseURL = %q, want the sanitized copy unchanged", third.BaseURL)
+	}
+	if third.EndpointFingerprint == second.EndpointFingerprint {
+		t.Fatal("a request-path change left the fingerprint unchanged, so a client cannot see where the request now goes")
+	}
+}
+
+// The fingerprint stands in for parts of the endpoint that can be low-entropy
+// (a password in userinfo, a short query token), so it is keyed with the hub's
+// own secret: an unkeyed digest of a guessable secret is a guessable function
+// of it, and a client holding the listing could recover the secret by brute
+// force - exactly what the sanitized copy exists to prevent.
+func TestInstances_EndpointFingerprintIsKeyedWithTheHubSecret(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	const endpoint = "https://gateway.test/v1?token=hunter2"
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if again := entry(t, f.ctl.List(), "work").EndpointFingerprint; again != got {
+		t.Fatalf("the fingerprint moved between listings: %q then %q", got, again)
+	}
+	// The same endpoint under a second state root has its own key and so a
+	// different digest. That is what keying means here: the value a client
+	// holds is a function of the hub's secret, not of the endpoint alone, so
+	// the secret parts it covers cannot be recovered from it.
+	other := newInstancesFixture(t, nil)
+	if err := other.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai", BaseURL: endpoint}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if otherFP := entry(t, other.ctl.List(), "work").EndpointFingerprint; otherFP == got {
+		t.Fatal("two state roots fingerprinted the same endpoint identically, so the digest is not keyed")
+	}
+	// The key is machine-local and closed to other users, the same discipline
+	// the OAuth records beside it keep.
+	info, err := os.Stat(filepath.Join(f.stateDir, endpointFingerprintKeyFile))
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	assertKeyFileMode0600(t, info, "the key file")
+}
+
+// A state root the hub cannot key under omits the fingerprint rather than
+// serving a digest anyone can recompute.
+func TestInstances_EndpointFingerprintIsOmittedWithoutAKey(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A directory where the key file belongs: neither reading nor creating it
+	// can succeed, which is the shape of a state root the hub cannot key under.
+	unkeyableStateRoot(t, f.stateDir)
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted when no key is available", got)
+	}
+}
+
+// A state root the hub cannot key under is not silent: the listing has to say
+// why every fingerprint is missing (the rows a client cannot verify against,
+// and the writes that fail closed with nothing visible behind them). The entry
+// names the key file and the reason, never key material, and a healthy hub has
+// no such entry.
+func TestInstances_ListDiagnosesAnUnusableEndpointFingerprintKey(t *testing.T) {
+	newWork := func(t *testing.T) *instancesFixture {
+		t.Helper()
+		f := newInstancesFixture(t, nil)
+		if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		return f
+	}
+	keyDiagnostics := func(diags []string) []string {
+		var out []string
+		for _, d := range diags {
+			if strings.HasPrefix(d, endpointFingerprintKeyFile+": ") {
+				out = append(out, d)
+			}
+		}
+		return out
+	}
+
+	t.Run("a healthy hub reports nothing", func(t *testing.T) {
+		f := newWork(t)
+		if got := keyDiagnostics(f.ctl.List().Diagnostics); len(got) != 0 {
+			t.Fatalf("a healthy hub diagnosed its key file: %v", got)
+		}
+	})
+
+	t.Run("an unusable key is reported", func(t *testing.T) {
+		f := newWork(t)
+		// A directory where the key file belongs: neither reading nor creating
+		// it can succeed, so every fingerprint is omitted and the pane has to
+		// say why.
+		unkeyableStateRoot(t, f.stateDir)
+		diags := f.ctl.List().Diagnostics
+		found := keyDiagnostics(diags)
+		if len(found) != 1 {
+			t.Fatalf("Diagnostics = %v, want exactly one entry for the unusable %s", diags, endpointFingerprintKeyFile)
+		}
+		if !strings.Contains(found[0], "(endpoint fingerprints are unavailable until it can be read or written)") {
+			t.Fatalf("diagnostic = %q, want it to say the fingerprints are unavailable until the key can be read or written", found[0])
+		}
+		if strings.Contains(found[0], "in the way") {
+			t.Fatalf("diagnostic carried the obstacle file's content: %q", found[0])
+		}
+	})
+}
+
+// A curated provider with no credential yet has no instance, but the listing
+// still advertises a setup entry for it whose endpoint fingerprint is built by
+// resolving the provider. A client asserting that value has to be answered from
+// the same lookup, or the first key for every credential-requiring provider
+// could never be saved: the hub would compute no fingerprint and call the
+// write a conflict.
+func TestInstances_ApiKeySetAcceptsTheFingerprintTheCatalogueAdvertises(t *testing.T) {
+	// No ANTHROPIC_API_KEY and no stored key: anthropic has no instance here.
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": ""})
+	var setup *appwire.InstanceEntry
+	for _, p := range f.ctl.List().AvailableProviders {
+		if p.ID == "anthropic" {
+			setup = p.Setup
+			break
+		}
+	}
+	if setup == nil {
+		t.Fatal("the listing carries no setup entry for anthropic")
+	}
+	if setup.EndpointFingerprint == "" {
+		t.Fatal("the setup entry advertises no endpoint fingerprint to assert")
+	}
+	if _, ok := f.ctl.reg.Get().Instance("anthropic"); ok {
+		t.Fatal("fixture drift: anthropic must have no instance without a credential")
+	}
+
+	// The check is live for such a provider, not skipped: a form opened on a
+	// different endpoint is still refused. Without the resolution fallback the
+	// hub would have no fingerprint to compare and would let this through.
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "anthropic",
+		Value:                       "sk-ant-stale",
+		ExpectedEndpointFingerprint: "an-endpoint-this-name-does-not-resolve-to",
+	}); err == nil {
+		t.Fatal("ApiKeySet accepted a stale assertion for an uncredentialed provider")
+	}
+	if v, ok := f.store.Get("anthropic"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for the stale assertion", v)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "anthropic",
+		Value:                       "sk-ant-first",
+		ExpectedEndpointFingerprint: setup.EndpointFingerprint,
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused the endpoint the catalogue advertises: %v", err)
+	}
+	if v, _ := f.store.Get("anthropic"); v != "sk-ant-first" {
+		t.Fatalf("stored key = %q, want the first key for the provider to land", v)
+	}
+}
+
+// A key file this hub did not write 0600 is one another local user may be able
+// to read, which is the whole guarantee the digest rests on (only a holder of
+// the key can recompute it). Using it as-is would keep keying digests with a
+// value someone else knows; the hub rotates it instead, so the exposed key stops
+// describing anything. The write happens before any listing is read: the file is
+// read fresh on every use, so the next read is the one that sees the rotation.
+func TestInstances_EndpointFingerprintRotatesAKeyOthersCanRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	exposed := "a-key-another-local-user-could-read"
+	if err := os.WriteFile(keyPath, []byte(exposed), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("a key file the hub rotates should leave it serving fingerprints")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	assertKeyFileMode0600(t, info, "the key file after the read")
+	rotated, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if string(rotated) == exposed {
+		t.Fatal("the exposed key is still the hub's key: a leaked key has to be rotated, not used")
+	}
+}
+
+// The owner arm of the same judgement: a key file that is not this hub's own is
+// not one it wrote, so it is rotated like an unreadable one. The expected uid is
+// injected because a test cannot own a file as another user.
+func TestInstances_EndpointFingerprintRotatesAKeyThatIsNotItsOwn(t *testing.T) {
+	original := endpointFingerprintKeyOwner
+	endpointFingerprintKeyOwner = func() int { return os.Getuid() + 1 }
+	t.Cleanup(func() { endpointFingerprintKeyOwner = original })
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	foreign := "a-key-file-the-hub-did-not-write"
+	if err := os.WriteFile(keyPath, []byte(foreign), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("a key file the hub rotates should leave it serving fingerprints")
+	}
+	rotated, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if string(rotated) == foreign {
+		t.Fatal("a key file belonging to another uid was used as the hub's own")
+	}
+}
+
+// Rotation is the answer to a key that may have leaked, so it has to take effect
+// in a running hub: the key file is read on every use, so a key file an operator
+// replaces stops keying digests immediately. That includes a replacement that
+// changes neither the file's size nor its modification time, which a size-and-
+// mtime cache could not tell apart. A key file that is deleted is rotated rather
+// than kept, so the next use writes a fresh one.
+func TestInstances_EndpointFingerprintFollowsARotatedKeyFile(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	first := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if first == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(keyPath, []byte("a-rotated-key-an-operator-just-put-here"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	second := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if second == first {
+		t.Fatal("the fingerprint still came from the cached key after the key file was replaced")
+	}
+
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatalf("Remove(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	third := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if third == "" || third == second {
+		t.Fatal("a deleted key file was not replaced by a fresh one")
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("Stat(%s) after the rotation: %v", endpointFingerprintKeyFile, err)
+	}
+
+	// The reviewer's rotation, against the 43-byte key the hub just generated:
+	// a different key of the same length, with the replaced file's own
+	// modification time put back, so size and mtime together cannot tell it apart
+	// from the file it replaced. Only reading the file on every use can see it.
+	before, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	sameLength := []byte("b-rotated-key-an-operator-just-put-here-now")
+	if int64(len(sameLength)) != before.Size() {
+		t.Fatalf("the replacement key is %d bytes, want the %d bytes of the file it replaces", len(sameLength), before.Size())
+	}
+	if err := os.WriteFile(keyPath, sameLength, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if err := os.Chtimes(keyPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatalf("Chtimes(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	rotatedSameSize := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if rotatedSameSize == third {
+		t.Fatal("the fingerprint still came from the stale cached key after a same-size, same-mtime replacement")
+	}
+}
+
+// A key file that is there but empty is a corrupt one, and treating it as "no
+// key" would fail the endpoint-change protection open without a word. The hub
+// replaces it, so the listing keeps serving fingerprints a client can compare.
+func TestInstances_EndpointFingerprintRepairsAnEmptyKeyFile(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.WriteFile(keyPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("an empty key file left the endpoint fingerprint omitted")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("the empty key file was left in place")
+	}
+	assertKeyFileMode0600(t, info, "the repaired key file")
+}
+
+// Something unusable at the key path does not leave the state root unkeyable
+// when it can be lifted: an empty directory cannot be renamed over and is not
+// a key, so it is removed and the path keyed atomically. (A non-empty
+// directory cannot be either and stays the obstacle the diagnostics name.)
+func TestInstances_EndpointFingerprintRepairsAnEmptyKeyPathDirectory(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	if err := os.Mkdir(keyPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", keyPath, err)
+	}
+
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got == "" {
+		t.Fatal("an empty directory at the key path left the endpoint fingerprint omitted")
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", keyPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("key path mode = %v, want a regular key file", info.Mode())
+	}
+	assertKeyFileMode0600(t, info, "the repaired key file")
+}
+
+// A platform that does not record POSIX permission bits - Windows synthesizes
+// 0666 for every file, 0444 when read-only - must not have the hub's own key
+// refused for the mode it reports: the refusal would send every read through
+// the repair, so the hub would rotate the key on every use and every
+// fingerprint a client had been shown would stop matching. The seam stands in
+// for that platform, answering unjudged, which no mode written on this host
+// makes the real helper do.
+func TestInstances_EndpointFingerprintIsReadWhereThePlatformDoesNotReportModes(t *testing.T) {
+	original := endpointFingerprintKeyMode
+	endpointFingerprintKeyMode = func(os.FileInfo) (os.FileMode, bool) { return 0, false }
+	t.Cleanup(func() { endpointFingerprintKeyMode = original })
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	keyPath := filepath.Join(f.stateDir, endpointFingerprintKeyFile)
+	// What the hub's own 0600 key reads back as on Windows: a mode the hub has
+	// to accept as its own rather than judge against a POSIX 0600.
+	if err := os.WriteFile(keyPath, []byte("a-key-the-hub-just-wrote"), 0o666); err != nil {
+		t.Fatalf("WriteFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+
+	first := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if first == "" {
+		t.Fatal("a key the platform reports no modes for left the endpoint fingerprint omitted")
+	}
+	if second := entry(t, f.ctl.List(), "work").EndpointFingerprint; second != first {
+		t.Fatal("the key was rotated between two reads on a platform that reports no modes")
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", endpointFingerprintKeyFile, err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("the hub rotated a key it should have accepted; every fingerprint a client was shown would stop matching")
+	}
+}
+
+// A credential write that landed must not be reported as failed because the
+// config it belongs to cannot be loaded: the secret is stored either way, and a
+// caller told it failed retypes one the hub already has. The reload failure
+// stays visible where it belongs - as the registry's own state, which is what
+// carries the diagnostics and refuses instance writes (spec §10).
+func TestInstances_ApiKeySetLandsWhenTheRegistryCannotReload(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// An entry that parses but cannot resolve an endpoint (#711): the reload
+	// that follows the write fails.
+	raw, err := os.ReadFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	raw = append(raw, []byte("\n[providers.standalone]\nprotocol = \"openai-chat\"\n")...)
+	if err := os.WriteFile(f.tomlPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "work", Value: "sk-landed"}); err != nil {
+		t.Fatalf("ApiKeySet reported a failure for a write that landed: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-landed" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+	if !f.ctl.reg.WritesRefused() {
+		t.Fatal("the reload failure is no longer visible as the registry's own state")
+	}
+}
+
+// An asserted endpoint the hub can no longer match is refused, not waved
+// through: the client was shown an endpoint (it asserted one), and a hub that
+// computes no fingerprint for the name cannot say the key would land there. The
+// unkeyable state root is exactly the state that would otherwise switch the
+// protection off silently, so a write carrying an assertion has to fail closed
+// and ask the user to look again. An empty assertion is refused there too: the
+// client was shown nothing because the hub could not key a fingerprint, and
+// landing the key anyway would leave the destination unverified without a word.
+// Only a hub with no state root at all has nothing to key with and nothing to
+// refuse (TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot).
+func TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A directory where the key file belongs: neither reading nor creating it
+	// can succeed, so every fingerprint is omitted.
+	unkeyableStateRoot(t, f.stateDir)
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted with no usable key", got)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-unchecked",
+		ExpectedEndpointFingerprint: "asserted-by-a-form-the-hub-cannot-describe",
+	}); err == nil {
+		t.Fatal("ApiKeySet accepted an assertion the hub cannot check")
+	}
+	if v, _ := f.store.Get("work"); v != "" {
+		t.Fatalf("stored key = %q, want nothing stored for an assertion that cannot be checked", v)
+	}
+	// The client that was shown nothing asserts nothing - and it was shown
+	// nothing because the hub cannot key a fingerprint, so the write has to fail
+	// closed here too. Accepting the empty assertion would let a concurrent
+	// endpoint change receive the credential with no verification at all, which
+	// is the hole an unusable key used to open silently.
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "work",
+		Value:    "sk-no-assertion",
+	})
+	if err == nil {
+		t.Fatal("ApiKeySet accepted a write whose destination the hub cannot key a fingerprint for")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("ApiKeySet = %v, want a Conflict saying the destination cannot be verified", err)
+	}
+	if !strings.Contains(err.Error(), "cannot key its endpoint fingerprints right now") {
+		t.Fatalf("refusal = %q, want it to say the hub cannot key its endpoint fingerprints", err)
+	}
+	if v, _ := f.store.Get("work"); v != "" {
+		t.Fatalf("stored key = %q, want nothing stored for a write the hub cannot verify", v)
+	}
+}
+
+// An empty assertion is accepted while the hub can key a fingerprint, whatever
+// the destination: verifyEndpointFingerprint checks an asserted endpoint, and a
+// client that asserts nothing is refused only when the hub itself cannot key
+// one (TestInstances_ApiKeySetRefusesAnAssertionTheHubCannotCheck). This pins
+// the accepted side for a name with no destination at all: openai-compatible
+// with no base URL is hidden, so endpointHasDestination answers false while the
+// hub can key fingerprints.
+func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithNoDestination(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if f.ctl.auth.endpointHasDestination("openai-compatible") {
+		t.Fatal("fixture drift: openai-compatible must have no destination with no base URL")
+	}
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "openai-compatible",
+		Value:    "sk-no-destination",
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused a write for a name with no destination: %v", err)
+	}
+	if v, _ := f.store.Get("openai-compatible"); v != "sk-no-destination" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+}
+
+// The other side of the same rule: a hub with no state root at all (a bare test
+// controller) has nothing to key an endpoint fingerprint with, so no client
+// could have been shown one and there is no verification to fail closed on. The
+// empty assertion is accepted there, and the write lands.
+func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// No state root: nothing to key with, and every row omits its fingerprint.
+	f.ctl.auth.stateDir = ""
+	if got := entry(t, f.ctl.List(), "work").EndpointFingerprint; got != "" {
+		t.Fatalf("EndpointFingerprint = %q, want it omitted with no state root", got)
+	}
+
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider: "work",
+		Value:    "sk-no-root",
+	}); err != nil {
+		t.Fatalf("ApiKeySet refused a write with no state root to key an endpoint with: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-no-root" {
+		t.Fatalf("stored key = %q, want the write to have landed", v)
+	}
+	// Nothing to report, either: there is no key file that could be unusable.
+	for _, d := range f.ctl.List().Diagnostics {
+		if strings.HasPrefix(d, endpointFingerprintKeyFile+": ") {
+			t.Fatalf("a hub with no state root diagnosed a key file it does not have: %q", d)
+		}
+	}
+}
+
+// removeCredentials documents that it reports which credential layers it
+// actually deleted, and its caller's restore gate relies on that reading: a
+// flag set for a file that was never there says there is something to put back.
+func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deleted, err := f.ctl.removeCredentials("work")
+	if err != nil {
+		t.Fatalf("removeCredentials: %v", err)
+	}
+	if deleted.storedKey || deleted.oauthRecord {
+		t.Fatalf("removeCredentials reported %+v for a name holding nothing", deleted)
+	}
+
+	// With a layer present the flag follows the deletion it just performed.
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(authopenai.AuthFilePath(f.stateDir, "work")), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(authopenai.AuthFilePath(f.stateDir, "work"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	deleted, err = f.ctl.removeCredentials("work")
+	if err != nil {
+		t.Fatalf("removeCredentials: %v", err)
+	}
+	if !deleted.storedKey || !deleted.oauthRecord {
+		t.Fatalf("removeCredentials reported %+v for a name holding both layers", deleted)
+	}
+}
+
+// A credential write may assert the endpoint whose form the user was shown, and
+// the hub checks that assertion where the write lands. A client's own
+// comparison reads a listing a concurrent change can outdate, so without this
+// the secret could still land on an endpoint the user never reviewed.
+func TestInstances_ApiKeySetRefusesAnEndpointItsCallerDidNotSee(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:    "work",
+		Base:    "openai",
+		BaseURL: "https://gateway.test/v1?api-version=2024-02-01",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	shown := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if shown == "" {
+		t.Fatal("the listing carried no fingerprint to assert")
+	}
+	// The endpoint moves after the form was opened: only the query parameter
+	// changes, so the displayed URL stays identical.
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: "https://gateway.test/v1?api-version=2025-01-01"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	_, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-stale",
+		ExpectedEndpointFingerprint: shown,
+	})
+	if err == nil {
+		t.Fatal("ApiKeySet stored a key against an endpoint its caller no longer sees")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("ApiKeySet = %v, want a conflict wire error", err)
+	}
+	if v, ok := f.store.Get("work"); ok {
+		t.Fatalf("stored key = %q, want nothing stored for the stale endpoint", v)
+	}
+
+	// The endpoint the caller can see now is accepted.
+	current := entry(t, f.ctl.List(), "work").EndpointFingerprint
+	if _, err := f.ctl.auth.ApiKeySet(appwire.AuthApiKeySetParams{
+		Provider:                    "work",
+		Value:                       "sk-current",
+		ExpectedEndpointFingerprint: current,
+	}); err != nil {
+		t.Fatalf("ApiKeySet with the endpoint the caller sees: %v", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-current" {
+		t.Fatalf("stored key = %q, want the matching write to land", v)
 	}
 }
 
@@ -1142,7 +2779,7 @@ func TestInstances_ListReportsTheFirstAuthoredAPIKeyEnv(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture registry has no groq instance")
 	}
-	got := f.ctl.entryFor(inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}})
+	got := f.ctl.entryFor(f.ctl.reg.Get(), inst, &registry.Provider{APIKeyEnv: []string{"FIRST", "SECOND"}}, endpointFingerprintKey(f.ctl.authStateDir()))
 	if got.APIKeyEnv != "FIRST" {
 		t.Fatalf("APIKeyEnv = %q, want FIRST", got.APIKeyEnv)
 	}
@@ -2097,4 +3734,399 @@ func TestInstances_EditSameNameIsNotARename(t *testing.T) {
 		t.Fatalf("Edit with NewName == Name must be a plain no-op edit: %v", err)
 	}
 	authoredEntry(t, f.tomlPath, "work")
+}
+
+// Decode the public JSON contract so missing additive fields fail at runtime,
+// and catalogue tests also prove the metadata actually crosses appwire.
+type providerSetupDescriptor struct {
+	ID        string
+	AuthModes []string
+	Setup     *appwire.InstanceEntry
+}
+
+func providerSetup(t *testing.T, list appwire.InstanceListResponse, id string) providerSetupDescriptor {
+	t.Helper()
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(mustMarshal(t, list), &wire); err != nil {
+		t.Fatal(err)
+	}
+	catalogue, ok := wire["availableProviders"]
+	if !ok {
+		t.Fatal("missing public availableProviders key")
+	}
+	var providers []map[string]json.RawMessage
+	if err := json.Unmarshal(catalogue, &providers); err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range providers {
+		var p providerSetupDescriptor
+		if err := json.Unmarshal(fields["id"], &p.ID); err != nil {
+			t.Fatal(err)
+		}
+		if p.ID != id {
+			continue
+		}
+		modes, ok := fields["authModes"]
+		if !ok {
+			t.Fatal("missing public authModes key")
+		}
+		if err := json.Unmarshal(modes, &p.AuthModes); err != nil {
+			t.Fatal(err)
+		}
+		if setup, ok := fields["setup"]; ok {
+			if err := json.Unmarshal(setup, &p.Setup); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return p
+	}
+	t.Fatalf("catalogue has no provider %q", id)
+	return providerSetupDescriptor{}
+}
+
+func requireNoProviderSecrets(t *testing.T, value any, secrets ...string) {
+	t.Helper()
+	encoded := string(mustMarshal(t, value))
+	for _, secret := range secrets {
+		if strings.Contains(encoded, secret) {
+			t.Fatal("wire response contains credential or endpoint secret sentinel")
+		}
+	}
+}
+
+// Dropping setup metadata, conflating discovery with Instances, or replacing
+// transport-specific auth modes with a universal key form must fail here.
+func TestProviderSetup_DiscoveryWithoutCredentials(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{})
+	list := f.ctl.List()
+	for _, tc := range []struct {
+		id, auth, destination string
+		modes                 []string
+		hidden, member        bool
+	}{
+		{"anthropic", registry.AuthHeader, "https://api.anthropic.com/v1", []string{"apiKey"}, false, false},
+		{"openai", registry.AuthBearer, "https://api.openai.com/v1", []string{"apiKey"}, false, false},
+		{"openai-codex", registry.AuthOAuthOpenAICodex, "https://chatgpt.com/backend-api/codex", []string{"oauth"}, false, false},
+		{"ollama", registry.AuthOptionalBearer, "http://localhost:11434/v1", []string{"none", "apiKey"}, false, true},
+		{"google-vertex", registry.AuthGCPADC, "", []string{"adc", "credentialJson"}, true, false},
+		{"openai-compatible", registry.AuthOptionalBearer, "", []string{"none", "apiKey"}, true, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			p := providerSetup(t, list, tc.id)
+			if !slices.Equal(p.AuthModes, tc.modes) {
+				t.Errorf("auth modes=%v, want %v", p.AuthModes, tc.modes)
+			}
+			if p.Setup == nil {
+				t.Fatal("missing discovery setup")
+			}
+			s := p.Setup
+			if s.Name != tc.id || s.ProviderID != tc.id || s.Auth != tc.auth || !s.Implicit || s.ActiveSource != "none" || !slices.Equal(s.AuthModes, tc.modes) {
+				t.Fatalf("incorrect setup identity/auth: %+v", s)
+			}
+			if s.BaseURL != tc.destination || s.Hidden != tc.hidden {
+				t.Fatalf("destination=%q hidden=%v; want %q hidden=%v", s.BaseURL, s.Hidden, tc.destination, tc.hidden)
+			}
+			if s.CredentialRequired != (tc.auth != registry.AuthOptionalBearer) {
+				t.Fatalf("credentialRequired=%v for auth %q", s.CredentialRequired, tc.auth)
+			}
+			member := slices.ContainsFunc(list.Instances, func(i appwire.InstanceEntry) bool { return i.Name == tc.id })
+			if member != tc.member {
+				t.Fatalf("launch-ready membership=%v, want %v", member, tc.member)
+			}
+		})
+	}
+	// Hidden implicit IDs are addressable discovery, not launch readiness.
+	// Nonimplicit providers have no setup until an instance addresses that ID.
+	for _, p := range list.AvailableProviders {
+		s := providerSetup(t, list, p.ID)
+		if !slices.Equal(s.AuthModes, authModesFor(p.Auth)) {
+			t.Errorf("%s modes=%v do not match descriptor auth %q", p.ID, s.AuthModes, p.Auth)
+		}
+		if !p.Implicit && s.Setup != nil {
+			t.Errorf("nonimplicit %s unexpectedly has setup", p.ID)
+		}
+	}
+}
+
+// Using the curated vendor record instead of the authored instance would
+// expose the wrong destination, credential source, and credential edit fields.
+func TestProviderSetup_AuthoredOverrideIsSafeResolvedView(t *testing.T) {
+	const key = "fixture-inline-key-sentinel"
+	const header = "fixture-header-secret-sentinel"
+	const stored = "fixture-stored-secret-sentinel"
+	const envKey = "fixture-env-secret-sentinel"
+	const endpoint = "https://user-sentinel:password-sentinel@gateway.test/v1?token=query-sentinel#fragment-sentinel"
+	f := newInstancesFixture(t, map[string]string{"ANTHROPIC_API_KEY": envKey})
+	if err := f.store.Set("anthropic", stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.WriteConfigFile(f.tomlPath, &registry.Layer{Providers: map[string]registry.Provider{
+		"anthropic": {
+			APIKey: key, APIKeyEnv: []string{"OVERRIDE_KEY"},
+			Transport:         registry.Transport{BaseURL: endpoint},
+			CredentialHeaders: map[string]string{"X-Credential": header},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.ctl.reg.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	list := f.ctl.List()
+	p := providerSetup(t, list, "anthropic")
+	if p.Setup == nil {
+		t.Fatal("missing authored discovery setup")
+	}
+	actual := entry(t, list, "anthropic")
+	if !reflect.DeepEqual(*p.Setup, actual) {
+		t.Fatalf("setup differs from authored instance: setup=%+v instance=%+v", p.Setup, actual)
+	}
+	if p.Setup.BaseURL != "https://gateway.test/v1" || p.Setup.Implicit || p.Setup.APIKeyEnv != "OVERRIDE_KEY" || p.Setup.CredentialHeader != "" || p.Setup.ActiveSource != "api_key" {
+		t.Fatalf("incorrect safe override metadata: %+v", p.Setup)
+	}
+	requireNoProviderSecrets(t, list, key, header, stored, envKey, "user-sentinel", "password-sentinel", "query-sentinel", "fragment-sentinel")
+}
+
+func TestProviderSetup_EnvironmentDestinationIsSanitized(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{
+		"ANTHROPIC_BASE_URL": "https://user-sentinel:password-sentinel@proxy.test/v1?token=query-sentinel#fragment-sentinel",
+	})
+	list := f.ctl.List()
+	p := providerSetup(t, list, "anthropic")
+	if p.Setup == nil || p.Setup.BaseURL != "https://proxy.test/v1" || p.Setup.ActiveSource != "none" {
+		t.Fatalf("setup does not reflect sanitized resolved environment destination: %+v", p.Setup)
+	}
+	requireNoProviderSecrets(t, list, "user-sentinel", "password-sentinel", "query-sentinel", "fragment-sentinel")
+}
+
+// List reads the registry snapshot and providers.toml as one view. A mutation
+// writes the file and reloads the registry inside c.mu, so a listing that ran
+// between those two halves of a mutation would serve a row carrying the fresh
+// authored credential fields beside the endpoint and endpoint fingerprint of
+// the view the reload has not committed yet. List has to hold the lock for its
+// whole snapshot: it may not return while a mutation is mid-section, and the
+// listing it does return must be one generation throughout.
+func TestInstances_ListWaitsForAMutationHoldingTheLock(t *testing.T) {
+	const (
+		aURL = "https://a.example.test/v1"
+		bURL = "https://b.example.test/v1"
+		aKey = "KEY_A"
+		bKey = "KEY_B"
+	)
+
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{
+		Name:      "work",
+		Base:      "openai",
+		BaseURL:   aURL,
+		APIKeyEnv: aKey,
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	settled := entry(t, f.ctl.List(), "work")
+	if settled.BaseURL != aURL || settled.APIKeyEnv != aKey {
+		t.Fatalf("fixture drift: settled row = %+v, want baseURL %q apiKeyEnv %q", settled, aURL, aKey)
+	}
+	fpA := settled.EndpointFingerprint
+	if fpA == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// A registry whose loader can be paused. The controller swaps its live
+	// registry (the rollback tests replace f.ctl.reg and f.ctl.auth.reg the same
+	// way), and the pause catches the mutation between its providers.toml write
+	// and the reload that commits it: the file already carries the new values
+	// while the registry still holds the old snapshot.
+	armed := atomic.Bool{}
+	loadEntered := make(chan struct{})
+	releaseLoad := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseLoad) }) }
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		if armed.CompareAndSwap(true, false) {
+			close(loadEntered)
+			<-releaseLoad
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, f.store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(f.tomlPath),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, f.store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+
+	editDone := make(chan error, 1)
+	editFinished := make(chan struct{})
+	armed.Store(true)
+	go func() {
+		defer close(editFinished)
+		editDone <- f.ctl.Edit(appwire.InstanceEditParams{Name: "work", BaseURL: bURL, APIKeyEnv: bKey})
+	}()
+
+	select {
+	case <-loadEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Edit never reached its reload, so the loader was not paused")
+	}
+
+	listDone := make(chan appwire.InstanceListResponse, 1)
+	listFinished := make(chan struct{})
+	go func() {
+		defer close(listFinished)
+		listDone <- f.ctl.List()
+	}()
+	t.Cleanup(func() {
+		release()
+		for _, finished := range []chan struct{}{editFinished, listFinished} {
+			select {
+			case <-finished:
+			case <-time.After(10 * time.Second):
+				t.Error("a goroutine was still blocked after the loader was released")
+			}
+		}
+	})
+
+	// The loader is paused inside the mutation's held lock, so List has to be
+	// waiting on it: one that returns here read a half-committed mutation.
+	select {
+	case got := <-listDone:
+		row := entry(t, got, "work")
+		t.Fatalf("List returned while a mutation held the controller lock: row baseURL=%q apiKeyEnv=%q endpointFingerprint=%q; want the listing to wait and then serve one generation (A: %q/%q/%q, B: %q/%q)",
+			row.BaseURL, row.APIKeyEnv, row.EndpointFingerprint, aURL, aKey, fpA, bURL, bKey)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	if err := <-editDone; err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	select {
+	case resp = <-listDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("List never returned after the mutation completed")
+	}
+
+	// The generations in question, read from the settled pane after the edit.
+	settledB := entry(t, f.ctl.List(), "work")
+	if settledB.BaseURL != bURL || settledB.APIKeyEnv != bKey {
+		t.Fatalf("fixture drift: after the edit the pane serves %+v, want baseURL %q apiKeyEnv %q", settledB, bURL, bKey)
+	}
+	fpB := settledB.EndpointFingerprint
+	if fpB == "" || fpB == fpA {
+		t.Fatalf("fixture drift: moving the endpoint must move the fingerprint: %q then %q", fpA, fpB)
+	}
+
+	row := entry(t, resp, "work")
+	switch {
+	case row.BaseURL == aURL && row.APIKeyEnv == aKey && row.EndpointFingerprint == fpA:
+		// The pre-edit generation, self-consistent.
+	case row.BaseURL == bURL && row.APIKeyEnv == bKey && row.EndpointFingerprint == fpB:
+		// The post-edit generation, self-consistent.
+	default:
+		t.Fatalf("List served a mixed row: baseURL=%q apiKeyEnv=%q endpointFingerprint=%q; want all of A (%q/%q/%q) or all of B (%q/%q/%q)",
+			row.BaseURL, row.APIKeyEnv, row.EndpointFingerprint, aURL, aKey, fpA, bURL, bKey, fpB)
+	}
+}
+
+// List's snapshot covers credential writes too, not only providers.toml
+// mutations: Logout holds credMu exclusively while it decides which layer the
+// name clears and removes it, and a listing that ran inside that section would
+// pair the credential state of one generation with the registry view of
+// another. List takes the shared side of credMu across its whole snapshot (mu
+// then credMu, the documented order), so it cannot return while an exclusive
+// section is held, and the listing taken afterwards is one generation
+// throughout.
+func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	settled := entry(t, f.ctl.List(), "work")
+	if settled.ActiveSource != "store" || !settled.HasStoredFile {
+		t.Fatalf("fixture drift: settled row = %+v, want the stored key's source", settled)
+	}
+	if settled.EndpointFingerprint == "" {
+		t.Fatal("fixture drift: the endpoint must be fingerprintable here")
+	}
+
+	// Paused inside Logout's exclusive credMu section, before the clear it
+	// performs: that is the section a listing must not read through.
+	originalClear := f.ctl.auth.clearCredential
+	clearEntered := make(chan struct{})
+	releaseClear := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseClear) }) }
+	f.ctl.auth.clearCredential = func(name string) error {
+		close(clearEntered)
+		<-releaseClear
+		return originalClear(name)
+	}
+	t.Cleanup(release)
+
+	logoutDone := make(chan error, 1)
+	go func() {
+		_, err := f.ctl.auth.Logout(appwire.AuthLogoutParams{Provider: "work"})
+		logoutDone <- err
+	}()
+	select {
+	case <-clearEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Logout never reached the credential clear, so its exclusive section was not held")
+	}
+
+	listDone := make(chan appwire.InstanceListResponse, 1)
+	listFinished := make(chan struct{})
+	go func() {
+		defer close(listFinished)
+		listDone <- f.ctl.List()
+	}()
+	t.Cleanup(func() {
+		release()
+		// The listing is joined before the fixture's temp roots are removed:
+		// building a row can still land the endpoint-fingerprint key file under
+		// the state root, and one still running at cleanup races RemoveAll.
+		select {
+		case <-listFinished:
+		case <-time.After(10 * time.Second):
+			t.Error("the listing goroutine was still blocked after the section was released")
+		}
+	})
+
+	// The exclusive section is held, so List has to be waiting on it: one that
+	// returns here read a credential state a writer is still deciding.
+	select {
+	case got := <-listDone:
+		row := entry(t, got, "work")
+		t.Fatalf("List returned while a credential write held the lock: row activeSource=%q hasStoredFile=%v endpointFingerprint=%q; want the listing to wait for the section to end",
+			row.ActiveSource, row.HasStoredFile, row.EndpointFingerprint)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case err := <-logoutDone:
+		if err != nil {
+			t.Fatalf("Logout: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Logout never finished after its section was released")
+	}
+
+	// The listing afterwards is one generation: the cleared credential state
+	// beside the registry view that names it, never one half beside the other.
+	after := entry(t, f.ctl.List(), "work")
+	if after.ActiveSource != "none" || after.HasStoredFile {
+		t.Fatalf("post-logout row = activeSource %q hasStoredFile %v, want the cleared generation", after.ActiveSource, after.HasStoredFile)
+	}
 }
