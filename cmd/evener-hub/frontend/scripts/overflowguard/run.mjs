@@ -620,8 +620,9 @@ function assertFieldsets(detail, label) {
   return failures;
 }
 
-// measureVerbCluster reads the harness's verb-cluster geometry for one width
-// and one fixture (steer advertised or not) off a lite measurement.
+// measureVerbCluster reads the harness's compose-controls measurement (the
+// verb cluster's geometry plus each control's containment) for one width and
+// one fixture (steer advertised or not) off a lite measurement.
 async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
   const result = await measureAt(
     cdpEndpoint,
@@ -629,19 +630,23 @@ async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
     width,
     { lite: true },
   );
-  return result.currentWork.verbCluster;
+  return result.currentWork;
 }
 
 function verbClusterWrapped(cluster) {
   return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
 }
 
-// assertVerbCluster: the wrap rule itself. At a card container of 399px or
-// less a three-verb cluster sits below the status row; two verbs stay beside
-// it there, and three stay beside it above. The threshold is the container's,
+// assertVerbCluster: the wrap rule itself, plus the containment the main pass
+// asserts for the no-steer fixture. At a card container of 399px or less a
+// three-verb cluster sits below the status row; two verbs stay beside it
+// there, and three stay beside it above. The threshold is the container's,
 // measured by the harness, and the verb count is the fixture's own
-// (expectedVerbs, from its capabilities).
-function assertVerbCluster(cluster, steer) {
+// (expectedVerbs, from its capabilities). Every expected control is present,
+// inside the card and the pane, no two overlap, and the current-work strip
+// and the card share the pane without horizontal overflow.
+function assertVerbCluster(work, steer) {
+  const cluster = work.verbCluster;
   if (!Number.isFinite(cluster.containerWidth)) {
     return [`card container width unmeasured (${cluster.containerWidth})`];
   }
@@ -654,6 +659,12 @@ function assertVerbCluster(cluster, steer) {
     failures.push(
       `expected the verbs ${expectWrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px), ` +
         `got top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+    );
+  }
+  if (!work.controlsFound || !work.controlsContained || !work.controlsDoNotOverlap || !work.sharedPaneWithoutOverflow) {
+    failures.push(
+      `compose controls geometry: found=${work.controlsFound} contained=${work.controlsContained} ` +
+        `noOverlap=${work.controlsDoNotOverlap} sharedPane=${work.sharedPaneWithoutOverflow} ${JSON.stringify(work.controls)}`,
     );
   }
   return failures;
@@ -1424,8 +1435,9 @@ async function main() {
     for (const steer of [false, true]) {
       for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
         const label = `${width}px${steer ? " steer" : ""} verbs`;
-        const cluster = await measureVerbCluster(cdpEndpoint, vitePort, width, steer);
-        const failures = assertVerbCluster(cluster, steer);
+        const work = await measureVerbCluster(cdpEndpoint, vitePort, width, steer);
+        const cluster = work.verbCluster;
+        const failures = assertVerbCluster(work, steer);
         if (failures.length > 0) {
           failed++;
           console.log(`${label} ... FAIL - ${failures.join("; ")}`);
