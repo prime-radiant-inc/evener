@@ -53,6 +53,11 @@ test("names the repository as owner/repo#branch and links it to the forge page",
   expect(screen.getByTestId("forge-mark").getAttribute("data-forge")).toBe("github");
   // The bare branch is only for the no-forge case; here the repo carries it.
   expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  // The anchor, not the span inside it, owns the tooltip: a title on the span
+  // would shadow this one for any hover over the visible text, leaving only a
+  // restatement of what is already on screen.
+  expect(link.getAttribute("title")).toBe("Open owner/repo#feature/x on GitHub");
+  expect(screen.getByTestId("composer-repo-ref").getAttribute("title")).toBeNull();
 });
 
 test("recognizes GitLab and Bitbucket origins", async () => {
