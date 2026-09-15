@@ -148,23 +148,11 @@ func prefetchAllLiveModels(ctx context.Context, holder *hubcore.ProviderRegistry
 	anyChanged := false
 	for _, name := range names {
 		wg.Go(func() {
-			// Paired atomically per fetch: each goroutine builds its
-			// client from the same snapshot its token belongs to, so a
-			// Reload between goroutines cannot cross-wire them.
-			reg, tok, id := holder.BeginLiveFetchReg(name)
-			if reg == nil {
-				return
-			}
-			// Same call-scoped binding as fetchInstanceLive: this
-			// goroutine's requests carry their own Codex value, so
-			// the pass stays concurrent — no shared lock across
-			// the HTTP round trip.
-			fetchCtx := withScopedCodexAuth(ctx, reg)
-			rows, ok, err := fetchInstanceLiveWith(fetchCtx, newLiveClient(reg), name)
-			if err != nil || !ok {
-				return
-			}
-			holder.ReapplyLive(tok, name, id, rows)
+			// The same fetch core the manual refresh uses: paired snapshot,
+			// call-scoped Codex value (so this goroutine's requests carry
+			// their own), and a token-validated publish. Failures are this
+			// pass's normal case — a dead endpoint keeps its catalog rows.
+			_ = fetchInstanceLive(ctx, holder, name)
 			if before[name] != visibleModelFacts(holder.Get(), name) {
 				mu.Lock()
 				anyChanged = true

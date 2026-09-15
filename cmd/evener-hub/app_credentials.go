@@ -69,20 +69,17 @@ func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeCli
 		client *llm.Client
 		err    error
 	)
-	// Serialized like every other registry-client construction: the
-	// loaders below wire process-wide tokenauth seams.
-	if strings.TrimSpace(path) == "" {
-		var r *registry.Registry
-		r, _, err = cmdutil.LoadRegistry()
-		if err == nil && r != nil {
-			client = LiveRegistryClient(r)
-		}
-	} else {
-		var r *registry.Registry
-		r, _, err = cmdutil.LoadRegistry(registry.WithConfigPath(path))
-		if err == nil && r != nil {
-			client = LiveRegistryClient(r)
-		}
+	// Serialized like every other registry-client construction: the loaders
+	// below wire process-wide tokenauth seams. An empty path means the
+	// default user layer; anything else names the file to read.
+	var opts []registry.Option
+	if trimmed := strings.TrimSpace(path); trimmed != "" {
+		opts = append(opts, registry.WithConfigPath(trimmed))
+	}
+	var r *registry.Registry
+	r, _, err = cmdutil.LoadRegistry(opts...)
+	if err == nil && r != nil {
+		client = LiveRegistryClient(r)
 	}
 	if err != nil {
 		// A typed nil in the interface would read as a usable client.
