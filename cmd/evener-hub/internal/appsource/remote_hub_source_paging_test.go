@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appitempaging"
@@ -250,5 +254,101 @@ func TestRemoteHubSourceReusesIdentityWhileTranscriptDoesNotShrink(t *testing.T)
 	}
 	if divergent.Identity == first.Identity {
 		t.Fatalf("divergent read kept identity %+v, want a fresh incarnation", divergent.Identity)
+	}
+}
+
+// newConcurrentScriptedRemote answers each request on its own goroutine, unlike
+// newScriptedRemote whose single receive loop serializes requests at the
+// transport. It reports whether two non-initialize requests were ever in flight
+// at the same time, so a caller can assert that the source serialized them.
+// No SSH, no network, no host.
+func newConcurrentScriptedRemote(t *testing.T, result any) (*RemoteHubSource, func() bool) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	var inFlight atomic.Int64
+	var overlapped atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			request := *msg.Request
+			go func() {
+				if request.Method == appwire.MethodInitialize {
+					data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
+					_ = server.Send(ctx, appwire.ResponseMessage(request.ID, json.RawMessage(data)))
+					return
+				}
+				if inFlight.Add(1) > 1 {
+					overlapped.Store(true)
+				}
+				// Hold the request open long enough that a second unsynchronized
+				// request for the same thread would definitely overlap it.
+				time.Sleep(50 * time.Millisecond)
+				inFlight.Add(-1)
+				data, err := json.Marshal(result)
+				if err != nil {
+					return
+				}
+				_ = server.Send(ctx, appwire.ResponseMessage(request.ID, json.RawMessage(data)))
+			}()
+		}
+	}()
+
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
+		cancel()
+		t.Fatalf("initialize scripted remote: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = client.Close()
+		<-done
+	})
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	return source, overlapped.Load
+}
+
+// Concurrent item pages for the same remote thread must not interleave: the
+// retained remote cursor and its controller identity are one read-modify-write
+// unit, so the source serializes them per thread exactly as LocalDaemonSource
+// does. Without the per-thread lock, two fresh pages race into the remote at the
+// same time and one request's RebaseCursor/put can be applied to the other's
+// retained state.
+func TestRemoteHubSourceSerializesPerThreadItemPaging(t *testing.T) {
+	cursor := remoteItemCursor(t, 10)
+	source, overlapped := newConcurrentScriptedRemote(t, itemPageWithCursor(10, cursor))
+
+	const workers = 4
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			<-start
+			if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+				Ref:       "host:t1",
+				ItemsView: "fragment",
+			}); err != nil {
+				t.Errorf("concurrent page: %v", err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	if overlapped() {
+		t.Fatal("two item pages for one remote thread reached the remote hub at once; per-thread paging must be serialized")
 	}
 }

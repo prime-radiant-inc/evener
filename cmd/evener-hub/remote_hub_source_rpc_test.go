@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 )
 
@@ -434,5 +435,162 @@ func TestHubRPCThreadReadDoesNotEnrichRemoteFilesAsLocal(t *testing.T) {
 	}
 	if images := resp.Thread.Turns[0].Items[0].OutputImages; len(images) != 0 {
 		t.Fatalf("remote thread gained controller-local output images: %+v", images)
+	}
+}
+
+// A remote thread's CWD names the remote host's filesystem. When that path also
+// exists on the controller (a shared layout such as /home/<user>/<repo>), the
+// sidebar list must not resolve it locally and stamp a controller-local project
+// identity over the one the remote hub already computed: that would group the
+// thread under the wrong project and aim project-scoped actions at a controller
+// path.
+func TestHubRPCThreadListKeepsRemoteProjectIdentity(t *testing.T) {
+	// A real controller-local directory that resolves to a controller project, so
+	// an ungated annotation would overwrite the remote values below.
+	localDir := t.TempDir()
+	remoteThread := appwire.Thread{
+		ID:          "t1",
+		SessionID:   "t1",
+		CWD:         localDir,
+		Source:      "local",
+		ProjectID:   "remote-project-id",
+		ProjectPath: "/remote/repo",
+		Evener:      appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID: "turn-1",
+			Items: []appwire.ThreadItem{{
+				Type:          "text",
+				ID:            "item-1",
+				TranscriptKey: "key-1",
+				Position:      &appwire.ThreadItemPosition{Entry: 1},
+			}},
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadList:
+			return appwire.ThreadListResponse{Data: []appwire.Thread{remoteThread}}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := rpc.ThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("thread list = %+v, want the one remote row", resp.Data)
+	}
+	row := resp.Data[0]
+	if row.Source != "h1" {
+		t.Fatalf("row source = %q, want the remote source h1", row.Source)
+	}
+	if row.ProjectID != "remote-project-id" || row.ProjectPath != "/remote/repo" {
+		t.Fatalf("remote project = (%q, %q), want the remote-provided (%q, %q); the controller resolved a remote CWD against its own filesystem",
+			row.ProjectID, row.ProjectPath, "remote-project-id", "/remote/repo")
+	}
+}
+
+// A remote hub is expected to enforce the requested item limit, but the
+// controller must not depend on it: the packer selects the newest itemLimit
+// candidates before the response leaves this hub, so a mixed-version or
+// misbehaving remote that returns an oversized page cannot widen it.
+func TestHubRPCThreadReadBoundsRemoteItemPage(t *testing.T) {
+	oversized := appwire.Thread{
+		ID:        "t1",
+		SessionID: "t1",
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID:        "turn-1",
+			ItemsView: appwire.TurnItemsViewFragment,
+			Items: []appwire.ThreadItem{
+				{Type: "text", ID: "item-1", TranscriptKey: "key-1", Position: &appwire.ThreadItemPosition{Entry: 1}},
+				{Type: "text", ID: "item-2", TranscriptKey: "key-2", Position: &appwire.ThreadItemPosition{Entry: 2}},
+				{Type: "text", ID: "item-3", TranscriptKey: "key-3", Position: &appwire.ThreadItemPosition{Entry: 3}},
+			},
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: oversized}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          "h1:t1",
+		IncludeTurns: true,
+		ItemsView:    "fragment",
+		ItemLimit:    1,
+	})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 || resp.Thread.Turns[0].Items[0].ID != "item-3" {
+		t.Fatalf("bounded read = %+v, want exactly the newest remote item", resp.Thread.Turns)
+	}
+}
+
+// annotateThreadProjects must still resolve a local thread's controller-local
+// project while leaving a remote thread's remote-computed identity untouched,
+// even when both CWDs name a directory that exists here.
+func TestAnnotateThreadProjectsSkipsRemoteThreads(t *testing.T) {
+	localDir := t.TempDir()
+	localProject, err := identifier.ResolveProject(localDir)
+	if err != nil {
+		t.Fatalf("resolve local project: %v", err)
+	}
+	threads := []appwire.Thread{
+		{ID: "local-1", Source: "local", CWD: localDir},
+		{ID: "remote-1", Source: "h1", CWD: localDir, ProjectID: "remote-project-id", ProjectPath: "/remote/repo"},
+	}
+	annotateThreadProjects(threads)
+	if threads[0].ProjectID != localProject.ID || threads[0].ProjectPath != localProject.CanonicalPath {
+		t.Fatalf("local project = (%q, %q), want (%q, %q)",
+			threads[0].ProjectID, threads[0].ProjectPath, localProject.ID, localProject.CanonicalPath)
+	}
+	if threads[1].ProjectID != "remote-project-id" || threads[1].ProjectPath != "/remote/repo" {
+		t.Fatalf("remote project = (%q, %q), want the remote-provided values",
+			threads[1].ProjectID, threads[1].ProjectPath)
 	}
 }

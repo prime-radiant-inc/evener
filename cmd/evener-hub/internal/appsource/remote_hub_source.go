@@ -50,6 +50,14 @@ type RemoteHubSource struct {
 	// snapshot: an evicted continuation degrades to a typed stale-cursor error
 	// instead of leaking the remote hub's cursor identity into the controller.
 	itemPaging remoteItemPagingCache
+
+	// itemPagingLocks serializes the peek → remote I/O → put read-modify-write
+	// for one remote thread, mirroring LocalDaemonSource.itemPagingLocks. Without
+	// it, concurrent requests for the same thread interleave: one request's
+	// RebaseCursor can be applied to another request's retained remote cursor and
+	// replay a stale boundary under a newer incarnation. The key is the
+	// controller-side ref, the same key the paging cache uses.
+	itemPagingLocks keyedMutexRegistry
 }
 
 var (
@@ -360,6 +368,11 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 		return ItemCandidateResult{}, err
 	}
 	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	// Hold the per-thread paging lock from the retained-state peek through the
+	// remote page and its put, exactly as LocalDaemonSource does: the retained
+	// remote cursor and its controller identity are one read-modify-write unit.
+	unlock := s.itemPagingLocks.lock(key)
+	defer unlock()
 	itemLimit, err := appwire.NormalizeTranscriptItemLimit(params.ItemLimit)
 	if err != nil {
 		return ItemCandidateResult{}, err
@@ -439,6 +452,11 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 		return ItemCandidateResult{}, err
 	}
 	key := remoteItemPagingKey(s.id, ref.ThreadID)
+	// The read is already materialized, but minting its controller identity and
+	// replacing the retained cursor is the same read-modify-write unit as a
+	// paged continuation, so it takes the same per-thread lock.
+	unlock := s.itemPagingLocks.lock(key)
+	defer unlock()
 	candidates, err := appitempaging.CandidatesFromTurns(response.Thread.Turns)
 	if err != nil {
 		return ItemCandidateResult{}, err
