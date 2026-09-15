@@ -1663,6 +1663,55 @@ describe("resource-backed Rail", () => {
       restoreSessionPane();
     }
   });
+
+  test("the rail's Notes action rechecks the notes capability, refusing a stale menu", () => {
+    topNotesStore.getState().resetForTests();
+    const restoreSessionPane = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(() => Promise.resolve({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
+      ]);
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "local:notable",
+            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
+          ],
+        ]),
+      });
+      render(<Rail />);
+
+      // The menu opens while the capability is live...
+      fireEvent.click(screen.getByRole("button", { name: /actions for notable/i }));
+      const notesItem = screen.getByRole("menuitem", { name: "Notes" });
+
+      // ...and is revoked before the click lands - one act, so the click
+      // runs against the stale menu the user still sees.
+      act(() => {
+        threadsStore.setState({
+          threads: new Map([
+            [
+              "local:notable",
+              { ref: "local:notable", capabilities: { sharedNotes: false }, status: { type: "idle" } } as never,
+            ],
+          ]),
+        });
+        fireEvent.click(notesItem);
+      });
+
+      // The capability is gone, so the click must leave no trace: no
+      // expanded state, no focus request, nothing the session pane would
+      // surface if the capability ever came back.
+      expect(topNotesStore.getState().isExpanded("local:notable")).toBe(false);
+      expect(topNotesStore.getState().hasPendingFocus("local:notable")).toBe(false);
+    } finally {
+      restoreSessionPane();
+    }
+  });
   test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
     window.history.replaceState({}, "", "/");
     const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });

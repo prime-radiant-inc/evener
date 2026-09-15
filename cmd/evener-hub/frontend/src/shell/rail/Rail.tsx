@@ -5,7 +5,7 @@ import type {
   NavigationProjectSummary,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { canReadSharedNotes, errorText } from "@evener/appwire-client";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -1233,6 +1233,12 @@ function NavigationRail({
   const rowActions = useMemo<RailRowActions>(
     () => ({
       onOpenSessionPane: (session, pane) => {
+        // A menu rendered while the session still had the notes capability
+        // can be clicked before React processes the revocation, so the notes
+        // action rechecks the capability - the same guard SessionChrome's
+        // own Notes entry applies. Without it a stale click leaves expanded
+        // and focus state for a panel that cannot render.
+        if (pane === "notes" && !canReadSharedNotes(threadsStore.getState().threads.get(session.ref))) return;
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
         if (pane === "notes") {
