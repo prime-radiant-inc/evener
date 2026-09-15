@@ -45,11 +45,20 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	if !r.registered {
 		return nil
 	}
-	r.entry.ThreadID = sessionID
-	r.entry.SessionID = sessionID
-	r.entry.InstanceID = sessionID
-	_, err := rendezvous.Write(r.runDir, r.entry)
-	return err
+	// Persist first, then adopt: writing a copy and assigning r.entry only
+	// after rendezvous.Write succeeds keeps memory and disk in agreement. A
+	// failed write that had already mutated r.entry would leave memory holding
+	// an identity newer than the file, and Remove's exact-ownership guard would
+	// then misread its own stale artifact as a replacement daemon's.
+	entry := r.entry
+	entry.ThreadID = sessionID
+	entry.SessionID = sessionID
+	entry.InstanceID = sessionID
+	if _, err := rendezvous.Write(r.runDir, entry); err != nil {
+		return err
+	}
+	r.entry = entry
+	return nil
 }
 
 // Entry returns a detached copy of the registered rendezvous record. The

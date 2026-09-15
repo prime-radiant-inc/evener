@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -31,18 +32,40 @@ const (
 
 // retirementReleaseFault injects deterministic failures at the non-terminal
 // release boundary, after Commit and before the corresponding side effect. It
-// is nil in production. Because it is a package-global, tests that set it MUST
-// NOT run in parallel with any test that releases or closes a session; the
-// agent package's tests are sequential today. Its "transcript_close" point is
+// is nil in production. It is read on the release path, which can run on a
+// goroutine outliving the test that set it, so the seam is synchronized: a
+// plain read racing a test's plain write is a data race under the Go memory
+// model, and this repository runs -race. Its "transcript_close" point is
 // evaluated only under the retirement policy, so it can never affect a terminal
 // close.
-var retirementReleaseFault func(point string) error
+var (
+	retirementReleaseFaultMu sync.Mutex
+	retirementReleaseFault   func(point string) error
+)
+
+// setRetirementReleaseFault installs fn as the release-fault injector and
+// returns a function that restores the previous seam. Tests pair it with
+// t.Cleanup; production never calls it.
+func setRetirementReleaseFault(fn func(point string) error) func() {
+	retirementReleaseFaultMu.Lock()
+	prev := retirementReleaseFault
+	retirementReleaseFault = fn
+	retirementReleaseFaultMu.Unlock()
+	return func() {
+		retirementReleaseFaultMu.Lock()
+		retirementReleaseFault = prev
+		retirementReleaseFaultMu.Unlock()
+	}
+}
 
 func retirementReleaseFailure(point string) error {
-	if retirementReleaseFault == nil {
+	retirementReleaseFaultMu.Lock()
+	fault := retirementReleaseFault
+	retirementReleaseFaultMu.Unlock()
+	if fault == nil {
 		return nil
 	}
-	return retirementReleaseFault(point)
+	return fault(point)
 }
 
 // errRetirementTeardownSpent means the session's single release pass (a terminal

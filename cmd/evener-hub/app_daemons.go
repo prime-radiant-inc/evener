@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -43,15 +44,39 @@ func daemonIdentity(entry rendezvous.Entry) appwire.DaemonIdentity {
 // platform capability is read directly. Safe retire requires the daemon's
 // kernel-serialized ownership contract, and a single platform build cannot
 // exercise both branches of CanRetire, so tests override this to prove the hub
-// agrees with the daemon's own retirement refusal.
-var retireOwnershipCapability func() bool
+// agrees with the daemon's own retirement refusal. It is read on the daemon
+// list path, which can run on a goroutine outliving the test that set it, so
+// the seam is synchronized: a plain read racing a test's plain write is a data
+// race under the Go memory model, and this repository runs -race.
+var (
+	retireOwnershipCapabilityMu sync.Mutex
+	retireOwnershipCapability   func() bool
+)
+
+// setRetireOwnershipCapability installs fn as the ownership-capability seam and
+// returns a function that restores the previous value. Tests pair it with
+// t.Cleanup; production never calls it.
+func setRetireOwnershipCapability(fn func() bool) func() {
+	retireOwnershipCapabilityMu.Lock()
+	prev := retireOwnershipCapability
+	retireOwnershipCapability = fn
+	retireOwnershipCapabilityMu.Unlock()
+	return func() {
+		retireOwnershipCapabilityMu.Lock()
+		retireOwnershipCapability = prev
+		retireOwnershipCapabilityMu.Unlock()
+	}
+}
 
 // strongOwnershipAvailable reports whether the local daemon can uphold the
 // strong rendezvous ownership contract retirement requires
 // (cmd/evener/serve.go refuses retirement outright where it cannot).
 func strongOwnershipAvailable() bool {
-	if retireOwnershipCapability != nil {
-		return retireOwnershipCapability()
+	retireOwnershipCapabilityMu.Lock()
+	capability := retireOwnershipCapability
+	retireOwnershipCapabilityMu.Unlock()
+	if capability != nil {
+		return capability()
 	}
 	return rendezvous.StrongOwnershipAvailable()
 }

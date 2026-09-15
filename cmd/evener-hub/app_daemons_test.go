@@ -70,8 +70,8 @@ func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
 	roster.Refresh()
 	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster}
 
-	previous := retireOwnershipCapability
-	t.Cleanup(func() { retireOwnershipCapability = previous })
+	restore := setRetireOwnershipCapability(nil)
+	t.Cleanup(restore)
 
 	for _, tc := range []struct {
 		name      string
@@ -82,7 +82,7 @@ func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
 		{name: "strong ownership available", available: true, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			retireOwnershipCapability = func() bool { return tc.available }
+			setRetireOwnershipCapability(func() bool { return tc.available })
 			list, err := listDaemons(t.Context(), cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -98,7 +98,7 @@ func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
 
 	// The unseamed production path must agree with the platform capability.
 	t.Run("platform default", func(t *testing.T) {
-		retireOwnershipCapability = nil
+		setRetireOwnershipCapability(nil)
 		list, err := listDaemons(t.Context(), cfg)
 		if err != nil {
 			t.Fatal(err)

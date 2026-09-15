@@ -1,6 +1,7 @@
 package rvreg
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,76 @@ import (
 
 	"primeradiant.com/evener/rendezvous"
 )
+
+// TestRegistrationFailedUpdateLeavesMemoryAndDiskAgreeing is the regression
+// for UpdateSessionID mutating the in-registration copy BEFORE it persists the
+// new identity. A rendezvous write that fails (here: a directory staged where
+// the atomic write puts <pid>.json.tmp, so the write fails while the previous
+// record stays on disk) must leave memory holding the identity that is
+// actually on disk. Without that, Remove compares a memory identity newer than
+// the file, sees the mismatch, and diskHoldsReplacement misreads the stale
+// file as a live replacement's entry — declaring a completed no-op while
+// leaving our own rendezvous artifact behind.
+func TestRegistrationFailedUpdateLeavesMemoryAndDiskAgreeing(t *testing.T) {
+	runDir := t.TempDir()
+	const pid = 7373
+	reg := &Registration{}
+	if err := reg.Register(runDir, rendezvous.Entry{
+		PID:        pid,
+		Protocol:   "evener-appwire-v1",
+		Endpoint:   "ws://127.0.0.1:9/rpc",
+		SourceID:   "local",
+		ThreadID:   "01OLD",
+		SessionID:  "01OLD",
+		InstanceID: "01OLD",
+		StartedAt:  time.Now(),
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	artifact := filepath.Join(runDir, fmt.Sprintf("%d.json", pid))
+	// A directory at the temp path the atomic write renames from makes the
+	// update's write fail and leaves the registered record untouched.
+	sabotage := artifact + ".tmp"
+	if err := os.Mkdir(sabotage, 0o700); err != nil {
+		t.Fatalf("sabotage rendezvous write: %v", err)
+	}
+
+	if err := reg.UpdateSessionID("01NEW"); err == nil {
+		t.Fatal("UpdateSessionID reported success despite a failing rendezvous write")
+	}
+
+	// Observable consequence 1: the in-memory registration still reports the
+	// identity that is on disk, so Entry never overstates what this process
+	// published.
+	got, ok := reg.Entry()
+	if !ok {
+		t.Fatal("Entry after a failed UpdateSessionID must still report the registered record")
+	}
+	if got.ThreadID != "01OLD" || got.SessionID != "01OLD" || got.InstanceID != "01OLD" {
+		t.Fatalf("Entry after a failed update = %+v, want the OLD identity still on disk", got)
+	}
+	entries, err := rendezvous.List(runDir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 1 || entries[0].SessionID != "01OLD" {
+		t.Fatalf("on-disk entries after a failed update = %+v, want exactly the OLD record", entries)
+	}
+
+	// Observable consequence 2: with memory and disk agreeing, the
+	// ownership-checked removal deletes this process's own artifact instead of
+	// misreading the disagreement as a live replacement's entry and silently
+	// leaving the stale file behind.
+	if err := os.Remove(sabotage); err != nil {
+		t.Fatalf("clear sabotage: %v", err)
+	}
+	if err := reg.Remove(); err != nil {
+		t.Fatalf("Remove after a failed UpdateSessionID: %v", err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("a failed UpdateSessionID left our own rendezvous artifact behind: stat err = %v", err)
+	}
+}
 
 func TestRegistrationUpdatesSessionIdentity(t *testing.T) {
 	runDir := t.TempDir()

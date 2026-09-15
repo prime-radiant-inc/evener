@@ -2463,3 +2463,35 @@ func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *exece
 	}
 	env.DisposeUnadoptedScratch()
 }
+
+// DisposeRootScratchAfterFailure settles the per-session scratch a failed ROOT
+// construction left on the launch environment. NewSession publishes the root's
+// durable scratch retention (installScratchRetention) partway through
+// construction and then runs more fallible steps, so a failure after that
+// publication leaves a manifest that references the scratch the launch
+// environment owns. The launch caller's bare env.DisposeUnadoptedScratch would
+// then run os.RemoveAll over a directory the manifest still references;
+// references are append-only with no unpin API, so the root's retirement
+// preparation would refuse forever and cold resume would fail the same way.
+//
+// A failed root construction has no Session to ask for its owner, so the owner
+// is resolved from the environment's own installed binding — the root id
+// installScratchRetention published the binding under. An allocation the
+// manifest references is therefore retained (its lease released, its directory
+// kept, exactly as DisposeResumeScratchAfterFailure does for the resume path);
+// anything else is the launch's own fresh mint and is disposed. The binding is
+// read fresh here rather than passed in, so a construction that failed before
+// installScratchRetention ran still disposes its unadopted scratch.
+func DisposeRootScratchAfterFailure(stateDir string, env *execenv.LocalExecutionEnvironment) {
+	if env == nil {
+		return
+	}
+	if binding, err := env.ScratchRetentionBinding(); err == nil {
+		owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}
+		if envOwnsReferencedRetainedScratch(owner, env) {
+			env.RetainSessionScratch()
+			return
+		}
+	}
+	env.DisposeUnadoptedScratch()
+}

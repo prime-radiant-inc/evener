@@ -684,8 +684,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		sess, err = deps.newSession(client, profile, env, sessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built.
-			env.DisposeUnadoptedScratch()
+			// provisioned was never built. NewSession may already have
+			// published the root's durable scratch retention before it failed,
+			// so the cleanup must retain an allocation the manifest references
+			// rather than remove it out from under a later resume.
+			agent.DisposeRootScratchAfterFailure(sd, env)
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}

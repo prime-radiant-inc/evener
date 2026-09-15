@@ -37,9 +37,9 @@ func TestRemoveUnlessRegularRefusesAReplacementPublishedInTheWindow(t *testing.T
 		t.Fatalf("marshal replacement: %v", err)
 	}
 
-	prevFlock := ownershipFlock
+	prevFlock := installedOwnershipFlock()
 	var once sync.Once
-	ownershipFlock = func(fd int, how int) error {
+	t.Cleanup(setOwnershipFlock(func(fd int, how int) error {
 		if how == syscall.LOCK_EX {
 			once.Do(func() {
 				if err := os.Remove(target); err != nil {
@@ -52,8 +52,7 @@ func TestRemoveUnlessRegularRefusesAReplacementPublishedInTheWindow(t *testing.T
 			})
 		}
 		return prevFlock(fd, how)
-	}
-	t.Cleanup(func() { ownershipFlock = prevFlock })
+	}))
 
 	if err := RemoveUnlessRegular(dir, pid); err == nil {
 		t.Fatal("RemoveUnlessRegular unlinked a replacement that published a regular entry under the lock")

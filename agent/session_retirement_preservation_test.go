@@ -189,13 +189,12 @@ func TestRetirementReleaseFailureAfterCommitStaysRetiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	injected := errors.New("injected transcript close failure")
-	retirementReleaseFault = func(point string) error {
+	defer setRetirementReleaseFault(func(point string) error {
 		if point == "transcript_close" {
 			return injected
 		}
 		return nil
-	}
-	defer func() { retirementReleaseFault = nil }()
+	})()
 
 	if err := root.ReleaseForRetirement(context.Background(), prepared); !errors.Is(err, injected) {
 		t.Fatalf("release error = %v, want injected failure", err)
@@ -1768,13 +1767,12 @@ func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
 	// runs after the one-use guard is claimed, so it distinguishes "proceeded"
 	// from "refused" without changing teardown behavior.
 	var entered atomic.Int32
-	retirementReleaseFault = func(point string) error {
+	defer setRetirementReleaseFault(func(point string) error {
 		if point == "before_release" {
 			entered.Add(1)
 		}
 		return nil
-	}
-	defer func() { retirementReleaseFault = nil }()
+	})()
 
 	const callers = 8
 	results := make([]error, callers)
@@ -1935,13 +1933,12 @@ func TestRetirementClaimsTeardownBeforeChildRelease(t *testing.T) {
 	}
 
 	var order []string
-	retirementReleaseFault = func(point string) error {
+	defer setRetirementReleaseFault(func(point string) error {
 		if point == "teardown_claimed" || point == "child_release" {
 			order = append(order, point)
 		}
 		return nil
-	}
-	defer func() { retirementReleaseFault = nil }()
+	})()
 
 	if err := f.root.ReleaseForRetirement(context.Background(), prepared); err != nil {
 		t.Fatalf("release: %v", err)

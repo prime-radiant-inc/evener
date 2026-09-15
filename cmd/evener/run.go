@@ -400,8 +400,11 @@ func run(ctx context.Context, cfg runConfig) error {
 		sess, err = runNewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			// The session that would have owned whatever this environment
-			// provisioned was never built.
-			env.DisposeUnadoptedScratch()
+			// provisioned was never built. NewSession may already have
+			// published the root's durable scratch retention before it failed,
+			// so the cleanup must retain an allocation the manifest references
+			// rather than remove it out from under a later resume.
+			agent.DisposeRootScratchAfterFailure(stateDir, env)
 			return fmt.Errorf("session creation: %w", err)
 		}
 	}
