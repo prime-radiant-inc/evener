@@ -603,28 +603,40 @@ Run over non-interactive SSH (no login shell, no TTY):
   `evener` at `evener_path`/`run_path`, so the preflight `launch-check` call
   fails for a reason that is *not* a transport failure, and the preflight must
   report it as a defined result instead of a generic `ErrSSHStart`. The
-  result is recognized only when it is **verified**: ssh connected and
-  authenticated, the remote shell ran, and the failure is that specific
-  executable path not existing (the remote shell's own not-found status —
-  `127` — and its own "no such file or directory"/"not found" text for
-  `run_path`, with nothing else on the diagnostic stream indicating an
-  ssh-level or connection failure). Preflight records it (a
+  result is recognized only when it is **verified**, and it must be recognized
+  from a **dedicated executable probe with a stable, machine-readable sentinel —
+  never from parsing the remote shell's not-found status and human-readable
+  text**. The preflight runs a probe for the resolved `run_path` whose answer is
+  the exit code alone (`test -x <run_path>`: `0` present, `1` absent;
+  `command -v` is the equivalent), so recognition does not depend on the shell
+  generation, the host locale, or the wording of "no such file or directory" /
+  "not found". The probe runs over the same non-interactive SSH channel and its
+  own status stays distinct from ssh's: ssh exits `255` for its own failures, so
+  a `255` or a spawn failure is a transport failure, while only the probe's `1`
+  is the verified absent result. Because ssh writes its own diagnostics and the
+  remote command's stderr to a single stream (the stream-merge rule below), the
+  recognition must not consult that merged stream at all; a host without the
+  ssh-diagnostic separation must default to the retryable class rather than
+  guess from the text. Preflight records the verified result (a
   `Preflight.ExecutableMissing` fact, surfaced as the named
   `ErrExecutableMissing` sentinel where an error is needed) and `Ensure`
   routes it into the deploy/install path (§4), whose installer fallback
   creates the default run target (`<home>/.local/bin/evener`); preflight then
   **re-runs** against the installed binary before version-matching or
   attaching. **Arbitrary SSH failures must not trigger installation:** a
-  failure to spawn ssh, a connection/auth refusal, a non-zero ssh status that
-  lacks the specific not-found marker for `run_path`, an unparseable or empty
-  answer, or a launch-contract/protocol refusal all stay in their own classes
-  (`ErrSSHStart`, `ErrSSHAuth`, `ErrPreflightDecode`, `ErrLaunchContract`) and
-  never run the installer, because an unreachable host would otherwise be
-  treated as an empty one and the deploy ladder would push a binary at a host
-  that never answered. **Implementation status:** the shipped 04a preflight
-  surfaces this as `ErrSSHStart` from the failed `launch-check` run
-  (`sshconn/preflight.go`), and the routed deploy/install branch is the 04b
-  requirement (keystone follow-up), not a present fact.
+  failure to spawn ssh, a connection/auth refusal, an ssh-level `255`, an
+  unparseable or empty `launch-check` answer, or a launch-contract/protocol
+  refusal all stay in their own classes (`ErrSSHStart`, `ErrSSHAuth`,
+  `ErrPreflightDecode`, `ErrLaunchContract`) and never run the installer,
+  because an unreachable host would otherwise be treated as an empty one and the
+  deploy ladder would push a binary at a host that never answered.
+  **Implementation status:** the shipped 04a preflight surfaces the missing
+  binary as `ErrSSHStart` from the failed `launch-check` run
+  (`sshconn/preflight.go`) by recognizing the remote shell's `127`/not-found
+  text; that text-based recognition is the fragile form this requirement
+  supersedes. The dedicated probe, the ssh-diagnostic separation it relies on,
+  and the routed deploy/install branch are the 04b/round-19 requirement (keystone
+  follow-ups), not a present fact.
 - **Roots (probed).** Preflight resolves the host's config root and state root
   from the probed environment with the same chain the host binary uses
   (`resolveRoots`, `cmdutil.StateRootFromLookup`, `envvars/userdirs.ConfigRoot`)
@@ -1088,6 +1100,19 @@ deploy landed.
      identified process, the manager **refuses with `ErrRestart` and emits no
      signal** rather than falling back to a check-then-act kill; the bare
      unguarded `kill` is never acceptable (see the limit below).
+     **Platform reality: the atomic-handle form exists only on Linux today.**
+     `pidfd_open`/`pidfd_send_signal` are Linux-only, so supported Darwin hosts
+     have no `pidfd`, and this series defines no host-side pin helper and the
+     installer provisions none. A supervisorless (ad hoc) Darwin hub therefore
+     cannot satisfy this requirement, so its restart **refuses `ErrRestart` with
+     no signal** rather than falling back to an unguarded `kill` (the ad hoc
+     path below states the same restriction). A **restart-capable Darwin
+     deployment must be supervised** (launchd): the supervised path signals
+     through `launchctl kickstart -k`, which names the job by label rather than
+     signaling a reused PID, so it needs no `pidfd`. Ad hoc Darwin restart
+     becomes safe only once a host-side atomic-signal helper is specified and
+     installed; that helper is a tracked round-19 code follow-up (keystone
+     §"Tracked code follow-ups"), not a present fact.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
@@ -1192,6 +1217,13 @@ deploy landed.
      clear**, then relaunch detached, appending to the recovered log
      (`nohup <quoted argv…> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
+     This path is available only where an atomic process handle can pin the
+     identified process — today, Linux through `pidfd`. On a Darwin host with
+     no supervisor and no provisioned helper, the manager **refuses the restart
+     (`ErrRestart`, no signal, no relaunch)** and the operator must supervise
+     the hub or install the helper; it never issues the bare unguarded `kill`,
+     because signaling an unpinned PID can terminate an unrelated process after
+     PID reuse (check 5; the limit above).
      The recovered log is used **only** when both fd 1 and fd 2 point at the
      same regular file (`parseLogPath`): a pty, a pipe, `/dev/null`, or two
      different destinations yields no log path. With no recovered log the
@@ -1433,8 +1465,12 @@ with the remote hub and its daemons still running.
   that the restart/health path uses the same address. Assert `--` precedes the
   destination so a `dest` beginning with `-` is never read as an ssh option.
   Assert **no** ssh invocation carries `StrictHostKeyChecking=no`/`accept-new`
-  or any raw `-p`/`-i`/`ProxyJump` option, and that an unknown host key surfaces
-  the terminal actionable error rather than a retry.
+  or any raw `-p`/`-i`/`ProxyJump` option, and that an unknown host key is
+  surfaced with the named operator hint (add the key out of band —
+  §"Contract", "Host-key verification is the user's `known_hosts`") in the
+  **retryable** `ErrSSHStart` class rather than asserted terminal: a completed
+  run's stderr cannot be attributed to ssh, so a host-key refusal stays
+  retryable and must not end the reconnect/backoff loop.
 - **Quoting tests (`quote_test.go` + argv tables).** `shellQuote` leaves an
   all-safe word bare and single-quotes anything else, closing and escaping an
   embedded `'`; `~` stays bare so `~/bin/evener` still expands. Round-trip the
@@ -1580,17 +1616,23 @@ with the remote hub and its daemons still running.
     re-reading the start time (or any other identity field) at signal time is
     **not** sufficient. When neither form is available for the identified
     process the manager refuses with `ErrRestart` and emits no signal. This
-    criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to end.
+    criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to
+    end, and its refusal is the Darwin case: a host with no `pidfd` and no
+    provisioned helper (a supervisorless Darwin hub) refuses rather than
+    signaling, so a restart-capable Darwin deployment must be supervised (the
+    supervised path pins by launchd label, not PID).
 21. A fresh host whose `run_path` does not exist is a **verified missing
-    executable** preflight result (`ErrExecutableMissing`), routed into
-    deploy/install — the installer fallback creates the default
-    `<home>/.local/bin/evener` — followed by a re-preflight before
-    version-match/attach; it is not surfaced as `ErrSSHStart` and does not
-    dead-end preflight. An unreachable host (`ErrSSHStart`), an auth-shaped
-    refusal, an unparseable/empty `launch-check` answer, and a
-    launch-contract/protocol refusal do **not** enter deploy/install — asserted
-    by a fake-runner table over the failed `launch-check` cases, where only the
-    verified not-found for `run_path` produces install argv.
+    executable** preflight result (`ErrExecutableMissing`), recognized from the
+    **dedicated executable probe's stable sentinel** — `test -x <run_path>`
+    exiting `1`, never a parsed `127`/not-found string and never the merged
+    diagnostic stream — routed into deploy/install — the installer fallback
+    creates the default `<home>/.local/bin/evener` — followed by a re-preflight
+    before version-match/attach; it is not surfaced as `ErrSSHStart` and does
+    not dead-end preflight. An unreachable host (`ErrSSHStart`), an ssh-level
+    `255`, an auth-shaped refusal, an unparseable/empty `launch-check` answer,
+    and a launch-contract/protocol refusal do **not** enter deploy/install —
+    asserted by a fake-runner table over the probe cases, where only the
+    verified absent sentinel for `run_path` produces install argv.
 
 ## PR size estimate (LOC)
 

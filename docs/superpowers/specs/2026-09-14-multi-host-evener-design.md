@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–18)
+## Tracked code follow-ups (rounds 7–19)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -461,3 +461,40 @@ exact scope. None is a present fact.
   wildcard, superseding component 04's restart-identity normalization (check 4)
   and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
   validation plus `sshconn/version.go` and `sshconn/preflight.go`.
+- **[04] Darwin supervised-restart requirement / atomic-signal helper (round 19)**
+  — the restart's atomic-identity pin (round 17) is a `pidfd`, which is
+  Linux-only, so a supervisorless Darwin hub has no way to pin the identified
+  process across the signal and must refuse `ErrRestart` with no signal. A
+  restart-capable Darwin deployment must therefore be **supervised** (launchd
+  `kickstart -k` pins by label, not PID), or a host-side atomic-signal helper
+  must be specified and provisioned by the installer to make ad hoc Darwin
+  restart safe. Scope: `sshconn/version.go` (`restartBare` / the restart path),
+  the installer/`deploy.go` provisioning, and component-04 §"Stop/restart
+  mechanics". Mirrors component-04 acceptance criterion 20.
+- **[04] dedicated executable probe for a missing `run_path` (round 19)** — the
+  verified missing-executable result (round 18) must be recognized from a
+  dedicated probe with a stable exit-code sentinel (`test -x <run_path>`: `0`
+  present, `1` absent; ssh-level `255` is a transport failure) rather than the
+  remote shell's `127` / "no such file or directory" text, and requires the
+  ssh-diagnostic separation (round 18 item) so the merged diagnostic stream is
+  never consulted for the classification. Scope: `sshconn/preflight.go` (the
+  probe and `isSSHAuthFailure`/`sshDiagnostic`), `sshconn/runner.go` (the
+  distinct diagnostic channel), `sshconn/manager.go` (`isTerminal`). Mirrors
+  component-04 criterion 21.
+- **[06] shared versioned transactional migration + local canonicalization
+  (round 19, extends the round-18 composite-key item)** — `favorite`, `archive`,
+  and `session_pin` share `index.db`, so the composite-key rebuild (round 18)
+  must be one **centralized, schema-versioned `BEGIN IMMEDIATE` transaction**
+  applied before any store serves — a single version record, all three tables
+  rebuilt inside the one transaction, concurrent openers serialized on the write
+  lock — not three independent `CREATE`/copy/drop/rename paths in separate
+  `open` calls. Also define the canonical local-source constant `"local"` and
+  normalize every empty/absent/bare source to it in storage, lookups,
+  projections, and `SessionRef` resolution, with a behavioral migration test
+  that reads a migrated bare local row under the canonical key. Scope:
+  `cmd/evener-hub/internal/hubcore/favorite.go`, `archive.go`,
+  `pin_section.go` (the versioned migration + the canonical constant); the
+  handlers `app_archive.go`, `app_favorite.go`, `app_pin_section.go`; and the
+  projection `navigation_projection.go`. Mirrors component-06 §"Migration of
+  existing decisions — the uniqueness keys must be rebuilt, not just widened"
+  and its canonical-local-source requirement.

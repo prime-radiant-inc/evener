@@ -184,11 +184,17 @@ The handler:
    host-dependent discovery calls — the spawn pane's plugin-preview panel and
    its provider-instance list — and are already in the exact set through the
    plugin and instance families above; they are named here so component 06's
-   discovery set and this allow-list enumerate the same names.) `evener/git/head`
-   is the one addition to the shipped 07a allow-list that the discovery set
-   requires and that no admin family already covers; without it a wrapped
-   `evener/git/head` fails closed with `appwire.InvalidParams`, and an
-   unwrapped one reads the controller's git repository for a remote path.
+   discovery set and this allow-list enumerate the same names.) **The whole
+   discovery set is the addition to the shipped 07a allow-list**, which as
+   written covers the five admin families only (the implementation-status note
+   above): `evener/plugin/preview` and `evener/instance/list` are already
+   present through their families, so the genuinely new names are
+   `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`,
+   `evener/projects/recent`, `evener/harnesses/list`,
+   `evener/spawn/slashCatalog`, `evener/git/head`, and `model/list`. Without
+   them a wrapped discovery call fails closed with `appwire.InvalidParams`; an
+   unwrapped `evener/git/head` in particular reads the controller's git
+   repository for a remote path.
    A prefix match (`strings.HasPrefix(method, "evener/instance/")`) is **not**
    acceptable: it would auto-allow a future sensitive `ScopeHub` method the
    moment it is added to the catalog (a hypothetical

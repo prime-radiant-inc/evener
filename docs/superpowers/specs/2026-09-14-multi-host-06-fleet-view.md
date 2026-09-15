@@ -358,14 +358,47 @@ only `local`, so the fan-out currently degenerates to one source.
       so the tree and the navigation projection receive the owning source with
       the decision (a bare-keyed map would re-collide on read even with a
       composite table).
-  The migration preserves the decision and its kind/id, so no existing local
-  favorite or archive is lost and a pre-migration row keeps resolving to the
-  local host, and it stays idempotent across restarts (adding `source` and
-  backfilling `source = "local"` when absent; rebuilding only while the primary
-  key is still the bare `(kind, id)` form, so a re-run is a no-op and a
-  half-applied migration completes on the next start). New rows are written with
-  their owning source. **Implementation status:** neither the migration nor the
-  source column exists today; this is the implementing PR's requirement.
+  **The migration is one shared, versioned transaction — not three independent
+  rebuilds.** `favorite`, `archive`, and `session_pin` all live in the single
+  `index.db` (`favorite.go`'s "It shares the same DB file"; each store runs its
+  own `CREATE TABLE IF NOT EXISTS` in `open`), so create/copy/drop/rename per
+  table across three uncoordinated `open` paths is not safe: a concurrent store
+  initialization — a second opener, a concurrent process, or a crash mid-rebuild
+  — can observe a missing or partially rebuilt table, and "a half-applied
+  migration completes on the next start" is **not** guaranteed by per-table DDL.
+  The migration must therefore be **centralized and applied once, before any
+  store serves**: a single schema-versioned step (a `PRAGMA user_version` /
+  schema-version record) takes `BEGIN IMMEDIATE`, rebuilds **all three** affected
+  tables (and any other table whose primary key changes) inside that one
+  transaction, advances the version only on commit, and commits before the
+  stores are exposed. Concurrent initializers serialize on the write lock
+  (`sqliteDSN` already sets `busy_timeout=5000` and WAL; `pin_section.go`'s
+  `openWithImmediateTransaction` / `_txlock=immediate` is the existing seam), so
+  a second opener either sees the committed new schema or waits — it never
+  rebuilds ahead of the first or reads a half-rebuilt set. A crash before commit
+  rolls the whole rebuild back and the next start re-runs it; a re-run after a
+  committed migration is a no-op. The migration preserves the decision and its
+  kind/id, so no existing local favorite or archive is lost and a pre-migration
+  row keeps resolving to the local host. New rows are written with their owning
+  source. **Implementation status:** neither the migration nor the source column
+  exists today, and no schema-version record exists (`sqlite_dsn.go` notes the
+  pragmas live in the DSN "rather than in a one-time migration"); this shared
+  versioned transaction is the implementing PR's requirement.
+  **The local source is canonicalized to `"local"` everywhere.** The migration
+  writes legacy rows' source as `"local"`, so every read must agree on that
+  token: an absent, empty, or bare (unqualified) source resolves to `"local"`,
+  and no consumer may key an empty source and `"local"` as different. The
+  controller-side consumers key by the bare id / `(kind, id)` today with no
+  source at all, so without a canonicalization rule the backfilled `"local"`
+  matches no lookup and local archive/favorite/pin state appears lost after
+  upgrade. Requirement: define one canonical local-source constant (`"local"`)
+  and use it in storage **and** at every lookup/projection boundary — the
+  handlers, the store reads/deletes, the tree/projection maps, and the
+  `SessionRef` resolution — normalizing an empty/absent source to `"local"`
+  before keying, so a pre-migration bare-keyed read still resolves. A behavioral
+  migration test must cover it: seed a bare `(kind, id)` / `session_id` row,
+  migrate, and assert the local row is still readable and updatable under the
+  canonical `"local"` key (not dropped, not shadowed by a remote row).
   **Session pin assignments must be source-qualified too.** Archive and favorite
   host qualification is not the only controller-side identity keyed by a bare
   session ID: pin sections and session-pin assignments are as well, with the same
@@ -807,7 +840,8 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     assignment/unpin RPC resolves a `host:<id>` `SessionRef` through the host and
     a bare/`local:` ref through the local source, and that an unknown source is
     refused typed; assert the migration backfills `source = "local"` on a
-    pre-existing `session_pin` row without losing it.
+    pre-existing `session_pin` row without losing it, and that a bare/empty
+    local lookup still resolves to the canonical `"local"` row after migration.
   - Source cap: a manifest built from 63 hosts + `local` validates; 64 hosts +
     `local` (65 entries) is the over-limit case component 03's
     `ErrTooManyHosts` prevents from being configured.
@@ -878,11 +912,17 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
 11. Favorite and archive actions carry the owning source: two hosts' projects
     with the same ID (or path) hold separate favorite/archive keys, and a
     project archive on a non-local host succeeds without resolving
-    `params.WorkingDir` against the controller's filesystem.
+    `params.WorkingDir` against the controller's filesystem. A pre-existing
+    local favorite/archive survives the `source = "local"` migration and
+    resolves under the canonical `"local"` key (an empty/bare lookup
+    normalizes to it), and the migration rebuilds all three shared tables in
+    one versioned `BEGIN IMMEDIATE` transaction before the stores serve.
 12. Session pin assignments carry the owning source: two hosts' sessions with the
     same bare thread ID hold separate pins, the assign/unpin handlers resolve the
     requested `SessionRef` through its source, and a pre-existing local pin
-    survives the `source = "local"` migration.
+    survives the `source = "local"` migration — including a bare/empty local
+    lookup, which normalizes to the canonical `"local"` key rather than missing
+    the migrated row.
 
 ## PR size estimate (LOC)
 
