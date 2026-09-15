@@ -89,7 +89,15 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 
 	remote := params
 	remote.Ref = ref.String()
-	remote.ThreadID = ref.ThreadID
+	// Forward the caller's ThreadID verbatim, empty included. The remote hub
+	// resolves a bare non-empty ThreadID in preference to Ref, so substituting
+	// the translated ref's suffix would address the thread by its stable
+	// identity — which the remote rejects as an unknown bare ID the moment an
+	// identity replacement has moved the live thread ID (appRef survives, the
+	// thread ID does not). An empty ThreadID lets the remote resolve the ref,
+	// which is stable-aware. The ref's suffix is only this hub's local routing
+	// key (sub.threadID below).
+	remote.ThreadID = params.ThreadID
 	remote.Subscribe = true
 	// The remote client is shared by every controller relay for this host, so
 	// controller-level replacement semantics must never reach it: a
@@ -246,12 +254,18 @@ func (s *RemoteHubSource) pumpSubscription(ctx context.Context, sub *remoteHubSu
 }
 
 // retireSubscription removes sub from the routing table if it is still the
-// installed subscription and, only then, tells the remote hub to drop the
-// matching remote-side subscription. The remote client is long-lived, so
-// without the unsubscribe the remote hub would keep forwarding the thread's
-// notifications for the rest of the connection's life. A subscription that was
-// already replaced is skipped: the replacement owns that remote subscription
-// now.
+// installed subscription and tells the remote hub to drop the matching
+// remote-side subscription, unless a live replacement owns it. The remote
+// client is long-lived, so without the unsubscribe the remote hub would keep
+// forwarding the thread's notifications for the rest of the connection's life.
+//
+// The unsubscribe is skipped only when another subscription still holds this
+// remote ref on this same client (remoteRefOwnedLocked): remote subscriptions
+// live per (connection, thread), so only a replacement on the same connection
+// can own this one. A replacement on a *different* client — a reconnect that
+// installed its replacement before the old connection was closed — cannot, and
+// skipping there would leave the old connection forwarding a thread nothing
+// local watches.
 //
 // remoteMu serializes this check-then-unsubscribe against installSubscriber, so
 // a replacement's subscribe request can never land before its predecessor's
@@ -259,12 +273,12 @@ func (s *RemoteHubSource) pumpSubscription(ctx context.Context, sub *remoteHubSu
 func (s *RemoteHubSource) retireSubscription(sub *remoteHubSubscription) {
 	s.remoteMu.Lock()
 	s.subMu.Lock()
-	latest := s.subs[sub.threadID] == sub
-	if latest {
+	if s.subs[sub.threadID] == sub {
 		delete(s.subs, sub.threadID)
 	}
+	owned := s.remoteRefOwnedLocked(sub)
 	s.subMu.Unlock()
-	if latest {
+	if !owned {
 		s.unsubscribeRemoteLocked(sub)
 	}
 	s.remoteMu.Unlock()

@@ -248,8 +248,11 @@ func TestRemoteHubSourceReadThread(t *testing.T) {
 	if remote.Ref != "local:t2" {
 		t.Fatalf("remote Ref = %q, want local:t2", remote.Ref)
 	}
-	if remote.ThreadID != "t2" {
-		t.Fatalf("remote ThreadID = %q, want t2", remote.ThreadID)
+	// The caller addressed the thread by ref alone, so the forwarded ThreadID
+	// stays empty: the remote resolves the ref itself, which is stable-aware,
+	// while a bare threadId it cannot resolve is rejected outright.
+	if remote.ThreadID != "" {
+		t.Fatalf("remote ThreadID = %q, want empty (the caller sent no thread id)", remote.ThreadID)
 	}
 	if !remote.IncludeTurns {
 		t.Fatal("IncludeTurns was not forwarded")

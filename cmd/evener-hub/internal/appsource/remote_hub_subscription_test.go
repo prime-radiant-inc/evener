@@ -188,8 +188,12 @@ func TestRemoteHubSubscribeThreadWireContract(t *testing.T) {
 	if reads != 1 {
 		t.Fatalf("thread/read sent %d times, want exactly 1", reads)
 	}
-	if params.Ref != "local:S" || params.ThreadID != "S" || !params.Subscribe {
-		t.Fatalf("subscribe params = %+v, want ref=local:S threadId=S subscribe=true", params)
+	// The caller addressed the thread by ref alone, so no bare threadId is
+	// forwarded: the remote resolves the ref itself (a bare threadId it cannot
+	// resolve is rejected, and after an identity replacement "S" is no longer
+	// the live thread ID).
+	if params.Ref != "local:S" || params.ThreadID != "" || !params.Subscribe {
+		t.Fatalf("subscribe params = %+v, want ref=local:S threadId= subscribe=true", params)
 	}
 
 	// The snapshot response must never surface on the channel; only pushed
@@ -1140,7 +1144,230 @@ func TestRemoteHubReadThreadDoesNotForwardReplaceSubscription(t *testing.T) {
 	if params.ReplaceSubscription {
 		t.Fatalf("read forwarded replaceSubscription=true (%s); the shared remote client must never be scoped to one thread", string(raw))
 	}
-	if !params.Subscribe {
-		t.Fatal("read request dropped Subscribe; only replacement semantics must be cleared")
+	if params.Subscribe {
+		t.Fatalf("read forwarded subscribe=true (%s); the snapshot read must not create a remote subscription nothing local owns", string(raw))
+	}
+}
+
+// forwardedReadParams returns the params of the most recent thread/read the
+// source forwarded, failing the test when none was recorded.
+func forwardedReadParams(t *testing.T, remote *pushableRemote) appwire.ThreadReadParams {
+	t.Helper()
+	var params appwire.ThreadReadParams
+	if err := json.Unmarshal(lastMethodCall(t, remote.calls(), appwire.MethodThreadRead), &params); err != nil {
+		t.Fatalf("decode forwarded thread/read params: %v", err)
+	}
+	return params
+}
+
+// sawRemoteUnsubscribe reports whether remote recorded a thread/unsubscribe
+// naming ref.
+func sawRemoteUnsubscribe(t *testing.T, remote *pushableRemote, ref string) bool {
+	t.Helper()
+	for _, call := range remote.calls() {
+		if call.method != appwire.MethodThreadUnsubscribe {
+			continue
+		}
+		var params appwire.ThreadUnsubscribeParams
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode unsubscribe params: %v", err)
+		}
+		if params.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// Test 23: the translated ref's suffix is this hub's local routing key, not the
+// thread identity the remote hub is addressed by. The remote resolves a bare
+// non-empty ThreadID in preference to Ref, so forwarding the stable ref suffix
+// would address the thread by its stable identity and be rejected as soon as an
+// identity replacement moved the live thread ID. The caller's ThreadID — empty
+// or not — is what must be forwarded; an empty one lets the remote resolve the
+// (stable-aware) ref.
+func TestRemoteHubSubscribeThreadForwardsCallerThreadID(t *testing.T) {
+	t.Run("ref only keeps threadId empty", func(t *testing.T) {
+		remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+			return scriptedReply{result: appwire.ThreadReadResponse{}}
+		})
+
+		if _, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:stable"}); err != nil {
+			t.Fatalf("SubscribeThread: %v", err)
+		}
+
+		params := forwardedReadParams(t, remote)
+		if params.Ref != "local:stable" {
+			t.Fatalf("forwarded Ref = %q, want local:stable", params.Ref)
+		}
+		if params.ThreadID != "" {
+			t.Fatalf("forwarded threadId = %q, want empty; a bare threadId overrides the ref the remote resolves", params.ThreadID)
+		}
+	})
+
+	t.Run("explicit threadId is preserved", func(t *testing.T) {
+		remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+			return scriptedReply{result: appwire.ThreadReadResponse{}}
+		})
+
+		if _, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{
+			Ref:      "host:stable",
+			ThreadID: "new-instance",
+		}); err != nil {
+			t.Fatalf("SubscribeThread: %v", err)
+		}
+
+		params := forwardedReadParams(t, remote)
+		if params.ThreadID != "new-instance" {
+			t.Fatalf("forwarded threadId = %q, want the caller's new-instance", params.ThreadID)
+		}
+	})
+}
+
+// Test 24: ReadThread and ListTurns must preserve the caller's ThreadID for the
+// same reason SubscribeThread does — the ref's suffix is a local routing key,
+// and a bare threadId the remote does not recognize is rejected outright.
+func TestRemoteHubReadAndListTurnsForwardCallerThreadID(t *testing.T) {
+	t.Run("ReadThread", func(t *testing.T) {
+		source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+			return scriptedReply{result: appwire.ThreadReadResponse{}}
+		})
+
+		if _, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: "host:stable"}); err != nil {
+			t.Fatalf("ReadThread: %v", err)
+		}
+
+		var params appwire.ThreadReadParams
+		if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadRead), &params); err != nil {
+			t.Fatalf("decode read params: %v", err)
+		}
+		if params.Ref != "local:stable" {
+			t.Fatalf("forwarded Ref = %q, want local:stable", params.Ref)
+		}
+		if params.ThreadID != "" {
+			t.Fatalf("forwarded threadId = %q, want empty (the caller sent none)", params.ThreadID)
+		}
+	})
+
+	t.Run("ListTurns", func(t *testing.T) {
+		source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		})
+
+		if _, err := source.ListTurns(t.Context(), appwire.ThreadTurnsListParams{Ref: "host:stable"}); err != nil {
+			t.Fatalf("ListTurns: %v", err)
+		}
+
+		var params appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadTurnsList), &params); err != nil {
+			t.Fatalf("decode turns params: %v", err)
+		}
+		if params.Ref != "local:stable" {
+			t.Fatalf("forwarded Ref = %q, want local:stable", params.Ref)
+		}
+		if params.ThreadID != "" {
+			t.Fatalf("forwarded threadId = %q, want empty (the caller sent none)", params.ThreadID)
+		}
+	})
+}
+
+// Test 25: a JSON null nested thread is not a thread object, so the translator
+// leaves it byte-for-byte alone rather than materializing an empty object and
+// stamping a source on it.
+func TestRemoteHubPreservesNullNestedThread(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	if err := remote.push(appwire.NotifyThreadStatusChanged, map[string]any{
+		"threadId": "S",
+		"ref":      "local:S",
+		"thread":   nil,
+	}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("subscription closed before the null-thread notification")
+	}
+	var decoded struct {
+		Thread json.RawMessage `json:"thread"`
+	}
+	if err := json.Unmarshal(n.Params, &decoded); err != nil {
+		t.Fatalf("decode notification params: %v", err)
+	}
+	if string(decoded.Thread) != "null" {
+		t.Fatalf("nested thread = %s, want null (rewritten to a source-bearing object); params = %s", decoded.Thread, n.Params)
+	}
+}
+
+// Test 26: retiring a subscription whose routing entry now holds a replacement
+// bound to a DIFFERENT client must still drop the retiring subscription's own
+// remote subscription. A replacement on another connection cannot own this
+// connection's remote subscription, so skipping the unsubscribe (as the code
+// did whenever the entry had changed) leaves a live connection forwarding a
+// thread nothing local watches.
+func TestRemoteHubRetireSubscriptionDropsRemoteRefWhenReplacementUsesAnotherClient(t *testing.T) {
+	handler := func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	}
+	oldRemote := newPushableRemote(t, "host", handler)
+	newRemote := newPushableRemote(t, "host", handler)
+
+	source := oldRemote.source
+	displaced := &remoteHubSubscription{
+		threadID:  "S",
+		remoteRef: "local:S",
+		client:    oldRemote.client,
+		cancel:    func() {},
+	}
+	source.subs["S"] = &remoteHubSubscription{
+		threadID:  "S",
+		remoteRef: "local:S",
+		client:    newRemote.client,
+		cancel:    func() {},
+	}
+
+	source.retireSubscription(displaced)
+
+	if !sawRemoteUnsubscribe(t, oldRemote, "local:S") {
+		t.Fatalf("no thread/unsubscribe for local:S on the displaced connection; calls = %+v", oldRemote.calls())
+	}
+	if sawRemoteUnsubscribe(t, newRemote, "local:S") {
+		t.Fatalf("the replacement's connection was unsubscribed; calls = %+v", newRemote.calls())
+	}
+}
+
+// Test 27: the control for Test 26 — a replacement on the SAME connection owns
+// the remote subscription, so the retiring predecessor must not unsubscribe it
+// out from under the live replacement.
+func TestRemoteHubRetireSubscriptionKeepsRemoteRefForSameClientReplacement(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+
+	source := remote.source
+	displaced := &remoteHubSubscription{
+		threadID:  "S",
+		remoteRef: "local:S",
+		client:    remote.client,
+		cancel:    func() {},
+	}
+	source.subs["S"] = &remoteHubSubscription{
+		threadID:  "S",
+		remoteRef: "local:S",
+		client:    remote.client,
+		cancel:    func() {},
+	}
+
+	source.retireSubscription(displaced)
+
+	if sawRemoteUnsubscribe(t, remote, "local:S") {
+		t.Fatalf("retiring predecessor unsubscribed the live same-connection replacement; calls = %+v", remote.calls())
 	}
 }
