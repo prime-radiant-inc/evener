@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"path"
-	"slices"
 	"strings"
 	"time"
 
@@ -62,6 +61,29 @@ func hubPort(addr string) string {
 		return p
 	}
 	return "9180"
+}
+
+// loopbackAddr rewrites a wildcard hub bind address to loopback, mirroring the
+// attach path's normalization (cmd/evener-hub/attach.go loopbackAddr) so the
+// restart and health probes address the host's hub exactly as the bridge dials
+// it. The IPv6 wildcard maps to ::1 rather than 127.0.0.1: a hub bound
+// IPv6-only is not listening on IPv4. Non-wildcard addresses pass through
+// unchanged, so a valid loopback such as 127.0.0.2 or [::1], or a non-default
+// port, is probed as configured instead of being flattened to "localhost".
+// "localhost" names are rewritten to the literal 127.0.0.1 for the same reason
+// the attach path does: the probe must not depend on the host's resolver.
+func loopbackAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	switch host {
+	case "", "0.0.0.0", "localhost":
+		return net.JoinHostPort("127.0.0.1", port)
+	case "::":
+		return net.JoinHostPort("::1", port)
+	}
+	return addr
 }
 
 // supervisorKind classifies how a host hub is managed.
@@ -404,6 +426,26 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 	return len(pids) == 0, nil
 }
 
+// hubHealthRemote builds the remote command that reads the host hub's
+// /api/health. The address is the configured host address, normalized for a
+// wildcard bind the way the attach path normalizes it, and the whole URL is
+// quoted as one word so a host-derived address cannot inject a shell command.
+func hubHealthRemote(addr string) string {
+	return "curl -fsS " + shellQuote(loopbackAddr(addr)+"/api/health")
+}
+
+// probeHubVersion asks the host hub's /api/health once and returns the version
+// it reports. ok is false when nothing answered or the body was not a health
+// response, which is "no running hub to judge" rather than an error: ensureOnce
+// must not invent a restart from an unanswerable probe.
+func (m *Manager) probeHubVersion(ctx context.Context, host hostreg.Host) (string, bool) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubHealthRemote(m.hostAddr(host))), nil)
+	if err != nil {
+		return "", false
+	}
+	return parseHealthVersion(out)
+}
+
 // waitHealthy polls the host hub's /api/health until the response reports
 // expectedVersion or the bound is exhausted. The expected version is what makes
 // this the authoritative restart check: any hub answer proves a hub is serving,
@@ -413,7 +455,7 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 // shutdown drain, tearing down the fresh channel.
 func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
 	port := hubPort(m.hostAddr(host))
-	remote := "curl -fsS localhost:" + shellQuote(port) + "/api/health"
+	remote := hubHealthRemote(m.hostAddr(host))
 	var lastVersion string
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
@@ -460,8 +502,17 @@ func hubArgvFromCommandLine(line string) ([]string, error) {
 	if base := path.Base(argv[0]); base != "evener" {
 		return nil, fmt.Errorf("executable %q is not evener", argv[0])
 	}
-	if !slices.Contains(argv[1:], "hub") {
-		return nil, errors.New("argv does not run the hub subcommand")
+	// The hub subcommand must sit at the actual subcommand position. Matching
+	// "hub" anywhere in argv accepts an unrelated command that merely names it
+	// (e.g. `evener serve --model hub`) and would kill and relaunch that
+	// process. The daemon is `evener hub` and takes only flags after the
+	// subcommand, so a later positional (`evener hub attach`, the client) is
+	// not the daemon either.
+	if len(argv) < 2 || argv[1] != "hub" {
+		return nil, fmt.Errorf("argv does not run the hub subcommand at position 1: %q", argv)
+	}
+	if len(argv) > 2 && !strings.HasPrefix(argv[2], "-") {
+		return nil, fmt.Errorf("unexpected positional %q after the hub subcommand", argv[2])
 	}
 	return argv, nil
 }

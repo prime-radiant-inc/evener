@@ -339,42 +339,163 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	}
 }
 
-// TestModuleRootFromRequiresEvenerModule proves the source-tree lookup only
-// accepts this module: an unrelated go.mod (an installed hub launched inside
-// another workspace module) must not be mistaken for the evener checkout.
-func TestModuleRootFromRequiresEvenerModule(t *testing.T) {
-	root := t.TempDir()
-	deep := filepath.Join(root, "sub", "deep")
-	if err := os.MkdirAll(deep, 0o755); err != nil {
+// TestVerifyBuildSourceRequiresAnEvenerCheckout proves the explicit build source
+// is verified and never guessed: an unset source, a tree that is not this
+// module, and a tree without a ./cmd/evener package are each refused rather than
+// built. A different module (an installed hub pointed at another workspace) must
+// not be mistaken for the evener checkout.
+func TestVerifyBuildSourceRequiresAnEvenerCheckout(t *testing.T) {
+	if _, err := verifyBuildSource(""); err == nil || !strings.Contains(err.Error(), "no build source") {
+		t.Fatalf("verifyBuildSource(\"\") err = %v, want a missing-source error", err)
+	}
+
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "go.mod"), []byte("module example.com/other\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := moduleRootFrom(deep); got != "" {
-		t.Fatalf("moduleRootFrom found %q with no go.mod", got)
+	if _, err := verifyBuildSource(other); err == nil || !strings.Contains(err.Error(), "not the evener checkout") {
+		t.Fatalf("verifyBuildSource(other module) err = %v, want a wrong-module error", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/other\n\ngo 1.27\n"), 0o644); err != nil {
+
+	evener := t.TempDir()
+	if err := os.WriteFile(filepath.Join(evener, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := moduleRootFrom(deep); got != "" {
-		t.Fatalf("moduleRootFrom matched a different module at %q", got)
+	if _, err := verifyBuildSource(evener); err == nil || !strings.Contains(err.Error(), "cmd/evener") {
+		t.Fatalf("verifyBuildSource(no cmd/evener) err = %v, want a missing-package error", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(evener, "cmd", "evener"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := moduleRootFrom(deep); got != root {
-		t.Fatalf("moduleRootFrom = %q, want %q", got, root)
+	got, err := verifyBuildSource(evener)
+	if err != nil {
+		t.Fatalf("verifyBuildSource(valid checkout): %v", err)
+	}
+	if want, _ := filepath.EvalSymlinks(evener); got != want {
+		t.Fatalf("verifyBuildSource = %q, want %q", got, want)
 	}
 }
 
-// TestLocalBuildWithoutModuleRootFailsClearly proves an installed hub launched
-// outside the checkout reports a clear unavailable-source error instead of
-// running `go build ./cmd/evener/` against the wrong directory.
-func TestLocalBuildWithoutModuleRootFailsClearly(t *testing.T) {
-	t.Chdir(t.TempDir())
-	err := localBuild(context.Background(), "linux", "amd64", filepath.Join(t.TempDir(), "evener"))
+// TestLocalBuildWithoutBuildSourceFailsClearly proves the production builder
+// fails closed with a clear unavailable-source error instead of running
+// `go build ./cmd/evener/` against whatever directory is nearby.
+func TestLocalBuildWithoutBuildSourceFailsClearly(t *testing.T) {
+	err := localBuild(context.Background(), "", "linux", "amd64", filepath.Join(t.TempDir(), "evener"))
 	if err == nil {
-		t.Fatal("localBuild succeeded with no evener module root")
+		t.Fatal("localBuild succeeded with no build source")
 	}
-	if !strings.Contains(err.Error(), "evener module root") {
+	if !strings.Contains(err.Error(), "build source") {
 		t.Fatalf("error does not explain the missing source tree: %v", err)
+	}
+}
+
+// TestDeployBuildsFromTheConfiguredSource proves an explicit BuildSource is
+// honored: the production builder runs `go build` with the configured checkout
+// as its working directory, never the process working directory.
+func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(source, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "go-wd")
+	shim := "#!/bin/sh\npwd > " + marker + "\n" +
+		"out=\"\"\nwhile [ $# -gt 0 ]; do if [ \"$1\" = \"-o\" ]; then out=$2; fi; shift; done\n" +
+		"printf fake > \"$out\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+":"+os.Getenv("PATH"))
+	t.Chdir(t.TempDir()) // run from an unrelated directory
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildSource: source})
+
+	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("go build did not run: %v", err)
+	}
+	want, _ := filepath.EvalSymlinks(source)
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("go build ran in %q, want the configured source %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
+// TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory proves the production
+// builder never discovers its source by looking around the working directory.
+// A directory that merely looks like an evener checkout (same module path) must
+// not be built: an installed hub launched inside an unrelated or ancestor
+// checkout would silently deploy that tree's code. Before the fix localBuild
+// walked up from the working directory, found this decoy checkout, and shelled
+// out to `go build` (the shim on PATH recorded it), so this test failed with
+// "deploy built from the working-directory checkout"; after the fix it fails
+// closed with a clear missing-source error before any build runs.
+func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
+	decoy := t.TempDir()
+	if err := os.WriteFile(filepath.Join(decoy, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(decoy, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(decoy)
+
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "go-ran")
+	shim := "#!/bin/sh\nprintf '%s' \"$PWD\" > " + marker + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+":"+os.Getenv("PATH"))
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	// No BuildBinary seam and no explicit source: the production builder runs.
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	if err == nil {
+		t.Fatal("deploy succeeded with no configured build source")
+	}
+	if got, statErr := os.ReadFile(marker); statErr == nil {
+		t.Fatalf("deploy built from the working-directory checkout (%q): %v", got, err)
+	}
+	if !strings.Contains(err.Error(), "build source") {
+		t.Fatalf("error does not explain the missing build source: %v", err)
 	}
 }

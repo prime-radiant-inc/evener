@@ -94,6 +94,16 @@ type Options struct {
 	// inject a fake so no build runs.
 	BuildBinary func(ctx context.Context, goos, goarch, out string) error
 
+	// BuildSource is the filesystem path of the evener checkout the production
+	// builder cross-compiles from. It must be explicit: an installed hub cannot
+	// locate its own source reliably, and guessing — walking the working
+	// directory or runtime.Caller frames — can silently build an unrelated or
+	// ancestor checkout that declares the same module path. Empty means no
+	// source is configured and the production builder fails with a clear error
+	// instead of deploying whatever tree happens to be nearby. Ignored when
+	// BuildBinary is set.
+	BuildSource string
+
 	// HubAddr is the host hub's loopback listen address, used by the restart
 	// path to find the old pid and probe /api/health. Default 127.0.0.1:9180.
 	HubAddr string
@@ -363,18 +373,39 @@ func (m *Manager) Close() error {
 
 // ensureOnce runs one full preflight-then-attach sequence with the state
 // transitions around it. When the host's evener build differs from the
-// controller's it deploys the matching build and restarts the host hub before
-// attaching.
+// controller's — whether on disk or in the hub that is actually running — it
+// deploys the matching build (only when the on-disk binary differs) and restarts
+// the host hub before attaching.
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, error) {
 	m.stateEvent(host.Name, StatePreflighting)
 	facts, err := m.preflight(ctx, host)
 	if err != nil {
 		return nil, err
 	}
-	if facts.Version != m.opts.controllerVersion() {
-		m.stateEvent(host.Name, StateDeploying)
-		if err := m.deploy(ctx, host, facts); err != nil {
-			return nil, err
+	expected := m.opts.controllerVersion()
+	// Version auto-match must key off the hub that is actually RUNNING, not the
+	// binary on disk. A deploy writes the new binary before the restart is
+	// attempted, so a transient restart failure (no polkit, an ambiguous unit
+	// listing, a bare-relaunch failure) leaves the old process serving while the
+	// on-disk launch-check already matches; gating on disk would then skip the
+	// deploy/restart branch forever and attach to a stale hub, silently losing
+	// the guarantee that the attached runtime matches the controller. The
+	// running version comes from the hub's own /api/health.
+	//
+	// When nothing answers the probe there is no running hub to judge, so no
+	// restart is invented here: an on-disk mismatch still drives its own
+	// deploy/restart, and otherwise ensureOnce attaches as before and lets the
+	// existing attach failure/retry behavior apply.
+	running, runningKnown := m.probeHubVersion(ctx, host)
+	if facts.Version != expected || (runningKnown && running != expected) {
+		// Deploy only when the on-disk binary also differs: a restart left
+		// pending by an earlier failed attempt already installed this build, so
+		// re-cross-compiling on every reconnect would be a needless build.
+		if facts.Version != expected {
+			m.stateEvent(host.Name, StateDeploying)
+			if err := m.deploy(ctx, host, facts); err != nil {
+				return nil, err
+			}
 		}
 		m.stateEvent(host.Name, StateRestarting)
 		if err := m.restartHub(ctx, host, facts); err != nil {
@@ -394,7 +425,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 			return nil, err
 		}
 		facts.LaunchFlags = refreshed.LaunchFlags
-		facts.Version = m.opts.controllerVersion()
+		facts.Version = expected
 	}
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
 		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)

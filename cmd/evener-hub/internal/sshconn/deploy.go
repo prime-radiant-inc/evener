@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,25 +25,23 @@ const buildinfoPkg = "primeradiant.com/evener/buildinfo"
 // manager's per-host lock, so a fixed suffix cannot collide.
 const deployTempSuffix = ".tmp"
 
-// localBuild is the production cross-compile seam. It runs the same command
-// shape make build-linux uses (make/building.mk:42) and stamps this process's
-// own buildinfo values so the deployed binary reports the controller's exact
-// version.
-func localBuild(ctx context.Context, goos, goarch, out string) error {
+// localBuild is the production cross-compile seam. source is the explicit
+// evener checkout to build from (Options.BuildSource); it is verified before
+// use, so an unset or wrong source is a clear error rather than a build of
+// whatever tree is nearby. It runs the same command shape make build-linux uses
+// (make/building.mk:42) and stamps this process's own buildinfo values so the
+// deployed binary reports the controller's exact version.
+func localBuild(ctx context.Context, source, goos, goarch, out string) error {
+	root, err := verifyBuildSource(source)
+	if err != nil {
+		return fmt.Errorf("go build %s/%s: %w", goos, goarch, err)
+	}
 	cmd := exec.CommandContext(ctx, "go", "build", "-ldflags", buildLdflags(), "-o", out, "./cmd/evener/")
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
 		"GOOS="+goos,
 		"GOARCH="+goarch,
 	)
-	// Build the controller's own tree even when the hub was not started from its
-	// module root. Without a resolvable evener module there is nothing correct to
-	// build: `go build ./cmd/evener/` from an unrelated directory builds the
-	// wrong tree or fails obscurely, so report the missing source instead.
-	root := moduleRoot()
-	if root == "" {
-		return fmt.Errorf("go build %s/%s: cannot locate the evener module root (no go.mod declaring %q at or above the working directory); run the hub from its checkout", goos, goarch, modulePath)
-	}
 	cmd.Dir = root
 	outBytes, err := cmd.CombinedOutput()
 	if err != nil {
@@ -71,32 +70,32 @@ func buildLdflags() string {
 // any other workspace module the hub might be launched inside.
 const modulePath = "primeradiant.com/evener"
 
-// moduleRoot walks up from the working directory looking for the evener module
-// so `go build ./cmd/evener/` resolves the controller's own tree regardless of
-// the launch directory.
-func moduleRoot() string {
-	wd, err := os.Getwd()
+// verifyBuildSource checks that source is an explicit, real evener checkout and
+// returns its absolute path. The source cannot be discovered: an installed hub
+// has no reliable way to locate its own source tree, and guessing — walking the
+// working directory or runtime.Caller frames — can select a different ancestor
+// checkout that declares the same module path. An unset source, or one that is
+// not this module with a ./cmd/evener package, is therefore a clear error
+// rather than a build of whatever tree happens to be nearby.
+func verifyBuildSource(source string) (string, error) {
+	if strings.TrimSpace(source) == "" {
+		return "", errors.New("no build source configured: set Options.BuildSource to the evener checkout's module root (an installed hub cannot locate its own source)")
+	}
+	abs, err := filepath.Abs(source)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("build source %q: %w", source, err)
 	}
-	return moduleRootFrom(wd)
-}
-
-// moduleRootFrom walks up from dir looking for a go.mod that declares this
-// module. A go.mod for a different module is not this tree: an installed hub
-// launched inside another workspace module must not build that module's
-// ./cmd/evener/.
-func moduleRootFrom(dir string) string {
-	for {
-		if declaresEvenerModule(dir) {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
+	if !declaresEvenerModule(abs) {
+		return "", fmt.Errorf("build source %q is not the evener checkout: no go.mod declaring %q", abs, modulePath)
 	}
+	info, err := os.Stat(filepath.Join(abs, "cmd", "evener"))
+	if err != nil {
+		return "", fmt.Errorf("build source %q has no cmd/evener package: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("build source %q has a non-directory cmd/evener", abs)
+	}
+	return abs, nil
 }
 
 // declaresEvenerModule reports whether dir holds a go.mod for this module.
@@ -132,7 +131,10 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 
 	build := m.opts.BuildBinary
 	if build == nil {
-		build = localBuild
+		source := m.opts.BuildSource
+		build = func(ctx context.Context, goos, goarch, out string) error {
+			return localBuild(ctx, source, goos, goarch, out)
+		}
 	}
 	if err := build(ctx, facts.OS, facts.Arch, stage); err != nil {
 		return fmt.Errorf("%w: host %q build %s/%s: %w", ErrDeploy, host.Name, facts.OS, facts.Arch, err)

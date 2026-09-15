@@ -802,8 +802,8 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 	if err := m.waitHealthy(context.Background(), host, "newsha"); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
-	if !strings.Contains(healthRemote, "localhost:9999/api/health") {
-		t.Fatalf("health probe used the wrong port: %q", healthRemote)
+	if !strings.Contains(healthRemote, "127.0.0.1:9999/api/health") {
+		t.Fatalf("health probe did not use the host's configured address: %q", healthRemote)
 	}
 }
 
@@ -827,8 +827,8 @@ func TestWaitHealthyQuotesPort(t *testing.T) {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	remote := strings.Join(fr.recordedRuns()[0], " ")
-	if !strings.Contains(remote, "localhost:'9180;id'/api/health") {
-		t.Fatalf("health URL does not quote the port: %q", remote)
+	if !strings.Contains(remote, "'127.0.0.1:9180;id/api/health'") {
+		t.Fatalf("health URL does not quote the address: %q", remote)
 	}
 }
 
@@ -980,6 +980,8 @@ func TestHubArgvFromCommandLine(t *testing.T) {
 		{"symlinked evener", "/usr/local/bin/evener hub", false},
 		{"not evener", "/usr/sbin/nginx -g daemon off", true},
 		{"evener serve is not the hub", "/opt/evener/bin/evener serve", true},
+		{"another subcommand merely naming hub", "/opt/evener/bin/evener serve --model hub", true},
+		{"the hub attach client is not the daemon", "/opt/evener/bin/evener hub attach --stdio", true},
 		{"compound refused", "/opt/evener/bin/evener hub; rm -rf /", true},
 		{"empty", "", true},
 	}
@@ -1109,5 +1111,145 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 	}
 	if !errors.Is(err, kickErr) || !strings.Contains(err.Error(), "kickstart") {
 		t.Fatalf("error does not surface the failed kickstart: %v", err)
+	}
+}
+
+// TestWaitHealthyUsesTheConfiguredHostAddr proves the health probe addresses the
+// host's configured listen address instead of discarding its host part for
+// "localhost". A valid loopback such as 127.0.0.2 (or an IPv6-only ::1) is not
+// reachable as "localhost", so the old probe failed verification after a
+// successful restart. Before the fix the recorded remote was
+// `curl -fsS localhost:9180/api/health` and this test failed with
+// "health probe discarded the configured host".
+func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.2:9180"}
+	var remote string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "/api/health") {
+			remote = joined
+			return []byte(`{"version":"newsha"}`), nil
+		}
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.waitHealthy(context.Background(), host, "newsha"); err != nil {
+		t.Fatalf("waitHealthy: %v", err)
+	}
+	if !strings.Contains(remote, "127.0.0.2:9180/api/health") {
+		t.Fatalf("health probe discarded the configured host: %q", remote)
+	}
+	if strings.Contains(remote, "localhost") {
+		t.Fatalf("health probe still used localhost: %q", remote)
+	}
+}
+
+// TestHubHealthRemoteNormalizesWildcardBinds proves the health URL is built from
+// the configured address with the attach path's wildcard-to-loopback
+// normalization: a wildcard bind is reached over loopback, the IPv6 wildcard
+// maps to ::1 rather than forcing the IPv4 family, and every non-wildcard
+// address (including a valid loopback like 127.0.0.2) is probed verbatim.
+func TestHubHealthRemoteNormalizesWildcardBinds(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.2:9180": "127.0.0.2:9180/api/health",
+		"127.0.0.1:9999": "127.0.0.1:9999/api/health",
+		"0.0.0.0:9180":   "127.0.0.1:9180/api/health",
+		"localhost:9180": "127.0.0.1:9180/api/health",
+		"[::]:9180":      "'[::1]:9180/api/health'",
+		"[::1]:9180":     "'[::1]:9180/api/health'",
+	}
+	for addr, want := range cases {
+		if got := hubHealthRemote(addr); got != "curl -fsS "+want {
+			t.Errorf("hubHealthRemote(%q) = %q, want %q", addr, got, "curl -fsS "+want)
+		}
+	}
+}
+
+// TestEnsureRestartsWhenTheRunningHubVersionDiffers proves version auto-match
+// keys off the RUNNING hub, not the on-disk binary. A prior deploy can leave the
+// new binary installed while the old process keeps serving (a restart that failed
+// without polkit, an ambiguous unit listing, a bare relaunch failure), so the
+// on-disk launch-check now reports the controller's version. Keying the gate off
+// disk then skips deploy/restart entirely and attaches to the stale hub, silently
+// losing the feature's core guarantee that the attached runtime matches the
+// controller. Before the fix the on-disk version matched and no restart was ever
+// issued; after it the differing /api/health version forces the restart path.
+func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	restarts := 0
+	healthProbes := 0
+	fr := &fakeRunner{
+		runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.HasSuffix(joined, "uname -s"):
+				return []byte("Linux\n"), nil
+			case strings.HasSuffix(joined, "uname -m"):
+				return []byte("x86_64\n"), nil
+			case strings.Contains(joined, "XDG_STATE_HOME"):
+				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+			case strings.Contains(joined, "launch-check"):
+				// The on-disk binary already matches the controller.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			case strings.Contains(joined, "list-units"):
+				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+			case strings.Contains(joined, "systemctl restart"):
+				restarts++
+				return nil, nil
+			case strings.Contains(joined, "api/health"):
+				healthProbes++
+				if healthProbes == 1 {
+					// The stale hub a previously failed restart left serving.
+					return []byte(`{"version":"oldsha"}`), nil
+				}
+				return []byte(`{"version":"newsha"}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               func(context.Context, string, string, string) error { return nil },
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if restarts == 0 {
+		t.Fatal("no restart: a running hub whose /api/health version differs from the controller must enter the restart path even when the on-disk binary matches")
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel preflight version = %q, want %q", got, "newsha")
+	}
+}
+
+// TestEnsureNoRestartWhenNoHubAnswersTheProbe pins the deliberate choice for the
+// High fix: when no hub answers /api/health, ensureOnce does not invent a restart.
+// It attaches as before (with a matching on-disk version) and lets the existing
+// attach failure/retry behavior apply.
+func TestEnsureNoRestartWhenNoHubAnswersTheProbe(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev", // cannedRun reports the on-disk version "dev"
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		for _, forbidden := range []string{"systemctl", "launchctl", "lsof", "kill ", "nohup", "cat >", "command -v"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("an unanswerable probe invented a restart: %v", argv)
+			}
+		}
 	}
 }
