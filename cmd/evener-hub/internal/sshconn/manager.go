@@ -213,9 +213,13 @@ type Manager struct {
 	closeErr  error
 	locks     map[string]*sync.Mutex
 	chans     map[string]*Channel
-	// supervisors holds each host's live reconnect loop cancel func, so a terminal
-	// failure can end that loop even while it waits out a backoff.
-	supervisors map[string]context.CancelFunc
+	// supervisors holds, per host, the set of live reconnect loops. A replacement
+	// attach registers a new loop without discarding the previous one, and a
+	// terminal failure cancels every loop for the host — including one parked in a
+	// backoff that a replacement's attach would otherwise have orphaned (a second
+	// EventFailed, or an Attached after that Failed, for a host already announced
+	// finished).
+	supervisors map[string]map[*supervisorLoop]struct{}
 	// supervisorsWG counts the live supervise goroutines (each reconnect attempt
 	// runs inside one), so Close can wait for them to quiesce before it returns.
 	supervisorsWG sync.WaitGroup
@@ -244,7 +248,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		closeDone:   make(chan struct{}),
 		locks:       map[string]*sync.Mutex{},
 		chans:       map[string]*Channel{},
-		supervisors: map[string]context.CancelFunc{},
+		supervisors: map[string]map[*supervisorLoop]struct{}{},
 		announced:   map[string]*Channel{},
 	}
 }
@@ -849,8 +853,13 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // increments supervisorsWG before it returns, so once Close has set closed and
 // released the lock no new supervisor can join the group, and every supervisor
 // that did join is observed by Close's Wait.
+//
+// Every live loop stays registered as its own entry: a replacement attach adds a
+// loop rather than overwriting the host's slot, so stopSupervisor can end a
+// predecessor still parked in backoff instead of leaking it.
 func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
+	loop := &supervisorLoop{cancel: cancel}
 	m.mu.Lock()
 	if m.closed {
 		// Close already ran. A supervisor started now would only race its Wait, and
@@ -859,34 +868,54 @@ func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mute
 		cancel()
 		return false
 	}
-	m.supervisors[host.Name] = cancel
+	if m.supervisors[host.Name] == nil {
+		m.supervisors[host.Name] = map[*supervisorLoop]struct{}{}
+	}
+	m.supervisors[host.Name][loop] = struct{}{}
 	// WaitGroup.Go adds, runs, and marks the loop done, so Close waiting on the
 	// group observes the fully-finished loop.
 	m.supervisorsWG.Go(func() {
-		// Release this loop's context child when it ends. startSupervise replaces
-		// the map entry on every reconnect, so a replaced loop's WithCancel child
-		// would otherwise stay registered with baseCtx until Close — a leak that
-		// grows by one with each reconnect.
-		defer cancel()
+		// Deregister and release this loop's context child when it ends. Without the
+		// deregistration a replaced loop's handle would stay in the host's set for
+		// good — a leak that grows by one with each reconnect — and its WithCancel
+		// child would stay registered with baseCtx until Close.
+		defer func() {
+			m.mu.Lock()
+			if set := m.supervisors[host.Name]; set != nil {
+				delete(set, loop)
+				if len(set) == 0 {
+					delete(m.supervisors, host.Name)
+				}
+			}
+			m.mu.Unlock()
+			cancel()
+		}()
 		m.supervise(ctx, host, ch, lock)
 	})
 	m.mu.Unlock()
 	return true
 }
 
-// stopSupervisor ends host's reconnect loop, if one is running. Without it a
+// supervisorLoop identifies one live supervise goroutine. A cancel func is not a
+// valid map key, so loops are keyed by this handle.
+type supervisorLoop struct {
+	cancel context.CancelFunc
+}
+
+// stopSupervisor ends every reconnect loop host still has, if any. Without it a
 // terminal failure announced by Ensure would leave the supervisor that retired
 // its own channel still looping, to repeat the same terminal outcome — a second
 // EventFailed for a host consumers were already told was finished — or, for a
 // terminal class the next attempt happens to pass, to announce an Attached after
-// that Failed.
+// that Failed. Cancelling all of them, not just the most recent, is what reaches
+// a predecessor parked in backoff after a replacement attach registered over it.
 func (m *Manager) stopSupervisor(name string) {
 	m.mu.Lock()
-	cancel := m.supervisors[name]
+	loops := m.supervisors[name]
 	delete(m.supervisors, name)
 	m.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	for loop := range loops {
+		loop.cancel()
 	}
 }
 
@@ -961,8 +990,12 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 	}
 	if isTerminal(err) {
 		// Close canceling the attempt is not a host failure: during shutdown a
-		// consumer must not receive an EventFailed for it.
-		if !errors.Is(err, ErrManagerClosed) {
+		// consumer must not receive an EventFailed for it. The mapping to
+		// ErrManagerClosed above covers only the retryable transport shape, so a
+		// terminal fault found concurrently with the shutdown — a protocol
+		// mismatch, an unparseable preflight — must be suppressed directly here,
+		// exactly as Ensure's own baseCtx.Err() path suppresses it.
+		if m.baseCtx.Err() == nil {
 			m.failedEvent(host.Name, err)
 		}
 		m.stateEvent(host.Name, StateDisconnected)

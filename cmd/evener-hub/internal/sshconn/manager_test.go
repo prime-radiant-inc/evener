@@ -1643,6 +1643,118 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 	}
 }
 
+// Attaching a replacement overwrites the host's supervisor registration, so a
+// terminal failure of the replacement must still stop the *older* supervisor
+// parked in its backoff. Otherwise that loop wakes, re-attaches against a host
+// consumers were already told was finished, and announces a second EventFailed
+// (or an Attached after that Failed).
+func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	mismatch := false
+	failures := 0
+	sleeps := 0
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			refuse := mismatch
+			mu.Unlock()
+			if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	events := make(chan Event, 256)
+	// Only the first backoff sleep blocks: that parks the original supervisor
+	// while a replacement attaches. Every later loop — the replacement's and the
+	// older one once released — runs straight through.
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent: func(ev Event) {
+			events <- ev
+			if ev.Kind == EventFailed {
+				mu.Lock()
+				failures++
+				mu.Unlock()
+			}
+		},
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep: func(context.Context, time.Duration) error {
+			mu.Lock()
+			sleeps++
+			n := sleeps
+			mu.Unlock()
+			if n == 1 {
+				enterOnce.Do(func() { close(sleepEntered) })
+				<-release
+			}
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	defer releaseOnce.Do(func() { close(release) })
+
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+
+	// Drop the first channel: its supervisor clears the slot, releases the host
+	// lock, and parks in the blocking backoff sleep.
+	ch1.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the original supervisor never entered its backoff sleep")
+	}
+
+	// Attach a replacement while the older supervisor is parked. This replaces the
+	// host's supervisor registration.
+	ch2, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("replacement Ensure: %v", err)
+	}
+	if ch2 == ch1 {
+		t.Fatal("Ensure handed back the dropped channel")
+	}
+	waitForEvent(t, events, EventAttached)
+
+	// The replacement now fails terminally: its own supervisor retires the
+	// dropped replacement and finds the protocol mismatch on the next attempt.
+	mu.Lock()
+	mismatch = true
+	mu.Unlock()
+	ch2.markLost()
+	waitUntil(t, "the replacement's terminal failure", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return failures == 1
+	})
+
+	// Let the parked older supervisor wake. Cancelled by the replacement's
+	// terminal failure, it stands down; with a leaked cancellation it re-attaches
+	// and announces a second EventFailed.
+	releaseOnce.Do(func() { close(release) })
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	got := failures
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("EventFailed announcements = %d, want exactly 1: a replaced supervisor outlived its replacement", got)
+	}
+}
+
 // ssh forwards the remote command's stderr onto the same stream as its own
 // diagnostics, so a remote program's error text must not be read as ssh
 // refusing the key: only ssh's own exit status makes an auth refusal terminal.
@@ -2405,6 +2517,84 @@ func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
 	if cur := m.currentChannel("alpha"); cur != nil {
 		t.Fatalf("closed manager kept a channel: %v", cur)
 	}
+}
+
+// A terminal error found while Close is racing the supervisor's reconnect must
+// not surface as an EventFailed: shutdown reports no host failure, even when the
+// attempt also happened to find a terminal fault (here a protocol mismatch). The
+// mapping to ErrManagerClosed covers only the retryable transport shape, so the
+// manager's own teardown must suppress the terminal announcement directly.
+func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+
+	var mu sync.Mutex
+	block := false
+	preflightEntered := make(chan struct{})
+	releasePreflight := make(chan struct{})
+	var enteredOnce, releaseOnce sync.Once
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			blocking := block
+			mu.Unlock()
+			if blocking && strings.Contains(strings.Join(argv, " "), "launch-check") {
+				enteredOnce.Do(func() { close(preflightEntered) })
+				<-releasePreflight
+				return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	defer releaseOnce.Do(func() { close(releasePreflight) })
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	mu.Lock()
+	block = true
+	mu.Unlock()
+	ch.markLost()
+	select {
+	case <-preflightEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never reached a reconnect preflight")
+	}
+
+	// Begin shutdown while that preflight is still in flight: Close cancels the
+	// base context and then waits for the supervisor.
+	closed := make(chan error, 1)
+	go func() { closed <- m.Close() }()
+	select {
+	case <-m.baseCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never canceled the base context")
+	}
+
+	// Release the preflight: it answers with a terminal protocol mismatch even
+	// though the manager is closing. Shutdown must not read that as a host
+	// failure.
+	releaseOnce.Do(func() { close(releasePreflight) })
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close did not finish after the preflight returned")
+	}
+	assertNoFailedEvent(t, events)
 }
 
 func assertNoFailedEvent(t *testing.T, events <-chan Event) {
