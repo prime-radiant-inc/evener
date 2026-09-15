@@ -122,23 +122,35 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 func (h *ProviderRegistry) Reload() error {
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
+	// current is written only here, and reloads are serialized: this read is
+	// stable for the whole call, so the fingerprints below describe the very
+	// snapshots this reload commits.
+	old := h.current
+	oldIDs := instanceIdentities(old)
 	r, _, err := h.load()
 	if err != nil {
 		fallback, _, ferr := h.load(registry.WithNoUserLayer())
+		var fallbackIDs map[string]string
+		if ferr == nil {
+			fallbackIDs = instanceIdentities(fallback)
+		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		old := h.current
 		h.loadErr = err
 		if ferr == nil {
 			// A failed reload bumps no incarnations: the fallback is not a
 			// successful snapshot, so the names it shares with old keep
 			// their rows for the recovery that follows.
-			carryLive(old, fallback, nil)
+			carryLive(old, fallback, nil, oldIDs, fallbackIDs)
 			h.current = fallback
 			h.generation++
 		}
 		return err
 	}
+	// Fingerprinting reads credential material (a Codex record, the ADC
+	// file): computed here, from snapshots no one else can see yet, so a
+	// slow state root never stalls readers behind this commit's write lock.
+	newIDs := instanceIdentities(r)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	// Incarnations first: a name new to this snapshot is a new incarnation
@@ -148,7 +160,7 @@ func (h *ProviderRegistry) Reload() error {
 	// instance a dead one's inventory, which is the same staleness the
 	// fetch tokens refuse; only the identity check cannot see it.
 	recreated := h.bumpNewIncarnations(r)
-	carryLive(h.current, r, recreated)
+	carryLive(old, r, recreated, oldIDs, newIDs)
 	// The fallback between a failure and its fix knew none of the
 	// explicit instances: re-apply the last-good snapshot for every
 	// instance whose identity still matches, so live-only ids survive
@@ -160,7 +172,7 @@ func (h *ProviderRegistry) Reload() error {
 		if _, ok := r.Instance(instance); !ok {
 			continue
 		}
-		if instanceIdentity(r, instance) != snap.identity {
+		if newIDs[instance] != snap.identity {
 			continue
 		}
 		r.ApplyLive(instance, snap.rows)
@@ -169,12 +181,12 @@ func (h *ProviderRegistry) Reload() error {
 		if _, ok := r.Instance(instance); !ok {
 			continue
 		}
-		h.noteLive(instance, instanceIdentity(r, instance), rows)
+		h.noteLive(instance, newIDs[instance], rows)
 	}
 	// Drop snapshots for names the fresh registry no longer knows, or
 	// whose identity changed: a later re-add under the same name must
 	// not resurrect the old endpoint's rows.
-	h.pruneLastGoodLive(r)
+	h.pruneLastGoodLive(r, newIDs)
 	h.current, h.loadErr = r, nil
 	h.generation++
 	return nil
@@ -204,17 +216,32 @@ func (h *ProviderRegistry) bumpNewIncarnations(r *registry.Registry) map[string]
 	return recreated
 }
 
+// instanceIdentities fingerprints every instance of r, or nil for a nil
+// registry. Identity reads credential material, so callers take it from a
+// snapshot they hold rather than under the holder's lock: a slow or
+// network-mounted state root must not stall Get/Instances/List.
+func instanceIdentities(r *registry.Registry) map[string]string {
+	if r == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, inst := range r.Instances() {
+		out[inst.Name] = instanceIdentity(r, inst.Name)
+	}
+	return out
+}
+
 // pruneLastGoodLive deletes cached snapshots for instances absent
 // from r or identity-mismatched with it, so a later re-add under the
 // same name cannot resurrect the old endpoint's rows. Call with the
 // holder lock held.
-func (h *ProviderRegistry) pruneLastGoodLive(r *registry.Registry) {
+func (h *ProviderRegistry) pruneLastGoodLive(r *registry.Registry, ids map[string]string) {
 	for instance, snap := range h.lastGoodLive {
 		if _, ok := r.Instance(instance); !ok {
 			delete(h.lastGoodLive, instance)
 			continue
 		}
-		if instanceIdentity(r, instance) != snap.identity {
+		if ids[instance] != snap.identity {
 			delete(h.lastGoodLive, instance)
 		}
 	}
@@ -227,7 +254,7 @@ func (h *ProviderRegistry) pruneLastGoodLive(r *registry.Registry) {
 // the identity byte-identical — are skipped outright: a new incarnation
 // starts empty however identical its transport looks. Both nil-safe;
 // ApplyLive re-filters, so the round trip is idempotent.
-func carryLive(old, r *registry.Registry, recreated map[string]bool) {
+func carryLive(old, r *registry.Registry, recreated map[string]bool, oldIDs, newIDs map[string]string) {
 	if old == nil || r == nil {
 		return
 	}
@@ -241,7 +268,7 @@ func carryLive(old, r *registry.Registry, recreated map[string]bool) {
 		if _, ok := r.Instance(instance); !ok {
 			continue
 		}
-		if instanceIdentity(old, instance) != instanceIdentity(r, instance) {
+		if oldIDs[instance] != newIDs[instance] {
 			continue
 		}
 		r.ApplyLive(instance, rows)
@@ -436,14 +463,20 @@ func (h *ProviderRegistry) Get() *registry.Registry {
 // every fetch begun against the instance that is gone.
 func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registry, LiveToken, string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.fetchClock++
-	id := ""
-	if h.current != nil {
-		id = instanceIdentity(h.current, instance)
-	}
 	tok := LiveToken{order: h.fetchClock, incarnation: h.incarnations[instance]}
-	return h.current, tok, id
+	reg := h.current
+	h.mu.Unlock()
+	// The endpoint identity reads credential material (a Codex record, the
+	// ADC file), so it is taken OUTSIDE the lock: a slow or network-mounted
+	// state root must not stall every Get/Instances/List behind it. It is
+	// derived from the snapshot this fetch will run against, which is the
+	// registry the token was paired with above.
+	id := ""
+	if reg != nil {
+		id = instanceIdentity(reg, instance)
+	}
+	return reg, tok, id
 }
 
 // ReapplyLive applies rows fetched under token tok to the current
@@ -461,36 +494,53 @@ func (h *ProviderRegistry) BeginLiveFetchReg(instance string) (*registry.Registr
 // rows are catalog data, not a live listing, and applying them would
 // plant an empty snapshot over a real one.
 func (h *ProviderRegistry) ReapplyLive(tok LiveToken, instance, identity string, rows []registry.Model) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.current == nil {
+	// The identity check below reads credential material, so it is taken
+	// outside the lock and re-judged if a Reload moves the snapshot in
+	// between: only the install itself holds the lock.
+	for {
+		h.mu.RLock()
+		reg := h.current
+		h.mu.RUnlock()
+		if reg == nil {
+			return
+		}
+		// Judged against THIS fetch's endpoint identity — not the latest
+		// recorded for the name. A remove/rename/re-point since the fetch
+		// began drops its rows instead of planting the old transport's
+		// listing on the new one, however many newer fetches began after.
+		// An empty fetched identity (a registry that never knew the name,
+		// as in the hermetic holder tests) matches an empty current one.
+		if identity != instanceIdentity(reg, instance) {
+			return
+		}
+		h.mu.Lock()
+		if h.current != reg {
+			// A Reload landed while the identity was being read: judge
+			// against the snapshot that is current now.
+			h.mu.Unlock()
+			continue
+		}
+		if tok.order <= h.lastApplied[instance] {
+			h.mu.Unlock()
+			return
+		}
+		// The name was removed and recreated since this fetch began: a new
+		// entry under the same name, endpoint, and credentials is a new
+		// instance, so the old incarnation's rows must not publish onto it.
+		if tok.incarnation != h.incarnations[instance] {
+			h.mu.Unlock()
+			return
+		}
+		if h.lastApplied == nil {
+			h.lastApplied = map[string]uint64{}
+		}
+		h.lastApplied[instance] = tok.order
+		reg.ApplyLive(instance, rows)
+		h.noteLive(instance, identity, rows)
+		h.generation++
+		h.mu.Unlock()
 		return
 	}
-	if tok.order <= h.lastApplied[instance] {
-		return
-	}
-	// The name was removed and recreated since this fetch began: a new
-	// entry under the same name, endpoint, and credentials is a new
-	// instance, so the old incarnation's rows must not publish onto it.
-	if tok.incarnation != h.incarnations[instance] {
-		return
-	}
-	// Judged against THIS fetch's endpoint identity — not the latest
-	// recorded for the name. A remove/rename/re-point since the fetch
-	// began drops its rows instead of planting the old transport's
-	// listing on the new one, however many newer fetches began after.
-	// An empty fetched identity (a registry that never knew the name,
-	// as in the hermetic holder tests) matches an empty current one.
-	if identity != instanceIdentity(h.current, instance) {
-		return
-	}
-	if h.lastApplied == nil {
-		h.lastApplied = map[string]uint64{}
-	}
-	h.lastApplied[instance] = tok.order
-	h.current.ApplyLive(instance, rows)
-	h.noteLive(instance, identity, rows)
-	h.generation++
 }
 
 // noteLive records rows as the holder's last-good snapshot for

@@ -723,6 +723,83 @@ describe("mutations returning the updated instance list", () => {
     expect(state.diagnostics).toEqual(["new diagnostics"]);
   });
 
+  test("a superseded toggle from a replaced client does not touch the new client's listing", async () => {
+    const first = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    first.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // The toggle is out when the session reconnects on a new client, whose
+    // own listing says the model is enabled.
+    let finishToggle!: (value: InstanceListResponse) => void;
+    first.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    await credentialsStore.getState().fetch();
+
+    // The old client's answer lands afterwards: it must not write its row
+    // into the new client's listing.
+    finishToggle(withModels([{ id: "m1", disabled: true }]));
+    await toggle;
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([{ id: "m1" }]);
+  });
+
+  test("a replaced client's refresh cannot delete the new client's refresh token", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // A refresh is out on the first client...
+    let finishOldRefresh!: (value: InstanceListResponse) => void;
+    first.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishOldRefresh = resolve;
+        }),
+    );
+    const oldRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // ...when the session reconnects and the new client starts its own
+    // refresh for the same instance (its version restarts at 1).
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    let finishNewRefresh!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishNewRefresh = resolve;
+        }),
+    );
+    const newRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // The old request's cleanup must not take the new request's token with
+    // it: that would discard the live inventory the new client asked for.
+    finishOldRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "old-live" }] }], availableProviders: [] });
+    await oldRefresh;
+    finishNewRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "new-live" }] }], availableProviders: [] });
+    await newRefresh;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["new-live"]);
+  });
+
   test("a refresh cannot revert an edit that landed while it was in flight", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
