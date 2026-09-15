@@ -19,9 +19,11 @@ the slash invocation and catalog visibility rules the palette and composer
 share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the display formatters both
 apps render counts, durations and clock times with, the text and argument
-helpers a tool call's rendering is built from, and the doc-pane URL
-builders, which hang their hrefs off a base origin the host supplies (empty
-for a same-origin web page). The doc-pane data layer is published at the
+helpers a tool call's rendering is built from, the credential labels both
+apps describe a provider instance's active credential source, shadowed
+layers and test outcome with, and the doc-pane URL builders, which hang
+their hrefs off a base origin the host supplies (empty for a same-origin web
+page). The doc-pane data layer is published at the
 `./docContent` subpath as well, where `readDocFile` takes the host's
 `DocPort` - that base origin paired with a fetch: the package issues no
 request of its own and names neither an origin nor a credentials policy.

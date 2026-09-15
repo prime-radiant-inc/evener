@@ -67,6 +67,22 @@ export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
+export {
+  activeSourceLabel,
+  credentialLayers,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_ERROR,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  groupByProvider,
+  isEndpointConflict,
+  keylessByDesign,
+  safeCredentialTestMessage,
+  safeCredentialTestResult,
+  styleInfoText,
+  unconfiguredLabel,
+} from "./credentialLabels";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {

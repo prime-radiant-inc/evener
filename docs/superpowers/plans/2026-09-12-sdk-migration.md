@@ -432,6 +432,7 @@ before acting on it.
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
+| C19 | — | open — `settings/credentials/credentialLabels.ts` → `appwire-client/typescript/credentialLabels.ts`, both tests with it; `hubWireFixtures.ts` follows into the package's `testing/` on a `?raw` import so the wire test can stay beside the module |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
