@@ -1993,3 +1993,100 @@ func TestRemoteHubSubscribeThreadTranslatesPendingEscalationRefs(t *testing.T) {
 		t.Fatalf("opaque escalation ref = %q, want job:job_abc untouched", got)
 	}
 }
+
+// Test 31: the identity a subscription unsubscribes is the canonical ref the
+// successful subscribe snapshot named, not the caller's bare threadId. The
+// remote hub canonicalizes a current root thread ID to its stable ref, so
+// recording the caller's threadId ("local:current") names a subscription the
+// remote may no longer hold after an identity replacement; the snapshot's own
+// ref is the identity the remote actually keyed.
+func TestRemoteHubSubscribeThreadCanonicalizesRemoteRefFromSnapshot(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadRead {
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "current",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:stable"},
+			}}}
+		}
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:stable", ThreadID: "current"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "stable", "host:stable")
+
+	cancel()
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("received a notification after cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscription out did not close on cancellation")
+	}
+
+	waitForRemoteUnsubscribe(t, remote, "local:stable")
+	if sawRemoteUnsubscribe(t, remote, "local:current") {
+		t.Fatalf("teardown named the caller's bare threadId, which the remote canonicalizes away: %+v", remote.calls())
+	}
+}
+
+// Test 32: a replacement for the same remote thread is recognized as owning the
+// remote subscription even when the two subscriptions were created with
+// different caller threadIds (the thread's current ID moved across an identity
+// replacement). Comparing the caller-derived provisional targets made the
+// predecessor believe the ref was unowned and unsubscribe the live
+// replacement's remote feed; the canonical snapshot identity is what both
+// subscriptions actually hold.
+func TestRemoteHubRetireKeepsCanonicalRemoteRefForSameClientReplacement(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadRead {
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:     "current",
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:stable"},
+			}}}
+		}
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	ctx := t.Context()
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:stable", ThreadID: "current"})
+	if err != nil {
+		t.Fatalf("first SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "stable", "host:stable")
+
+	// The same remote thread, addressed with the ID it holds after an identity
+	// replacement, displaces the first subscription on the same client.
+	out2, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:stable", ThreadID: "current2"})
+	if err != nil {
+		t.Fatalf("replacement SubscribeThread: %v", err)
+	}
+	expectResync(t, out2, "stable", "host:stable")
+
+	// The displaced predecessor retires when its pump unwinds; it must observe
+	// that the live replacement still owns local:stable.
+	select {
+	case _, ok := <-out:
+		if ok {
+			t.Fatal("displaced subscription delivered after its replacement settled")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("displaced subscription out did not close")
+	}
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, call := range remote.calls() {
+			if call.method == appwire.MethodThreadUnsubscribe {
+				t.Fatalf("predecessor unsubscribed the live replacement's remote ref: %s", string(call.params))
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

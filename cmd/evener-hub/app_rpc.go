@@ -319,7 +319,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				}
 				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
 			}
-			key, _, err := threadRelayTarget(source, params)
+			// A federated source is keyed by the ref it was addressed with
+			// (relayDeliveryTarget), so a read carrying both the stable ref and
+			// the thread's current ID admits under the identity a ref-only
+			// thread/unsubscribe resolves.
+			key, _, err := relayDeliveryTarget(source, params)
 			if err != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
@@ -586,7 +590,7 @@ func registerThreadHandlers(
 			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
-		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+		relayKey, _, keyErr := relayDeliveryTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
