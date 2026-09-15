@@ -230,13 +230,19 @@ func isProtocolMismatchOutput(out []byte) bool {
 // authFailureMarkers are ssh stderr phrases that mean the host cannot
 // authenticate non-interactively. Under BatchMode these are terminal: ssh will
 // never prompt, so retrying only spams the host.
+//
+// Every marker is a shape ssh itself emits, because a remote command's stderr
+// reaches the controller on that same stream: a bare "Permission denied" is what
+// a host prints when it refuses to execute the binary we asked for, and reading
+// that as an authentication refusal would end the reconnect loop for good. ssh
+// always names the methods it tried in parentheses — "Permission denied
+// (publickey,password,keyboard-interactive)." — and that parenthetical is what
+// makes the spelling ssh's own.
 var authFailureMarkers = []string{
-	"Permission denied",
+	"Permission denied (",
 	"Host key verification failed",
-	"Authentication failed",
 	"no mutual signature algorithm",
 	"Too many authentication failures",
-	"not accessible to the current user",
 }
 
 func isAuthFailure(stderr string) bool {

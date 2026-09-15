@@ -238,31 +238,47 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	lock.Lock()
 
 	if ch := m.liveChannel(name); ch != nil {
-		// Close may have run since the lookup above; a channel it already tore
-		// down is not usable, and reporting it as such is the honest answer.
-		if m.isClosed() || ch.isClosed() {
-			lock.Unlock()
-			_ = ch.Close()
-			return nil, ErrManagerClosed
-		}
+		err := m.channelUsable(name, ch)
 		lock.Unlock()
-		return ch, nil
+		if err == nil {
+			return ch, nil
+		}
+		if errors.Is(err, ErrManagerClosed) {
+			// Close tore this channel down; closing it again is a no-op.
+			_ = ch.Close()
+		}
+		return nil, err
 	}
 	// A channel whose link has dropped is no longer usable, but it keeps
 	// ownership until a replacement is attached: were this attach to fail, its
 	// supervisor must still find the channel mapped so it can run the reconnect
 	// loop. Only a successful publish retires it.
 	stale := m.currentChannel(name)
-	// Bound the first attach when the caller set no deadline of its own: without
-	// it, a hung remote command holds this host's lock for good, exactly as it
-	// would on the reconnect path (attemptLimit).
-	attachCtx := ctx
-	cancel := func() {}
+	// Retire the replaced channel on every path out of here, early returns
+	// included: a Close racing this attach must not leave the old ssh child, its
+	// pipes, and its transport alive. It runs outside the host lock, since
+	// Channel.Close blocks on that child's exit.
+	defer func() {
+		if stale != nil {
+			_ = stale.Close()
+		}
+	}()
+	// Bound the first attach when the caller set no deadline of its own, and tie
+	// it to the manager's lifetime: without the bound a hung remote command holds
+	// this host's lock for good (as on the reconnect path, attemptLimit), and
+	// without the tie an in-flight attempt outlives Manager.Close until its own
+	// deadline while its ssh child stays alive.
+	parent := ctx
 	if _, ok := ctx.Deadline(); !ok {
-		attachCtx, cancel = context.WithTimeout(ctx, m.opts.attemptLimit())
+		var cancelTimeout context.CancelFunc
+		parent, cancelTimeout = context.WithTimeout(ctx, m.opts.attemptLimit())
+		defer cancelTimeout()
 	}
-	ch, err := m.ensureOnce(attachCtx, host)
-	cancel()
+	attemptCtx, cancel := context.WithCancel(parent)
+	defer cancel()
+	stopClose := context.AfterFunc(m.baseCtx, cancel)
+	defer stopClose()
+	ch, err := m.ensureOnce(attemptCtx, host)
 	if err != nil {
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
@@ -285,20 +301,40 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	go m.supervise(host, ch, lock)
 	lock.Unlock()
 
-	// The state is settled; then comes the slow part. Close may have run while
-	// the lock was held and closed every channel it could see, so re-check
-	// before claiming success. A window between this check and the caller's use
-	// is inherent: Close is terminal for the Manager.
-	if m.isClosed() || ch.isClosed() {
-		_ = ch.Close()
-		return nil, ErrManagerClosed
-	}
-	if stale != nil {
-		// Retire the replaced channel without the lock: Channel.Close blocks on
-		// the ssh child's exit.
-		_ = stale.Close()
+	// Validate last, so the window before the caller uses the channel is as small
+	// as it can be. Only the manager being closed is terminal here: a channel that
+	// died under us is a link drop, and the supervisor started above is already
+	// reconnecting, so that is reported as retryable. The deferred close above
+	// retires any replaced channel as we return.
+	if err := m.channelUsable(name, ch); err != nil {
+		if errors.Is(err, ErrManagerClosed) {
+			_ = ch.Close()
+		}
+		return nil, err
 	}
 	return ch, nil
+}
+
+// channelUsable classifies a channel's fitness to hand to a caller: nil when it
+// is usable, ErrManagerClosed when the manager itself has closed (terminal), and
+// a retryable error when the link died under us. A lost channel is not a closed
+// manager: conflating the two reported a recoverable link drop as terminal.
+func (m *Manager) channelUsable(name string, ch *Channel) error {
+	if m.isClosed() {
+		return ErrManagerClosed
+	}
+	if ch.isClosed() || ch.isLost() {
+		return errChannelDropped(name)
+	}
+	return nil
+}
+
+// errChannelDropped reports a channel that died before it could be used. It is
+// deliberately not ErrManagerClosed: the manager is healthy and the channel's
+// supervisor is already reconnecting, so the caller should retry rather than
+// treat the host as finished.
+func errChannelDropped(name string) error {
+	return fmt.Errorf("%w: host %q link dropped before the channel was usable", ErrSSHStart, name)
 }
 
 // Close cancels every supervisor and closes every live channel. It is terminal
@@ -448,7 +484,12 @@ func (m *Manager) supervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) {
 	}
 
 	lock.Lock()
-	if m.baseCtx.Err() != nil || ch.isClosed() || m.currentChannel(host.Name) != ch {
+	// Ownership, not liveness, decides whether this supervisor still has work: the
+	// manager closing ends it, and a replaced channel means the replacement's
+	// supervisor owns the host now. A channel that was closed while still mapped is
+	// still ours to reconnect — Ensure may have retired a dropped one, and the host
+	// must not be left unsupervised because of that.
+	if m.baseCtx.Err() != nil || m.currentChannel(host.Name) != ch {
 		lock.Unlock()
 		return
 	}
@@ -497,6 +538,14 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 	defer cancel()
 	nch, err := m.ensureOnce(attemptCtx, host)
 	if err == nil {
+		if nch.isLost() || nch.isClosed() {
+			// The link died between the handshake and this publish. Announcing it
+			// would install a dead channel and leak the old registration, so reap
+			// it and take another turn through the backoff.
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateReconnecting)
+			return true
+		}
 		if !m.publishChannel(host.Name, nch) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
 			_ = nch.Close()

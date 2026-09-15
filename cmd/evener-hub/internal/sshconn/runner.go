@@ -104,17 +104,56 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdin = stdin
-	var stdout, stderr bytes.Buffer
+	stdout := cappedBuffer{limit: runOutputLimit}
+	stderr := cappedBuffer{limit: runOutputLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return append(stdout.Bytes(), stderr.Bytes()...), &RunError{
-			Stdout: stdout.Bytes(),
-			Stderr: stderr.Bytes(),
-			Err:    err,
-		}
+	err := cmd.Run()
+	switch {
+	case err != nil:
+		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
+			&RunError{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes(), Err: err}
+	case stdout.truncated || stderr.truncated:
+		// A preflight answer is a few hundred bytes. Refusing what the cap cut
+		// short is the honest option: parsing a silently truncated prefix is how a
+		// host gets misread. The command itself is bounded by ctx, so a flooding
+		// remote cannot outlive the attempt.
+		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
+			&RunError{
+				Stdout: stdout.buf.Bytes(),
+				Stderr: stderr.buf.Bytes(),
+				Err:    fmt.Errorf("output exceeded the %d byte limit", runOutputLimit),
+			}
 	}
-	return stdout.Bytes(), nil
+	return stdout.buf.Bytes(), nil
+}
+
+// runOutputLimit caps one stream from a one-shot command. Preflight output is a
+// few hundred bytes; the cap exists so a hostile or broken remote command cannot
+// make the controller buffer unbounded output before anything parses it.
+const runOutputLimit = 1 << 20
+
+// cappedBuffer accumulates at most limit bytes and remembers whether more
+// arrived. Writes always report success: the child must not be blocked by our
+// cap, and the caller learns about the truncation from the flag instead.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.buf.Len(); room > 0 {
+		if len(p) <= room {
+			b.buf.Write(p)
+			return len(p), nil
+		}
+		b.buf.Write(p[:room])
+	}
+	if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
 }
 
 // execStdio owns one exec.Cmd's pipes. Wait and Kill are each run at most once

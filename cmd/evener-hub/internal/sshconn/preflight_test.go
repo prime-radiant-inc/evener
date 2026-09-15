@@ -148,16 +148,27 @@ func TestIsProtocolMismatchOutput(t *testing.T) {
 func TestIsAuthFailure(t *testing.T) {
 	auth := []string{
 		"bob@host: Permission denied (publickey).",
+		"jesse@jesse-paradise-park: Permission denied (publickey,password,keyboard-interactive).",
 		"Host key verification failed.",
-		"Authentication failed.",
 		"no mutual signature algorithm",
+		"Too many authentication failures",
 	}
 	for _, s := range auth {
 		if !isAuthFailure(s) {
 			t.Errorf("isAuthFailure(%q) = false, want true", s)
 		}
 	}
-	if isAuthFailure("Connection timed out") {
-		t.Error("timeout classified as auth failure")
+	// The remote command's own failures arrive on the same stream, so a bare
+	// "Permission denied" must not be read as ssh refusing the key.
+	notAuth := []string{
+		"Connection timed out",
+		"Permission denied",
+		"sh: /usr/local/bin/evener: Permission denied",
+		"Authentication failed",
+	}
+	for _, s := range notAuth {
+		if isAuthFailure(s) {
+			t.Errorf("isAuthFailure(%q) = true, want false", s)
+		}
 	}
 }

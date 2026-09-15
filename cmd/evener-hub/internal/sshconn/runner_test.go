@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +238,30 @@ func TestExecStdioKillAfterExitIsNotAnError(t *testing.T) {
 	}
 	if err := stdio.Kill(); err != nil {
 		t.Fatalf("Kill after the child exited = %v, want nil", err)
+	}
+}
+
+// A preflight answer is a few hundred bytes. A command that floods the controller
+// must be refused rather than buffered without bound.
+func TestExecRunnerRunRejectsOversizedOutput(t *testing.T) {
+	r := execRunner{}
+	want := 3 * runOutputLimit
+	out, err := r.Run(context.Background(), []string{"sh", "-c", "yes a | head -c " + strconv.Itoa(want)}, nil)
+	if err == nil {
+		t.Fatalf("Run accepted %d bytes of output", len(out))
+	}
+	var rf *RunError
+	if !errors.As(err, &rf) {
+		t.Fatalf("err = %v, want *RunError", err)
+	}
+	if !strings.Contains(rf.Err.Error(), "limit") {
+		t.Fatalf("the error does not name the limit: %v", rf.Err)
+	}
+	if len(rf.Stdout) != runOutputLimit {
+		t.Fatalf("captured stdout = %d bytes, want the %d byte cap", len(rf.Stdout), runOutputLimit)
+	}
+	if len(out) > 2*runOutputLimit {
+		t.Fatalf("captured %d bytes across both streams, want at most the two caps", len(out))
 	}
 }
 

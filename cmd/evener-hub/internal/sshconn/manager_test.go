@@ -860,6 +860,129 @@ func TestHostIsIndependentCopy(t *testing.T) {
 	}
 }
 
+// A lost channel is not a closed manager. Conflating the two reported a
+// recoverable link drop as terminal, and could hand a dead handle to a caller.
+func TestChannelUsableClassification(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{})
+
+	newChannel := func() *Channel {
+		return &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	}
+	lost := func() *Channel { c := newChannel(); c.markLost(); return c }
+	closed := func() *Channel { c := newChannel(); close(c.done); return c }
+
+	if err := m.channelUsable("alpha", newChannel()); err != nil {
+		t.Fatalf("a live channel was classified as %v", err)
+	}
+	for name, ch := range map[string]*Channel{"lost": lost(), "closed": closed()} {
+		err := m.channelUsable("alpha", ch)
+		if err == nil {
+			t.Fatalf("%s channel accepted as usable", name)
+		}
+		if errors.Is(err, ErrManagerClosed) {
+			t.Fatalf("%s channel reported as a closed manager: %v", name, err)
+		}
+		if !errors.Is(err, ErrSSHStart) {
+			t.Fatalf("%s channel error = %v, want the retryable ErrSSHStart class", name, err)
+		}
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := m.channelUsable("alpha", newChannel()); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("after Close, classification = %v, want ErrManagerClosed", err)
+	}
+}
+
+// Close can land between the replacement's publish and Ensure's validation, at
+// which point the map holds the replacement and the replaced channel is in
+// nobody's hands: Ensure still has to reap it.
+func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	attaches := 0
+	var m *Manager
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m = newTestManager(t, reg, fr, Options{
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventAttached {
+				return
+			}
+			mu.Lock()
+			attaches++
+			second := attaches == 2
+			mu.Unlock()
+			if second {
+				// Close publishes its closed flag before it takes any host lock, so
+				// this lands while Ensure still holds the lock and before Ensure
+				// validates the channel it just published. Waiting for the flag
+				// keeps that interleaving deterministic; Close itself blocks on the
+				// lock Ensure is holding until Ensure releases it.
+				go func() { _ = m.Close() }()
+				deadline := time.Now().Add(2 * time.Second)
+				for !m.isClosed() && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
+			}
+		},
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch1.markLost()
+
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("Ensure racing Close = %v, want ErrManagerClosed", err)
+	}
+	waitClosed(t, ch1)
+}
+
+// Manager.Close must end an in-flight initial attach: otherwise its ssh child
+// outlives the manager until the caller's deadline or the attempt bound.
+func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	entered := make(chan struct{})
+	var once sync.Once
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+			once.Do(func() { close(entered) })
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		startFn: goodStartFn(t),
+	}
+	// A long attempt bound on purpose: only Close can end this attempt, so the
+	// assertion below is about Close rather than about attemptLimit.
+	m := newTestManager(t, testRegistry(t, host), fr, Options{attemptTimeout: 30 * time.Second})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attach never reached the runner")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Ensure reported success after Close")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close did not cancel the in-flight initial attach")
+	}
+}
+
 // waitClosed fails unless ch reaches the closed state within the deadline. A
 // supervisor may close a channel just after releasing the host lock, so a
 // concurrent Ensure cannot assume it already happened.
