@@ -436,11 +436,21 @@ func reapStaleFallbackBases(tmpBase string, now time.Time, liveBase, liveDir str
 		return
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		if !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		info, err := entry.Info()
-		if err != nil || now.Sub(info.ModTime()) < staleRetainedMaxAge {
+		if err != nil {
+			continue
+		}
+		if !dirInfo(info) {
+			// A symlink or Windows reparse point under a fallback base name is
+			// never a base: unlink the entry itself rather than traverse it, so it
+			// can neither be removed through nor shadow a real base.
+			_ = os.Remove(filepath.Join(tmpBase, entry.Name()))
+			continue
+		}
+		if now.Sub(info.ModTime()) < staleRetainedMaxAge {
 			continue
 		}
 		// Only a directory this user owns, with no group or other access, is ours
@@ -591,6 +601,12 @@ func materializeEmbeddedSkills(skillsFS fs.FS, base, skipDir string) (string, st
 // reserve a name leaves the staging directory in place (and keepStaging set)
 // rather than failing the caller, because the caller having its bundled skills
 // matters more than where they came from.
+//
+// The caller caches a retained copy as a verified copy rather than a fallback:
+// it is content-addressed and leased like a published one, and retrying the
+// published name would re-stage the whole tree and keep a fresh copy per retry
+// while the name stays occupied. The accepted consequence is that this process
+// keeps serving the retained copy even if the published name heals.
 func retainStagedCopy(staging, base, digest string, keepStaging *bool) (string, string) {
 	// Renaming onto a fresh random name avoids the placeholder race and works
 	// where a rename cannot replace an existing directory.
@@ -713,12 +729,12 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		if err != nil {
 			return
 		}
-		if info.IsDir() {
+		if dirInfo(info) {
 			_ = os.RemoveAll(path)
 			return
 		}
-		// A file or symlink is removed with Remove, which deletes the link itself
-		// rather than anything it points at.
+		// A file, symlink, or Windows reparse point is removed with Remove, which
+		// deletes the link itself rather than anything it points at.
 		_ = os.Remove(path)
 	}
 	for _, entry := range entries {
@@ -748,15 +764,18 @@ func reapStaleCopies(base string, now time.Time, keepDigest, skipDir string) {
 		default:
 			continue
 		}
-		if !entry.IsDir() {
-			info, err := entry.Info()
-			if err != nil || now.Sub(info.ModTime()) < maxAge {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if !dirInfo(info) {
+			if now.Sub(info.ModTime()) < maxAge {
 				continue
 			}
-			// A file or symlink squatting a cache name is removed with Remove,
-			// which deletes the link itself rather than anything it points at,
-			// so a later publish can heal the name instead of falling back
-			// forever.
+			// A file, symlink, or Windows reparse point squatting a cache name is
+			// removed with Remove, which deletes the link itself rather than
+			// anything it points at, so a later publish can heal the name instead
+			// of falling back forever.
 			_ = os.Remove(path)
 			continue
 		}

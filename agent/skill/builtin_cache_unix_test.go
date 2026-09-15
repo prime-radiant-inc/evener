@@ -3,9 +3,12 @@
 package skill
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestEnsurePrivateCacheDir_CreatesPrivateDir(t *testing.T) {
@@ -87,5 +90,33 @@ func TestDefaultEmbeddedSkillsBaseDir_FallsBackWhenPredictableNameIsUnusable(t *
 	info, err := os.Lstat(dir)
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("fallback base dir = %q, %v, %v", dir, info, err)
+	}
+}
+
+// A link squatting a fallback base name must never be followed: the reaper
+// unlinks the entry itself and leaves whatever it points at alone.
+func TestReapStaleFallbackBases_UnlinksALinkWithoutFollowingIt(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	canary := filepath.Join(target, "keep")
+	if err := os.WriteFile(canary, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write canary: %v", err)
+	}
+	link := filepath.Join(tmp, embeddedSkillsPrefix+processOwnerTag()+"-planted")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	reapStaleFallbackBases(os.TempDir(), time.Now(), "", "")
+
+	if _, err := os.Lstat(link); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("planted link still present: %v", err)
+	}
+	if _, err := os.Stat(canary); err != nil {
+		t.Fatalf("reaper removed the link's target: %v", err)
 	}
 }
