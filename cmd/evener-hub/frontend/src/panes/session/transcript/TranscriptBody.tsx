@@ -358,9 +358,8 @@ export function TranscriptBody({
         surface,
         sessionRef,
         disclosureScope,
-        entities,
       }),
-    [itemRenderFingerprint, entities],
+    [itemRenderFingerprint],
   );
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const viewRegistration = useTranscriptViewRegistration({

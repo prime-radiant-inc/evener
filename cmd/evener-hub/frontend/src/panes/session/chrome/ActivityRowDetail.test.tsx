@@ -6,6 +6,7 @@ import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../.
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import { detailLineByText } from "./detailLine.testFixture";
 
@@ -99,9 +100,9 @@ function delegateRow(
 
 // The id the strip's delegate line names, and the view the session's entity
 // map holds for it. buildEntityView is the chrome's own builder (useEntityView
-// wraps it), so this is the same map ActivityPanelBody hands the tree; the
-// tests below pass it in explicitly because the strip itself lives outside the
-// transcript subtree that carries the render context's map.
+// wraps it), so this is the same map ActivityPanelBody provides to the tree;
+// the tests below wrap the strip in EntityViewsProvider because the strip
+// lives outside the transcript subtree that provides the same map there.
 const DELEGATE_ID = "dlg_034HQ2kSDXfKFq1mm3idL1";
 
 function delegateEntities(id: string, task: string) {
@@ -214,11 +215,9 @@ describe("ActivityRowDetail", () => {
   // control to a row that already carries one.
   test("the delegate id renders as an embedded entity card trigger, not plain text", () => {
     const { container } = render(
-      <ActivityRowDetail
-        row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })}
-        now={NOW}
-        entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}
-      />,
+      <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+        <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+      </EntityViewsProvider>,
     );
 
     const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
@@ -234,11 +233,9 @@ describe("ActivityRowDetail", () => {
     vi.useFakeTimers();
     try {
       render(
-        <ActivityRowDetail
-          row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })}
-          now={NOW}
-          entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}
-        />,
+        <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+          <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+        </EntityViewsProvider>,
       );
 
       fireEvent.focus(screen.getByTestId("entity-trigger"));
@@ -252,6 +249,31 @@ describe("ActivityRowDetail", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The strip no longer takes an `entities` prop at all: the only way this id
+  // can become a trigger is the entity-map context, so a trigger here is proof
+  // the provider is the path that resolves.
+  test("the delegate id resolves through the entity provider with no entities prop", () => {
+    render(
+      <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+        <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+      </EntityViewsProvider>,
+    );
+
+    expect(screen.getByTestId("entity-trigger").textContent).toBe(DELEGATE_ID);
+  });
+
+  // No provider owns the map in a bare render (a direct strip, or the chrome
+  // before its body mounts): the id stays the plain text it always was.
+  test("with no entity provider the delegate id stays plain text", () => {
+    const { container } = render(
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />,
+    );
+
+    const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
+    expect(within(line).queryByTestId("entity-trigger")).toBeNull();
+    expect(line.textContent).toContain(DELEGATE_ID);
   });
 
   test("live job row meta says running with quiet age, output bytes, and started time", () => {

@@ -15,6 +15,7 @@ import {
   useActivitySummaryStore,
 } from "../../../stores/activitySummary";
 import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useEntityView } from "../transcript/useEntityView";
@@ -214,7 +215,6 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
           <ActivityTree
             ref={treeRef}
             tree={tree}
-            entities={entities}
             watches={watches}
             omittedWatches={omittedWatches}
             omittedArmedWatches={omittedArmedWatches}
@@ -350,7 +350,10 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
     );
   }
 
-  return renderBody();
+  // The one owner of the session's entity map in the chrome republishes it to
+  // every EntityRef below (the detail strips' delegate lines) through the
+  // dedicated entity-views context, instead of threading it down the tree.
+  return <EntityViewsProvider entities={entities}>{renderBody()}</EntityViewsProvider>;
 });
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(

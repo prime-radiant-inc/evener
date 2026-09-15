@@ -97,7 +97,7 @@ test("keeps provider context identity across projection objects with equal seman
   expect(screen.getByTestId("context-probe").getAttribute("data-config")).toBe("activity");
 });
 
-test("carries the entity map and keys context identity on the map identity", () => {
+test("does not key render-context identity on the entity map it no longer carries", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
   const entities = new Map<string, EntityView>();
   const { rerender } = render(
@@ -106,8 +106,9 @@ test("carries the entity map and keys context identity on the map identity", () 
     </TranscriptRenderProvider>,
   );
   const firstContextValue = observedContext;
-  expect(firstContextValue?.entities).toBe(entities);
+  if (firstContextValue === undefined) throw new Error("provider probe did not render");
 
+  // Equal semantic content with a fresh config object keeps the identity.
   rerender(
     <TranscriptRenderProvider config={{ ...config }} entities={entities}>
       <ContextProbe />
@@ -115,14 +116,16 @@ test("carries the entity map and keys context identity on the map identity", () 
   );
   expect(observedContext).toBe(firstContextValue);
 
+  // The map moved to its own provider (EntityViewsProvider). Replacing it must
+  // not mint a new render context, which would re-render every transcript
+  // consumer below; only the entity provider's own consumers see the swap.
   const replacement = new Map(entities);
   rerender(
     <TranscriptRenderProvider config={config} entities={replacement}>
       <ContextProbe />
     </TranscriptRenderProvider>,
   );
-  expect(observedContext).not.toBe(firstContextValue);
-  expect(observedContext?.entities).toBe(replacement);
+  expect(observedContext).toBe(firstContextValue);
 });
 
 function DisclosureProbe({ id }: { id: string }) {
