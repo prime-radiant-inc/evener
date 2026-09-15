@@ -6,9 +6,9 @@
 // (`../../protocol/errors`, `../../appwire-client/typescript/errors`) and
 // should spell it as a name (`@evener/appwire-client`). Run it once per
 // migration step, read the per-specifier counts it prints, commit the result.
-// `--check` makes no edit and exits nonzero if anything is left to rewrite.
-// `make lint-package-imports` asserts the same thing with a grep, because the
-// lint lane installs no dependency tree and this script needs TypeScript.
+// `make lint-package-imports` is the standing check that no path spelling
+// survives -- a grep, since the lint lane installs no dependency tree and this
+// script needs TypeScript; this script is the one-time rewrite, not a gate.
 //
 // Why a script instead of sed: the target specifier depends on the SYMBOLS an
 // import names, not on its path prefix. `readDocFile` is published only at
@@ -54,7 +54,7 @@ function layoutOf(root) {
 }
 
 function usage() {
-  console.log(`Usage: node scripts/sdk/rewrite-package-imports.mjs [--root DIR] [--check]
+  console.log(`Usage: node scripts/sdk/rewrite-package-imports.mjs [--root DIR]
 
 Rewrites every import of the AppWire TypeScript package in the web and native
 trees from a relative path to the package name, choosing the specifier the
@@ -70,7 +70,6 @@ rather than the three identical lines three deep paths turn into.
 
 Options:
   --root DIR sweep DIR instead of this checkout (for this script's own test)
-  --check    report only; exit 1 if any import still names a path
   --help     this text
 
 Exits 2, writing nothing, if an import names a symbol the package does not
@@ -287,8 +286,7 @@ function main() {
     usage();
     return 0;
   }
-  const checkOnly = args.includes("--check");
-  const rest = args.filter((arg) => !["--check", "--help", "-h"].includes(arg));
+  const rest = args.filter((arg) => !["--help", "-h"].includes(arg));
   let root = checkoutRoot;
   if (rest[0] === "--root") {
     if (rest.length < 2) {
@@ -407,34 +405,32 @@ function main() {
     return 2;
   }
 
-  if (!checkOnly) {
-    const conflicts = [];
-    let mergedFiles = 0;
-    // Only a file this run edited, or one that already names the package at
-    // least twice, can hold duplicate imports to merge. The rest are neither
-    // re-read (their text is in hand) nor parsed.
-    for (const [file, original] of texts) {
-      const text = pending.get(file) ?? original;
-      if (!pending.has(file) && text.split(PACKAGE_NAME).length - 1 < 2) continue;
-      const merged = mergeDuplicateImports(file, text, conflicts);
-      if (merged === null) continue;
-      pending.set(file, merged);
-      mergedFiles += 1;
-    }
-    if (conflicts.length > 0) {
-      console.error(`${conflicts.length} import(s) cannot be merged; nothing was written:`);
-      for (const conflict of conflicts) console.error(`  ${conflict}`);
-      return 2;
-    }
-    for (const [file, contents] of pending) writeFileSync(file, contents);
-    if (mergedFiles > 0) console.log(`merged duplicate package imports in ${mergedFiles} file(s)`);
+  const conflicts = [];
+  let mergedFiles = 0;
+  // Only a file this run edited, or one that already names the package at least
+  // twice, can hold duplicate imports to merge. The rest are neither re-read
+  // (their text is in hand) nor parsed.
+  for (const [file, original] of texts) {
+    const text = pending.get(file) ?? original;
+    if (!pending.has(file) && text.split(PACKAGE_NAME).length - 1 < 2) continue;
+    const merged = mergeDuplicateImports(file, text, conflicts);
+    if (merged === null) continue;
+    pending.set(file, merged);
+    mergedFiles += 1;
   }
+  if (conflicts.length > 0) {
+    console.error(`${conflicts.length} import(s) cannot be merged; nothing was written:`);
+    for (const conflict of conflicts) console.error(`  ${conflict}`);
+    return 2;
+  }
+  for (const [file, contents] of pending) writeFileSync(file, contents);
+  if (mergedFiles > 0) console.log(`merged duplicate package imports in ${mergedFiles} file(s)`);
 
   const rows = [...counts.entries()].map(([key, count]) => [...key.split("\t"), count]);
   rows.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
   for (const [tree, specifier, count] of rows) console.log(`${String(count).padStart(4)}  ${tree.padEnd(14)} ${specifier}`);
-  console.log(`${statementsRewritten} import statement(s) across ${pending.size} file(s)${checkOnly ? " still name a path" : " rewritten"}`);
-  return checkOnly && statementsRewritten > 0 ? 1 : 0;
+  console.log(`${statementsRewritten} import statement(s) across ${pending.size} file(s) rewritten`);
+  return 0;
 }
 
 process.exit(main());

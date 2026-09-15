@@ -103,25 +103,6 @@ test("the mobile-native/scripts tools are rewritten like every other consumer", 
   }
 });
 
-test("--check reports what is left and writes nothing", () => {
-  const before = 'import { errorText } from "../../appwire-client/typescript/errors";\nerrorText();\n';
-  const root = fixture({ "mobile/src/state.ts": before });
-  try {
-    let status = 0;
-    let output = "";
-    try {
-      output = execFileSync(process.execPath, [script, "--root", root, "--check"], { encoding: "utf8" });
-    } catch (error) {
-      status = error.status;
-      output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
-    }
-    assert.equal(status, 1);
-    assert.match(output, /still name a path/);
-    assert.equal(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), before);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
 
 test("an inline type member and a value member of the same export merge to the value form", () => {
   // Two statements that both land on the package root, naming one export two
