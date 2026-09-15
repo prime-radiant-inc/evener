@@ -145,6 +145,53 @@ describe("ActivityWatchDetail timeline", () => {
     expect(dot).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
   });
 
+  test("labels the end the now marker is drawn at when an instant lands exactly on the clock", () => {
+    // `now` equals the earliest retained instant, with newer deliveries ahead of
+    // the clock. The marker belongs at the rail's left edge there, so the left
+    // label is the one that says "now"; the right end is the newest delivery.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: [new Date(NOW).toISOString(), "2026-08-05T15:20:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(`now ${nowClock}`);
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:20:00Z"));
+    // The end that says "now" is the end the marker actually draws at.
+    expect(leftOf(screen.getByTestId("watch-timeline-now"))).toBe(0);
+  });
+
+  test("describes a marker that sits between the ends without mislabeling either end", () => {
+    // The browser clock lags, so the newest delivery is ahead of it: the rail
+    // spans earliest -> newest with the marker somewhere inside. Neither end IS
+    // `now`, so neither label may claim it, and the marker's own instant is
+    // still described because the marks themselves are hidden from assistive
+    // tech.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(formatClockTime("2026-08-05T14:00:00Z"));
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:55:00Z"));
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-rail").getAttribute("aria-label")).toContain(`now ${nowClock}`);
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    expect(marker).toBeGreaterThan(positions[0] as number);
+    expect(marker).toBeLessThan(positions[1] as number);
+  });
+
   test("keeps two instants apart even when both sit inside a stretched rail's headroom", () => {
     // The two newest deliveries are within the reserved last 2% of a rail that
     // already reaches past `now`. Clamping them into that reserve would still

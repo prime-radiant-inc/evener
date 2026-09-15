@@ -209,6 +209,20 @@ func TestConfigureWatchRejectsOversizedArguments(t *testing.T) {
 			},
 			want: "tool_name must be at most",
 		},
+		{
+			// The name alone is inside the bound, but the hub renders the filter as
+			// ONE label with the status beside it, and that label is what it bounds.
+			name: "event_filter whose rendered label exceeds the bound",
+			args: watchArgs{
+				Target: "caller",
+				Events: []string{"assistant.tool"},
+				EventFilter: &watchEventFilter{
+					ToolName: strings.Repeat("x", maxWatchConditionChars-2),
+					Status:   "error",
+				},
+			},
+			want: "event_filter must render to at most",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := jm.configureWatch(tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -232,6 +246,25 @@ func TestConfigureWatchRejectsOversizedArguments(t *testing.T) {
 	}
 	if jm.watchCount() != 1 {
 		t.Fatalf("watch count = %d, want the multibyte condition to arm one watch", jm.watchCount())
+	}
+
+	// The rendered bound is exact: the decoration around the name and status is
+	// inside it, and it is measured with the same function that renders the wire
+	// label, so the two cannot drift apart.
+	const decoration = len("tool_name=, status=ok")
+	fits := &watchEventFilter{ToolName: strings.Repeat("x", maxWatchConditionChars-decoration), Status: "ok"}
+	if rendered := len([]rune(watchEventFilterSummary(fits))); rendered != maxWatchConditionChars {
+		t.Fatalf("test setup: rendered filter is %d runes, want exactly %d", rendered, maxWatchConditionChars)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.tool"}, EventFilter: fits}); err != nil {
+		t.Fatalf("a filter rendering to exactly %d runes was refused: %v", maxWatchConditionChars, err)
+	}
+	over := &watchEventFilter{ToolName: strings.Repeat("x", maxWatchConditionChars-decoration+1), Status: "ok"}
+	if _, err := jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.tool"}, EventFilter: over}); err == nil || !strings.Contains(err.Error(), "event_filter must render to at most") {
+		t.Fatalf("one rune past the rendered bound: error = %v, want event_filter must render to at most", err)
+	}
+	if jm.watchCount() != 2 {
+		t.Fatalf("watch count = %d, want 2: the filter on the bound armed, the one past it did not", jm.watchCount())
 	}
 }
 
@@ -592,6 +625,26 @@ func TestConfigureWatchRejectsEveryWithMultipleEvents(t *testing.T) {
 	_, err = jm.configureWatch(watchArgs{Target: "caller", Every: 1})
 	if err == nil || !strings.Contains(err.Error(), "nothing to watch") {
 		t.Fatalf("bare every:1: error = %v, want nothing to watch", err)
+	}
+}
+
+// A negative every is not the same request as an absent one: it asks for a
+// throttle the daemon cannot honour. Accepting it and installing an unthrottled
+// watch delivers every matching event to a caller who asked for one in N, and
+// because the single-kind rule was gated on every>0, it also slipped a throttle
+// past the shapes that rule exists to refuse.
+func TestConfigureWatchRejectsNegativeEvery(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+
+	for _, events := range [][]string{{"communicate"}, {"communicate", "job.notification"}, {"*"}} {
+		_, err := jm.configureWatch(watchArgs{Target: "caller", Events: events, Every: -3})
+		if err == nil || !strings.Contains(err.Error(), "every must be a positive count") {
+			t.Fatalf("events %v with every:-3: error = %v, want every must be a positive count", events, err)
+		}
+		if jm.watchCount() != 0 {
+			t.Fatalf("events %v: watch count = %d, want 0 after a negative every was refused", events, jm.watchCount())
+		}
 	}
 }
 

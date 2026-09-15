@@ -108,7 +108,6 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   // in its future instead of collapsing onto the left edge with them.
   const left = Math.min(earliest, now);
   const right = Math.max(newest, now);
-  const markerAtStart = now < earliest;
   const stretched = newest > now;
   const span = right - left;
   // A stretched rail scales its whole span into the headroom, so no two
@@ -125,10 +124,21 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   // reached. A zero span means the single retained instant IS `now`, where the
   // marker takes the opposite end so the two never draw on one position.
   const nowPosition = span <= 0 ? WATCH_TIMELINE_DOT_MAX_PERCENT : Math.max(0, offset(now));
-  // Each end is labeled with the instant that sits at it, and only the end the
-  // marker is at says "now".
+  // Which end the marker is drawn at is one decision, and the "now" label comes
+  // from it: a label on an end the marker is not at would name the wrong instant
+  // as the clock. The left end is the marker's when the rail starts at `now`
+  // (the clock lags, or an instant lands exactly on it); the right end is its
+  // when `now` is the rail's end, including the zero span that draws there. When
+  // a delivery is ahead of the clock and another is behind it, the marker sits
+  // between the ends and neither one is `now`.
+  const markerAtStart = span > 0 && now <= earliest;
+  const markerAtEnd = span <= 0 || now >= newest;
+  // Each end is labeled with the instant that sits at it.
   const startLabel = markerAtStart ? `now ${clockFromMillis(left)}` : clockFromMillis(left);
-  const endLabel = markerAtStart ? clockFromMillis(right) : `now ${clockFromMillis(right)}`;
+  const endLabel = markerAtEnd ? `now ${clockFromMillis(right)}` : clockFromMillis(right);
+  // The marks are hidden from assistive tech, so the marker's own instant is
+  // named in the label when neither end holds it.
+  const floatingNow = !markerAtStart && !markerAtEnd ? `, now ${clockFromMillis(now)}` : "";
   const caption =
     watch.deliveries <= instants.length
       ? "Delivered to this session"
@@ -139,7 +149,7 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
         className={CLASS.timelineRail}
         data-testid="watch-timeline-rail"
         role="img"
-        aria-label={`${caption}, ${startLabel} to ${endLabel}`}
+        aria-label={`${caption}, ${startLabel} to ${endLabel}${floatingNow}`}
       >
         <span className={CLASS.timelineLine} aria-hidden="true" />
         {/* The marker precedes the dots in DOM order so a dot can never be

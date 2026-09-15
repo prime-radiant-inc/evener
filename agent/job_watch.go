@@ -56,13 +56,14 @@ const (
 	// clones it, so an unbounded list here is an unbounded payload everywhere.
 	// The watchable kinds are a fixed handful, so this is generous.
 	maxWatchEvents = 64
-	// maxWatchConditionChars bounds the two condition strings a watch may carry,
-	// output_match and event_filter.tool_name, at registration. It is the hub's
-	// navigation label bound and the wire codec's own bound for these fields: a
-	// longer value would be truncated on its way to the browser and then shown as
-	// the condition the watch matches, which is a claim this daemon must not make.
-	// Refused here, so the hub's truncation only ever sees a row from some other
-	// producer. Counted in runes, like every other "...Chars" bound here.
+	// maxWatchConditionChars bounds the condition strings a watch may carry at
+	// registration: output_match, event_filter.tool_name, and the filter as the
+	// browser renders it (the name with its label and status beside it). It is the
+	// hub's navigation label bound and the wire codec's own bound for these
+	// fields: a longer value would be truncated on its way to the browser and then
+	// shown as the condition the watch matches, which is a claim this daemon must
+	// not make. Refused here, so the hub's truncation only ever sees a row from
+	// some other producer. Counted in runes, like every other "...Chars" bound here.
 	maxWatchConditionChars = 512
 	// watchDeliveryBudget caps the condition fires a watch config may deliver
 	// before the circuit breaker auto-clears it (spec §4 F1). A periodic progress
@@ -661,6 +662,13 @@ func normalizeWatchArgs(a *watchArgs) error {
 	if a.RepeatSeconds != 0 && (a.RepeatSeconds < 60 || a.RepeatSeconds > 3600) {
 		return errors.New("invalid_request: repeat_seconds must be between 60 and 3600")
 	}
+	// A negative every is not "no throttle": it asks for a throttle the daemon
+	// cannot honour, and installing an unthrottled watch in its place would
+	// deliver every matching event to a caller who asked for one in N. Refuse it
+	// here, before the every>0 branches below treat it as absent everywhere.
+	if a.Every < 0 {
+		return fmt.Errorf("invalid_request: every must be a positive count (it fires on each Nth matching event), got %d", a.Every)
+	}
 	a.Note = limitWatchText(a.Note, watchMessageMaxChars)
 	// The payload bounds: a watch whose trigger arguments are unbounded makes
 	// every projection of it unbounded too, so they are refused here rather than
@@ -683,6 +691,15 @@ func normalizeWatchArgs(a *watchArgs) error {
 		a.EventFilter.Status = strings.ToLower(strings.TrimSpace(a.EventFilter.Status))
 		if runes := len([]rune(a.EventFilter.ToolName)); runes > maxWatchConditionChars {
 			return fmt.Errorf("invalid_request: event_filter.tool_name must be at most %d characters, got %d", maxWatchConditionChars, runes)
+		}
+		// The hub renders the filter as ONE label ("tool_name=…, status=…") and
+		// bounds that label, so the field's own bound is not enough: a name at the
+		// bound plus the decoration around it was cut on its way to the browser,
+		// which then showed a shortened tool name as the one being matched. Bound
+		// the rendered label with the very function that renders it, so the two
+		// cannot drift apart.
+		if summary := watchEventFilterSummary(a.EventFilter); len([]rune(summary)) > maxWatchConditionChars {
+			return fmt.Errorf("invalid_request: event_filter must render to at most %d characters, got %d (tool_name shares the bound with its label and status)", maxWatchConditionChars, len([]rune(summary)))
 		}
 		if a.EventFilter.ToolName == "" && a.EventFilter.Status == "" {
 			a.EventFilter = nil
