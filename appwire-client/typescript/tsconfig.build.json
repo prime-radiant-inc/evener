@@ -29,6 +29,7 @@
     "entityIds.ts",
     "entityView.ts",
     "watchRows.ts",
+    "watchText.ts",
     "activityList.ts",
     "activityMerge.ts",
     "itemFailure.ts",

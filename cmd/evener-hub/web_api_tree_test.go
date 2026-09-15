@@ -232,3 +232,73 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 		t.Fatalf("remote subagent metadata = %+v", meta)
 	}
 }
+
+// An older daemon omits the watches field entirely, and a probe that listed
+// nothing carries no diagnostics. Both must project an empty watch list onto
+// the tree entry rather than failing the thread.
+func TestAppThreadTreeEntryWithoutWatchesYieldsEmptyList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		diag *appwire.EvenerDiagnostics
+	}{
+		{name: "nil diagnostics", diag: nil},
+		{name: "diagnostics without watches", diag: &appwire.EvenerDiagnostics{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, entry, ok := appThreadTreeEntries(appwire.Thread{
+				ID:     "thread-empty",
+				Source: "remote",
+				Evener: appwire.EvenerThread{Ref: "remote:thread-empty", Diagnostics: tc.diag},
+			})
+			if !ok {
+				t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+			}
+			if len(entry.Watches) != 0 {
+				t.Fatalf("entry.Watches = %+v, want empty when diagnostics omit Watches", entry.Watches)
+			}
+		})
+	}
+}
+
+// A watch is reported by the session's own daemon. Two sessions that can both
+// see a receiver watch each carry their own diagnostics rows; the entry must
+// never aggregate the other session's rows, or a rollup would double count.
+func TestAppThreadTreeEntryCarriesOnlyItsOwnWatches(t *testing.T) {
+	threadA := appwire.Thread{
+		ID:     "thread-a",
+		Source: "remote",
+		Evener: appwire.EvenerThread{
+			Ref: "remote:thread-a",
+			Diagnostics: &appwire.EvenerDiagnostics{Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-a", Source: "timer", Note: "owner watch"},
+			}},
+		},
+	}
+	threadB := appwire.Thread{
+		ID:     "thread-b",
+		Source: "remote",
+		Evener: appwire.EvenerThread{
+			Ref: "remote:thread-b",
+			Diagnostics: &appwire.EvenerDiagnostics{Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-b", Source: "output", Note: "receiver watch"},
+			}},
+		},
+	}
+
+	_, entryA, okA := appThreadTreeEntries(threadA)
+	_, entryB, okB := appThreadTreeEntries(threadB)
+	if !okA || !okB {
+		t.Fatalf("entries rejected: a=%v b=%v", okA, okB)
+	}
+	if len(entryA.Watches) != 1 || entryA.Watches[0].ID != "watch-a" {
+		t.Fatalf("session A watches = %+v, want only watch-a", entryA.Watches)
+	}
+	if len(entryB.Watches) != 1 || entryB.Watches[0].ID != "watch-b" {
+		t.Fatalf("session B watches = %+v, want only watch-b", entryB.Watches)
+	}
+	for _, watch := range entryB.Watches {
+		if watch.ID == "watch-a" {
+			t.Fatalf("session B carries session A's watch: %+v", entryB.Watches)
+		}
+	}
+}

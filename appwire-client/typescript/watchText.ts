@@ -1,0 +1,121 @@
+// The watch vocabulary the rail and the session panel both speak: cadence, the
+// armed wording, the row title, and the gloss that joins them.
+//
+// Deliberately free of React and of CSS imports. The session panel's row model
+// (panes/session/chrome/activityRows.ts) is a pure module that mobile-native
+// typechecks as part of its own build, so importing these from the rail's React
+// component file dragged every widget stylesheet into that graph - a dependency
+// the mobile check rejects, correctly. Keep this file importable from anywhere.
+import type { NavigationWatchCadence, NavigationWatchSummary } from "./types.gen";
+
+// A watch's cadence in the rail's compact shorthand: seconds in, "10m" out.
+// Deliberately coarse: the PERIOD is real, and that is what this label carries.
+// A clock watch's derived next-fire instant is a separate, explicitly
+// approximate label (watchNextFireLabel), never folded in here.
+export function watchDurationLabel(seconds: number | undefined): string {
+  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return "";
+  // Round ONCE to the nearest second, then floor each unit from that total.
+  // Rounding a remainder while flooring the larger unit is what let 119.6s
+  // print "1m60s": the minutes stayed at 1 while the seconds rounded up to 60.
+  // A whole-second total both carries that rounding into the larger unit (120s
+  // reads "2m") and keeps every remainder below its unit (never "60s", "60m",
+  // "24h").
+  const total = Math.round(seconds);
+  // A span under half a second rounds to a whole 0. "0s" reads as "no time at
+  // all" -- and in watchNextFireLabel it would read as "firing now" for a fire
+  // that is still a few hundred milliseconds out -- so a rounded 0 renders
+  // nothing, exactly like a non-positive input. Callers that show a duration
+  // beside other wording already handle the empty label (activityRows' armedAge
+  // falls back to the armed state).
+  if (total <= 0) return "";
+  if (total < 60) return `${total}s`;
+  if (total < 3600) {
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    return rest > 0 ? `${minutes}m${rest}s` : `${minutes}m`;
+  }
+  if (total < 86400) {
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
+  }
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+}
+
+// The clock-driven cadence kinds. Output and event cadences have no schedule,
+// so they must never render a next fire even if a stray instant is present.
+const CLOCK_CADENCE_KINDS = new Set(["after", "every", "progress"]);
+
+// A clock watch's next fire, worded as an approximation: "next ~4m". The
+// instant is the daemon's derived one, which can slide later (the runtime keeps
+// a Go ticker the scheduler can delay), so it is deliberately NOT an exact
+// clock time and never the word "about". Returns "" when the cadence is not
+// clock-driven, carries no derived instant, or that instant cannot be parsed.
+// A derived instant already in the past also returns "": there is no honest
+// future fire to promise from it.
+export function watchNextFireLabel(cadence: NavigationWatchCadence, now: number): string {
+  if (!CLOCK_CADENCE_KINDS.has(cadence.kind)) return "";
+  const instant = cadence.derived_next_fire_at === undefined ? Number.NaN : Date.parse(cadence.derived_next_fire_at);
+  if (!Number.isFinite(instant)) return "";
+  const remaining = (instant - now) / 1000;
+  if (remaining <= 0) return "";
+  const duration = watchDurationLabel(remaining);
+  return duration === "" ? "" : `next ~${duration}`;
+}
+
+// One wire cadence row as a phrase a person reads. "after"/"every"/"progress"
+// all carry a period; "output"/"events" are conditions with no period at all,
+// which is exactly why they read "on ..." instead of "every ...".
+export function watchCadenceLabel(cadence: NavigationWatchCadence): string {
+  switch (cadence.kind) {
+    case "after":
+      return `after ${watchDurationLabel(cadence.seconds)}`.trim();
+    case "every":
+    case "progress":
+      return `every ${watchDurationLabel(cadence.seconds)}`.trim();
+    case "output":
+      return "on output";
+    case "events": {
+      // A count and a filter are optional and additive: a plain event watch
+      // (or an older server that omits both) still reads exactly "on events".
+      // The wire carries the filter in the model-facing prose summary's own
+      // vocabulary, so this only prefixes "where ".
+      let label = "on events";
+      if (cadence.every !== undefined && cadence.every > 0) {
+        label += ` every ${cadence.every}`;
+      }
+      const filter = cadence.filter?.trim();
+      if (filter) {
+        label += ` where ${filter}`;
+      }
+      return label;
+    }
+    default:
+      // An unrecognized future cadence kind still says SOMETHING honest rather
+      // than rendering an empty second line.
+      return cadence.kind;
+  }
+}
+
+// The armed wording, in one place so the rail's gloss and the session panel's
+// own watch rows can never disagree about it.
+export function watchArmedLabel(active: boolean): string {
+  return active ? "armed" : "not armed";
+}
+
+// A watch row's second line: what it is waiting on, and whether it is still
+// armed. One line per watch, never a countdown - see watchDurationLabel.
+export function watchGloss(watch: NavigationWatchSummary): string {
+  const parts = (watch.cadence ?? []).map(watchCadenceLabel).filter((label) => label !== "");
+  parts.push(watchArmedLabel(watch.active));
+  return parts.join(" · ");
+}
+
+// The title a watch row shows: the note the watch was armed with - the reason
+// a person wrote down. The id is the fallback for a note the wire omitted or
+// truncated to nothing, so a row is never blank.
+export function watchTitle(watch: NavigationWatchSummary): string {
+  return watch.note?.trim() || watch.id;
+}

@@ -2,9 +2,10 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
+import type { AuthStatusResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
+import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -39,6 +40,9 @@ const LIST_RESPONSE: InstanceListResponse = {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
@@ -301,6 +305,60 @@ describe("mutations returning the updated instance list", () => {
     expect(credentialsStore.getState().instances).toEqual([]);
   });
 
+  // create() and remove() steer onboarding and removal flows on the strength
+  // of their own write the same way edit steers the sheet, so they owe their
+  // callers the same verdict: a response the store discarded must not read as
+  // authoritative.
+  test("create() and remove() report whether the store applied their response", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    let finishCreate!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/create",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishCreate = resolve;
+        }),
+    );
+    const created = credentialsStore.getState().create({ name: "work2", base: "openai-codex", baseUrl: "" });
+    await Promise.resolve();
+    // A listing read issued after the create wins the store race, so the
+    // create's own response is superseded before it lands.
+    await credentialsStore.getState().fetch();
+    finishCreate({
+      instances: [ONE_INSTANCE, { ...ONE_INSTANCE, name: "work2", isDefault: false }],
+      availableProviders: [],
+    });
+    expect(await created).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    let finishRemove!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/remove",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRemove = resolve;
+        }),
+    );
+    const removed = credentialsStore.getState().remove("work");
+    await Promise.resolve();
+    await credentialsStore.getState().fetch();
+    finishRemove({ instances: [], availableProviders: [] });
+    expect(await removed).toBe(false);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+
+    fake.on("evener/instance/create", () => ({
+      instances: [ONE_INSTANCE, { ...ONE_INSTANCE, name: "work2", isDefault: false }],
+      availableProviders: [],
+    }));
+    expect(await credentialsStore.getState().create({ name: "work2", base: "openai-codex", baseUrl: "" })).toBe(true);
+    fake.on("evener/instance/remove", () => ({ instances: [], availableProviders: [] }));
+    expect(await credentialsStore.getState().remove("work")).toBe(true);
+    expect(credentialsStore.getState().instances).toEqual([]);
+  });
+
   test("remove() calls evener/instance/remove and applies the returned list", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/remove", (params) => {
@@ -352,7 +410,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("setApiKey() calls evener/auth/apiKey/set and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-secret" });
+      expect(params).toEqual({ provider: "work", value: "sk-secret", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
     });
     const result = await credentialsStore.getState().setApiKey("work", "sk-secret");
@@ -364,7 +422,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("clearStoredKey() calls evener/auth/apiKey/clear and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/clear", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
     });
     const result = await credentialsStore.getState().clearStoredKey("work");
@@ -375,7 +433,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("logout() calls evener/auth/logout", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/logout", (params) => {
-      expect(params).toEqual({ provider: "work" });
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
       return {
         removed: true,
         status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
@@ -383,6 +441,63 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     });
     const result = await credentialsStore.getState().logout("work");
     expect(result.removed).toBe(true);
+  });
+
+  // A destructive action carries the endpoint the caller showed the user, so
+  // the hub can refuse a name that now resolves elsewhere rather than clearing
+  // or removing a replacement's credentials/configuration. A caller shown no
+  // endpoint sends nothing, rather than an empty-string assertion.
+  test("remove() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work", expectedEndpointFingerprint: "fp-work" });
+      return { instances: [], availableProviders: [] };
+    });
+    expect(await credentialsStore.getState().remove("work", "fp-work")).toBe(true);
+  });
+
+  test("clearStoredKey() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    await credentialsStore.getState().clearStoredKey("work", "fp-work");
+  });
+
+  test("logout() forwards the expected endpoint fingerprint when given one", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work", expectedEndpointFingerprint: "fp-work", originClientId: "test-tab" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    await credentialsStore.getState().logout("work", "fp-work");
+  });
+
+  test("the destructive wrappers omit the fingerprint when none was captured", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/remove", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return { instances: [], availableProviders: [] };
+    });
+    fake.on("evener/auth/apiKey/clear", (params) => {
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
+      return { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true };
+    });
+    fake.on("evener/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work", originClientId: "test-tab" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "none", hasStoredOAuth: false },
+      };
+    });
+    await credentialsStore.getState().remove("work");
+    // An empty string is "shown no endpoint" too, not an empty assertion.
+    await credentialsStore.getState().clearStoredKey("work", "");
+    await credentialsStore.getState().logout("work", "");
   });
 
   test("loginStart() calls evener/auth/login/start", async () => {
@@ -398,7 +513,12 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("loginComplete() calls evener/auth/login/complete", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/login/complete", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-1", redirectUrl: "https://redirect" });
+      expect(params).toEqual({
+        provider: "work",
+        flowId: "flow-1",
+        redirectUrl: "https://redirect",
+        originClientId: "test-tab",
+      });
       return {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
@@ -426,7 +546,7 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
   test("devicePoll() calls evener/auth/device/poll", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-2" });
+      expect(params).toEqual({ provider: "work", flowId: "flow-2", originClientId: "test-tab" });
       return { state: "pending" };
     });
     const result = await credentialsStore.getState().devicePoll("work", "flow-2");
@@ -530,6 +650,559 @@ describe("notification-triggered refetch", () => {
     expect(listSpy).toHaveBeenCalledTimes(1);
   });
 
+  test("a successful save refreshes the listing through the store, and the echo does not refresh again", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The store owns the post-mutation refresh: the component that issued the
+    // save may be canceled, hidden, or unmounted before the response lands,
+    // so a caller-scoped refresh leaves the listing stale. The hub also
+    // BroadcastAlls the originator its own success echo (notifyAuthUpdated) -
+    // that echo must not schedule a SECOND refresh on top of the store's own.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a foreign change coalesced into this client's own refresh window keeps the refresh foreign", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const before = credentialsStore.getState().selfRefresh;
+
+    // A foreign change opens the debounce window first, and this client's own
+    // mutation lands inside it. The single coalesced refresh carried a foreign
+    // change, so it must not be marked as the store's own: the flow's
+    // invalidation guard has to keep seeing it as foreign, or a genuine
+    // foreign change would be silently suppressed.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "anthropic", activeSource: "store" } });
+    await credentialsStore.getState().setApiKey("work", "draft");
+    const marks: number[] = [];
+    const unsubscribe = credentialsStore.subscribe((current) => marks.push(current.selfRefresh));
+    await vi.advanceTimersByTimeAsync(250);
+    unsubscribe();
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(marks.every((mark) => mark === before)).toBe(true);
+  });
+
+  test("a foreign change landing after this client's own request still keeps the refresh foreign", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The other order of the same rule: this client's own mutation opens the
+    // debounce window and a foreign change lands inside it. The single
+    // coalesced read observes that change too, so it is not the store's own
+    // refresh and the flow's invalidation guard has to keep seeing it as
+    // foreign. Marking it self would suppress a genuine foreign change for
+    // exactly the read that carried it.
+    await credentialsStore.getState().setApiKey("work", "draft");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "anthropic", activeSource: "store" } });
+    const marks: number[] = [];
+    const unsubscribe = credentialsStore.subscribe((current) => marks.push(current.selfRefresh));
+    await vi.advanceTimersByTimeAsync(250);
+    unsubscribe();
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(marks.every((mark) => mark === before)).toBe(true);
+  });
+
+  test("a refresh serving only this client's own mutation still carries the self mark", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  });
+
+  test("another client's auth change still refetches after a local mutation", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "anthropic", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a same-provider notification with no recent local mutation still refetches", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    // An unrelated client mutating the same provider is indistinguishable from
+    // an echo by payload alone - only a recent LOCAL mutation suppresses.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a same-provider change in the echo window after a successful save still refetches", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The store's own post-save refresh runs first.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+
+    // The real echo never arrives; another client's same-provider change does,
+    // inside the correlation window. The marker must not swallow it: the
+    // listing has to be re-read even though the notification matched.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("a slow save's response extends the window for its own late echo", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let finishSave: ((value: AuthStatusResponse) => void) | undefined;
+    fake.on(
+      "evener/auth/apiKey/set",
+      () =>
+        new Promise<AuthStatusResponse>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    const pending = credentialsStore.getState().setApiKey("work", "draft");
+    // A loaded host (or a slow hub) answers the save later than the fixed
+    // window measured from the issue: the response lands at 2001ms. The hub's
+    // broadcast follows the response it answers, so the echo arrives after
+    // that - still this client's own.
+    await vi.advanceTimersByTimeAsync(2001);
+    finishSave?.({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await pending;
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    // The echo coalesces with the store's own post-save refresh into exactly
+    // one read, and that read keeps the self mark: the guided flow must not
+    // read its own successful save as "Connection or configuration changed".
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  });
+
+  test("the echo correlation window is bounded", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    await vi.advanceTimersByTimeAsync(2001);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    // Two refreshes: the store's own post-save refresh (inside the window) and
+    // this late echo's - past the window the marker is gone, so a same-provider
+    // notification is an unrelated client's change again.
+    expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("a failed save does not suppress a later same-provider notification", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("hub refused the key");
+    });
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await expect(credentialsStore.getState().setApiKey("work", "draft")).rejects.toThrow("hub refused the key");
+    // A failed mutation broadcasts nothing, so this same-provider notification
+    // is an unrelated client's change - it must still refetch.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a routine pending device poll does not extend the suppression window", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "pending" }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().devicePoll("work", "flow");
+    // A pending poll broadcasts nothing; an unrelated same-provider change
+    // arriving during the poll loop must still refetch.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("an authorized device poll refreshes the listing even with no caller left to do it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/device/poll", () => ({ provider: "work", state: "authorized" }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().devicePoll("work", "flow");
+    // The polling dialog may already be closed by the time authorization
+    // lands; the store owns the refresh, so the listing updates anyway.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("the echo correlation is consumed, not window-wide", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The own echo, consumed by the correlation.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(50);
+    // A second same-provider notification inside the old 2s window is an
+    // unrelated client's change: the marker was consumed, so it refetches.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("an echo that names this page is consumed as its own", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The hub echoes the id this page's mutation carried, so the broadcast
+    // names this page as its originator: it is this client's own echo, and it
+    // coalesces with the store's post-save refresh instead of scheduling a
+    // second read on top of it.
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", activeSource: "store", originClientId: "test-tab" },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+
+    // Consumed by identity, not matched window-wide: the marker is gone, so a
+    // second same-provider notification is an unrelated client's change again.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test("an echo that names another client leaves this page's marker alone", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+    const before = credentialsStore.getState().selfRefresh;
+
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // Another client's change names that client, so it is foreign however close
+    // it lands to this page's own mutation: the coalesced read carries a change
+    // this store did not make, so it must not take the self mark - marking it
+    // self would keep the guided flow's invalidation guard from seeing it.
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", activeSource: "store", originClientId: "tab-b" },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    // Anchored after the foreign read so this assertion can only be satisfied
+    // by a read the follow-up itself schedules.
+    const afterForeign = credentialsStore.getState().selfRefresh;
+
+    // The marker survived that foreign notification, so this page's own echo
+    // is still attributed to this page when it arrives without an id (an older
+    // hub). Under the provider-plus-window rule the notification above retired
+    // the marker, and this id-less echo would read as foreign - scheduling the
+    // read foreign-marked, so the self mark below would not move.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(afterForeign);
+  });
+
+  test("a second same-provider mutation's own echo still carries the self mark", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    fake.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    // Two same-provider mutations: each one broadcasts exactly one own echo.
+    // The second marker must not overwrite the first, or the first echo
+    // consumes the only marker and the second self echo is misread as an
+    // unrelated client's change.
+    await credentialsStore.getState().setApiKey("work", "first");
+    await credentialsStore.getState().setApiKey("work", "second");
+    await vi.advanceTimersByTimeAsync(250); // the two post-save refreshes coalesce
+
+    // First echo: consumed by the first outstanding marker.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    const beforeSecondEcho = credentialsStore.getState().selfRefresh;
+    // Second echo: still this client's own echo, so its refresh keeps the
+    // self mark. With a single overwritten timestamp this notification is
+    // treated as foreign and the coalesced read drops the self mark, which
+    // spuriously invalidates the guided flow.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(beforeSecondEcho);
+  });
+
+  test("a same-provider change during a pending device poll is refetched without waiting for the poll", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let resolvePoll: (value: { provider: string; state: string }) => void = () => {};
+    const pollAnswer = new Promise<{ provider: string; state: string }>((resolve) => {
+      resolvePoll = resolve;
+    });
+    fake.on("evener/auth/device/poll", () => pollAnswer);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    const pending = credentialsStore.getState().devicePoll("work", "flow");
+    // Another client's same-provider change lands while the poll is in flight.
+    // The correlation may read it as this poll's echo, but the listing is still
+    // re-read: the marker must not permanently swallow a foreign change.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    resolvePoll({ provider: "work", state: "pending" });
+    await pending;
+    // A pending result proves no echo of ours was coming; that makeup read
+    // coalesces with the one above.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a same-provider change during an in-flight save is refetched without waiting for the save", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    let rejectSave: (reason: Error) => void = () => {};
+    const saveAnswer = new Promise<never>((_resolve, reject) => {
+      rejectSave = reject;
+    });
+    fake.on("evener/auth/apiKey/set", () => saveAnswer);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    const pending = credentialsStore.getState().setApiKey("work", "draft");
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    rejectSave(new Error("hub refused the key"));
+    await expect(pending).rejects.toThrow("hub refused the key");
+    // The failure proves no echo of ours was coming; that makeup coalesces with
+    // the notification's own read.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a marker from a replaced connection cannot suppress a later notification", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    first.on("evener/auth/apiKey/set", ({ provider }) => ({
+      provider,
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().fetch();
+    await credentialsStore.getState().setApiKey("work", "draft");
+    // The client is replaced before the mutation's echo can arrive: whatever
+    // same-provider notification comes on the NEW connection is not that lost
+    // echo, so a surviving marker must not swallow it.
+    const second = connectFakeClient();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    second.on("evener/instance/list", listSpy);
+    // Let the reconnect's own restore fetch settle before counting.
+    await vi.advanceTimersByTimeAsync(0);
+    const before = listSpy.mock.calls.length;
+    second.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy.mock.calls.length).toBe(before + 1);
+  });
+
+  test("a stale save failure from a replaced connection cannot retire the new connection's marker", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    let rejectFirst: (reason: Error) => void = () => {};
+    const firstSave = new Promise<AuthStatusResponse>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    first.on("evener/auth/apiKey/set", () => firstSave);
+    await credentialsStore.getState().fetch();
+
+    const firstPending = credentialsStore.getState().setApiKey("work", "first");
+    // The connection is replaced while the first save is still in flight: the
+    // old connection's callback lands after its markers were cleared.
+    const second = connectFakeClient();
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
+
+    let resolveSecond: (value: AuthStatusResponse) => void = () => {};
+    const secondSave = new Promise<AuthStatusResponse>((resolve) => {
+      resolveSecond = resolve;
+    });
+    second.on("evener/auth/apiKey/set", () => secondSave);
+    const secondPending = credentialsStore.getState().setApiKey("work", "second");
+
+    // The stale rejection must be ignored whole - it belongs to a connection
+    // that is gone - and must not retire the new connection's marker.
+    rejectFirst(new Error("hub refused the old key"));
+    await expect(firstPending).rejects.toThrow("hub refused the old key");
+
+    resolveSecond({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await secondPending;
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The new connection's own echo is still consumed as its own, so the
+    // coalesced read keeps the self mark.
+    second.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "store" } });
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBeGreaterThan(before);
+  });
+
+  test("a stale save success from a replaced connection does not schedule a self-marked read", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    let resolveFirst: (value: AuthStatusResponse) => void = () => {};
+    const firstSave = new Promise<AuthStatusResponse>((resolve) => {
+      resolveFirst = resolve;
+    });
+    first.on("evener/auth/apiKey/set", () => firstSave);
+    await credentialsStore.getState().fetch();
+
+    const firstPending = credentialsStore.getState().setApiKey("work", "first");
+    // The connection is replaced before the first save's success lands.
+    const second = connectFakeClient();
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    await vi.advanceTimersByTimeAsync(0); // the reconnect's restore fetch settles
+    const before = credentialsStore.getState().selfRefresh;
+
+    // The old connection's success must not schedule a read on the new one,
+    // let alone mark it as this connection's own refresh.
+    resolveFirst({ provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false });
+    await firstPending;
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(credentialsStore.getState().selfRefresh).toBe(before);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
   test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST_RESPONSE);
@@ -547,5 +1220,40 @@ describe("notification-triggered refetch", () => {
     // rejection) is the real assertion; this just also confirms the failed
     // background attempt left the prior successful load untouched.
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("a superseded set-default schedules the store's own listing read", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("evener/instance/list", listSpy);
+
+    // Hold the set-default response so a newer listing read can overtake it.
+    let finishSetDefault!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setDefault",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishSetDefault = resolve;
+        }),
+    );
+    const pending = credentialsStore.getState().setDefault("work");
+    await Promise.resolve();
+
+    // A listing read issued after the set-default wins the store race, so the
+    // set-default response lands superseded and applyMutation discards it.
+    await credentialsStore.getState().fetch();
+    const readsBefore = listSpy.mock.calls.length;
+
+    finishSetDefault(LIST_RESPONSE);
+    expect(await pending).toBe(false); // the superseded verdict
+
+    // The discarded response carried the new default flag, and the read that
+    // won may have started before the hub applied it. A superseded verdict must
+    // therefore schedule the store's own post-mutation read, or the listing
+    // keeps the old flag until something else refreshes it.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(listSpy.mock.calls.length).toBe(readsBefore + 1);
   });
 });
