@@ -399,7 +399,7 @@ func ensurePrivateCacheDir(dir string) error {
 	if !cacheDirOwnedByCurrentUser(info) {
 		return fmt.Errorf("skill cache dir %s is not owned by the current user", dir)
 	}
-	if info.Mode().Perm()&0o700 != 0o700 {
+	if !cacheDirOwnerCanWrite(info) {
 		// Without owner write and execute this process cannot create the staging
 		// directory inside it, so it must not be selected as the cache root.
 		return fmt.Errorf("skill cache dir %s is not usable by its owner", dir)

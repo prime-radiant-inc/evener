@@ -26,3 +26,9 @@ func cacheDirOwnedByCurrentUser(info fs.FileInfo) bool {
 func cacheDirHasPrivatePermissions(info fs.FileInfo) bool {
 	return info.Mode().Perm()&0o077 == 0
 }
+
+// cacheDirOwnerCanWrite reports whether the owner can create entries inside the
+// directory, which a cache root must allow.
+func cacheDirOwnerCanWrite(info fs.FileInfo) bool {
+	return info.Mode().Perm()&0o700 == 0o700
+}

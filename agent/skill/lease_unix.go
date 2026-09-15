@@ -1,4 +1,4 @@
-//go:build unix
+//go:build darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
 
 package skill
 

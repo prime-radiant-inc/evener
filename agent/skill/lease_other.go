@@ -1,4 +1,4 @@
-//go:build !unix && !windows
+//go:build !darwin && !dragonfly && !freebsd && !linux && !netbsd && !openbsd && !solaris && !windows
 
 package skill
 

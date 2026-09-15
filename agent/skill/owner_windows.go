@@ -30,3 +30,7 @@ func cacheDirOwnedByCurrentUser(fs.FileInfo) bool { return true }
 // cacheDirHasPrivatePermissions cannot be checked portably: Windows synthesizes
 // directory modes, so a 0700 directory does not read back as 0700.
 func cacheDirHasPrivatePermissions(fs.FileInfo) bool { return true }
+
+// cacheDirOwnerCanWrite cannot be checked from a synthesized directory mode; the
+// per-user temp directory is assumed writable by its owner.
+func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }

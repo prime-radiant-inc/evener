@@ -14,3 +14,6 @@ func cacheDirOwnedByCurrentUser(fs.FileInfo) bool { return true }
 
 // cacheDirHasPrivatePermissions cannot be checked portably on these platforms.
 func cacheDirHasPrivatePermissions(fs.FileInfo) bool { return true }
+
+// cacheDirOwnerCanWrite cannot be checked portably on these platforms.
+func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }
