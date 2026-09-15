@@ -228,3 +228,54 @@ func TestWatchDerivedNextFireOneShotFiredPendingSettlementHasNoNextFire(t *testi
 		t.Fatalf("repeating derived next fire = %+v, want %q", got, wantRepeating)
 	}
 }
+
+// A one-shot that delivered by a CONDITION has fired: one-shot means fire once,
+// whatever fires it. The delivery ring is what marks that in the window before
+// the durable teardown writes firedPendingEnd, so the derived next fire and the
+// armed state must both read it as spent -- a countdown next to "armed" for a
+// watch that will never fire again is the overstatement this pins against.
+func TestWatchOneShotFiredByConditionIsSpent(t *testing.T) {
+	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	fired := &watchConfig{
+		timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600_000,
+		createdAt: created, deliveries: 1,
+		deliveryTimes: []time.Time{created.Add(30 * time.Second)},
+	}
+	got := watchCadencesOf(fired)
+	if len(got) != 1 || got[0].Kind != "after" || got[0].DerivedNextFireAt != "" {
+		t.Fatalf("cadences = %+v, want one after cadence with no next fire", got)
+	}
+	if info := watchStatusInfoFromConfig(fired); info.Active {
+		t.Fatalf("one-shot fired by a condition reports armed: %+v", info)
+	}
+
+	// Still waiting: neither signal set, so it is armed and dated.
+	waiting := &watchConfig{
+		timer: true, oneShot: true, timerSeconds: 600, progressIntervalMS: 600_000,
+		createdAt: created,
+	}
+	if info := watchStatusInfoFromConfig(waiting); !info.Active {
+		t.Fatalf("unfired one-shot reports spent: %+v", info)
+	}
+	if cadences := watchCadencesOf(waiting); len(cadences) != 1 || cadences[0].DerivedNextFireAt == "" {
+		t.Fatalf("unfired one-shot cadences = %+v, want a derived next fire", cadences)
+	}
+}
+
+// A repeating cadence advances from the LATER of its install instant and its
+// newest clock fire. A clock that steps backwards, or a fire stamped before the
+// install instant, must not move the next fire earlier -- an instant in the past
+// is one the UI deliberately refuses to show.
+func TestWatchRepeatingNextFireNeverAdvancesFromAnOlderClockFire(t *testing.T) {
+	created := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	fmtTime := func(tm time.Time) string { return tm.Format(time.RFC3339Nano) }
+	skewed := &watchConfig{
+		timer: true, timerSeconds: 300, progressIntervalMS: 300_000,
+		createdAt: created, lastClockFire: created.Add(-120 * time.Second),
+	}
+	got := watchCadencesOf(skewed)
+	want := fmtTime(created.Add(300 * time.Second))
+	if len(got) != 1 || got[0].DerivedNextFireAt != want {
+		t.Fatalf("derived next fire = %+v, want %q (the install instant, not the older fire)", got, want)
+	}
+}

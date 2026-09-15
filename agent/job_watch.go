@@ -2564,13 +2564,16 @@ func (s *Session) liveWatchStatuses() []WatchStatusInfo {
 		return nil
 	}
 	// Answered from the same page walk the list path uses, so the two cannot
-	// disagree about which rows are this session's. nil stays reserved for a nil
-	// session: this helper's callers treat a non-nil empty answer as "no watches
-	// now", and TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer pins that.
-	if rows := s.LiveWatchRowsForSessions([]string{s.ID()})[s.ID()]; len(rows) != 0 {
-		return rows
+	// disagree about which rows are this session's. A known session with no
+	// watches keeps the non-nil empty answer its siblings document
+	// (TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer pins it for the public
+	// seams): nil means "this session cannot be answered for", never "it has no
+	// watches now".
+	rows, ok := s.LiveWatchRowsForSessions([]string{s.ID()})[s.ID()]
+	if !ok {
+		return nil
 	}
-	return nil
+	return rows
 }
 
 // LiveWatchRowsForSessions resolves the supplied thread IDs to the live watch
@@ -2737,10 +2740,26 @@ func watchStatusInfoFromConfig(cfg *watchConfig) WatchStatusInfo {
 		Deliveries:     cfg.deliveries,
 		DeliveryTimes:  watchDeliveryTimesOf(cfg),
 		CreatedAt:      cfg.createdAt.Format(time.RFC3339Nano),
-		// A one-shot that already fired but is still registered only until its
-		// durable teardown lands (firedPendingEnd) is no longer armed.
-		Active: !cfg.firedPendingEnd,
+		// A one-shot that has already fired is no longer armed, even while its
+		// durable teardown is still pending: the armed state and the derived next
+		// fire must answer "is it still waiting" the same way.
+		Active: !watchOneShotHasFired(cfg),
 	}
+}
+
+// watchOneShotHasFired reports whether a one-shot watch has already fired. A
+// one-shot fires once, whatever fires it, so its first delivery of ANY kind ends
+// it -- and no single field marks that moment. firedPendingEnd is written only
+// once the durable teardown starts, a send-routed fire stamps lastClockFire
+// before it counts a delivery, and a condition-fired one-shot has a delivery
+// before either. All three signals therefore read as spent, and both the armed
+// state and the derived next fire take their answer from here so the two can
+// never disagree. A repeating watch never reports spent this way.
+func watchOneShotHasFired(cfg *watchConfig) bool {
+	if cfg == nil || !cfg.oneShot {
+		return false
+	}
+	return cfg.firedPendingEnd || !cfg.lastClockFire.IsZero() || len(cfg.deliveryTimes) > 0
 }
 
 // watchDeliveryTimesOf renders cfg's bounded delivery-instant ring oldest
@@ -2805,16 +2824,17 @@ func watchDerivedNextFireAt(cfg *watchConfig, interval time.Duration) string {
 	}
 	// A one-shot advances from the install instant and fires exactly once. Once
 	// it has fired it has no next fire; its durable teardown is the only thing
-	// still pending, and that is not a fire. firedPendingEnd and a recorded
-	// delivery both mark it, but a send-routed one-shot fires without either
-	// while its frame is still settling: lastClockFire is stamped at the fire,
-	// so a non-zero lastClockFire is the reliable "already fired" signal in that
-	// window. A one-shot must never advance from lastClockFire.
-	if cfg.oneShot && (cfg.firedPendingEnd || !cfg.lastClockFire.IsZero() || len(cfg.deliveryTimes) > 0) {
+	// still pending, and that is not a fire. watchOneShotHasFired owns that
+	// question, so the countdown cannot outlive the armed state.
+	if watchOneShotHasFired(cfg) {
 		return ""
 	}
+	// A repeating cadence advances from whichever of its install instant and its
+	// newest CLOCK fire is later: a clock that steps backwards (or a fire stamped
+	// before the install instant during a skew) must not move the next fire
+	// earlier, where the panel would hide it as already past.
 	base := cfg.createdAt
-	if !cfg.lastClockFire.IsZero() {
+	if !cfg.lastClockFire.IsZero() && cfg.lastClockFire.After(cfg.createdAt) {
 		base = cfg.lastClockFire
 	}
 	if base.IsZero() {
