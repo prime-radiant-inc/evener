@@ -824,8 +824,14 @@ func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSource
 	commit := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate_send", "done", false))
 	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: plans[0].deliveryID}}
 	fs.failNextAmbiguousDurability(3)
-	if err := writer.AppendDurable(commit); err == nil {
-		t.Fatal("ambiguous caller commit append unexpectedly succeeded")
+	// The writer owns durability: a retained entry (whole line in the file,
+	// unsynced) returns nil and poisons the writer. The commit is a record, but
+	// not durable — the poison is what stops the source ack downstream.
+	if err := writer.AppendDurable(commit); err != nil {
+		t.Fatalf("ambiguous caller commit append error = %v, want nil: the whole line is a record", err)
+	}
+	if !writer.Poisoned() {
+		t.Fatal("ambiguous caller commit left the writer accepting appends over an unsynced tail")
 	}
 	if err := writer.Close(); err == nil {
 		t.Fatal("ambiguous caller commit close unexpectedly succeeded")

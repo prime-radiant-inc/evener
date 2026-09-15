@@ -61,6 +61,24 @@ var ErrRollbackFailed = errors.New("rollback failed")
 // the file still holds.
 var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
 
+// poisonCause is why a writer stopped, which is also what says whether it can
+// be restarted. Both causes leave bytes at the tail that nothing synced; they
+// differ in whether those bytes are a record.
+type poisonCause uint8
+
+const (
+	poisonNone poisonCause = iota
+	// poisonPartialLine: a write stopped midway, so the tail is the remains of
+	// a record rather than a record. Permanent — no later operation can make
+	// half a line whole, and an append running onto it would be unreadable.
+	poisonPartialLine
+	// poisonRetainedLine: a whole line is in the file and nothing made it
+	// durable. The danger is only the missing fsync, so a barrier that fsyncs
+	// the whole file (EstablishDurability) resolves it exactly, and the writer
+	// goes back to work over a tail that is now a durable record.
+	poisonRetainedLine
+)
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -253,11 +271,17 @@ type Writer struct {
 	dirty    bool
 	lastSync time.Time
 
-	// poisoned records an append that failed partway and could not be rolled
-	// back: the file's tail may be the remains of a record rather than a
-	// record, and nothing this writer could append after it would be readable.
-	// See ErrWriterPoisoned.
-	poisoned bool
+	// poisonedBy records the append that stopped this writer, and why, because
+	// why decides whether anything can restart it. See poisonCause and
+	// ErrWriterPoisoned.
+	poisonedBy poisonCause
+
+	// retainedWarnings holds the diagnostics of appends whose whole line landed
+	// but did not sync: the entry IS a record (the append returned nil), but
+	// the sync failure must not be lost. The session drains them through
+	// TakeWarning and surfaces each once, outside the locks a warning's
+	// notification hook needs.
+	retainedWarnings []string
 
 	// positionUnknown records a rollback that removed the entry but could not
 	// seek back to the file's new end, leaving this writer's position past it.
@@ -418,6 +442,110 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 	return w.append(turn, true)
 }
 
+// AppendBatch writes every turn as one write and one fsync, all-or-nothing:
+// either every line is in the file at contiguous sequence numbers, or a
+// rollback to the batch's start offset leaves none of them and spends no
+// sequence number. It returns the sequence number the first turn took.
+//
+// A batch whose whole buffer landed but could not be synced or rolled back is
+// retained by the same rule a single durable append follows: the lines are
+// records (the call returns nil with the first seq), the writer stops over the
+// unsynced tail (a retained poison EstablishDurability can clear), and the sync
+// failure surfaces once through TakeWarning.
+//
+// No-op returning (0, nil) for a nil or closed writer, matching Append — see
+// its doc comment for why a not-yet-open writer must not error.
+func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
+	if w == nil || w.closed.Load() {
+		return 0, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed.Load() {
+		return 0, nil
+	}
+	if w.poisonedBy != poisonNone {
+		return 0, ErrWriterPoisoned
+	}
+	firstSeq := w.seq
+	if len(turns) == 0 {
+		return firstSeq, nil
+	}
+	if w.positionUnknown {
+		if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
+			return firstSeq, fmt.Errorf("seek transcript append position: %w", err)
+		}
+		w.positionUnknown = false
+	}
+
+	var buf []byte
+	for i, turn := range turns {
+		data, err := json.Marshal(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn})
+		if err != nil {
+			return firstSeq, fmt.Errorf("marshal transcript batch entry %d: %w", i, err)
+		}
+		buf = append(buf, data...)
+		buf = append(buf, '\n')
+	}
+
+	startOffset, err := w.file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return firstSeq, fmt.Errorf("seek transcript batch start: %w", err)
+	}
+
+	commit := func() int {
+		for _, turn := range turns {
+			w.countAppendedEntryLocked(turn)
+		}
+		return firstSeq
+	}
+
+	if written, writeErr := w.writeLineLocked(buf); writeErr != nil {
+		if w.batchFailureRetainedLocked("write transcript batch", writeErr, startOffset, written, len(buf), turns) {
+			commit()
+			return firstSeq, nil
+		}
+		return firstSeq, fmt.Errorf("write transcript batch: %w", writeErr)
+	}
+	w.dirty = true
+	if syncErr := w.file.Sync(); syncErr != nil {
+		if w.batchFailureRetainedLocked("sync transcript batch", syncErr, startOffset, len(buf), len(buf), turns) {
+			commit()
+			return firstSeq, nil
+		}
+		return firstSeq, fmt.Errorf("sync transcript batch: %w", syncErr)
+	}
+	w.lastSync = time.Now()
+	w.dirty = false
+	commit()
+	return firstSeq, nil
+}
+
+// batchFailureRetainedLocked rolls the failed batch back to startOffset and
+// reports whether its whole buffer is retained in the file — a run of records
+// the caller commits and returns nil for, having stopped the writer and queued
+// the warning. It returns false when the rollback removed the batch (nothing
+// recorded, the error stands) or when only part of the buffer landed (a partial
+// record the writer cannot vouch for). All-or-nothing: a batch is retained only
+// when the WHOLE buffer is in the file.
+func (w *Writer) batchFailureRetainedLocked(operation string, cause error, startOffset int64, written, bufLen int, turns []schema.Turn) bool {
+	removed, rollbackErr := w.rollbackAppendLocked(startOffset)
+	if rollbackErr == nil || removed {
+		// Either the batch is gone (rollback removed it) or the rollback failed
+		// only after removing the bytes; nothing is retained.
+		return false
+	}
+	if written != bufLen {
+		// Part of the buffer is in the file: not a clean run of records.
+		w.poisonedBy = poisonPartialLine
+		return false
+	}
+	w.poisonedBy = poisonRetainedLine
+	w.dirty = true
+	w.queueRetainedWarningLocked(operation, fmt.Errorf("%w; %w: %w", cause, ErrRollbackFailed, rollbackErr))
+	return true
+}
+
 // EstablishDurability fsyncs the transcript's current complete contents
 // without appending another entry. Recovery callers use it before treating a
 // readable record from an earlier ambiguous write as authoritative.
@@ -435,6 +563,13 @@ func (w *Writer) EstablishDurability() error {
 	}
 	w.lastSync = time.Now()
 	w.dirty = false
+	if w.poisonedBy == poisonRetainedLine {
+		// The barrier just made the whole file durable, the retained line
+		// included, so the record at the tail is now authoritative and the
+		// reason this writer stopped is gone. A partial line is not a record
+		// and no fsync makes it one, so that poison stands.
+		w.poisonedBy = poisonNone
+	}
 	return nil
 }
 
@@ -449,7 +584,26 @@ func (w *Writer) Poisoned() bool {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.poisoned
+	return w.poisonedBy != poisonNone
+}
+
+// TakeWarning removes and returns one pending retained-entry diagnostic, or
+// ("", false) when none remain. A retained entry (whole line in the file, no
+// fsync) is recorded — the append returned nil — but the sync failure must
+// still reach a client; the session drains these after its write returns,
+// where emitting is safe, and surfaces each exactly once.
+func (w *Writer) TakeWarning() (string, bool) {
+	if w == nil {
+		return "", false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.retainedWarnings) == 0 {
+		return "", false
+	}
+	warning := w.retainedWarnings[0]
+	w.retainedWarnings = w.retainedWarnings[1:]
+	return warning, true
 }
 
 func (w *Writer) append(turn schema.Turn, forceSync bool) error {
@@ -465,7 +619,7 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w.closed.Load() {
 		return nil
 	}
-	if w.poisoned {
+	if w.poisonedBy != poisonNone {
 		return ErrWriterPoisoned
 	}
 	if w.positionUnknown {
@@ -500,35 +654,51 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 
 	data = append(data, '\n')
 	previousDirty := w.dirty
-	if written, err := w.writeLineLocked(data); err != nil {
+	if written, writeErr := w.writeLineLocked(data); writeErr != nil {
 		if forceSync {
-			return w.appendFailureLocked("write transcript entry", err, startOffset, turn, written, len(data))
+			return w.appendFailureLocked("write transcript entry", writeErr, startOffset, turn, written, len(data))
 		}
 		// The buffered door attempts no rollback, so whatever landed stays
 		// exactly where it is — including the writer's position, which only
-		// the bytes it wrote have moved.
-		w.poisonLandedBytesLocked(turn, written, len(data))
-		return fmt.Errorf("write transcript entry: %w", err)
+		// the bytes it wrote have moved. A whole line that landed is a record;
+		// the write reported failure over it, so the writer cannot promise the
+		// end and stops, but the entry is real: return nil and warn.
+		if w.poisonLandedBytesLocked(turn, written, len(data)) {
+			w.queueRetainedWarningLocked("write transcript entry", writeErr)
+			return nil
+		}
+		return fmt.Errorf("write transcript entry: %w", writeErr)
 	}
 
 	w.dirty = true
 	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
-		if err := w.file.Sync(); err != nil {
+		if syncErr := w.file.Sync(); syncErr != nil {
 			if forceSync {
 				if removed, rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
 					if !removed {
+						// The whole line is in the file and nothing synced it:
+						// a record on an unsynced tail. It is a record — count
+						// it and return nil — but the writer stops (retained
+						// cause, which EstablishDurability can clear), and the
+						// sync failure surfaces as a warning.
 						w.countAppendedEntryLocked(turn)
+						w.poisonedBy = poisonRetainedLine
+						w.dirty = true
+						w.queueRetainedWarningLocked("sync transcript entry", fmt.Errorf("%w; %w: %w", syncErr, ErrRollbackFailed, rollbackErr))
+						return nil
 					}
-					return fmt.Errorf("sync transcript entry: %w; %w: %w", err, ErrRollbackFailed, rollbackErr)
+					return fmt.Errorf("sync transcript entry: %w; %w: %w", syncErr, ErrRollbackFailed, rollbackErr)
 				}
 				w.dirty = previousDirty
-				return fmt.Errorf("sync transcript entry: %w", err)
+				return fmt.Errorf("sync transcript entry: %w", syncErr)
 			}
 			// The buffered door rolls nothing back, so the whole line stays in
-			// the file and every reader of this transcript sees it. Spend its
-			// sequence number here or the next append takes that number again.
+			// the file and every reader sees it: a record. Spend its sequence
+			// number, return nil, and surface the sync failure as a warning.
+			// The position is still the file's end, so the writer stays usable.
 			w.countAppendedEntryLocked(turn)
-			return fmt.Errorf("sync transcript entry: %w", err)
+			w.queueRetainedWarningLocked("sync transcript entry", syncErr)
+			return nil
 		}
 		w.lastSync = time.Now()
 		w.dirty = false
@@ -538,16 +708,26 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	return nil
 }
 
-// poisonLandedBytesLocked stops the writer when a failed write left bytes at
+// queueRetainedWarningLocked records the diagnostic of an append whose whole
+// line landed but did not sync, for the session to surface once through
+// TakeWarning. The append itself returned nil — the entry is a record — so this
+// is the only channel the sync failure has.
+func (w *Writer) queueRetainedWarningLocked(operation string, err error) {
+	w.retainedWarnings = append(w.retainedWarnings, fmt.Sprintf("%s: %v", operation, err))
+}
+
+// poisonLandedBytesLocked stops the writer when a failed append left bytes at
 // the tail of the file that no later append may run onto, and marks those bytes
-// for Close to flush. A write that transferred nothing left nothing to guard:
-// the file and the position are as they were, so the writer stays usable and a
-// retry still lands. A whole line that landed is a record a reader will see, so
-// it spends its sequence number and counts the failures it settles before the
-// writer stops.
-func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) {
+// for Close to flush. Two failures leave such bytes: a write that stopped
+// partway (permanent — no fsync makes half a line whole), and a durable append
+// whose sync failed and whose rollback could not take the line back out
+// (retained, cleared by EstablishDurability). A write that transferred nothing
+// left nothing to guard: the file and the position are as they were, so the
+// writer stays usable and a retry still lands. It reports whether a WHOLE line
+// was retained — a record its caller returns nil for after spending its seq.
+func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int) (retainedWhole bool) {
 	if written == 0 {
-		return
+		return false
 	}
 	// Nothing synced what landed, and Close flushes only what it is told is
 	// dirty. An entry counted here but left out of that flush is one the writer
@@ -555,8 +735,11 @@ func (w *Writer) poisonLandedBytesLocked(turn schema.Turn, written, lineLen int)
 	w.dirty = true
 	if written == lineLen {
 		w.countAppendedEntryLocked(turn)
+		w.poisonedBy = poisonRetainedLine
+		return true
 	}
-	w.poisoned = true
+	w.poisonedBy = poisonPartialLine
+	return false
 }
 
 // countAppendedEntryLocked spends the entry's sequence number and counts the
@@ -610,7 +793,14 @@ func (w *Writer) appendFailureLocked(operation string, err error, startOffset in
 		return fmt.Errorf("%s: %w", operation, err)
 	}
 	if !removed {
-		w.poisonLandedBytesLocked(turn, written, lineLen)
+		// A WHOLE line that could not be taken back out is a record: it spends
+		// its seq, the writer stops (retained cause), and the append returns
+		// nil with the failure surfaced as a warning. A PARTIAL line is not a
+		// record — the write error stands.
+		if w.poisonLandedBytesLocked(turn, written, lineLen) {
+			w.queueRetainedWarningLocked(operation, fmt.Errorf("%w; %w: %w", err, ErrRollbackFailed, rollbackErr))
+			return nil
+		}
 	}
 	return fmt.Errorf("%s: %w; %w: %w", operation, err, ErrRollbackFailed, rollbackErr)
 }

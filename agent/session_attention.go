@@ -256,6 +256,14 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	if err := writer.AppendDurable(turn); err != nil {
 		return false, err
 	}
+	// The writer owns durability: a retained entry (whole line in the file,
+	// unsynced) returns nil and poisons the writer. A read-back would find the
+	// line, so this side of delegate attention — which owns its own durability
+	// barrier — must ask the writer, not the file, whether the write is
+	// durable.
+	if writer.Poisoned() {
+		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, transcript.ErrWriterPoisoned)
+	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
 	if err != nil {
 		return false, err
@@ -399,6 +407,12 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.StableTurnID = newQueueEntryID()
 	if err := writer.AppendDurable(turn); err != nil {
 		return false, err
+	}
+	// A retained entry returns nil and poisons the writer; the read-back below
+	// would find its line, so this durability owner asks the writer whether the
+	// write actually synced.
+	if writer.Poisoned() {
+		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, transcript.ErrWriterPoisoned)
 	}
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
@@ -1208,6 +1222,12 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		if err := reopened.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
 			return err
 		}
+		// A retained resolution returns nil and poisons the writer; the
+		// stabilization owner treats an unsynced barrier as a failure rather
+		// than reading the line back and calling it durable.
+		if reopened.Poisoned() {
+			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, transcript.ErrWriterPoisoned)
+		}
 	} else if err := reopened.EstablishDurability(); err != nil {
 		return err
 	}
@@ -1241,6 +1261,9 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		}
 		if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return err
+		}
+		if writer.Poisoned() {
+			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, transcript.ErrWriterPoisoned)
 		}
 		fold.resolutions[attentionID] = disposition
 		fold.resumeGenerations[attentionID] = resumeGeneration

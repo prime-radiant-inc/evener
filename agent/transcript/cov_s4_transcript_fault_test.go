@@ -232,8 +232,10 @@ func TestAppendDurable_SeekStartFails(t *testing.T) {
 }
 
 // A plain (non-durable) Append with a zero SyncInterval fsyncs every write; a
-// faulted Sync (index 5) surfaces "sync transcript entry" with no rollback, since
-// rollback only runs on the durable path.
+// faulted Sync (index 5) leaves the whole line in the file — a record — so the
+// append returns nil and the sync failure surfaces as a warning, with no
+// rollback (rollback only runs on the durable path) and no poison (the position
+// is still the file's end, so the writer stays usable).
 func TestAppend_SyncFailsNoRollback(t *testing.T) {
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(5)))
 	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader(), true)
@@ -241,18 +243,21 @@ func TestAppend_SyncFailsNoRollback(t *testing.T) {
 		t.Fatalf("newWriterFS: %v", err)
 	}
 	// SyncInterval defaults to 0 => sync every write. Write is index 4, Sync index 5.
-	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
-	if err == nil {
-		t.Fatal("expected error from faulted plain-append sync")
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x"))); err != nil {
+		t.Fatalf("Append error = %v, want nil: the whole line is a record", err)
 	}
-	if !strings.HasPrefix(err.Error(), "sync transcript entry") {
-		t.Fatalf("error = %q, want prefix %q", err.Error(), "sync transcript entry")
+	warning, ok := w.TakeWarning()
+	if !ok {
+		t.Fatal("no warning surfaced for the faulted buffered sync")
 	}
-	if strings.Contains(err.Error(), "rollback") {
-		t.Fatalf("plain append must not roll back, got %q", err.Error())
+	if !strings.HasPrefix(warning, "sync transcript entry") {
+		t.Fatalf("warning = %q, want prefix %q", warning, "sync transcript entry")
 	}
-	if !errors.Is(err, fault.ErrInjected) {
-		t.Fatalf("error = %v, want wrapped fault.ErrInjected", err)
+	if strings.Contains(warning, "rollback") {
+		t.Fatalf("plain append must not roll back, got %q", warning)
+	}
+	if w.Poisoned() {
+		t.Fatal("a buffered sync failure poisoned the writer; its whole line is a record and it stays usable")
 	}
 }
 
@@ -328,11 +333,17 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 		name         string
 		faultOps     []int
 		wantRollback string
+		// retained is true when the truncate itself failed, so the whole line
+		// stays in the file: a record. The append returns nil, poisons the
+		// writer (retained cause), and surfaces the failure as a warning. When
+		// the truncate succeeded and only a later rollback step failed, the
+		// entry is gone and the append reports the error.
+		retained bool
 	}{
-		{"truncateFails", []int{7}, "truncate to"},
-		{"seekFails", []int{8}, "seek eof"},
-		{"truncateAndSeekFail", []int{7, 8}, "seek eof"},
-		{"rollbackSyncFails", []int{9}, "sync rollback truncate"},
+		{"truncateFails", []int{7}, "truncate to", true},
+		{"seekFails", []int{8}, "seek eof", false},
+		{"truncateAndSeekFail", []int{7, 8}, "seek eof", true},
+		{"rollbackSyncFails", []int{9}, "sync rollback truncate", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,6 +358,22 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 				t.Fatalf("newWriterFS: %v", err)
 			}
 			err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+			if tc.retained {
+				if err != nil {
+					t.Fatalf("AppendDurable error = %v, want nil: the truncate failed, so the whole line is a record", err)
+				}
+				warning, ok := w.TakeWarning()
+				if !ok {
+					t.Fatal("no warning surfaced for the retained entry")
+				}
+				if !strings.Contains(warning, "rollback failed") || !strings.Contains(warning, tc.wantRollback) {
+					t.Fatalf("warning = %q, want a rollback-failed %q detail", warning, tc.wantRollback)
+				}
+				if !w.Poisoned() {
+					t.Fatal("a retained durable entry left the writer accepting appends over an unsynced tail")
+				}
+				return
+			}
 			if err == nil {
 				t.Fatal("expected error from faulted sync + faulted rollback")
 			}
@@ -384,8 +411,20 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	w.TrackFailures(nil, 0)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.AppendDurable(retained); !errors.Is(err, ErrRollbackFailed) {
-		t.Fatalf("append error = %v, want a rollback failure leaving the entry in the file", err)
+	// The entry is a record, so the durable append returns nil; the writer
+	// stops over the unsynced tail (a retained poison the barrier can clear),
+	// and the sync failure surfaces as a warning.
+	if err := w.AppendDurable(retained); err != nil {
+		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
+	}
+	if !w.Poisoned() {
+		t.Fatal("the retained entry left the writer accepting appends over an unsynced tail")
+	}
+	if _, ok := w.TakeWarning(); !ok {
+		t.Fatal("the retained entry surfaced no warning")
+	}
+	if err := w.EstablishDurability(); err != nil {
+		t.Fatalf("EstablishDurability: %v", err)
 	}
 	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
 		t.Fatalf("append after retained entry: %v", err)
@@ -433,11 +472,12 @@ func faultTestEntries(t *testing.T, fs afero.Fs) []Entry {
 
 // The buffered door rolls nothing back, so a sync that fails leaves the whole
 // line in the file — a record every reader of this transcript will see for the
-// rest of the process. Its sequence number is spent even though the call
-// reports failure, or the next append takes that number again and a reader
-// finds two entries claiming one sequence. This is the ordinary recordTurn
-// door: the default SyncInterval of 0 sends every buffered append through it.
-// Indices: entry Write 4, entry Sync 5 (fault).
+// rest of the process. The append returns nil (the entry is a record) and
+// surfaces the sync failure as a warning; its sequence number is spent, or the
+// next append takes that number again and a reader finds two entries claiming
+// one sequence. The writer stays usable — the position is still the file's
+// end. This is the ordinary recordTurn door: the default SyncInterval of 0
+// sends every buffered append through it. Indices: entry Write 4, entry Sync 5 (fault).
 func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
 	plan := bytes.Repeat([]byte{0x01}, 128)
 	plan[5] = 0x00 // entry Sync
@@ -449,8 +489,11 @@ func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
 	w.TrackFailures(nil, 0)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.Append(retained); err == nil {
-		t.Fatal("buffered append reported success over a faulted sync")
+	if err := w.Append(retained); err != nil {
+		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
+	}
+	if _, ok := w.TakeWarning(); !ok {
+		t.Fatal("the buffered sync failure surfaced no warning")
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
 		t.Fatalf("append after the faulted sync: %v", err)

@@ -481,8 +481,11 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
 
 	err := sess.maybeAppendEnvironmentContext()
-	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
-		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("ambiguous append error = %v, want an unresolved durability barrier: the writer owns durability now", err)
+	}
+	if !strings.Contains(err.Error(), syncFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure surfaced", err)
 	}
 	ambiguous := durableEnvironmentTurnIDs(t, sess)
 	if len(ambiguous) != 1 || ambiguous[0] == "" {
@@ -565,17 +568,23 @@ func TestEnvironmentUnreadableTranscriptReemitsForTheModel(t *testing.T) {
 	unreadable.Store(true)
 	err := sess.maybeAppendEnvironmentContext()
 	unreadable.Store(false)
-	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
-		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("ambiguous append error = %v, want an unresolved durability barrier: the writer owns durability now", err)
+	}
+	if !strings.Contains(err.Error(), syncFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure surfaced", err)
 	}
 	assertEnvironmentReemittedForModel(t, sess)
 }
 
-// TestEnvironmentUnestablishedDurabilityReemitsForTheModel: reconciliation
+// TestEnvironmentUnestablishedDurabilityStandsTheSessionDown: reconciliation
 // reads the transcript back only once it has raised a durability barrier over
-// it, and a barrier that cannot be raised leaves the same unknown. The model is
-// owed the observation either way.
-func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
+// the retained entry, and that barrier is also what would return the poisoned
+// writer to service. A barrier that cannot be raised leaves the entry unknown
+// AND the writer stopped, so the tracker rewinds (the model was shown nothing)
+// and the next turn is refused loudly rather than silently re-emitting onto an
+// unsynced tail.
+func TestEnvironmentUnestablishedDurabilityStandsTheSessionDown(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -583,10 +592,19 @@ func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
 	attachEnvironmentUnverifiableWrite(t, sess, syncFailure, rollbackFailure, durabilityFailure)
 
 	err := sess.maybeAppendEnvironmentContext()
-	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
-		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("ambiguous append error = %v, want an unresolved durability barrier: the writer owns durability now", err)
 	}
-	assertEnvironmentReemittedForModel(t, sess)
+	if !strings.Contains(err.Error(), syncFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure surfaced", err)
+	}
+	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+	if got := countEnvironmentTurns(sess); got != 0 {
+		t.Fatalf("model history environment turns after the unresolved append = %d, want none claimed", got)
+	}
+	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn after the unresolvable barrier = %v, want transcript.ErrWriterPoisoned", err)
+	}
 }
 
 // assertEnvironmentReemittedForModel requires an unresolved append to leave the
@@ -622,8 +640,11 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 	drainPendingEvents(sess)
 
 	err := sess.maybeAppendEnvironmentContext()
-	if !errors.Is(err, syncFailure) || !errors.Is(err, rollbackFailure) {
-		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure", err)
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("ambiguous append error = %v, want an unresolved durability barrier: the writer owns durability now", err)
+	}
+	if !strings.Contains(err.Error(), syncFailure.Error()) || !strings.Contains(err.Error(), rollbackFailure.Error()) {
+		t.Fatalf("ambiguous append error = %v, want both the sync and the rollback failure surfaced", err)
 	}
 	confirmed := durableEnvironmentTurnIDs(t, sess)
 	if len(confirmed) != 1 || confirmed[0] == "" {
@@ -1260,8 +1281,8 @@ func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	attachEnvironmentAmbiguousWrite(t, sess, syncFailure, rollbackFailure)
 
-	if _, err := sess.ProcessInput(t.Context(), "rejected by its environment append", nil); !errors.Is(err, syncFailure) {
-		t.Fatalf("rejected input error = %v, want the environment durability failure", err)
+	if _, err := sess.ProcessInput(t.Context(), "rejected by its environment append", nil); !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("rejected input error = %v, want the unresolved environment durability barrier", err)
 	}
 	if got := loadMetaForTest(t, sess).AcceptedInputTurns; got != 0 {
 		t.Fatalf("persisted accepted input turns after the rejected input = %d, want the none it accepted", got)

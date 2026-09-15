@@ -226,15 +226,19 @@ func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 }
 
 // A write that transferred the whole line before failing leaves a record a
-// reader will see. Its sequence number is spent and the failure it settles is
-// counted, exactly as the retained-entry path does — and the writer still stops,
-// because a write that reported failure says nothing dependable about the tail.
+// reader will see, so the append returns nil and the failure surfaces as a
+// warning. Its sequence number is spent and the failure it settles is counted,
+// exactly as the retained-entry path does — and the writer still stops, because
+// a write that reported failure says nothing dependable about the tail.
 func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, math.MaxInt32)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.AppendDurable(retained); !errors.Is(err, ErrRollbackFailed) {
-		t.Fatalf("append error = %v, want a rollback failure over the retained line", err)
+	if err := w.AppendDurable(retained); err != nil {
+		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
+	}
+	if _, ok := w.TakeWarning(); !ok {
+		t.Fatal("the retained write surfaced no warning")
 	}
 	if w.seq != 1 {
 		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.seq)
@@ -298,14 +302,18 @@ func TestAppend_PartialLineFailurePoisonsWriter(t *testing.T) {
 }
 
 // A buffered write that transferred the whole line before failing left a record
-// a reader will see, so it spends its sequence number and counts the failures it
-// settles — the same accounting the durable door does for a retained line.
+// a reader will see, so the append returns nil and the failure surfaces as a
+// warning; it spends its sequence number and counts the failures it settles —
+// the same accounting the durable door does for a retained line.
 func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 	w, _ := armPartialWriteFailure(t, math.MaxInt32)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.Append(retained); err == nil {
-		t.Fatal("buffered append reported success over an injected write failure")
+	if err := w.Append(retained); err != nil {
+		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
+	}
+	if _, ok := w.TakeWarning(); !ok {
+		t.Fatal("the retained buffered write surfaced no warning")
 	}
 	if w.seq != 1 {
 		t.Fatalf("next sequence = %d, want 1: a whole line a reader sees spends its sequence", w.seq)
@@ -457,8 +465,8 @@ func TestAppend_RetriesAfterAFailedReposition(t *testing.T) {
 func TestAppend_WholeLineFailureLeavesTheWriterDirtyForClose(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, math.MaxInt32)
 
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("landed unsynced"))); err == nil {
-		t.Fatal("buffered append reported success over an injected write failure")
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("landed unsynced"))); err != nil {
+		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
 	before := fs.file.syncs
 	if err := w.Close(); err != nil {
