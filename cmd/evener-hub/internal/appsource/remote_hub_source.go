@@ -41,6 +41,12 @@ type RemoteHubSource struct {
 	subMu  sync.Mutex
 	subs   map[string]*remoteHubSubscription // key: remote thread ID
 	drains map[*appwire.Client]struct{}      // clients whose notification stream is being drained
+	// remoteMu serializes the wire-level subscribe and unsubscribe a
+	// subscription's lifecycle emits against the routing-table mutation that
+	// decides them, so a replacement's subscribe can never land before its
+	// predecessor's unsubscribe for the same remote thread. subMu is always
+	// taken inside it, never the other way around.
+	remoteMu sync.Mutex
 }
 
 var _ Source = (*RemoteHubSource)(nil)
