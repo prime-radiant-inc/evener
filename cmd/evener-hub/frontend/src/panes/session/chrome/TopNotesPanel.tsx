@@ -42,6 +42,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   const latestSessionRef = useRef(sessionRef);
   latestSessionRef.current = sessionRef;
   const hintId = useId();
+  const prevCanWrite = useRef(canWrite);
 
   useEffect(() => {
     // Gated on readability so a session without the notes capability never
@@ -60,8 +61,22 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
     // A read-only session has no editor to focus, so it must not consume the
     // request either: held here, /notes on an ended session still lands focus
     // if the session resumes without a remount.
+    const wasWritable = prevCanWrite.current;
+    prevCanWrite.current = canWrite;
     if (!canWrite) return;
     if (!expanded || !pendingFocus) return;
+    // Redemption arriving via a WRITABILITY transition is the held-request
+    // path: the request was issued in a read-only era and the user may have
+    // moved on since. It must not yank focus from an active control (a
+    // composer mid-typing) - the request is consumed silently instead, so it
+    // cannot pounce on some later interaction either.
+    if (!wasWritable) {
+      const active = document.activeElement;
+      if (active !== null && active !== document.body) {
+        topNotesStore.getState().takePendingFocus(sessionRef);
+        return;
+      }
+    }
     if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
     // The pane can be reused for another session between the take and the
     // frame, and React hands the successor the same DOM editor, so the
