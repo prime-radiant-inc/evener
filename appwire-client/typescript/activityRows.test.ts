@@ -98,6 +98,15 @@ test("indexes completed entries hidden behind a collapsed fold", () => {
   expect(indexActivityEntities(activityTree).get(TERMINAL_JOB_ID)).toMatchObject({ parentRef: activityTree.root.ref });
 });
 
+// The index is disclosure-independent, and it also keeps the session's own
+// entry order: entityView builds its entity map by iterating this index, so the
+// walk must not reorder entries into the panel's live-then-folded shape.
+test("the entity index visits entries in transcript order, disclosed or not", () => {
+  const activityTree = tree([shell("a", false), shell("b", true), shell("c", true), shell("d", false)]);
+
+  expect([...indexActivityEntities(activityTree).keys()]).toEqual(["a", "b", "c", "d"]);
+});
+
 test("indexed level-1 inactive row matches its fold-revealed panel row", () => {
   const inactiveJob = shell("level-one-inactive", true) as ActivityShellEntry;
   inactiveJob.job.transcriptRef = "job:level-one-inactive";
