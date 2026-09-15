@@ -62,6 +62,12 @@ type RetirementController struct {
 	eligibleSince time.Time
 	failure       string
 	claim         *RetirementClaim
+	// evidenceGate is a test-only observation seam: when set it runs inside
+	// nonBlockingEvidence, with the caller's captured root and generation already
+	// fixed, so a test can change the controller identity while that read is in
+	// flight. It is nil in production and is installed before the controller is
+	// used concurrently, so it needs no lock of its own.
+	evidenceGate func()
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -236,19 +242,31 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 // claimSnapshotCurrent builds a claim-attempt snapshot from the live controller
 // state plus a fresh, non-blocking evidence read of root. It never consults cached
 // evidence and never holds c.mu across the evidence read, so it cannot present a
-// settled obligation as current and cannot wait on admitted work. root is the
-// controller root captured under c.mu; a nil root yields no Session evidence (the
-// snapshot's own root check reports the missing root instead). The automatic
-// (manual=false) path skips the read because Run discards that snapshot
-// (retirement.go Run tick); only the manual response at cmd/evener/serve.go
-// renders it.
-func (c *RetirementController) claimSnapshotCurrent(root *Session, manual bool) RetirementSnapshot {
+// settled obligation as current and cannot wait on admitted work. root and
+// generation are the controller identity captured under c.mu; a nil root yields no
+// Session evidence (the snapshot's own root check reports the missing root
+// instead). The automatic (manual=false) path skips the read because Run discards
+// that snapshot (retirement.go Run tick); only the manual response at
+// cmd/evener/serve.go renders it.
+//
+// AttachRoot replaces c.root and advances c.generation under c.mu, so it can run
+// entirely within the window where c.mu is dropped for the evidence read. The read
+// then describes the previous root while the controller now owns a new one.
+// Revalidating the captured pair after relocking and discarding a mismatched read
+// is what keeps the snapshot from combining the old root's obligations with the
+// new root's live leases; this is the same root/generation counter-idiom
+// validClaimLocked uses on the claim path. On mismatch the snapshot degrades to
+// live controller state only, and the next attempt reads the new root afresh.
+func (c *RetirementController) claimSnapshotCurrent(root *Session, generation uint64, manual bool) RetirementSnapshot {
 	var evidence []RetirementBlocker
 	if manual {
 		evidence = c.nonBlockingEvidence(root)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.root != root || c.generation != generation {
+		evidence = nil
+	}
 	return c.snapshotWithBlockersLocked(evidence)
 }
 
@@ -257,6 +275,9 @@ func (c *RetirementController) claimSnapshotCurrent(root *Session, manual bool) 
 func (c *RetirementController) nonBlockingEvidence(root *Session) []RetirementBlocker {
 	if root == nil {
 		return nil
+	}
+	if c.evidenceGate != nil {
+		c.evidenceGate()
 	}
 	if tree := root.delegateController; tree != nil {
 		return tree.retirementNonBlockingEvidence()
@@ -309,19 +330,19 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.mu.Lock()
 	if c.phase != "resident" {
-		root := c.root
+		root, generation := c.root, c.generation
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(root, manual), ErrRetirementUnavailable
+		return nil, c.claimSnapshotCurrent(root, generation, manual), ErrRetirementUnavailable
 	}
 	if len(c.active) != 0 || c.root == nil {
-		root := c.root
+		root, generation := c.root, c.generation
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(root, manual), nil
+		return nil, c.claimSnapshotCurrent(root, generation, manual), nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
-		root := c.root
+		root, generation := c.root, c.generation
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(root, manual), nil
+		return nil, c.claimSnapshotCurrent(root, generation, manual), nil
 	}
 	c.phase = "preparing"
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
@@ -347,7 +368,10 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
 		c.mu.Unlock()
-		return nil, c.claimSnapshotCurrent(claim.root, manual), ErrRetirementUnavailable
+		// claim.root/claim.generation are the identity the rejected claim was
+		// created with; revalidation against the live pair rejects (and discards)
+		// an evidence read that no longer describes the controller's root.
+		return nil, c.claimSnapshotCurrent(claim.root, claim.generation, manual), ErrRetirementUnavailable
 	}
 	if len(blockers) != 0 || evidenceErr != nil {
 		claim.finished = true

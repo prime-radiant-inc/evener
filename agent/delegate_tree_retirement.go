@@ -230,15 +230,23 @@ func (c *delegateTreeController) retirementOwnerScanLocked(members map[string]st
 // The owner scan is taken with TryLock, not Lock: c.mu is itself held across a
 // durable delegate-store append (appendResumabilityClosureLocked ->
 // appendLocked -> store.AppendBatch, delegate_tree_controller.go:830,303,309),
-// so blocking on it would wait on admitted work. When the owner is mid-append
-// this returns no tree evidence; the live leases still represent the admitted
-// work, and the next attempt with nothing admitted reads the complete set.
+// so blocking on it would wait on admitted work. When the owner is mid-append the
+// in-memory owner state cannot be read, and it carries obligations that are not
+// lease-backed, so returning nothing would silently under-report a possible
+// blocker. This fails closed with a placeholder rather than asserting the tree is
+// clear.
 func (c *delegateTreeController) retirementNonBlockingEvidence() []RetirementBlocker {
 	if c == nil {
 		return nil
 	}
 	if !c.mu.TryLock() {
-		return nil
+		// The placeholder is deliberately shape-honest: an empty DelegateID names
+		// no specific delegate, because none was read. It states that root-owned
+		// tree state exists and could not be inspected, not that a particular
+		// delegate is blocked. It never appears on a decision path — the retire
+		// and refuse decision uses retirementEvidence, which blocks for c.mu — so
+		// it can only add a caution to an already-refusing diagnostic snapshot.
+		return []RetirementBlocker{{Category: "delegate", SessionID: c.rootSessionID}}
 	}
 	members := make(map[string]struct{}, len(c.durable))
 	for id := range c.durable {

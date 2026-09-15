@@ -221,6 +221,15 @@ func hasRetirementBlocker(blockers []RetirementBlocker, category string) bool {
 	return false
 }
 
+func hasRetirementBlockerFor(blockers []RetirementBlocker, category, sessionID string) bool {
+	for _, blocker := range blockers {
+		if blocker.Category == category && blocker.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRetirementEarlyReturnDoesNotPresentResolvedBlocker is the regression test
 // for the stale early-return snapshot: a refused claim's blockers are evidence
 // for that attempt, not controller state that a later attempt inherits. When a
@@ -322,6 +331,168 @@ func TestRetirementEarlyReturnDoesNotLeakPreviousRootRefusal(t *testing.T) {
 	for _, blocker := range snapshot.Blockers {
 		if blocker.SessionID == first.ID() {
 			t.Fatalf("snapshot presents an obligation owned by the previous root: %+v", snapshot.Blockers)
+		}
+	}
+}
+
+// TestRetirementEarlyReturnReportsFreshNonLeaseObligation pins the property the
+// two early-return regression tests above leave unpinned: they assert the absence
+// of a stale "input" blocker plus the presence of "turn", but "turn" comes from
+// the BeginMutation active lease, so they pass even if the fresh non-blocking
+// read were removed. Here a queued input is a live non-lease obligation on the
+// current root, held while admitted work forces the early-return gate: the
+// snapshot must contain both that fresh "input" blocker and the live "turn" lease.
+func TestRetirementEarlyReturnReportsFreshNonLeaseObligation(t *testing.T) {
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+
+	// Admitted work forces the next manual attempt down the early-return gate
+	// (len(c.active) != 0) instead of re-running full evidence.
+	release, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// A queued input is an obligation with no lease behind it: only the fresh
+	// non-blocking read can surface it, and the lease alone cannot satisfy the
+	// assertion below.
+	root.mu.Lock()
+	root.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	root.mu.Unlock()
+
+	claim, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if claim != nil {
+		t.Fatalf("early return admitted a claim: %+v", snapshot)
+	}
+	if !hasRetirementBlockerFor(snapshot.Blockers, "input", root.ID()) {
+		t.Fatalf("early return dropped the fresh non-lease obligation: %+v", snapshot.Blockers)
+	}
+	if !hasRetirementBlockerFor(snapshot.Blockers, "turn", root.ID()) {
+		t.Fatalf("early return dropped the live lease: %+v", snapshot.Blockers)
+	}
+}
+
+// TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence drives the real
+// root-swap race: TryClaim captures the root and releases c.mu for the
+// non-blocking evidence read, and AttachRoot can replace the root and advance the
+// generation inside that window. The snapshot must never combine a blocker read
+// from the previous root with the new root's live leases. The gate holds the
+// claim attempt inside its evidence read (after the capture, before the relock),
+// so the swap is ordered strictly between them rather than raced; the assertion is
+// on snapshot content, not on any call count.
+func TestRetirementClaimSnapshotDoesNotMixSwappedRootEvidence(t *testing.T) {
+	first := newQueuePersistTestSession(t, t.TempDir())
+	defer first.Close()
+	c := retirementEvidenceController(t, first)
+	second := newQueuePersistTestSession(t, t.TempDir())
+	defer second.Close()
+
+	// A queued input on the old root is a fresh non-lease obligation: the
+	// evidence read returns an "input" blocker attributed to first.
+	first.mu.Lock()
+	first.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	first.mu.Unlock()
+
+	// The old root's admitted lease forces the early-return gate.
+	releaseOld, err := c.BeginMutation(first.ID(), "admission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseOld()
+
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	c.evidenceGate = func() {
+		close(entered)
+		<-resume
+	}
+
+	type claimResult struct {
+		snapshot RetirementSnapshot
+		err      error
+	}
+	result := make(chan claimResult, 1)
+	go func() {
+		_, snapshot, err := c.TryClaim(true)
+		result <- claimResult{snapshot, err}
+	}()
+
+	// The gate only runs after TryClaim has captured (root, generation) and
+	// dropped c.mu, so once it is entered the swap below is ordered after the
+	// capture. AttachRoot then succeeds because c.mu is free.
+	<-entered
+	if err := c.AttachRoot(second); err != nil {
+		t.Fatalf("attach during evidence read: %v", err)
+	}
+	// A lease admitted on the new root after the swap is the new root's live work.
+	releaseNew, err := c.BeginMutation(second.ID(), "turn")
+	if err != nil {
+		t.Fatalf("admit on new root: %v", err)
+	}
+	defer releaseNew()
+	// Let the evidence read finish; it still reads the captured old root, then
+	// claimSnapshotCurrent relocks and combines.
+	close(resume)
+
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("early-return claim: %v", got.err)
+	}
+	var staleInput, newLease bool
+	for _, blocker := range got.snapshot.Blockers {
+		if blocker.Category == "input" && blocker.SessionID == first.ID() {
+			staleInput = true
+		}
+		if blocker.Category == "turn" && blocker.SessionID == second.ID() {
+			newLease = true
+		}
+	}
+	if staleInput && newLease {
+		t.Fatalf("snapshot mixed the previous root's evidence with the new root's leases: %+v", got.snapshot.Blockers)
+	}
+	if staleInput {
+		t.Fatalf("snapshot presented evidence read from the replaced root: %+v", got.snapshot.Blockers)
+	}
+	if !newLease {
+		t.Fatalf("snapshot dropped the new root's live lease: %+v", got.snapshot.Blockers)
+	}
+}
+
+// TestRetirementNonBlockingEvidenceFailsClosedOnOwnerContention pins the
+// fail-closed placeholder: when the owner mutex is held (as it is across a
+// durable delegate-store append), the non-blocking read cannot inspect the owner
+// state, which carries non-lease-backed obligations. It must report that it could
+// not be read rather than reporting the tree clear. The placeholder must not name
+// a delegate it never inspected.
+func TestRetirementNonBlockingEvidenceFailsClosedOnOwnerContention(t *testing.T) {
+	root, tree, c := newRetirementDelegateController(t)
+	defer root.Close()
+
+	release, err := c.BeginMutation(root.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	// Hold the owner mutex for the duration of the attempt, the way an append
+	// that owns c.mu does in production.
+	tree.mu.Lock()
+	_, snapshot, err := c.TryClaim(true)
+	tree.mu.Unlock()
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if !hasRetirementBlockerFor(snapshot.Blockers, "delegate", root.ID()) {
+		t.Fatalf("owner contention reported the tree clear: %+v", snapshot.Blockers)
+	}
+	for _, blocker := range snapshot.Blockers {
+		if blocker.Category == "delegate" && blocker.DelegateID != "" {
+			t.Fatalf("placeholder named a delegate it never read: %+v", snapshot.Blockers)
 		}
 	}
 }
