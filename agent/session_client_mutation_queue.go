@@ -295,11 +295,16 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}, false
 	}
+	// Eligibility is decided on one sample: the store as the serializer holds
+	// it, plus the in-flight set taken under s.mu just before -- the serializer
+	// never waits on s.mu, and the set changes only on the input goroutine
+	// that is calling here.
+	inFlight := s.steeringInFlightSample()
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
-		if id, turnID := claimableSteeringCarrier(snapshot); turnID != "" {
+		if id, turnID := claimableSteeringCarrier(snapshot, inFlight); turnID != "" {
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
 		}
@@ -331,10 +336,18 @@ func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
 // reserved turn it already owns, or "" when no steer is ready to carry one. The
 // claim above walks the order once through this; the gate's predicate asks it
 // the same question without taking anything.
-func claimableSteeringCarrier(snapshot *clientMutationSnapshot) (clientMutationID, turnID string) {
+//
+// inFlight is the session's steeringInFlight sample: a steer a turn popped and
+// is appending, or one whose append landed and whose incorporation write the
+// store refused, is accepted in the store and absent from the queue. A carrier
+// claimed for it would drain nothing of its own, so it is not eligible.
+func claimableSteeringCarrier(snapshot *clientMutationSnapshot, inFlight map[string]bool) (clientMutationID, turnID string) {
 	for _, id := range snapshot.SteeringOrder {
 		pending, exists := snapshot.PendingExecutions[id]
 		if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
+			continue
+		}
+		if _, ok := inFlight[id]; ok {
 			continue
 		}
 		return id, pending.TurnID
@@ -363,16 +376,17 @@ func (s *Session) carrierSteerStillQueued(turnID string) bool {
 // queueHeadClaimable it is the whole of that decision, so a caller asking
 // whether this session has steering it could actually run asks the question the
 // claim asks.
-func steeringCarrierClaimable(snapshot *clientMutationSnapshot) bool {
-	_, turnID := claimableSteeringCarrier(snapshot)
+func steeringCarrierClaimable(snapshot *clientMutationSnapshot, inFlight map[string]bool) bool {
+	_, turnID := claimableSteeringCarrier(snapshot, inFlight)
 	return steeringCarrierRailOpen(snapshot) && turnID != ""
 }
 
 // wakeHasClaimableWork reports whether this wake has work it could actually
 // take, by the same predicates the two claims decide with.
 func (s *Session) wakeHasClaimableWork() bool {
+	inFlight := s.steeringInFlightSample()
 	snapshot := s.clientMutations.snapshot()
-	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot)
+	return queueHeadClaimable(&snapshot) || steeringCarrierClaimable(&snapshot, inFlight)
 }
 
 // AcceptClientMutationQueue durably accepts or replays one client-authored

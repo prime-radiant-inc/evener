@@ -285,15 +285,21 @@ func TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns(t *testing.T) {
 // is the failure policy, the same as a queued message whose append fails:
 // the carrier's announced turn fails without a model request, the input ends
 // with that error and the session idle, the steer stays accepted in the
-// queue (runnable work, so the session does not rest), and the next wake --
-// not this input -- carries it. Nothing is lost and nothing is retried in a
-// loop.
+// queue, the failure re-arms the pending-input wake, and the run that wake
+// provokes -- not this input -- carries it. Nothing is lost and nothing is
+// retried in a loop.
 func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t *testing.T) {
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
-	// The disk fills the moment the carrier is claimed.
-	s.cfg.testOnly.steeringCarrierClaimed = func(string) { refusal.refuse.Store(true) }
+	wakes := countingUserInputWake(s)
+	// The disk fills the moment the carrier is claimed. The wakes before this
+	// point are the drain's own acceptance-time wake; only what the failure
+	// arms is under test.
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) {
+		drainWakes(wakes)
+		refusal.refuse.Store(true)
+	}
 	seen := recordEvents(s)
 	if err := s.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
@@ -323,11 +329,17 @@ func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t 
 	if got := s.State(); got != SessionIdle {
 		t.Fatalf("session state = %q after the input, want idle", got)
 	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("the failed append armed no wake: the steer waits for an unrelated action or a restart")
+	}
 
-	// The disk has room again; the next wake carries the steer.
+	// The disk has room again, and the daemon answers the wake by running the
+	// pending input.
 	refusal.refuse.Store(false)
 	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
-		t.Fatalf("the wake after the failed carrier: ran=%v err=%v, want it to carry the steer", ran, err)
+		t.Fatalf("the wake's run after the failed carrier: ran=%v err=%v, want it to carry the steer", ran, err)
 	}
 	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
 		t.Fatalf("the wake made %d request(s) in total and did not carry %q", len(requests), "second pass")
@@ -799,5 +811,43 @@ func TestInjectDrainedSteeringStopsAtTheFirstFailedAppend(t *testing.T) {
 	s.mu.Unlock()
 	if queued != 2 {
 		t.Fatalf("steering queue holds %d after the drain, want both steers still queued", queued)
+	}
+}
+
+// TestCarrierClaimSkipsASteerInFlight: a steer whose append landed but whose
+// incorporation write the store refused is accepted in the store and absent
+// from the queue (in flight, recorded). A carrier claim that read the store
+// alone took it as the head steer, drained a different steer under its id,
+// and failed again on the next wake. Eligibility excludes in-flight steers.
+func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-in-flight",
+		Input:            []appwire.InputItem{{Type: "text", Text: "recorded, unmarked"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	recordSteerWithFailedIncorporation(t, s, "steer-in-flight")
+
+	if carrier, ok := s.claimSteeringCarrierInput(); ok {
+		t.Fatalf("claimSteeringCarrierInput claimed %q with only an in-flight steer in the store; the carrier would drain nothing and fail", carrier.ClientMutationID)
+	}
+	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q after a refused claim, want empty", got)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-queued",
+		Input:            []appwire.InputItem{{Type: "text", Text: "queued behind it"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	carrier, ok := s.claimSteeringCarrierInput()
+	if !ok || carrier.ClientMutationID != "steer-queued" {
+		t.Fatalf("claimSteeringCarrierInput = %q ok=%v, want the queued steer behind the in-flight one", carrier.ClientMutationID, ok)
 	}
 }

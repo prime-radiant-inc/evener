@@ -13,7 +13,7 @@ import (
 // (armGoalContinuation), and a notification peek; the extracted core takes only
 // the RESULTS of those side effects so the priority ladder can be fuzzed directly.
 //
-// Oracles: determinism; the action is always one of the seven valid values;
+// Oracles: determinism; the action is always one of the six valid values;
 // skipGoalGate matches its definition; the priority ladder is honored; and the
 // goal accounting invariants hold — the gate never re-arms and a notification is
 // never selected right after a notification turn.

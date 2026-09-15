@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -973,6 +974,15 @@ func (s *Session) steeringLanded(clientMutationID string) {
 	s.reflectDurableClientSteering()
 }
 
+// steeringInFlightSample copies the in-flight set under s.mu, for a caller
+// about to decide steering eligibility inside the store's serializer (which
+// must never wait on s.mu).
+func (s *Session) steeringInFlightSample() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.steeringInFlight)
+}
+
 // steeringMarked ends the in-flight window of steers a Stop's finalization
 // just marked incorporated (recordedSteeringAwaitingMark's sample).
 func (s *Session) steeringMarked(ids []string) {
@@ -1030,11 +1040,10 @@ func (s *Session) injectDrainedSteering() {
 			break
 		}
 		if !s.consumeSteeringMessage(msg) {
-			// The table put the failed steer back at the head of the queue;
-			// popping again would take the same steer and spend another
-			// retry attempt inside this turn, without the backoff. The retry
-			// the table armed owns the next attempt, for this steer and for
-			// everything queued behind it.
+			// The failed steer is back at the head of the queue; popping again
+			// would take the same steer and fail the same way inside this
+			// turn. The wake consumeSteeringMessage armed owns the next
+			// attempt, for this steer and for everything queued behind it.
 			break
 		}
 	}
@@ -1088,11 +1097,14 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() { s.history = append(s.history, t) },
 		); err != nil {
 			// The steer did not land. The store never left accepted, so ending
-			// its in-flight window puts it back in the queue for the next turn
-			// that drains steering; until then it is runnable work
-			// (hasRunnableUserSteering) that keeps the session from resting.
+			// its in-flight window puts it back in the queue, and the same
+			// wake its acceptance armed is armed again: the daemon runs the
+			// pending input once this input ends, so a transient write
+			// failure costs one failed turn, not a wait for an unrelated
+			// action or a restart.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.steeringLanded(msg.ClientMutationID)
+			s.wakeForPendingSteering()
 			return false
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
