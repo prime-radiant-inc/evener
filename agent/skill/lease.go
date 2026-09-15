@@ -54,14 +54,20 @@ func skillsLockPath(base, name string, create bool) (string, error) {
 }
 
 // tryExclusiveLease takes the exclusive lease at lockPath, reporting whether it
-// succeeded. A contended, stale, or failed lease means the directory must not be
-// removed.
+// succeeded. A contended, unsupported, stale, or failed lease means the
+// directory must not be removed.
 func tryExclusiveLease(lockPath string) (skillsLease, bool) {
 	lease, contended, err := acquireSkillsLease(lockPath, true)
 	if contended || err != nil {
 		if lease != nil {
 			_ = lease.Release()
 		}
+		return nil, false
+	}
+	if _, unsupported := lease.(noopSkillsLease); unsupported {
+		// Locking is unsupported here, so an "exclusive" lease excludes nobody:
+		// refuse to reap rather than remove a copy a live process may be reading.
+		_ = lease.Release()
 		return nil, false
 	}
 	return lease, true

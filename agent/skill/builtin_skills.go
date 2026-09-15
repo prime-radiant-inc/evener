@@ -147,6 +147,9 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			forgetEmbeddedSkillsLocked()
 		}
 	}
+	// Fallback bases are created by MkdirTemp, so they live under the temp dir
+	// even where the cache base does not. The caller holds the cache mutex.
+	reapStaleFallbackBases(os.TempDir(), time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
 		return "", err
@@ -154,7 +157,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	const publishAttempts = 4
 	var lastErr error
 	for range publishAttempts {
-		dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base)
+		dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, embeddedSkillsCache.dir)
 		if err != nil {
 			return "", err
 		}
@@ -171,7 +174,6 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		}
 		skills := make(map[string]SkillMeta)
 		ScanSkillsDir(dir, skills)
-		previousFallbackBase := embeddedSkillsCache.fallbackBase
 		embeddedSkillsCache.dir = dir
 		embeddedSkillsCache.digest = digest
 		embeddedSkillsCache.skills = skills
@@ -179,10 +181,9 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.fallback = false
 		embeddedSkillsCache.fallbackBase = ""
 		embeddedSkillsCache.fallbackUntil = time.Time{}
-		if previousFallbackBase != "" {
-			// A shared copy replaced the private one; its base has no other owner.
-			_ = os.RemoveAll(previousFallbackBase)
-		}
+		// A replaced fallback base is deliberately not removed here: sessions
+		// from its window may still read skill files inside it, and the age-based
+		// reaper collects it once nothing holds it.
 		return dir, nil
 	}
 	// The shared cache kept being reaped. Publish a private base under the reaped
@@ -193,7 +194,7 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("creating private skills cache: %w", err)
 	}
-	dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base)
+	dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, "")
 	if err != nil {
 		_ = os.RemoveAll(base)
 		return "", fmt.Errorf("bundled skills cache unavailable (last: %w): %w", lastErr, err)
@@ -263,12 +264,10 @@ func releaseSkillsLeaseLocked() {
 }
 
 // forgetEmbeddedSkillsLocked drops the cached copy and its lease. A private
-// fallback copy is removed with it, so replacing one cannot leave a full copy
-// behind. The caller holds the cache mutex.
+// fallback copy is NOT removed with it: sessions created while it was current
+// hold SkillFile paths inside it and read them on demand, so it stays until
+// reapStaleFallbackBases collects it by age. The caller holds the cache mutex.
 func forgetEmbeddedSkillsLocked() {
-	dir := embeddedSkillsCache.dir
-	fallback := embeddedSkillsCache.fallback
-	fallbackBase := embeddedSkillsCache.fallbackBase
 	embeddedSkillsCache.dir = ""
 	embeddedSkillsCache.digest = ""
 	embeddedSkillsCache.skills = nil
@@ -277,14 +276,6 @@ func forgetEmbeddedSkillsLocked() {
 	embeddedSkillsCache.fallbackBase = ""
 	embeddedSkillsCache.fallbackUntil = time.Time{}
 	releaseSkillsLeaseLocked()
-	if !fallback {
-		return
-	}
-	if fallbackBase != "" {
-		_ = os.RemoveAll(fallbackBase)
-	} else if dir != "" {
-		_ = os.RemoveAll(dir)
-	}
 }
 
 // defaultEmbeddedSkillsBaseDir returns the private per-user directory the cache
@@ -294,13 +285,6 @@ func forgetEmbeddedSkillsLocked() {
 // namespaced by user and verified private, so another user on a shared host
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
-	// Cleanup runs on every resolution, not only when the predictable name is
-	// unusable, so a base that becomes usable again does not strand the fallback
-	// bases earlier runs left behind. The caller holds the cache mutex, so the
-	// live paths passed here are read under it. Fallback bases are created by
-	// MkdirTemp, so they live under the temp dir even where the cache base does
-	// not.
-	reapStaleFallbackBases(os.TempDir(), time.Now(), embeddedSkillsCache.fallbackBase, embeddedSkillsCache.dir)
 	dir := filepath.Join(defaultSkillsBaseRoot(), embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err == nil {
 		return dir, nil
@@ -398,7 +382,7 @@ func ensurePrivateCacheDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("checking skill cache dir: %w", err)
 	}
-	if !info.IsDir() {
+	if !dirInfo(info) {
 		return fmt.Errorf("skill cache path %s is not a directory", dir)
 	}
 	if !cacheDirHasPrivatePermissions(info) {
@@ -423,12 +407,12 @@ func ensurePrivateCacheDir(dir string) error {
 // the published name is adopted only when its content matches the digest; any
 // other occupant leaves the staged private copy in place, because a session
 // without its bundled skills is worse than one that did not reuse the cache.
-func materializeEmbeddedSkills(skillsFS fs.FS, base string) (string, string, error) {
+func materializeEmbeddedSkills(skillsFS fs.FS, base, skipDir string) (string, string, error) {
 	digest, err := digestSkillsFS(skillsFS)
 	if err != nil {
 		return "", "", fmt.Errorf("digesting embedded skills: %w", err)
 	}
-	reapStaleCopies(base, time.Now(), digest, embeddedSkillsCache.dir)
+	reapStaleCopies(base, time.Now(), digest, skipDir)
 	dest := filepath.Join(base, embeddedSkillsPrefix+digest)
 	if publishedSkillsDir(dest, digest) {
 		touchDir(dest)
@@ -520,18 +504,25 @@ func publishedSkillsDir(dest, digest string) bool {
 // directory name, so a tampered or partial copy is republished.
 func cacheDirUsable(dir, expected string) bool {
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || expected == "" {
+	if err != nil || !dirInfo(info) || expected == "" {
 		return false
 	}
 	actual, err := digestSkillsFS(os.DirFS(dir))
 	return err == nil && actual == expected
 }
 
+// dirInfo reports whether info describes a real directory, never a symlink or a
+// reparse point: on Windows Lstat reports a directory junction or symlink with
+// both ModeDir and ModeSymlink set, so IsDir alone would accept it.
+func dirInfo(info fs.FileInfo) bool {
+	return info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
 // cacheDirExists reports whether dir is still a real directory. It never
 // follows a symlink, so a replaced cache path is not mistaken for the copy.
 func cacheDirExists(dir string) bool {
 	info, err := os.Lstat(dir)
-	return err == nil && info.IsDir()
+	return err == nil && dirInfo(info)
 }
 
 // touchDir refreshes a cache directory's modification time, and its base's, so
@@ -810,9 +801,13 @@ func sortDirEntries(entries []fs.DirEntry) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 }
 
-// entryIsDir reports whether entry names a directory, resolving it from Info when
-// the filesystem reports no entry type.
+// entryIsDir reports whether entry names a real directory, resolving it from
+// Info when the filesystem reports no entry type and rejecting symlinks and
+// reparse points.
 func entryIsDir(entry fs.DirEntry) (bool, error) {
+	if entry.Type()&os.ModeSymlink != 0 {
+		return false, nil
+	}
 	if entry.IsDir() {
 		return true, nil
 	}
@@ -823,7 +818,7 @@ func entryIsDir(entry fs.DirEntry) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return info.Mode().IsDir(), nil
+	return dirInfo(info), nil
 }
 
 // extractEmbeddedSkills is the filesystem-backed extraction implementation.

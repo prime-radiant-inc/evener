@@ -239,7 +239,7 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 		t.Fatalf("digestSkillsFS: %v", err)
 	}
 
-	first, gotDigest, err := materializeEmbeddedSkills(fsys, base)
+	first, gotDigest, err := materializeEmbeddedSkills(fsys, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 		t.Fatalf("published copy missing its skill: %v", err)
 	}
 
-	second, _, err := materializeEmbeddedSkills(fsys, base)
+	second, _, err := materializeEmbeddedSkills(fsys, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills (second): %v", err)
 	}
@@ -281,12 +281,12 @@ func TestMaterializeEmbeddedSkills_PublishesOnceAndReuses(t *testing.T) {
 
 func TestMaterializeEmbeddedSkills_DistinctContentDistinctDirs(t *testing.T) {
 	base := t.TempDir()
-	first, _, err := materializeEmbeddedSkills(sampleSkillFS(), base)
+	first, _, err := materializeEmbeddedSkills(sampleSkillFS(), base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
 	other := skillFSFixture(map[string]string{"sample/SKILL.md": sampleSkillDocument + "other\n"})
-	second, _, err := materializeEmbeddedSkills(other, base)
+	second, _, err := materializeEmbeddedSkills(other, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills (other): %v", err)
 	}
@@ -309,7 +309,7 @@ func TestMaterializeEmbeddedSkills_HealsOccupiedPublishedName(t *testing.T) {
 		t.Fatalf("occupy published name: %v", err)
 	}
 
-	dir, _, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestMaterializeEmbeddedSkills_HealsTamperedPublishedDirectory(t *testing.T)
 		t.Fatalf("write tampered copy: %v", err)
 	}
 
-	dir, _, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestMaterializeEmbeddedSkills_HealsSymlinkedPublishedName(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	dir, _, err := materializeEmbeddedSkills(fsys, base)
+	dir, _, err := materializeEmbeddedSkills(fsys, base, "")
 	if err != nil {
 		t.Fatalf("materializeEmbeddedSkills: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestMaterializeEmbeddedSkills_HealsSymlinkedPublishedName(t *testing.T) {
 
 func TestMaterializeEmbeddedSkills_StagingFailureErrors(t *testing.T) {
 	base := filepath.Join(t.TempDir(), "missing")
-	if _, _, err := materializeEmbeddedSkills(sampleSkillFS(), base); err == nil {
+	if _, _, err := materializeEmbeddedSkills(sampleSkillFS(), base, ""); err == nil {
 		t.Fatal("materializeEmbeddedSkills succeeded with an unusable base")
 	}
 }
@@ -400,7 +400,7 @@ type unreadableFS struct{}
 func (unreadableFS) Open(string) (fs.File, error) { return nil, errors.New("unreadable") }
 
 func TestMaterializeEmbeddedSkills_DigestFailureIsReported(t *testing.T) {
-	if _, _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir()); err == nil {
+	if _, _, err := materializeEmbeddedSkills(unreadableFS{}, t.TempDir(), ""); err == nil {
 		t.Fatal("expected a digest failure to propagate")
 	}
 }
@@ -540,19 +540,33 @@ func TestEmbeddedSkillsDir_FailsWhenNoLeaseIsAvailable(t *testing.T) {
 	}
 }
 
-func TestForgetEmbeddedSkillsLocked_RemovesFallbackCopy(t *testing.T) {
-	dir := t.TempDir()
+// Forgetting a fallback copy must leave its files in place: sessions from the
+// fallback window still read skill files by path, and the age-based reaper is
+// what eventually collects the base.
+func TestForgetEmbeddedSkillsLocked_KeepsFallbackCopyReadable(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "copy")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create copy: %v", err)
+	}
 	saved := saveEmbeddedSkillsCache()
 	t.Cleanup(func() { restoreEmbeddedSkillsCache(saved) })
 	embeddedSkillsCache.mu.Lock()
 	embeddedSkillsCache.dir = dir
 	embeddedSkillsCache.fallback = true
+	embeddedSkillsCache.fallbackBase = base
 	embeddedSkillsCache.mu.Unlock()
 
 	forgetEmbeddedSkillsLocked()
 
-	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("fallback copy not removed when forgotten: %v", err)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("fallback copy removed while readers may hold its paths: %v", err)
+	}
+	embeddedSkillsCache.mu.Lock()
+	fallbackBase := embeddedSkillsCache.fallbackBase
+	embeddedSkillsCache.mu.Unlock()
+	if fallbackBase != "" {
+		t.Fatalf("fallbackBase not cleared on forget: %q", fallbackBase)
 	}
 }
 
