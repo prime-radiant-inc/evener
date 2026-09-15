@@ -77,9 +77,11 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 
 // fromRemoteThread rewrites every ref-bearing field of a thread the remote hub
 // returned. Thread.Source becomes this source's ID; Evener.Ref and
-// Evener.ParentRef (sub-thread aliases) move from "local:" to "<host>:".
-// Evener.InstanceID is deliberately left byte-for-byte untouched: it is an
-// opaque precondition token round-tripped into turn/start.expectedInstanceId.
+// Evener.ParentRef (sub-thread aliases) move from "local:" to "<host>:"; and the
+// session-valued refs nested in Evener.Diagnostics (a delegate's and a delegate
+// job's TranscriptRef) move the same way. Evener.InstanceID is deliberately left
+// byte-for-byte untouched: it is an opaque precondition token round-tripped into
+// turn/start.expectedInstanceId.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
 	thread.Source = s.id
 	ref, err := s.fromRemoteRefString(thread.Evener.Ref)
@@ -94,7 +96,44 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		}
 		thread.Evener.ParentRef = parent
 	}
+	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
 	return thread, nil
+}
+
+// fromRemoteDiagnostics rewrites the session-valued refs nested in a thread's
+// diagnostics tree. A delegate's TranscriptRef always names its child session,
+// and a delegate job's TranscriptRef names the same child session, so both live
+// in the remote hub's "local:" namespace and must move to "<host>:" or a
+// controller client would route a child-thread read to the local source. A
+// shell job's TranscriptRef is the opaque "job:<id>" ref, preserved
+// byte-for-byte, and every bare-id field (sessionId, ownerSessionId,
+// childSessionId, rootSessionId) is an id, not a ref, so none is touched.
+func (s *RemoteHubSource) fromRemoteDiagnostics(diagnostics *appwire.EvenerDiagnostics) {
+	if diagnostics == nil {
+		return
+	}
+	for index := range diagnostics.Delegates {
+		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Delegates[index].TranscriptRef)
+	}
+	for index := range diagnostics.Jobs {
+		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Jobs[index].TranscriptRef)
+	}
+}
+
+// fromRemoteRefOrOpaque maps a remote "local:<thread>" ref into the controller
+// namespace, but leaves a value this source cannot address — an opaque
+// "job:<id>" ref or a project-scoped ref — byte-for-byte rather than failing the
+// enclosing thread. It is the single-value counterpart of translateActivityRefs's
+// per-key policy.
+func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	translated, err := s.fromRemoteRefString(raw)
+	if err != nil {
+		return raw
+	}
+	return translated
 }
 
 // translateOut applies outbound ref translation to whichever response type
