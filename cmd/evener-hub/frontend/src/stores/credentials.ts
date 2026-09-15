@@ -81,6 +81,14 @@ export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
 
 export interface HostInstancesState {
   hosts: Record<string, HostInstanceState>;
+  // generation advances on every connection transition. A remote read captures
+  // it before its request and commits only if it is unchanged: an answer that
+  // arrives across a transition belongs to a client that is gone, and the
+  // listing it was refreshing is still the one this page holds. The transition
+  // also releases every partition's in-flight status, so a form reopened after
+  // a reconnect re-reads instead of waiting on an answer that will never be
+  // accepted.
+  generation: number;
 }
 
 /** hostInstancesStore holds one partition per non-controller host. It is a
@@ -88,7 +96,26 @@ export interface HostInstancesState {
  * those fields ARE the controller's rows, and everything that acts on them -
  * the package store's evener/auth/updated refetch, its writes - must never see
  * another host's listing. */
-export const hostInstancesStore = createStore<HostInstancesState>(() => ({ hosts: {} }));
+export const hostInstancesStore = createStore<HostInstancesState>(() => ({ hosts: {}, generation: 0 }));
+
+// The controller-scoped store above owns the page's rows; this subscription
+// only ends the remote reads a connection transition orphans.
+let lastConnectionState = connectionStore.getState().state;
+let lastConnectionClient = connectionStore.getState().client;
+connectionStore.subscribe((state) => {
+  if (state.state === lastConnectionState && state.client === lastConnectionClient) return;
+  lastConnectionState = state.state;
+  lastConnectionClient = state.client;
+  hostInstancesStore.setState((previous) => ({
+    generation: previous.generation + 1,
+    hosts: Object.fromEntries(
+      Object.entries(previous.hosts).map(([host, partition]) => [
+        host,
+        partition.loading ? { ...partition, loading: false } : partition,
+      ]),
+    ) as Record<string, HostInstanceState>,
+  }));
+});
 
 /** hostPartition reads one host's own partition, or the empty one before that
  * host has ever been loaded. */
@@ -109,10 +136,11 @@ export async function fetchHost(host: string): Promise<void> {
   if (isLocalHost(host)) return;
   const client = connectionStore.getState().client;
   if (!client) return;
+  const generation = hostInstancesStore.getState().generation;
   setHostPartition(host, (previous) => ({ ...previous, loading: true, error: null }));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
-    if (connectionStore.getState().client !== client) return;
+    if (hostInstancesStore.getState().generation !== generation) return;
     setHostPartition(host, () => ({
       instances: resp.instances,
       availableProviders: resp.availableProviders,
@@ -121,7 +149,7 @@ export async function fetchHost(host: string): Promise<void> {
       error: null,
     }));
   } catch (err) {
-    if (connectionStore.getState().client !== client) return;
+    if (hostInstancesStore.getState().generation !== generation) return;
     setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
   }
 }
@@ -129,7 +157,7 @@ export async function fetchHost(host: string): Promise<void> {
 /** resetHostInstancesForTests clears the partitions between tests. No
  * production code should call this. */
 export function resetHostInstancesForTests(): void {
-  hostInstancesStore.setState({ hosts: {} });
+  hostInstancesStore.setState({ hosts: {}, generation: 0 });
 }
 
 function setHostPartition(host: string, update: (previous: HostInstanceState) => HostInstanceState): void {
