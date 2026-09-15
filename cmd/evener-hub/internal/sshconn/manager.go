@@ -350,7 +350,7 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	// ensureOnce bounds each of its phases itself (preflight, deploy/restart,
 	// then the attach handshake), so a hung remote command still cannot hold this
 	// host's lock for good without an outer deadline.
-	ch, err := m.ensureOnce(ctx, host)
+	ch, err := m.ensureOnce(ctx, host, true)
 	if err != nil {
 		m.stateEvent(name, StateDisconnected)
 		lock.Unlock()
@@ -436,7 +436,11 @@ func (m *Manager) Close() error {
 //     protocol-broken or flag-less host can still be upgraded over ssh;
 //   - a deploy or restart that leaves the host without a listener is retried by
 //     the next Ensure, matching ErrRestart's stated contract.
-func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, error) {
+//
+// explicit marks an explicit attach request (component 06's first host action),
+// which is the only place the first-attach bootstrap start may run; a reconnect
+// passes false so it never starts a hub.
+func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
 	// Refuse an unusable hub address before any ssh command runs: the probe and
 	// restart paths below would otherwise address (and possibly kill) whatever
 	// holds the default port, or poll a port the bridge never dials.
@@ -474,10 +478,16 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		err := m.deploy(deployCtx, host, facts)
+		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
 			return nil, err
+		}
+		if resolvedTarget != "" {
+			// The installer fallback with an empty evener_path installed to its own
+			// default location. Use that path for the restart, health re-probe, and
+			// attach instead of assuming a separate `command -v evener` result.
+			host.EvenerPath = resolvedTarget
 		}
 		// The controller's own build is installed now; the dev-identity question
 		// is settled for this Manager's lifetime.
@@ -529,8 +539,91 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; set Options.BuildSource",
 			ErrVersionMismatch, host.Name, facts.Version, expected)
 	}
+	// First attach to a stopped host must be able to start the hub. The probe
+	// above only restarts a hub that is already answering, and the bridge is a
+	// client that must not start one, so a configured host whose hub is not
+	// running could never become usable. Bootstrap only for an explicit attach
+	// request (never a reconnect or the background snapshot walk, which is
+	// attached-only) and only when this attempt would otherwise attach to an
+	// acceptable build: the terminal refusals above have already fired for a host
+	// that cannot be upgraded, so there is nothing worth starting.
+	if explicit && !runningKnown && !restart && m.pendingRestart(host.Name).command == "" {
+		m.stateEvent(host.Name, StateRestarting)
+		startCtx, cancelStart := context.WithTimeout(ctx, m.opts.deployLimit())
+		bootErr := m.bootstrapHub(startCtx, host, facts, expected)
+		cancelStart()
+		if bootErr != nil {
+			return nil, bootErr
+		}
+	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
+}
+
+// bootstrapHub starts a host hub that is not running, the first-attach repair.
+// It refuses to start anything when a process already owns the configured
+// address (a second hub would race hub.lock), starts the identified supervisor's
+// unit when one is named unambiguously (systemd `start` / launchd `kickstart
+// -k`), otherwise the ops doc's detached ad hoc launch of the resolved
+// evener_path / `command -v evener`, and then waits for the expected build
+// exactly as the restart path does. A host with no resolvable executable and no
+// supervisor is refused with ErrRestart, so the first host action surfaces the
+// failure instead of attaching nothing.
+func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
+	port := hubPort(m.hostAddr(host))
+	pids, err := m.hubListenerPIDs(ctx, host, port)
+	if err != nil {
+		return err
+	}
+	if len(pids) > 0 {
+		// Something already owns the address, even if it did not answer the health
+		// probe. Starting a second hub would race hub.lock; leave it to the attach
+		// attempt.
+		return nil
+	}
+
+	set, err := m.detectSupervisor(ctx, host, facts)
+	if err != nil {
+		return err
+	}
+	sup := set.live
+	if sup.kind == supervisorNone {
+		sup = set.dormant
+	}
+	if sup.kind != supervisorNone {
+		if remote, ok := sup.startRemote(facts.UID); ok {
+			// kickstart -k / start both bring the unit up; the recorded pending
+			// restart keeps the start recoverable if this attempt is interrupted.
+			m.setPendingRestart(host.Name, remote, hubIdentity{})
+			out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+			if runErr != nil && !sup.restartStatusIsAdvisory() {
+				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
+			}
+			if err := m.waitHealthy(ctx, host, expected, hubIdentity{}); err != nil {
+				return err
+			}
+			m.clearPendingRestart(host.Name)
+			return nil
+		}
+	}
+
+	// Ad hoc: launch the resolved executable detached, discarding output (there is
+	// no recovered log for a hub that was not running).
+	target, err := m.expectedHubExecutable(ctx, host)
+	if err != nil {
+		return err
+	}
+	relaunch := relaunchCommand(hubBootstrapArgv(m.opts, host, target), "")
+	m.setPendingRestart(host.Name, relaunch, hubIdentity{})
+	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
+	if runErr != nil {
+		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
+	}
+	if err := m.waitHealthy(ctx, host, expected, hubIdentity{}); err != nil {
+		return err
+	}
+	m.clearPendingRestart(host.Name)
+	return nil
 }
 
 // ensureDecision is the one decision table for ensureOnce. Everything it needs
@@ -748,7 +841,7 @@ func (m *Manager) reconnectOnce(host hostreg.Host, lock *sync.Mutex) bool {
 		// Another Ensure attached while we slept; its supervisor owns the host.
 		return false
 	}
-	nch, err := m.ensureOnce(m.baseCtx, host)
+	nch, err := m.ensureOnce(m.baseCtx, host, false)
 	if err == nil {
 		if !m.publishChannel(host.Name, nch) {
 			// Close landed mid-attempt; reap the channel it would have orphaned.
@@ -866,11 +959,23 @@ func isDevVersion(v string) bool {
 	return v == "" || v == "dev"
 }
 
-// canDeploy reports whether a build source is configured, so the controller can
-// actually install its own build. It gates the dev-identity deploy: with no
-// source there is nothing to install.
-func (m *Manager) canDeploy() bool {
+// canBuild reports whether the primary cross-compile + push path is available: a
+// build source (or an injected BuildBinary) is configured.
+func (m *Manager) canBuild() bool {
 	return m.opts.BuildBinary != nil || strings.TrimSpace(m.opts.BuildSource) != ""
+}
+
+// canDeploy reports whether the controller can install its own build on a host
+// at all: either the primary push path is available, or the installer fallback
+// can pin a published artifact for this controller's build channel. A dev/dirty
+// controller with no build source has neither, so it cannot resolve a version
+// difference and ensureOnce refuses it terminally.
+func (m *Manager) canDeploy() bool {
+	if m.canBuild() {
+		return true
+	}
+	_, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	return err == nil
 }
 
 // isDevDeployed reports whether this Manager has installed its own dev build on

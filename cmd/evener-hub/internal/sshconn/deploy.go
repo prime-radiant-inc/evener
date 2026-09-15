@@ -235,10 +235,23 @@ func declaresEvenerModule(dir string) bool {
 	return false
 }
 
-// deploy cross-compiles this tree for the host target and atomically installs
-// it at the host's evener path. The existing binary is untouched unless the
-// push fully succeeds.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) error {
+// deploy installs a matching build on the host. The cross-compile + push path is
+// primary when a build source is configured; otherwise the installer fallback
+// runs on the host. It returns the run target the manager must use afterwards,
+// which is non-empty only for the installer fallback with an empty evener_path
+// (the installer's own default location, so the restart and attach paths address
+// the binary that was actually installed).
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+	if m.canBuild() {
+		return "", m.deployPush(ctx, host, facts)
+	}
+	return m.deployInstaller(ctx, host, facts)
+}
+
+// deployPush cross-compiles this tree for the host target and atomically
+// installs it at the host's evener path. The existing binary is untouched unless
+// the push fully succeeds.
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) error {
 	target, err := m.deployTarget(ctx, host)
 	if err != nil {
 		return err
@@ -377,4 +390,116 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 		return fmt.Errorf("%w: host %q push %s: %w: %s", ErrDeploy, host.Name, target, err, tail(out))
 	}
 	return nil
+}
+
+// installScriptURL is where the installer fallback fetches install.sh on the
+// host: the documented quickstart one-liner
+// (docs/getting-started.md:39-41) pins the repository's main branch. It is
+// fetched on the host, so the fallback needs host network access that the push
+// path does not.
+const installScriptURL = "https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh"
+
+// installerRefFor maps this controller's build channel to the artifact
+// reference install.sh accepts as EVENER_INSTALL_VERSION. install.sh treats that
+// variable as a GitHub *release tag* (`$repo/releases/download/$version`), while
+// buildinfo.Version() is a short Git SHA, possibly "-dirty" — passing it
+// verbatim would point every normal build at a release that does not exist. The
+// mapping is therefore:
+//
+//   - release: the stamped ReleaseTag (a Git SHA is never a substitute);
+//   - snapshot: the mutable `snapshot` tag, whose commit is pinned afterwards by
+//     the post-install version check;
+//   - dev/dirty: refused with ErrDeploy — there is no publishable identity to
+//     pin, so the operator must use the push path or Options.BuildBinary.
+//
+// `latest` is never passed.
+func installerRefFor(channel, releaseTag, dirty string) (string, error) {
+	if strings.TrimSpace(dirty) == "true" {
+		return "", fmt.Errorf("%w: this controller was built from a dirty tree, so the installer fallback has no published artifact to pin; use the atomic push path or Options.BuildBinary", ErrDeploy)
+	}
+	switch channel {
+	case "release":
+		tag := strings.TrimSpace(releaseTag)
+		if tag == "" {
+			return "", fmt.Errorf("%w: this controller is a release build but carries no stamped release tag (buildinfo.ReleaseTag); refusing to pass the Git SHA %q as a release tag — use the atomic push path", ErrDeploy, buildinfo.Version())
+		}
+		return tag, nil
+	case "snapshot":
+		return "snapshot", nil
+	default:
+		return "", fmt.Errorf("%w: this controller's build channel %q has no publishable artifact to pin (buildinfo.Version() %q is a Git SHA, not a release tag); use the atomic push path or Options.BuildBinary", ErrDeploy, channel, buildinfo.Version())
+	}
+}
+
+// installerDirs resolves the BINDIR / EVENER_SHARE_BINDIR the installer must be
+// given so it installs to the target the manager will actually run, plus that
+// run target. A host with a custom evener_path otherwise installs cleanly into
+// ~/.local/bin and then keeps probing and relaunching the old binary at the
+// configured path. When evener_path is empty the installer's own default
+// `~/.local/bin/evener` IS the run target, returned so the manager records and
+// uses it rather than assuming a separate `command -v evener` result.
+func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
+	p := strings.TrimSpace(host.EvenerPath)
+	if p == "" {
+		home := strings.TrimSpace(facts.Home)
+		if home == "" {
+			return "", "", "", fmt.Errorf("%w: host %q has no evener_path and preflight found no HOME to resolve the installer's default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
+		}
+		return "", "", path.Join(home, ".local", "bin", "evener"), nil
+	}
+	base := path.Base(p)
+	if base != "evener" && base != "evener-dev" {
+		return "", "", "", fmt.Errorf("%w: host %q evener_path %q has basename %q, which install.sh does not ship (it installs evener and evener-dev); use the atomic push path", ErrDeploy, host.Name, p, base)
+	}
+	bindir = path.Dir(p)
+	shareBindir = path.Join(path.Dir(bindir), "share", "evener", "bin")
+	return bindir, shareBindir, p, nil
+}
+
+// installerCommand builds the remote command that runs install.sh pinned to
+// ref, installing into bindir/shareBindir when a custom run target is given.
+// The documented one-liner runs the installer on the host with the variables
+// passed to `env` (not to curl), and every value is shell-quoted.
+func installerCommand(ref, bindir, shareBindir string) string {
+	env := "EVENER_INSTALL_VERSION=" + shellQuote(ref)
+	if bindir != "" {
+		env += " BINDIR=" + shellQuote(bindir) + " EVENER_SHARE_BINDIR=" + shellQuote(shareBindir)
+	}
+	return "curl -fsSL " + shellQuote(installScriptURL) + " | env " + env + " sh"
+}
+
+// deployInstaller is the fallback deploy path for a controller with no build
+// source: it runs the installer on the host pinned to the controller's own build
+// channel, then verifies the installed binary is the expected build before any
+// restart or attach. A tag that resolves to a wrong or moved artifact is a
+// failed verification (ErrDeploy), never an attach.
+func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
+	if err != nil {
+		return "", err
+	}
+	bindir, shareBindir, runTarget, err := installerDirs(host, facts)
+	if err != nil {
+		return "", err
+	}
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir)), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q installer (%s): %w: %s", ErrDeploy, host.Name, ref, err, tail(out))
+	}
+	// Verify the binary the installer left at the run target. With an empty
+	// evener_path the launch-check must address the installed file directly: the
+	// non-interactive PATH may not carry ~/.local/bin, so the literal `evener`
+	// could resolve to nothing.
+	probeHost := host
+	if runTarget != "" {
+		probeHost.EvenerPath = runTarget
+	}
+	lc, err := m.probeLaunchCheck(ctx, probeHost)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q installer verification: %w", ErrDeploy, host.Name, err)
+	}
+	if want := m.opts.controllerVersion(); lc.Version != want {
+		return "", fmt.Errorf("%w: host %q installer installed version %q, want %q (the pinned artifact does not match the controller's build)", ErrDeploy, host.Name, lc.Version, want)
+	}
+	return runTarget, nil
 }

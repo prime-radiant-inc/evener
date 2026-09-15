@@ -278,6 +278,22 @@ func channelArgv(o Options, h hostreg.Host) []string {
 	return evenerCommandArgv(o, h, args...)
 }
 
+// hubBootstrapArgv builds the argv for the ad hoc first-attach launch of a host
+// hub that is not running: the resolved executable (an absolute path, so the
+// launch does not depend on the non-interactive PATH), the hub subcommand, and
+// the host's configured config path / address so the started hub matches the one
+// the probes address. It mirrors channelArgv's optional flags.
+func hubBootstrapArgv(o Options, h hostreg.Host, target string) []string {
+	args := []string{target, "hub"}
+	if p := strings.TrimSpace(h.ConfigPath); p != "" {
+		args = append(args, "--config", p)
+	}
+	if a := explicitHostAddr(o, h); a != "" {
+		args = append(args, "--addr", a)
+	}
+	return args
+}
+
 // diagSink forwards ssh stderr to the configured diagnostic writer and keeps a
 // bounded tail so a failed attach can classify the cause (auth vs a generic
 // start failure) without buffering unbounded output.

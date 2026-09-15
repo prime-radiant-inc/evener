@@ -78,16 +78,17 @@ func TestRelaunchCommandQuotesHostDerivedValues(t *testing.T) {
 func TestSupervisorRestartRemoteQuotesLabel(t *testing.T) {
 	cases := []struct {
 		sup  supervisor
+		uid  string
 		want string
 	}{
-		{supervisor{supervisorSystemd, "evener-hub.service"}, "systemctl restart evener-hub.service"},
-		{supervisor{supervisorSystemdUser, "evener-hub.service"}, "systemctl --user restart evener-hub.service"},
-		{supervisor{supervisorLaunchd, "com.example.evener-hub"}, "launchctl kickstart -k gui/$(id -u)/com.example.evener-hub"},
-		{supervisor{supervisorSystemd, "evener; rm -rf /"}, "systemctl restart 'evener; rm -rf /'"},
+		{supervisor{supervisorSystemd, "evener-hub.service"}, "", "systemctl restart evener-hub.service"},
+		{supervisor{supervisorSystemdUser, "evener-hub.service"}, "", "systemctl --user restart evener-hub.service"},
+		{supervisor{supervisorLaunchd, "com.example.evener-hub"}, "1000", "launchctl kickstart -k gui/1000/com.example.evener-hub"},
+		{supervisor{supervisorSystemd, "evener; rm -rf /"}, "", "systemctl restart 'evener; rm -rf /'"},
 	}
 	for _, tc := range cases {
-		if got := tc.sup.restartRemote(); got != tc.want {
-			t.Errorf("restartRemote() = %q, want %q", got, tc.want)
+		if got, ok := tc.sup.restartRemote(tc.uid); got != tc.want || !ok {
+			t.Errorf("restartRemote(%q) = (%q,%v), want (%q,true)", tc.uid, got, ok, tc.want)
 		}
 	}
 }

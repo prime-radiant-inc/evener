@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -195,18 +194,83 @@ type supervisorSet struct {
 	dormant supervisor
 }
 
-// restartRemote is the remote command that restarts the supervised hub.
-func (s supervisor) restartRemote() string {
+// restartRemote is the remote command that restarts (or starts) the supervised
+// hub. ok is false when no safe supervised command can be built, in which case
+// the caller falls through to the ad hoc path rather than passing host-derived
+// data into the remote shell.
+//
+// The darwin domain argument is `gui/<uid>/<label>` with the numeric uid
+// resolved in preflight and passed as one bare-safe word: a `$(id -u)`
+// substitution would be single-quoted into a literal by the quoting rule and
+// never expand, and the label is host-derived so emitting it raw would be the
+// injection the quoted path avoids (spec 04, §"Stop/restart mechanics").
+func (s supervisor) restartRemote(uid string) (string, bool) {
 	switch s.kind {
 	case supervisorLaunchd:
-		return "launchctl kickstart -k gui/$(id -u)/" + shellQuote(s.label)
+		if !isNumericUID(uid) || !isBareSafeLabel(s.label) {
+			return "", false
+		}
+		return "launchctl kickstart -k gui/" + uid + "/" + s.label, true
 	case supervisorSystemd:
-		return "systemctl restart " + shellQuote(s.label)
+		return "systemctl restart " + shellQuote(s.label), true
 	case supervisorSystemdUser:
-		return "systemctl --user restart " + shellQuote(s.label)
+		return "systemctl --user restart " + shellQuote(s.label), true
 	default:
-		return ""
+		return "", false
 	}
+}
+
+// startRemote is the supervised hub START, used by the first-attach bootstrap:
+// the supervisor that owns the hub is asked to bring it up (systemd `start`,
+// launchd `kickstart -k`). ok is false under the same conditions as
+// restartRemote, so an unbuildable command falls through to the ad hoc path.
+func (s supervisor) startRemote(uid string) (string, bool) {
+	switch s.kind {
+	case supervisorLaunchd:
+		if !isNumericUID(uid) || !isBareSafeLabel(s.label) {
+			return "", false
+		}
+		return "launchctl kickstart -k gui/" + uid + "/" + s.label, true
+	case supervisorSystemd:
+		return "systemctl start " + shellQuote(s.label), true
+	case supervisorSystemdUser:
+		return "systemctl --user start " + shellQuote(s.label), true
+	default:
+		return "", false
+	}
+}
+
+// isNumericUID reports whether s is a non-empty run of ASCII digits.
+func isNumericUID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isBareSafeLabel reports whether a supervisor label can be passed as one
+// bare-safe word ([A-Za-z0-9_.-], no `/`). The launchd domain argument
+// `gui/<uid>/<label>` has to be a single unquoted word, so a label outside this
+// set refuses the supervised path instead of being interpolated into the remote
+// shell.
+func isBareSafeLabel(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '_' || r == '.' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // restartStatusIsAdvisory reports whether a nonzero restart-command status is
@@ -439,35 +503,13 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		}
 	}
 	if sup.kind != supervisorNone {
-		remote := sup.restartRemote()
-		// Record the restart before running it, exactly as restartBare does: a
-		// restart that leaves no listener must be completed by the next Ensure.
-		// Without this a supervisor restart that failed with the on-disk version
-		// already matching left nothing for the decision ladder to retry, so the
-		// next Ensure attached (or failed to attach) against a host with no hub.
-		m.setPendingRestart(host.Name, remote, replaced)
-		out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-		if runErr != nil && !sup.restartStatusIsAdvisory() {
-			// Surface the restart command's own failure even when the hub would
-			// answer a health probe: a healthy response alone cannot prove the
-			// restart took (the old process stays healthy through a failed
-			// `systemctl restart` when the user lacks sudo/polkit), so swallowing
-			// this cause is what let a failed restart look like success.
-			return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
+		if remote, ok := sup.restartRemote(facts.UID); ok {
+			return m.restartSupervised(ctx, host, sup, remote, expected, replaced)
 		}
-		if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
-			if runErr != nil {
-				// launchd: docs note an interrupted `kickstart` can report failure
-				// even when the restart succeeded
-				// (docs/evener-hub-remote-operations.md:290-293), so its status is
-				// diagnostic, not authoritative. The health failure is the real
-				// cause; name the command failure alongside it.
-				return fmt.Errorf("%w: host %q %s: %w: %s: %w", ErrRestart, host.Name, remote, runErr, tail(out), err)
-			}
-			return err
-		}
-		m.clearPendingRestart(host.Name)
-		return nil
+		// A supervisor whose command cannot be built safely — launchd with no
+		// numeric uid from preflight, or a label outside the bare-safe set — falls
+		// through to the ad hoc path rather than interpolating host-derived data
+		// into the remote shell.
 	}
 
 	if err := m.restartBare(ctx, host, replaced); err != nil {
@@ -478,6 +520,40 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
 	// this host is settled.
+	m.clearPendingRestart(host.Name)
+	return nil
+}
+
+// restartSupervised runs a detected supervisor's restart command and verifies
+// the host hub afterwards. The restart command is recorded before it runs, so a
+// restart that leaves no listener is completed by the next Ensure.
+func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup supervisor, remote, expected string, replaced hubIdentity) error {
+	// Record the restart before running it, exactly as restartBare does: a
+	// restart that leaves no listener must be completed by the next Ensure.
+	// Without this a supervisor restart that failed with the on-disk version
+	// already matching left nothing for the decision ladder to retry, so the
+	// next Ensure attached (or failed to attach) against a host with no hub.
+	m.setPendingRestart(host.Name, remote, replaced)
+	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+	if runErr != nil && !sup.restartStatusIsAdvisory() {
+		// Surface the restart command's own failure even when the hub would
+		// answer a health probe: a healthy response alone cannot prove the
+		// restart took (the old process stays healthy through a failed
+		// `systemctl restart` when the user lacks sudo/polkit), so swallowing
+		// this cause is what let a failed restart look like success.
+		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
+	}
+	if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
+		if runErr != nil {
+			// launchd: docs note an interrupted `kickstart` can report failure
+			// even when the restart succeeded
+			// (docs/evener-hub-remote-operations.md:290-293), so its status is
+			// diagnostic, not authoritative. The health failure is the real
+			// cause; name the command failure alongside it.
+			return fmt.Errorf("%w: host %q %s: %w: %s: %w", ErrRestart, host.Name, remote, runErr, tail(out), err)
+		}
+		return err
+	}
 	m.clearPendingRestart(host.Name)
 	return nil
 }
@@ -753,6 +829,9 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 		if err := validateHubArgv(argv); err != nil {
 			return nil, fmt.Errorf("%w: host %q pid %s: %w", ErrRestart, host.Name, pid, err)
 		}
+		if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
+			return nil, err
+		}
 		return argv, nil
 	}
 
@@ -772,7 +851,68 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 	if err != nil {
 		return nil, fmt.Errorf("%w: host %q pid %s: %w (command line %q)", ErrRestart, host.Name, pid, err, cmdline)
 	}
+	if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
+		return nil, err
+	}
 	return argv, nil
+}
+
+// hubExecutableMatches proves a recovered hub argv[0] is the executable the
+// manager deploys and launches. It canonicalizes the recovered path on the host
+// with the same portable POSIX-sh resolver deployTarget uses (symlinks resolved,
+// plain readlink — no `readlink -f`, which BSD readlink rejects) and compares it
+// to the canonical configured target: evener_path when set, else the canonical
+// `command -v evener`. A hardcoded basename would refuse every valid custom
+// target (say /opt/evener/current/evener-hub) that configuration and deploy
+// accept; a basename is also not sufficient, since an unrelated binary can share
+// one. A mismatch is ErrRestart with no kill.
+func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, exe string) error {
+	actual, err := m.resolveRemotePath(ctx, host, exe)
+	if err != nil {
+		return err
+	}
+	expected, err := m.expectedHubExecutable(ctx, host)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return fmt.Errorf("%w: host %q hub executable %q (resolves to %q) is not the configured target %q; refusing to restart it",
+			ErrRestart, host.Name, exe, actual, expected)
+	}
+	return nil
+}
+
+// expectedHubExecutable resolves the canonical path of the executable the host
+// hub is expected to run: the configured evener_path when set, else whatever
+// `command -v evener` resolves to. Both are canonicalized on the host, so a
+// symlinked install on either side compares equal.
+func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) (string, error) {
+	if p := strings.TrimSpace(host.EvenerPath); p != "" {
+		return m.resolveRemotePath(ctx, host, p)
+	}
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrRestart, host.Name, err, tail(out))
+	}
+	p := firstLine(string(out))
+	if p == "" {
+		return "", fmt.Errorf("%w: host %q has no evener on PATH and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
+	}
+	return m.resolveRemotePath(ctx, host, p)
+}
+
+// resolveRemotePath canonicalizes a remote path, following symlinks, with the
+// resolver deployTarget uses.
+func (m *Manager) resolveRemotePath(ctx context.Context, host hostreg.Host, p string) (string, error) {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, resolveDeployCommand(p)), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve %q: %w: %s", ErrRestart, host.Name, p, err, tail(out))
+	}
+	resolved := firstLine(string(out))
+	if resolved == "" {
+		return "", fmt.Errorf("%w: host %q path %q does not resolve to a real file", ErrRestart, host.Name, p)
+	}
+	return resolved, nil
 }
 
 // hubArgvRemote builds the remote command that prints pid's argv NUL-separated.
@@ -828,8 +968,14 @@ func validateHubArgv(argv []string) error {
 	if len(argv) == 0 {
 		return errors.New("empty command line")
 	}
-	if base := path.Base(argv[0]); base != "evener" {
-		return fmt.Errorf("executable %q is not evener", argv[0])
+	// The executable's identity is checked separately, by canonicalizing the
+	// recovered argv[0] on the host and comparing it to the configured target
+	// (hubExecutableMatches, below). A hardcoded `path.Base(argv[0]) == "evener"`
+	// is neither necessary nor sufficient: evener_path is an arbitrary executable
+	// path, so a valid custom target could never pass it. What this function
+	// decides is shape only.
+	if strings.TrimSpace(argv[0]) == "" {
+		return errors.New("empty executable in command line")
 	}
 	// The hub subcommand must sit at the actual subcommand position. Matching
 	// "hub" anywhere in argv accepts an unrelated command that merely names it

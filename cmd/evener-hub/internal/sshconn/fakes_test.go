@@ -147,8 +147,16 @@ func cannedRun(overrides map[string][]byte) func(context.Context, []string, io.R
 			return []byte("x86_64\n"), nil
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			return []byte(goodLaunchCheck), nil
+		case strings.Contains(joined, "api/health"):
+			// A running hub matching the on-disk build, so Ensure attaches
+			// without deploying, restarting, or taking the first-attach
+			// bootstrap start. Tests that need "nothing answered" use their own
+			// runFn or a health override.
+			return []byte(`{"version":"dev"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -188,6 +196,8 @@ func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health fu
 				return []byte("x86_64\n"), nil
 			case strings.Contains(joined, "XDG_STATE_HOME"):
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+			case strings.HasSuffix(joined, "id -u"):
+				return []byte("1000\n"), nil
 			case strings.Contains(joined, "launch-check"):
 				out, err := launch(launchCalls)
 				launchCalls++

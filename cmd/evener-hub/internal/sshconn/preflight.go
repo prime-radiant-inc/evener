@@ -32,9 +32,15 @@ type Preflight struct {
 	Home         string
 	ConfigRoot   string
 	StateRoot    string
-	Version      string
-	Protocol     string
-	LaunchFlags  []string
+	// UID is the host's numeric effective uid (`id -u`), or empty when the host
+	// did not report a numeric one. The supervised darwin restart interpolates it
+	// into `gui/<uid>/<label>`; it is expired on the controller, never left for
+	// the remote shell to expand as `$(id -u)` (spec 04, §"Preflight + version
+	// contract" and §"Stop/restart mechanics").
+	UID         string
+	Version     string
+	Protocol    string
+	LaunchFlags []string
 	// LaunchCheckKnown is true when the on-disk binary answered
 	// `launch-check --json` with a contract. It is false when the binary refused
 	// the controller's appwire protocol outright, in which case Protocol,
@@ -102,6 +108,19 @@ func parseEnvProbe(out []byte) (map[string]string, error) {
 		return nil, fmt.Errorf("%w: environment probe did not report HOME", ErrPreflightDecode)
 	}
 	return env, nil
+}
+
+// parseEffectiveUID reads the host's numeric effective uid from `id -u` output.
+// A non-numeric or empty answer is recorded as absent rather than guessed: the
+// value is interpolated into launchd's bare-safe `gui/<uid>/<label>` word, so a
+// host that does not report a plain number falls through to the ad hoc restart
+// path instead of risking a wrong or injected command.
+func parseEffectiveUID(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if !isNumericUID(s) {
+		return ""
+	}
+	return s
 }
 
 // resolveRoots resolves the host's evener config and state roots from the
@@ -192,6 +211,12 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	}
 	pf.Home = env["HOME"]
 	pf.ConfigRoot, pf.StateRoot = resolveRoots(goos, env)
+
+	uidOut, err := m.runRemote(ctx, host, "id -u")
+	if err != nil {
+		return pf, err
+	}
+	pf.UID = parseEffectiveUID(uidOut)
 
 	lc, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {

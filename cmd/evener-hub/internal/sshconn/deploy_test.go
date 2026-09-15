@@ -79,7 +79,7 @@ func TestDeployBuildsPushesAtomicallyAndCleansStaging(t *testing.T) {
 		},
 	})
 
-	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if builtOS != "linux" || builtArch != "amd64" {
@@ -117,7 +117,7 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 		BuildBinary: func(context.Context, string, string, string) error { buildCalled = true; return nil },
 	})
 
-	err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
 	if !errors.Is(err, ErrDeploy) {
 		t.Fatalf("err = %v, want ErrDeploy", err)
 	}
@@ -126,6 +126,238 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	}
 	if buildCalled {
 		t.Fatal("build ran despite missing target directory")
+	}
+}
+
+// TestDeployTargetEmptyResolvesRemotePATH covers the empty evener_path case:
+// TestInstallerRefForMapsBuildChannel pins acceptance criterion 16: the installer
+// artifact reference is derived from buildinfo.BuildChannel(), and
+// buildinfo.Version() (a short SHA, possibly -dirty) is never passed as a tag.
+func TestInstallerRefForMapsBuildChannel(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel string
+		tag     string
+		dirty   string
+		want    string
+		wantErr bool
+	}{
+		{"release uses the stamped tag", "release", "v1.2.3", "", "v1.2.3", false},
+		{"release without a tag refuses", "release", "", "", "", true},
+		{"snapshot passes snapshot", "snapshot", "", "", "snapshot", false},
+		{"dev refuses", "dev", "", "", "", true},
+		{"empty channel refuses", "", "v1.2.3", "", "", true},
+		{"dirty refuses even with a tag", "release", "v1.2.3", "true", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := installerRefFor(tc.channel, tc.tag, tc.dirty)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("installerRefFor(%q,%q,%q) err = %v, wantErr %v", tc.channel, tc.tag, tc.dirty, err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("installerRefFor(%q,%q,%q) = %q, want %q", tc.channel, tc.tag, tc.dirty, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestInstallerDirsInstallToTheRunTarget pins acceptance criterion 17: with
+// evener_path set the installer's BINDIR is its directory (refusing an unshipped
+// basename); with evener_path empty the installer's default
+// ~/.local/bin/evener is the run target the manager records.
+func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
+	bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener"}, Preflight{Home: "/home/dev"})
+	if err != nil {
+		t.Fatalf("installerDirs(evener_path): %v", err)
+	}
+	if bindir != "/opt/evener/bin" || share != "/opt/evener/share/evener/bin" || target != "/opt/evener/bin/evener" {
+		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
+	}
+
+	if _, _, _, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); err != nil {
+		t.Fatalf("installerDirs(evener-dev): %v (install.sh ships evener-dev)", err)
+	}
+
+	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
+	if !errors.Is(err, ErrDeploy) {
+		t.Fatalf("installerDirs(unshipped basename) err = %v, want ErrDeploy", err)
+	}
+	if bindir != "" || share != "" || target != "" {
+		t.Fatalf("installerDirs(unshipped basename) = (%q,%q,%q), want all empty", bindir, share, target)
+	}
+
+	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha"}, Preflight{Home: "/home/dev"})
+	if err != nil {
+		t.Fatalf("installerDirs(default): %v", err)
+	}
+	if bindir != "" || share != "" || target != "/home/dev/.local/bin/evener" {
+		t.Fatalf("installerDirs(default) = (%q,%q,%q), want (\",\",\"/home/dev/.local/bin/evener\")", bindir, share, target)
+	}
+
+	if _, _, _, err := installerDirs(hostreg.Host{Name: "alpha"}, Preflight{}); !errors.Is(err, ErrDeploy) {
+		t.Fatalf("installerDirs(no HOME) err = %v, want ErrDeploy", err)
+	}
+}
+
+// TestInstallerCommandPinsRefAndDirs pins the exact remote installer invocation:
+// the ref is pinned (never `latest`), and a custom run target passes BINDIR and
+// EVENER_SHARE_BINDIR so the symlink lands at evener_path.
+func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
+	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
+	want := "curl -fsSL " + installScriptURL + " | env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh"
+	if got != want {
+		t.Fatalf("installerCommand = %q, want %q", got, want)
+	}
+	got = installerCommand("snapshot", "", "")
+	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
+		t.Fatalf("installerCommand(default) = %q, want snapshot ref and no BINDIR override", got)
+	}
+	if strings.Contains(got, "latest") {
+		t.Fatalf("installerCommand passed `latest`: %q", got)
+	}
+}
+
+// TestEnsureInstallerFallbackDeploysPinnedRelease covers criterion 16 end to
+// end: with a release controller, no build source, and a mismatching host,
+// Ensure runs the installer pinned to the stamped tag, restarts, and attaches —
+// never passing buildinfo.Version() as a release tag and never cross-compiling.
+func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
+	origSHA, origDirty, origChannel, origTag := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() {
+		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag = origSHA, origDirty, origChannel, origTag
+	})
+	buildinfo.GitSHA = "newsha"
+	buildinfo.GitDirty = ""
+	buildinfo.Channel = "release"
+	buildinfo.ReleaseTag = "v1.2.3"
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	launchCalls := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "install.sh"):
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			return []byte(`{"version":"newsha"}`), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	var installed bool
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "EVENER_INSTALL_VERSION=v1.2.3") {
+			installed = true
+		}
+		if strings.Contains(joined, "EVENER_INSTALL_VERSION=newsha") {
+			t.Fatalf("passed the Git SHA as a release tag: %v", argv)
+		}
+		if strings.Contains(joined, "cat >") {
+			t.Fatalf("cross-compiled despite the installer fallback: %v", argv)
+		}
+	}
+	if !installed {
+		t.Fatal("the installer was never pinned to the stamped release tag")
+	}
+}
+
+// TestInstallerFallbackRecordsDefaultRunTarget pins criterion 17's second half:
+// with no evener_path the installer's own ~/.local/bin/evener is what the
+// manager attaches with afterwards.
+func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
+	origSHA, origDirty, origChannel, origTag := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() {
+		buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel, buildinfo.ReleaseTag = origSHA, origDirty, origChannel, origTag
+	})
+	buildinfo.GitSHA = "newsha"
+	buildinfo.GitDirty = ""
+	buildinfo.Channel = "snapshot"
+	buildinfo.ReleaseTag = ""
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	launchCalls := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "install.sh"):
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			return []byte(`{"version":"newsha"}`), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	var installerRan bool
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "EVENER_INSTALL_VERSION=snapshot") {
+			installerRan = true
+			if strings.Contains(joined, "BINDIR") {
+				t.Fatalf("empty evener_path passed a BINDIR override: %v", argv)
+			}
+		}
+	}
+	if !installerRan {
+		t.Fatal("the snapshot installer was never run")
+	}
+	starts := fr.recordedStarts()
+	if len(starts) != 1 {
+		t.Fatalf("Start calls = %d, want 1", len(starts))
+	}
+	if !strings.Contains(strings.Join(starts[0], " "), "/home/dev/.local/bin/evener") {
+		t.Fatalf("attach did not use the installer's resolved run target: %v", starts[0])
 	}
 }
 
@@ -157,7 +389,7 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 		},
 	})
 
-	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	want := pushBinaryRemote("/home/dev/.local/bin/evener")
@@ -197,7 +429,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 		},
 	})
 
-	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellQuote(dir)) {
@@ -241,7 +473,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 		},
 	})
 
-	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	if !strings.Contains(pushRemote, pushBinaryRemote(realPath)) {
@@ -494,7 +726,7 @@ func TestDeployBuildsFromTheConfiguredSource(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildSource: source})
 
-	if err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	got, err := os.ReadFile(marker)
@@ -600,7 +832,10 @@ func TestDeployDoesNotBuildFromAnUnconfiguredWorkingDirectory(t *testing.T) {
 	// No BuildBinary seam and no explicit source: the production builder runs.
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
-	err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	// The push path specifically: with no build source configured it must not
+	// build from the working-directory checkout. (deploy would take the installer
+	// fallback here.)
+	err := m.deployPush(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
 	if err == nil {
 		t.Fatal("deploy succeeded with no configured build source")
 	}

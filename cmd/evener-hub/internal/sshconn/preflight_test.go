@@ -1,10 +1,51 @@
 package sshconn
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
+
+// TestPreflightRecordsNumericEffectiveUID proves preflight records the host's
+// numeric effective uid (`id -u`), which the supervised darwin restart
+// interpolates into `gui/<uid>/<label>`. A non-numeric answer is recorded as
+// absent rather than guessed, so the restart falls through to the ad hoc path
+// instead of emitting a wrong or injected word.
+func TestPreflightRecordsNumericEffectiveUID(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	facts, err := m.preflight(context.Background(), host)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if facts.UID != "1000" {
+		t.Fatalf("UID = %q, want 1000", facts.UID)
+	}
+}
+
+func TestParseEffectiveUID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"1000\n", "1000"},
+		{"  0  ", "0"},
+		{"", ""},
+		{"$(id -u)", ""},
+		{"root", ""},
+		{"1000 1000", ""},
+	}
+	for _, tc := range cases {
+		if got := parseEffectiveUID([]byte(tc.in)); got != tc.want {
+			t.Errorf("parseEffectiveUID(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
 
 // TestOSArchMappingParity pins the uname mapping to install.sh:21-45. If
 // install.sh grows a target, this table and mapOS/mapArch must change together.
