@@ -110,7 +110,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 		return nil, err
 	}
 	if fields == nil {
-		fields = map[string]json.RawMessage{}
+		// JSON null is not a thread object: pass it through byte-for-byte rather
+		// than materializing an empty object and stamping a source on it.
+		return raw, nil
 	}
 	source, err := json.Marshal(s.id)
 	if err != nil {

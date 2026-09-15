@@ -159,7 +159,13 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	}
 	remote := params
 	remote.Ref = ref.String()
-	remote.ThreadID = ref.ThreadID
+	// Preserve the caller's ThreadID, empty included: the remote hub resolves a
+	// bare non-empty ThreadID in preference to Ref, so sending the translated
+	// ref's suffix here would address the thread by its stable identity and be
+	// rejected as an unknown bare ID once an identity replacement has moved the
+	// live thread ID. An empty ThreadID lets the remote resolve the ref, which
+	// is stable-aware. The ref's suffix stays this hub's local routing key.
+	remote.ThreadID = params.ThreadID
 	// The remote client is shared by every controller relay for this host, so
 	// controller-level replacement semantics must never reach it: the remote
 	// hub's replaceSubscription read scopes the whole connection to this one
@@ -168,6 +174,17 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	// concept — app_relay.go applies it to the controller's own subscriptions —
 	// and SubscribeThread clears the flag for the same reason.
 	remote.ReplaceSubscription = false
+	// The snapshot read must not subscribe either. This source's subscription is
+	// established solely by SubscribeThread, which owns the one remote
+	// subscription per thread and its thread/unsubscribe on teardown. A
+	// subscribed read here would attach the shared connection to this thread
+	// with no local routing entry tracking it, so nothing would drop it when the
+	// relay never attaches (an empty thread ID, a deletion fence, a failed
+	// subscribe) and the long-lived connection would keep forwarding that thread
+	// — into a notification stream nothing is draining — for the rest of its
+	// life. The relay path subscribes explicitly (app_relay.go startRelay), so
+	// no subscription is lost.
+	remote.Subscribe = false
 	var out appwire.ThreadReadResponse
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
 		return appwire.ThreadReadResponse{}, err
@@ -182,7 +199,10 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	}
 	remote := params
 	remote.Ref = ref.String()
-	remote.ThreadID = ref.ThreadID
+	// Preserve the caller's ThreadID for the same reason ReadThread does: a bare
+	// threadId the remote cannot resolve is rejected, while an empty one lets
+	// the remote resolve the (stable-aware) ref.
+	remote.ThreadID = params.ThreadID
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
