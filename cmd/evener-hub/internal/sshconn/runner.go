@@ -238,7 +238,10 @@ func sshBaseArgv(o Options) []string {
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=" + sshSeconds(o.connectTimeout()),
 		"-o", "ServerAliveInterval=" + sshSeconds(o.serverAliveInterval()),
-		"-o", "ServerAliveCountMax=" + sshSeconds(time.Duration(o.serverAliveCountMax())*time.Second),
+		// ServerAliveCountMax is a unitless count, not a duration: render it
+		// directly rather than routing it through seconds arithmetic, which can
+		// overflow for a large configured value.
+		"-o", "ServerAliveCountMax=" + strconv.Itoa(o.serverAliveCountMax()),
 	}
 }
 

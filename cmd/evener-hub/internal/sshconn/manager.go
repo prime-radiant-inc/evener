@@ -853,11 +853,15 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 	delay := min(m.opts.backoffBase(), m.opts.backoffMax())
 	for {
 		if err := m.opts.waitSleep(ctx, m.jitterFor(delay)); err != nil {
-			// Every transition is emitted under the lock, so a concurrent Ensure
-			// cannot interleave its Preflighting with this Disconnected.
-			lock.Lock()
-			m.stateEvent(host.Name, StateDisconnected)
-			lock.Unlock()
+			// A canceled loop no longer owns the host, so it announces nothing.
+			// stopSupervisor stopped it because the host reached a terminal
+			// outcome — announced by the caller that stopped it, and possibly
+			// followed by a replacement's Attached — and Close canceled the base
+			// context, whose terminal event is the Detached it emits while tearing
+			// the channel down (a supervisor on a canceled manager "returns
+			// without emitting one", as Close's pairing comment states). Emitting a
+			// Disconnected of its own would contradict that announcement or arrive
+			// after the replacement's Attached.
 			return
 		}
 		if !m.reconnectOnce(ctx, host, lock) {
@@ -954,7 +958,9 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 	defer lock.Unlock()
 
 	if ctx.Err() != nil {
-		m.stateEvent(host.Name, StateDisconnected)
+		// A canceled loop no longer owns the host; the canceller (a terminal
+		// Ensure, a terminal reconnect, or Close's Detached) owns the terminal
+		// announcement. Emit nothing, exactly as supervise's backoff path does.
 		return false
 	}
 	if m.currentChannel(host.Name) != nil {

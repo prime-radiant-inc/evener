@@ -1887,6 +1887,209 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 	}
 }
 
+// A supervisor stopped by stopSupervisor is superseded: the terminal Ensure that
+// stopped it already announced the host's Disconnected, and a replacement Ensure
+// may attach before the stopped loop reaches the host lock. The stopped loop must
+// then stay silent rather than emit its own Disconnected after the replacement's
+// Attached, which would leave the host's lifecycle state inconsistent.
+//
+// The test constructs exactly that interleaving: it parks the dropped channel's
+// supervisor inside its backoff sleep, drives a terminal Ensure (which cancels the
+// loop through stopSupervisor), attaches a replacement, and only then releases the
+// stale loop so it contends for the host lock after the replacement owns the host.
+func TestSupersededSupervisorDoesNotEmitDisconnectedAfterReplacement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// honorCancel decides which of the two cancellation sites the parked
+		// supervisor reports through: waitSleep returning an error (the primary
+		// path) or a success return followed by reconnectOnce observing the
+		// canceled context (the second site).
+		honorCancel bool
+	}{
+		{name: "waitSleepObservesCancellation", honorCancel: true},
+		{name: "reconnectOnceObservesCancellation", honorCancel: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+			reg := testRegistry(t, host)
+
+			var mu sync.Mutex
+			mismatch := false
+			canned := cannedRun(nil)
+			fr := &fakeRunner{
+				runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+					mu.Lock()
+					refuse := mismatch
+					mu.Unlock()
+					if refuse && strings.Contains(strings.Join(argv, " "), "launch-check") {
+						return []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+					}
+					return canned(ctx, argv, stdin)
+				},
+				startFn: goodStartFn(t),
+			}
+
+			var evMu sync.Mutex
+			var events []Event
+			sleepEntered := make(chan struct{})
+			release := make(chan struct{})
+			var enterOnce, releaseOnce sync.Once
+			exited := newExitSignal(1)
+			m := newTestManager(t, reg, fr, Options{
+				OnEvent: func(ev Event) {
+					evMu.Lock()
+					events = append(events, ev)
+					evMu.Unlock()
+				},
+				BackoffBase:     time.Millisecond,
+				BackoffMax:      time.Millisecond,
+				superviseExited: exited.hook,
+				sleep: func(ctx context.Context, _ time.Duration) error {
+					enterOnce.Do(func() { close(sleepEntered) })
+					// Park until the interleaving is established; only the dropped
+					// channel's supervisor ever sleeps here.
+					<-release
+					if tc.honorCancel {
+						return ctx.Err()
+					}
+					return nil
+				},
+				jitter: func(d time.Duration) time.Duration { return d },
+			})
+			defer releaseOnce.Do(func() { close(release) })
+
+			ch1, err := m.Ensure(context.Background(), "alpha")
+			if err != nil {
+				t.Fatalf("Ensure: %v", err)
+			}
+
+			// Drop the first link so its supervisor retires the channel and parks in
+			// the backoff sleep.
+			ch1.markLost()
+			select {
+			case <-sleepEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the dropped channel's supervisor never entered its backoff sleep")
+			}
+
+			// Terminal Ensure: no channel is mapped, so it fails terminally and
+			// cancels the parked supervisor through stopSupervisor.
+			mu.Lock()
+			mismatch = true
+			mu.Unlock()
+			if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrProtocolIncompatible) {
+				t.Fatalf("terminal Ensure = %v, want ErrProtocolIncompatible", err)
+			}
+
+			// Replacement Ensure: mismatches are off, so it attaches a fresh channel
+			// and announces Attached while the stale supervisor is still parked.
+			mu.Lock()
+			mismatch = false
+			mu.Unlock()
+			ch2, err := m.Ensure(context.Background(), "alpha")
+			if err != nil {
+				t.Fatalf("replacement Ensure: %v", err)
+			}
+			if ch2 == ch1 {
+				t.Fatal("replacement Ensure handed back the dropped channel")
+			}
+
+			// Everything up to here is the established interleaving; the stale
+			// loop's events must all land after this boundary.
+			evMu.Lock()
+			boundary := len(events)
+			evMu.Unlock()
+
+			// Release the parked stale supervisor and wait for its own exit, so the
+			// assertion is ordered against the loop standing down.
+			releaseOnce.Do(func() { close(release) })
+			exited.wait(t)
+
+			evMu.Lock()
+			after := append([]Event(nil), events[boundary:]...)
+			evMu.Unlock()
+			for _, ev := range after {
+				if ev.Kind == EventState && ev.State == StateDisconnected {
+					t.Fatalf("a superseded supervisor announced Disconnected after the replacement attached: %+v", ev)
+				}
+			}
+		})
+	}
+}
+
+// A supervisor parked in its backoff is canceled by Close rather than by a
+// terminal outcome, and it no longer owns the host either way. It must therefore
+// stand down without announcing a Disconnected: Close's own Detached is the
+// terminal event, and a trailing state event after it violates the "Close is
+// last" pairing that TestEnsureRetiresReplacedChannelWhenCloseRaces relies on.
+// The sleeping supervisor deliberately honours cancellation only once released,
+// so Close is guaranteed to observe it still parked rather than by a margin.
+func TestCloseCanceledBackoffSupervisorEmitsNoDisconnected(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+
+	var evMu sync.Mutex
+	var events []Event
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) {
+			evMu.Lock()
+			events = append(events, ev)
+			evMu.Unlock()
+		},
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep: func(ctx context.Context, _ time.Duration) error {
+			enterOnce.Do(func() { close(sleepEntered) })
+			<-release
+			return ctx.Err()
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	defer releaseOnce.Do(func() { close(release) })
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never entered its backoff sleep")
+	}
+
+	// Close cancels the base context and then waits for the parked supervisor, so
+	// it cannot return until the release lets the loop stand down.
+	closed := make(chan error, 1)
+	go func() { closed <- m.Close() }()
+	select {
+	case err := <-closed:
+		t.Fatalf("Close returned while the supervisor was still parked: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned after the supervisor stood down")
+	}
+
+	evMu.Lock()
+	got := append([]Event(nil), events...)
+	evMu.Unlock()
+	for _, ev := range got {
+		if ev.Kind == EventState && ev.State == StateDisconnected {
+			t.Fatalf("a Close-canceled supervisor announced Disconnected: %+v", ev)
+		}
+	}
+}
+
 // ssh forwards the remote command's stderr onto the same stream as its own
 // diagnostics, so a remote program's error text must not be read as ssh
 // refusing the key: only ssh's own exit status makes an auth refusal terminal.

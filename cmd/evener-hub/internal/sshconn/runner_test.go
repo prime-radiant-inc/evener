@@ -324,6 +324,18 @@ func TestSSHSecondsClampsToMinimumOne(t *testing.T) {
 	}
 }
 
+// ServerAliveCountMax is a unitless count, not a duration. Rendering it through
+// seconds arithmetic overflowed for a large configured value, because
+// count*time.Second exceeds the Duration range; render it directly.
+func TestServerAliveCountMaxRendersAsUnitlessCount(t *testing.T) {
+	const huge = 1 << 40 // huge*time.Second overflows int64
+	got := sshBaseArgv(Options{ServerAliveCountMax: huge})
+	want := "ServerAliveCountMax=" + strconv.Itoa(huge)
+	if !slices.Contains(got, want) {
+		t.Fatalf("sshBaseArgv = %v, want it to contain %q", got, want)
+	}
+}
+
 func TestAppendTailKeepsTrailingBytes(t *testing.T) {
 	buf := appendTail(nil, []byte("abcdef"), 4)
 	if string(buf) != "cdef" {

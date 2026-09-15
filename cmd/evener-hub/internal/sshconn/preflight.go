@@ -245,8 +245,11 @@ func isProtocolMismatchOutput(out []byte) bool {
 }
 
 // authFailureMarkers are ssh stderr phrases that mean the host cannot
-// authenticate non-interactively. Under BatchMode these are terminal: ssh will
-// never prompt, so retrying only spams the host.
+// authenticate non-interactively. Despite the name, a match is deliberately
+// NOT terminal: isTerminal excludes ErrSSHAuth, so the reconnect loop keeps
+// retrying. ssh forwards a remote command's stderr and exit status on this same
+// stream, so the refusal cannot be attributed to ssh, and retrying is the safe
+// side of that ambiguity (see sshRunFailure and ErrSSHAuth).
 //
 // Every marker is a shape ssh itself emits, because a remote command's stderr
 // reaches the controller on that same stream: a bare "Permission denied" is what
