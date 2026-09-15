@@ -56,6 +56,18 @@ func newPushableRemote(t *testing.T, id string, handle func(method string, param
 				}
 				continue
 			}
+			// thread/unsubscribe is framework teardown, not a scenario: the
+			// real server answers it with an empty response, and every
+			// subscription emits one when its relay ends. Answer it here so
+			// a scenario's handle never sees it; the call is still recorded
+			// above for tests that assert the teardown unsubscribe.
+			if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+				data, _ := json.Marshal(appwire.EmptyResponse{})
+				if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+					return
+				}
+				continue
+			}
 			reply := handle(msg.Request.Method, msg.Request.Params)
 			if reply.closeConn {
 				_ = server.Close()
@@ -742,5 +754,107 @@ func TestRemoteHubDiscardSubscriberUnblocksRouter(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("routeNotification stayed blocked after the failed subscription was discarded")
+	}
+}
+
+// Test 16: a subscription whose consumer stalls is retired instead of wedging
+// the one drain goroutine shared by every thread on the host. The healthy
+// subscription on the same client keeps flowing, and the stalled one's out
+// closes so the controller relay resyncs it.
+func TestRemoteHubRouteStallRetiresSubscriptionAndKeepsOthersFlowing(t *testing.T) {
+	restore := remoteHubRouteStallTimeout
+	remoteHubRouteStallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { remoteHubRouteStallTimeout = restore })
+
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+	ctx := t.Context()
+
+	outS, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("subscribe S: %v", err)
+	}
+	outT, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:T"})
+	if err != nil {
+		t.Fatalf("subscribe T: %v", err)
+	}
+
+	// Stall S's consumer by never reading outS. Fill its out buffer, then its in
+	// buffer, then block the shared drain on the next S notification.
+	for i := range 2*remoteHubSubBuffer + 16 {
+		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+			t.Fatalf("push S %d: %v", i, err)
+		}
+	}
+	// T must still be served: the stalled subscription is retired rather than
+	// allowed to hold the drain for every thread.
+	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "T", Ref: "local:T"}); err != nil {
+		t.Fatalf("push T: %v", err)
+	}
+
+	n, ok := recvNotification(t, outT)
+	if !ok {
+		t.Fatal("healthy T subscription closed while S stalled")
+	}
+	status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, n)
+	if status.Ref != "host:T" {
+		t.Fatalf("T subscriber got ref=%q, want host:T", status.Ref)
+	}
+
+	// S's out closes: the relay's resync signal. Drain whatever was buffered,
+	// then require the close.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-outS:
+			if !ok {
+				return
+			}
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stalled subscription's out never closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Test 17: jitter that fits the buffer is delivered, not resynced. The bounded
+// wait must not fire for a consumer that is merely behind.
+func TestRemoteHubRouteJitterWithinBufferIsDelivered(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+	ctx := t.Context()
+
+	out, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+
+	const burst = remoteHubSubBuffer
+	for i := range burst {
+		if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+			t.Fatalf("push %d: %v", i, err)
+		}
+	}
+	for i := range burst {
+		n, ok := recvNotification(t, out)
+		if !ok {
+			t.Fatalf("out closed after %d of %d notifications in a burst that fits the buffer", i, burst)
+		}
+		status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, n)
+		if status.Ref != "host:S" {
+			t.Fatalf("notification %d got ref=%q, want host:S", i, status.Ref)
+		}
+	}
+
+	// The subscription must still be live after the burst.
+	if err := remote.push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "S", Ref: "local:S"}); err != nil {
+		t.Fatalf("push after burst: %v", err)
+	}
+	if _, ok := recvNotification(t, out); !ok {
+		t.Fatal("subscription was retired by a burst within its buffer")
 	}
 }

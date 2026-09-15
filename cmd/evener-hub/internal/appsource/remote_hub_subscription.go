@@ -3,6 +3,7 @@ package appsource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -18,6 +19,15 @@ const remoteHubSubBuffer = 128
 // pin teardown (and, because the request is serialized with installs, the
 // subscription path) open indefinitely.
 const remoteHubUnsubscribeTimeout = 2 * time.Second
+
+// remoteHubRouteStallTimeout bounds how long the shared drain waits to hand a
+// notification to one subscription before treating that subscription's
+// consumer as stalled and retiring it. It is a var rather than a const only so
+// tests can shorten it (the same seam hubRelayIdleInterval provides); the
+// value is deliberately far longer than any scheduling jitter the 128-slot
+// per-subscription buffer is sized to absorb, so a merely slow consumer is
+// still served from the buffer instead of being resynced.
+var remoteHubRouteStallTimeout = 5 * time.Second
 
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
@@ -105,7 +115,16 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	var snapshot appwire.ThreadReadResponse
 	if err := client.Request(subCtx, appwire.MethodThreadRead, remote, &snapshot); err != nil {
 		s.discardSubscriber(sub, previous)
+		callerCanceled := ctx.Err() != nil
 		cancel()
+		// A cancellation that did not come from the caller is the owning
+		// client's notification stream closing mid-request (drainLoop retires
+		// subscriptions bound to a dead client). That is a transport loss, and
+		// mapping it as one keeps the auto-resume gate working; reporting
+		// context.Canceled would read as the caller giving up.
+		if !callerCanceled && errors.Is(err, context.Canceled) {
+			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription ended before it attached")
+		}
 		return nil, s.mapCallError(err)
 	}
 
@@ -217,9 +236,11 @@ func (s *RemoteHubSource) ensureDrainLocked(client *appwire.Client) {
 
 // drainLoop consumes the shared client's single notification stream. It must
 // never stop while the client is alive: appwire tears the connection down on
-// buffer overflow (ErrNotificationOverflow), so a busy thread would kill every
-// subscription on the host. Unrouted notifications are dropped — but they are
-// still read, which is what keeps the client healthy.
+// buffer overflow (ErrNotificationOverflow), so a busy or stalled thread would
+// kill every subscription on the host. routeNotification's bounded wait is what
+// enforces that — a subscription whose consumer stops reading is retired rather
+// than allowed to wedge this goroutine. Unrouted notifications are dropped — but
+// they are still read, which is what keeps the client healthy.
 //
 // When the stream closes the client is dead, and every subscription still bound
 // to it is a stall: subCtx derives from the relay's context, not the client, so
@@ -253,9 +274,20 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // routeNotification delivers one remote notification to the subscription for
 // its (translated) thread. It observes the subscriber under the lock and sends
 // outside it; a stale reference is harmless because in is never closed.
-// Blocking rather than dropping is deliberate: a dropped turn/completed is
-// exactly the failure this component exists to prevent. A subscription whose
-// pump has already exited unblocks via pumpDone instead of wedging the drain.
+//
+// Waiting rather than dropping is deliberate: a dropped turn/completed is
+// exactly the failure this component exists to prevent, and the buffer is
+// sized so ordinary jitter is absorbed here. The wait is BOUNDED, though,
+// because this is the single drain goroutine shared by every thread on the
+// host: a consumer that stops reading its own out blocks its pump, fills the
+// 128-slot in buffer, and would otherwise block this goroutine for all threads
+// — and, because a blocked drain stops reading client.Notifications(), the
+// client's frame buffer eventually overflows and tears the whole connection
+// down, killing every subscription on the host. On expiry the stalled
+// subscription is retired: its pump exits, out closes, and the controller
+// relay treats that as subscription end and re-reads the thread, so the
+// notification is resynced rather than silently lost. A pump that has already
+// exited unblocks via pumpDone instead.
 func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
@@ -267,9 +299,20 @@ func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
 	if sub == nil {
 		return
 	}
+	// Fast path: the buffer has room, which is the overwhelmingly common case,
+	// so no timer is created for a healthy hand-off.
+	select {
+	case sub.in <- translated:
+		return
+	default:
+	}
+	stall := time.NewTimer(remoteHubRouteStallTimeout)
+	defer stall.Stop()
 	select {
 	case sub.in <- translated:
 	case <-sub.pumpDone:
+	case <-stall.C:
+		sub.cancel()
 	}
 }
 
