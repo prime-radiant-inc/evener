@@ -518,6 +518,81 @@ describe("resource-backed Rail", () => {
     }
   });
 
+  // The fold a project is revealed in and the catalog that carries it must
+  // come from one decision: a test run folds under "Test runs", so requesting
+  // `projects` would open the right fold over an empty catalog. The catalog
+  // and the project root are left unloaded so the reveal reaches the request
+  // path instead of finding the row already rendered.
+  test("a reveal of a test-run project opens Test runs and loads that catalog", async () => {
+    const loadCatalog = vi.fn().mockResolvedValue(undefined);
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "section:test_runs": false }));
+    installState([
+      resource(
+        { kind: "catalog", catalog: "test_runs", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "tr", name: "Test run", session_count: 1 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "location", ref: "local:target" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:target",
+          top_level_ref: "local:target",
+          top_level: true,
+          project_key: "tr",
+          tier: "current",
+          session: summary({ ref: "local:target", title: "Target row" }),
+        },
+      ),
+    ]);
+    navigationStore.setState({ loadCatalog, loadProject });
+    render(<Rail revealTarget="local:target" />);
+    await act(async () => undefined);
+    expect(sectionDisclosure("Test runs").getAttribute("aria-expanded")).toBe("true");
+    expect(loadCatalog).toHaveBeenCalledWith("test_runs");
+    expect(loadProject).toHaveBeenCalledWith("tr");
+  });
+
+  test("a reveal of an archived project opens Archived sessions and loads its catalog", async () => {
+    const loadCatalog = vi.fn().mockResolvedValue(undefined);
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    installState([
+      resource(
+        { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          projects: [{ key: "old", name: "Old project", session_count: 1 }],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "location", ref: "local:target" },
+        {
+          generation_id: "g1",
+          revision: 1,
+          ref: "local:target",
+          top_level_ref: "local:target",
+          top_level: true,
+          project_key: "old",
+          session: summary({ ref: "local:target" }),
+        },
+      ),
+    ]);
+    navigationStore.setState({ loadCatalog, loadProject });
+    render(<Rail revealTarget="local:target" />);
+    await act(async () => undefined);
+    expect(sectionDisclosure(/Archived sessions/).getAttribute("aria-expanded")).toBe("true");
+    expect(loadCatalog).toHaveBeenCalledWith("archived_projects");
+    expect(loadProject).toHaveBeenCalledWith("old");
+  });
+
   test("places identity and Settings before Search in the top row and preserves navigation", () => {
     installState();
     connectionStore.setState({ serverInfo: { name: "evener-hub", version: "0.0.0" } });

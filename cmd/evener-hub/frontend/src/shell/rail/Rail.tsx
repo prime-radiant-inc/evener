@@ -153,11 +153,13 @@ interface RailSectionProps {
   projectRetryCallback: (key: string) => () => void;
 }
 
-// The rail's one section heading: a disclosure button wrapping an <h3>, so
+// The rail's one section heading: an <h3> wrapping a disclosure button, so
 // every tier folds the same way and keeps its heading role for assistive tech.
-// The chevron TRAILS the title (matching RailRow's own trailing row chevrons)
-// rather than leading it, and an optional action slot hosts a heading-level
-// menu (pin sections).
+// The heading takes its name from the button's text (the chevron is
+// aria-hidden), so there is no second aria-label to keep in step. The chevron
+// TRAILS the title (matching RailRow's own trailing row chevrons) rather than
+// leading it, and an optional action slot hosts a heading-level menu (pin
+// sections).
 interface SectionHeadingProps {
   label: string;
   open: boolean;
@@ -168,10 +170,7 @@ interface SectionHeadingProps {
 function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: SectionHeadingProps) {
   return (
     <div className={CLASS.sectionHeadingRow}>
-      <h3
-        className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}
-        aria-label={label}
-      >
+      <h3 className={staticLabel ? `${CLASS.sectionTitle} ${CLASS.staticSectionLabel}` : CLASS.sectionTitle}>
         <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
           {label}
           <Chevron direction={open ? "down" : "right"} />
@@ -952,11 +951,23 @@ function NavigationRail({
     },
     [isExpanded, setExpanded],
   );
-  // The section a project's row renders in. Archived is the tier that folds
-  // under "Archived sessions"; test-run projects fold under "Test runs".
-  const projectSectionKey = useCallback(
-    (projectKey: string) =>
-      resources.testRuns.some((project) => project.key === projectKey) ? TEST_RUNS_SECTION_KEY : PROJECTS_SECTION_KEY,
+  // Where a revealed project's row lives: the fold it is rendered in, whether
+  // that fold starts open, and the catalog that carries it. Archived is the
+  // tier that folds under "Archived sessions" and starts closed; a test-run
+  // project folds - and is catalogued - under "Test runs".
+  const projectPlacement = useCallback(
+    (location: { project_key?: string; tier?: string }) => {
+      // A whole-archived project's sessions keep their own tier, so the
+      // catalog is the reliable membership test there and the tier is not.
+      const archived =
+        location.tier === "archived" ||
+        resources.archivedProjects.some((project) => project.key === location.project_key);
+      if (archived)
+        return { sectionKey: ARCHIVED_SECTION_KEY, defaultOpen: false, catalog: "archived_projects" as const };
+      if (resources.testRuns.some((project) => project.key === location.project_key))
+        return { sectionKey: TEST_RUNS_SECTION_KEY, defaultOpen: true, catalog: "test_runs" as const };
+      return { sectionKey: PROJECTS_SECTION_KEY, defaultOpen: true, catalog: "projects" as const };
+    },
     [resources],
   );
   const rootLoadsInFlight = useRef(new Set<string>());
@@ -1077,15 +1088,14 @@ function NavigationRail({
         setExpanded(projectID, true);
         return;
       }
-      // Archived is the one section that starts closed, so the default an
-      // untouched section resolves to depends on which one this is.
-      const archivedTier = location.tier === "archived";
-      if (
-        !openRevealSection(archivedTier ? ARCHIVED_SECTION_KEY : projectSectionKey(location.project_key), !archivedTier)
-      )
-        return;
-      const catalog = archivedTier ? "archived_projects" : "projects";
-      requestRevealResource(revealTarget, `catalog:${catalog}`, () => navigationStore.getState().loadCatalog(catalog));
+      // One decision covers both which fold must open and which catalog holds
+      // the row; deriving them separately is how a test run ends up opening
+      // one fold while loading another catalog's rows.
+      const placement = projectPlacement(location);
+      if (!openRevealSection(placement.sectionKey, placement.defaultOpen)) return;
+      requestRevealResource(revealTarget, `catalog:${placement.catalog}`, () =>
+        navigationStore.getState().loadCatalog(placement.catalog),
+      );
       requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
         navigationStore.getState().loadProject(location.project_key as string),
       );
@@ -1100,8 +1110,8 @@ function NavigationRail({
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
-    // needs_you renders no section of its own, so Live is the only fold that
-    // can be hiding this row.
+    // needs_you has no fold of its own, and the rail renders none of its rows
+    // today, so Live is the only section that can hide this one.
     if (section === "live" && !openRevealSection(LIVE_SECTION_KEY, true)) return;
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
   }, [
@@ -1112,7 +1122,7 @@ function NavigationRail({
     setExpanded,
     requestRevealResource,
     openRevealSection,
-    projectSectionKey,
+    projectPlacement,
   ]);
 
   function handleToggle(node: RailNode) {

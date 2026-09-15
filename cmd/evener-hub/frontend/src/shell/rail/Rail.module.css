@@ -180,10 +180,12 @@
  * same way every other tappable thing in this sheet does - see
  * RailRow.module.css's own .railRow block. min-height, not height, so this
  * only ever GROWS the heading and the desktop geometry stays the desktop
- * rule. */
+ * rule. The fallback matters: --tap-min is declared inside tokens.css's
+ * max-width: 899px block, so on a wider coarse-pointer viewport it is
+ * undefined and the declaration would otherwise be dropped. */
 @media (pointer: coarse) {
   .sectionDisclosure {
-    min-height: var(--tap-min);
+    min-height: var(--tap-min, 44px);
   }
 }
 
