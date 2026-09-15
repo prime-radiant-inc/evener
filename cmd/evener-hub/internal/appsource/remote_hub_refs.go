@@ -152,6 +152,57 @@ var nestedSessionRefFields = map[string]struct{}{
 	"sessionRef":    {},
 }
 
+// pendingEscalationsField is the EvenerThread field holding the redacted
+// approval cards for the sandbox escalations currently blocked on a session.
+// Each entry's "ref" is a session handle a client routes the card by (see
+// appwire.SandboxEscalationRequested), so it moves into the controller
+// namespace with the rest of the thread. It is translated structurally in
+// translateThreadRaw rather than by adding "ref" to nestedSessionRefFields:
+// "ref" is the routing key at every structural location it appears in, and that
+// shared set is only for field names that always hold a session handle.
+const pendingEscalationsField = "pendingEscalations"
+
+// translatePendingEscalationsRaw rewrites the "ref" of every entry in a
+// pendingEscalations JSON array into the controller namespace, preserving every
+// other field. It never fails: a value it cannot decode is returned byte-for-
+// byte, mirroring translateNestedRefs, and an unrepresentable ref (a nested
+// hub's, an opaque handle) is left exactly as it arrived.
+func (s *RemoteHubSource) translatePendingEscalationsRaw(raw json.RawMessage) json.RawMessage {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return raw
+	}
+	for index := range entries {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entries[index], &fields); err != nil || fields == nil {
+			continue
+		}
+		handle, ok := fields["ref"]
+		if !ok {
+			continue
+		}
+		var rawRef string
+		if err := json.Unmarshal(handle, &rawRef); err != nil {
+			continue
+		}
+		encoded, err := json.Marshal(s.translateNestedRef(rawRef))
+		if err != nil {
+			continue
+		}
+		fields["ref"] = encoded
+		entry, err := json.Marshal(fields)
+		if err != nil {
+			continue
+		}
+		entries[index] = entry
+	}
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 // opaquePayloadFields are JSON fields whose values are arbitrary model or tool
 // JSON, not the hub's own structures: a turn's items ("turns", and the "raw"
 // item payload), a delegate's result packet ("message"/"structuredResult").
@@ -247,7 +298,8 @@ func (s *RemoteHubSource) translateNestedRefs(raw json.RawMessage) json.RawMessa
 // Evener.Capabilities is masked to the actions this source can forward: the
 // remote hub describes its own daemon, not this controller's ability to reach it.
 // Nested session handles inside Evener.Diagnostics (a job's or delegate's
-// transcriptRef) are translated too; see translateNestedRef.
+// transcriptRef) and Evener.PendingEscalations (each entry's ref, which clients
+// route an escalation card by) are translated too; see translateNestedRef.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
 	thread.Source = s.id
 	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities)
@@ -329,7 +381,8 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 // the same reason the notification translator works in RawMessage throughout.
 // Only Source, Evener.Ref and Evener.ParentRef are rewritten; InstanceID and
 // everything else pass through byte-for-byte. Nested session handles under
-// Evener (diagnostics job/delegate transcriptRefs) are rewritten as well.
+// Evener (diagnostics job/delegate transcriptRefs, and each pendingEscalations
+// entry's ref) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -371,6 +424,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 				return nil, err
 			}
 			evenerFields[key] = encoded
+		}
+		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
+			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)
 		}
 		encoded, err := json.Marshal(evenerFields)
 		if err != nil {

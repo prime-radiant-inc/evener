@@ -543,3 +543,48 @@ func TestRemoteHubSourceReadThreadTranslatesNestedDiagnostics(t *testing.T) {
 		t.Fatalf("delegate transcriptRef = %q, want host:child", got)
 	}
 }
+
+// TestRemoteHubSourceReadThreadTranslatesPendingEscalationRefs pins the
+// escalation-card half of the read path: a thread snapshot's
+// Evener.PendingEscalations entries carry the ref a client routes the card by
+// (SandboxEscalationRequested.Ref), so it must move into the controller
+// namespace with the rest of the thread. Opaque handles are left alone.
+func TestRemoteHubSourceReadThreadTranslatesPendingEscalationRefs(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t5",
+			Source: "local",
+			Evener: appwire.EvenerThread{
+				Ref: "local:t5",
+				PendingEscalations: []appwire.SandboxEscalationRequested{
+					{ThreadID: "child", Ref: "local:child", EscalationID: "e1", DeniedPath: "/tmp/denied"},
+					{ThreadID: "t5", Ref: "job:job_abc", EscalationID: "e2"},
+				},
+			},
+		}}}
+	})
+
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "host:t5"})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	escalations := resp.Thread.Evener.PendingEscalations
+	if len(escalations) != 2 {
+		t.Fatalf("pendingEscalations = %+v, want two entries", escalations)
+	}
+	if got := escalations[0].Ref; got != "host:child" {
+		t.Fatalf("escalation ref = %q, want host:child", got)
+	}
+	if got := escalations[0].ThreadID; got != "child" {
+		t.Fatalf("escalation threadId = %q, want child (never rewritten)", got)
+	}
+	if got := escalations[0].DeniedPath; got != "/tmp/denied" {
+		t.Fatalf("escalation deniedPath = %q, want the payload preserved", got)
+	}
+	if got := escalations[1].Ref; got != "job:job_abc" {
+		t.Fatalf("opaque escalation ref = %q, want job:job_abc untouched", got)
+	}
+}

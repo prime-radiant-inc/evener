@@ -154,7 +154,17 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			}
 			return nil, s.mapCallError(result.err)
 		}
-		s.settleSubscriber(sub, result.snapshot)
+		if !s.settleSubscriber(sub, result.snapshot) {
+			// A concurrent replacement won this thread's routing slot while the
+			// subscribe was in flight. Installing this subscription anyway would
+			// hand the relay a channel nothing routes to — a live-looking but
+			// permanently silent subscription — so discard it and report the
+			// loss. The relay treats the error as a failed subscribe and
+			// re-attaches through its recovery path.
+			s.discardSubscriber(sub, previous)
+			cancel()
+			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription was replaced before it attached")
+		}
 		go s.pumpSubscription(subCtx, sub)
 		if previous != nil && previous != sub {
 			previous.cancel()
@@ -247,20 +257,47 @@ func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
 // no thread at all is a degenerate attach with no authoritative identity to key
 // on and nothing to fold in, so the caller-derived key stands and the
 // controller's copy is left alone.
-func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) {
+//
+// It reports whether sub is the installed routing target when it returns.
+// false means a concurrent replacement displaced sub before its own subscribe
+// response arrived: the caller must not start sub's pump or hand the relay sub's
+// channel, because nothing will ever route to it. A re-key that finds sub
+// displaced reports false; a snapshot key that already matches sub's key still
+// checks that sub is the installed subscription, since a replacement for the
+// same thread under the same key leaves the snapshot key equal to sub.threadID.
+func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) bool {
 	if snapshot.Thread.ID == "" && snapshot.Thread.Evener.Ref == "" {
-		return
+		return s.subscriberInstalled(sub)
 	}
 	if key := s.snapshotRoutingKey(snapshot); key != "" && key != sub.threadID {
-		if displaced := s.rekeySubscriber(sub, key); displaced != nil && displaced != sub {
+		displaced, installed := s.rekeySubscriber(sub, key)
+		if !installed {
+			return false
+		}
+		if displaced != nil && displaced != sub {
 			displaced.cancel()
 		}
+	} else if !s.subscriberInstalled(sub) {
+		return false
 	}
 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: sub.threadID,
 		Ref:      appwire.Ref{SourceID: s.id, ThreadID: sub.threadID}.String(),
 	}).Notification
 	sub.out <- resync
+	return true
+}
+
+// subscriberInstalled reports whether sub is the routing target the caller's
+// identity currently maps to. A concurrent replacement installs itself under
+// the same key before its own subscribe succeeds, so this is how a stale
+// subscribe learns it has already been displaced.
+func (s *RemoteHubSource) subscriberInstalled(sub *remoteHubSubscription) bool {
+	s.remoteMu.Lock()
+	defer s.remoteMu.Unlock()
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return s.subs[sub.threadID] == sub
 }
 
 // snapshotRoutingKey returns the controller-namespace routing key named by the
@@ -284,24 +321,25 @@ func (s *RemoteHubSource) snapshotRoutingKey(snapshot appwire.ThreadReadResponse
 }
 
 // rekeySubscriber moves sub to the authoritative routing key a successful
-// subscribe revealed and returns whatever subscription that key held, so the
-// caller can retire it. It is a no-op when sub is no longer the installed
-// subscription for its provisional key, because a concurrent replacement
-// already won that slot and owns sub's fate.
-func (s *RemoteHubSource) rekeySubscriber(sub *remoteHubSubscription, key string) *remoteHubSubscription {
+// subscribe revealed. It returns the subscription that key held (so the caller
+// can retire it) and whether sub is now installed under the key. installed is
+// false when sub is no longer the installed subscription for its provisional
+// key, because a concurrent replacement already won that slot and owns sub's
+// fate; the caller must not publish sub then.
+func (s *RemoteHubSource) rekeySubscriber(sub *remoteHubSubscription, key string) (*remoteHubSubscription, bool) {
 	s.remoteMu.Lock()
 	defer s.remoteMu.Unlock()
 	s.subMu.Lock()
 	defer s.subMu.Unlock()
 	if s.subs[sub.threadID] != sub {
-		return nil
+		return nil, false
 	}
 	delete(s.subs, sub.threadID)
 	displaced := s.subs[key]
 	sub.threadID = key
 	s.subs[key] = sub
 	s.ensureDrainLocked(sub.client)
-	return displaced
+	return displaced, true
 }
 
 // installSubscriber publishes sub as the routing target for its remote thread
