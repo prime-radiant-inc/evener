@@ -11,10 +11,12 @@
 
 /* The pane's transcript viewport (Session.tsx's transcriptContent): a flex
  * item of .contentColumn, so it takes the height remaining under the notes
- * bar. */
+ * bar. min-width: 0 lets it shrink below its widest child's automatic
+ * minimum (long unbreakable text) instead of overflowing narrow panes. */
 .transcript {
   flex: 1 1 0;
   min-height: 0;
+  min-width: 0;
 }
 
 /* TranscriptBody's root (TranscriptBody.tsx): a plain block child of
