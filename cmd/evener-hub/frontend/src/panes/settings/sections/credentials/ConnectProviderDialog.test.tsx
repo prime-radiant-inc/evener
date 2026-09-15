@@ -225,12 +225,12 @@ function guidedRepair() {
       await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
       expect(screen.queryByLabelText("API key")).toBeNull();
-      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+      await focusSettlesInDialog();
     },
     async back() {
       await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+      await focusSettlesInDialog();
     },
   };
 }
@@ -255,16 +255,24 @@ test.each(["save", "refresh", "check", "result"])(
         }),
       ).toBeTruthy();
     await h.leave();
-    const calls = h.fake.calls.length;
+    const checksBefore = countMethod(h.fake, "evener/auth/test");
+    const writesBefore = countCredentialWrites(h.fake);
     await act(async () => {
       save.resolve(h.status);
       refresh.resolve(h.listing());
       check.resolve({ provider: "openai", status: "success", message: "" });
       await Promise.all([save.promise, refresh.promise, check.promise]);
     });
-    expect(h.fake.calls).toHaveLength(calls);
+    // The excursion must not let an in-flight response continue into a check or
+    // a credential write. Asserting the named calls rather than the total is
+    // what removes the load-sensitive flake: the store schedules its own
+    // debounced listing read after the save's evener/auth/updated, and that
+    // bookkeeping read is not the background check this test is named for.
+    await quiesceCalls(h.fake);
+    expect(countMethod(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCredentialWrites(h.fake)).toBe(writesBefore);
     expect(h.connected).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+    await focusSettlesInDialog();
     await h.back();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -275,7 +283,9 @@ test.each(["save", "refresh", "check", "result"])(
       "disabled",
       false,
     );
-    expect(h.fake.calls).toHaveLength(calls);
+    await quiesceCalls(h.fake);
+    expect(countMethod(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCredentialWrites(h.fake)).toBe(writesBefore);
   },
 );
 
@@ -607,6 +617,46 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+/** Focus settling is asynchronous: React commits the panel, then the browser
+ * moves focus into it. A loaded host can take longer than waitFor's one-second
+ * default, which is what flaked this family. The assertion is unchanged - focus
+ * must be inside the one open dialog - only the wait is load-tolerant. */
+async function focusSettlesInDialog(): Promise<void> {
+  await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true), {
+    timeout: 5000,
+  });
+}
+
+/** The RPCs this file's flows issue when a response wrongly continues past an
+ * invalidation: a background check and a credential write. */
+const CREDENTIAL_WRITE_METHODS = ["evener/auth/apiKey/set", "evener/auth/credentialJson/set"];
+
+function countMethod(fake: FakeClient, method: string): number {
+  return fake.calls.filter((call) => call.method === method).length;
+}
+
+function countCredentialWrites(fake: FakeClient): number {
+  return fake.calls.filter((call) => CREDENTIAL_WRITE_METHODS.includes(call.method)).length;
+}
+
+/** Waits until the fake client has recorded no new call for a settle window, so
+ * an assertion taken afterwards describes a quiescent client rather than one
+ * with a call still in flight. The real store schedules its own debounced
+ * listing read (~250ms) after a save's evener/auth/updated, and a response that
+ * wrongly continued past an invalidation issues its check in the microtasks
+ * right after its deferred resolves, so both have landed before this returns. */
+async function quiesceCalls(fake: FakeClient): Promise<void> {
+  const deadline = Date.now() + 5000;
+  let seen = fake.calls.length;
+  while (Date.now() < deadline) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    if (fake.calls.length === seen) return;
+    seen = fake.calls.length;
+  }
 }
 
 beforeEach(() => {
