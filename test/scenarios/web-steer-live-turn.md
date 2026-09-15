@@ -181,11 +181,12 @@ rm -rf "$tmpdir"
 - **The first turn usually races to idle before you can steer it.** The model
   does not reliably read `AGENTS.md` on the very first prompt. Send a second
   turn that cites the pacing rules explicitly, as step 2 does.
-- **Steer needs the turn id, not just the status.** `isTurnActive` requires
-  both `statusType === "active"` and a populated `activeTurnId`
-  (`submitRouting.ts:48-50`), which is why the Steer button can lag the
-  server's `state=active` by one notification. Wait for the button, not for
-  the clock.
+- **The Steer button follows the status.** `isTurnActive`
+  (`appwire-client/typescript/submitRouting.ts`) reads `statusType ===
+  "active"` alone; `activeTurnId` names the open transcript row and is not part
+  of the gate. The button can still lag the server's `state=active` by the one
+  `thread/status/changed` notification that carries it. Wait for the button,
+  not for the clock.
 - **Shift+Enter is the same action as the button**, but only while the
   `evener.prefs.enterToSend` preference is off (`Composer.tsx:685-687`).
 - **An empty queue is part of the premise.** Any queued message, or any

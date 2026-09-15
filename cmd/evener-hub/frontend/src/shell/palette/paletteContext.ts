@@ -7,6 +7,7 @@
 // (capabilities), and whether a turn is in flight to act on.
 
 import type { ThreadModel } from "../../protocol/model";
+import { isTurnActive } from "../../protocol/submitRouting";
 import { threadsStore } from "../../stores/threads";
 import { workspaceStore } from "../workspace";
 
@@ -68,9 +69,13 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
 }
 
 // hasActiveTurn is the palette's ONE model-derived predicate, and it answers
-// exactly one question: is there a turn to act on right now. It belongs to
-// /interrupt, /steer, /queue and /drain, which are meaningless without one
-// (the legacy's plain `!activeTurnId()` check).
+// exactly one question: is the session working right now. It belongs to
+// /steer, /queue and /drain, which are meaningless without a turn in flight.
+// It reads the thread status, the same rule as the composer's Steer button
+// (isTurnActive) and the hub's steer/queue capabilities, never
+// model.activeTurnId: the transcript clears that id between the
+// turn/completed and turn/started of an inline turn boundary while the
+// session is still mid-input (issue #1341).
 //
 // It is deliberately the only one left. A "session is busy" and a "session has
 // ended" predicate used to live here too, gating /model and the whole
@@ -80,5 +85,5 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
 // per-action capability for every thread, cold ones included, and resumes
 // behind the call. commands.ts reads those flags instead.
 export function hasActiveTurn(model: ThreadModel): boolean {
-  return !!model.activeTurnId;
+  return isTurnActive(model.status.type);
 }

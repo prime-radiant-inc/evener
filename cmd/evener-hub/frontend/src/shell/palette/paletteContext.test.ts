@@ -55,9 +55,13 @@ function model(overrides: Partial<ThreadModel>): ThreadModel {
   } as ThreadModel;
 }
 
-test("hasActiveTurn is the turn-id-only guard", () => {
-  expect(hasActiveTurn(model({ activeTurnId: "t1" }))).toBe(true);
-  expect(hasActiveTurn(model({ activeTurnId: undefined }))).toBe(false);
-  // awaiting-with-a-turn (mid-ask) still counts as having an active turn.
-  expect(hasActiveTurn(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(true);
+test("hasActiveTurn reads the thread status, not the transcript's open turn row", () => {
+  expect(hasActiveTurn(model({ status: { type: "active" }, activeTurnId: "t1" }))).toBe(true);
+  // Between turn/completed and turn/started of an inline turn boundary the
+  // id is gone while the session is still working.
+  expect(hasActiveTurn(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
+  expect(hasActiveTurn(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
+  // Mid-ask the daemon advertises no steer or queue (appCapabilitiesLocked
+  // derives both from an active status), and the palette agrees.
+  expect(hasActiveTurn(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
 });

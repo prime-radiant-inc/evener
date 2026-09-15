@@ -54,18 +54,18 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
+// steer=1 advertises the steer capability, so the busy fixture draws Stop +
+// Send + Steer (every busy session on a harness that can steer); without it
+// the cluster is Stop + Send, the one the status row's narrow-pane budget was
+// measured against (statusrow.module.css). The guard sweeps both.
+const steerMode = params.get("steer") === "1";
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
-  // The narrow-pane status row budget (statusrow.module.css, <= 399px) was
-  // measured beside Stop + Send. A busy session on a harness that can steer
-  // draws Steer as well, and at 320px the facts then clip (issue #1339); until
-  // that layout is decided the guard measures the cluster the budget was built
-  // for, so the fixture advertises no steer capability.
-  steer: false,
+  steer: steerMode,
   interrupt: true,
   compact: true,
   clear: true,
@@ -1461,11 +1461,17 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // The fixture is active with the interrupt capability and without the steer
-  // capability (see CAPABILITIES), so Composer renders Stop but not Steer.
-  // These are the actual controls it must render at every width. The card
-  // alone is not a controls check: each control is measured below.
-  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
+  // The fixture is active with the interrupt capability, and with the steer
+  // capability only in steer mode (see CAPABILITIES), so Composer renders
+  // Stop and Send, plus Steer in that mode. These are the actual controls it
+  // must render at every width. The card alone is not a controls check: each
+  // control is measured below.
+  const controlTestIds = [
+    "composer-attach",
+    "composer-stop",
+    "composer-submit",
+    ...(steerMode ? ["composer-steer"] : []),
+  ];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),

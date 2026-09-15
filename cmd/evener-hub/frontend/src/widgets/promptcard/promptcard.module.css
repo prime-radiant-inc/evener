@@ -37,8 +37,13 @@
   }
 }
 
+/* wrap is inert on its own: the leading slot shrinks to nothing (its status
+ * row sits in an inline-size container), so nothing ever forces a second line.
+ * It exists for the phone-width rule on .actions below, which opts a cluster
+ * into taking that line. */
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
 }
@@ -50,4 +55,20 @@
   align-items: center;
   gap: var(--space-1);
   margin-left: auto;
+}
+
+/* Three verbs (Stop, Send, Steer: every busy session on a harness that can
+ * steer) do not fit beside the status row at phone width. The row is the only
+ * shrinkable thing on the line, so it absorbed the third verb whole: measured
+ * at 320px, 13px for 60px of facts (issue #1339). Two verbs fit exactly, which
+ * is the budget statusrow.module.css's narrow-pane block was measured against,
+ * so only a three-verb cluster takes its own line, right-aligned like the
+ * cluster it was. The threshold is the status row's own phone-width one.
+ * Tooltip clones its single child, so the buttons are the direct children
+ * counted here. */
+@container (max-width: 399px) {
+  .actions:has(> :nth-child(3)) {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
 }

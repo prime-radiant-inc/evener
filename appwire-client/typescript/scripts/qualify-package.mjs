@@ -245,7 +245,8 @@ assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
-assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.isTurnActive("active"), true);
+assert.equal(client.isTurnActive("idle"), false);
 assert.equal(client.formatTokenCount(41200), "41k");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5k chars");

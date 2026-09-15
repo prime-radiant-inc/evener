@@ -1954,10 +1954,10 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
 // working (kata vewa/5gdv: a session holding queued work reports active with
 // no turn running) and took Steer away for a frame at every inline turn
 // boundary, where the projector closes one turn row before it opens the next
-// while the status never leaves active (issue #1330). The handler's own
-// activeTurnId check still stands between a click and a drain the daemon
-// would reject: in this window it toasts rather than sending.
-test("stop and steer both render during the window after status flips active but before activeTurnId arrives", async () => {
+// while the status never leaves active (issue #1330). The click follows the
+// same rule as the button (issue #1341): the daemon's v3 turn/steer takes no
+// turn id and has no active-turn precondition, so the steer is sent.
+test("stop and steer both render and both work during the window after status flips active but before activeTurnId arrives", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1977,8 +1977,8 @@ test("stop and steer both render during the window after status flips active but
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
   await user.click(screen.getByTestId("composer-steer"));
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
 
   // And it is a working button, not a decoration: the request it sends names
   // the ref and nothing else, which is why it needs no id to exist.
@@ -1998,11 +1998,14 @@ test("stop and steer both render during the window after status flips active but
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"
 // (the SAME function, not a separately-gated path). The handler's own
-// internal activeTurnId check is therefore the only thing standing between
-// the keyboard and a doomed steer, and these two cases are where it earns
-// its keep: no turn is in flight, whether or not the status draws a Steer
-// button to gate on.
-test("Shift+Enter with no active turn id shows a 'no active turn' toast rather than attempting a doomed steer", async () => {
+// readiness check is therefore the only thing standing between the keyboard
+// and a steer on an idle session, and it is the button's own rule: the thread
+// status. An active session with no open turn row (a hydrate cut inside the
+// window, or the gap between turn/completed and turn/started of an inline
+// turn boundary) is working, and the daemon's v3 turn/steer names no turn and
+// has no active-turn precondition (agent/session_client_mutation_queue.go
+// clientMutationSteer), so the keybinding sends it.
+test("Shift+Enter while active with no active turn id sends the steer", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2020,23 +2023,21 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
-// The drain route has the same doomed-without-a-turn shape as steer, but the
-// handler only guarded the steer branch, so a Steer-click that routed to drain
-// (non-empty queue, or staged attachments) minted a durable poison intent
-// instead of a toast. That is the exact first stuck message of the kata-wr3s
-// incident.
-//
-// The guard is still right; only its reason moved. The hub's empty-
-// expectedTurnId rejection is gone with the field (appwire v3 dropped it from
-// drain too, and handleAppTurnDrainAsSteer now validates nothing but ref,
-// input and clientMutationId). What refuses a turnless drain now is the agent:
-// "drain: no active turn to steer" at agent/session_queue.go:396, pinned by
-// agent/session_lifecycle_test.go's DrainAsSteerWithInput-while-idle case.
-test("Shift+Enter routing to drain with no active turn id toasts rather than minting a doomed drain", async () => {
+// The drain route follows the same rule. It used to be guarded on the turn id
+// because an unguarded Steer-click routing to drain (non-empty queue, or
+// staged attachments) once minted a durable intent the hub rejected forever
+// (kata wr3s, the empty-expectedTurnId rejection). That field is gone with
+// appwire v3, and the daemon's v3 drain (agent/session_client_mutation_queue.go
+// clientMutationDrain, reached through the hub's retrySafeTurns.Drain) refuses
+// only an interrupt fence, a stale queue revision, an empty queue or a reserved
+// entry. The "drain: no active turn to steer" refusal is the legacy
+// DrainAsSteerWithInput's, which turn/drainAsSteer never reaches. So a drain
+// on an active session with no open turn row is sent, not toasted.
+test("Shift+Enter routing to drain while active with no active turn id sends the drain", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2058,8 +2059,8 @@ test("Shift+Enter routing to drain with no active turn id toasts rather than min
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
-  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
 test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {

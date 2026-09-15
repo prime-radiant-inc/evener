@@ -27,7 +27,7 @@
 // stampClosedThreadCapabilities). Without it a session that shut down mid-turn
 // keeps send=false, and an ended composer is a follow-up card gated on exactly
 // that bit — so the whole composer disappears.
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -507,6 +507,40 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
   });
   expect(screen.queryByTestId("composer-steer"), "Steer after the status frame").not.toBeNull();
 }
+
+// The click follows the same rule as the button. Between the two turn frames
+// the model has no activeTurnId, and the handler used to refuse there with a
+// "no active turn" toast (issue #1341); the daemon is mid-input and its v3
+// turn/steer names no turn, so the steer is sent.
+test("a Steer clicked between turn/completed and turn/started sends turn/steer, with no toast", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${REF}`,
+      projectionState: "reflected",
+    },
+  }));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("go left");
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: { threadId: `thr_${REF}`, ref: REF, turn: { id: "turn_5", status: "completed", itemsView: "" } },
+    });
+  });
+  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
+
+  await userEvent.click(screen.getByTestId("composer-steer"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
+    ref: REF,
+    input: [{ type: "text", text: "go left" }],
+  });
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
+});
 
 test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));

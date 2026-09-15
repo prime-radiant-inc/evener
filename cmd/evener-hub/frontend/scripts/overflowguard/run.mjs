@@ -1184,195 +1184,203 @@ async function main() {
       );
     }
 
-    for (const width of sweep) {
-      const result = await measureAt(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
-        width,
-      );
-      let widthFailed = false;
-      if (
-        result.exceptionSafety.found !== 2 ||
-        !result.exceptionSafety.threw ||
-        JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
-      ) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - disclosure exception safety: ` +
-            `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
-            `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
-            `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
+    // The width sweep runs twice: once with the fixture advertising no steer
+    // capability (Stop + Send beside the status row, the cluster the row's
+    // narrow-pane budget was measured against) and once advertising it (Stop +
+    // Send + Steer, every busy session on a harness that can steer; at phone
+    // width the three verbs take their own line, promptcard.module.css).
+    for (const steer of [false, true]) {
+      for (const width of sweep) {
+        const label = steer ? `${width}px steer` : `${width}px`;
+        const result = await measureAt(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
+          width,
         );
-      }
-      if (result.disclosures.length !== 2) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
-        );
-      }
-      // The footer checks below are only worth what the predicate behind them
-      // is worth, so the predicate is exercised against its own fixture first
-      // (kata bsq9). A fact under a display:none ancestor must read as missing;
-      // an intentionally visually-hidden one must not.
-      // One expectation per clause of the shared predicate
-      // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
-      // no fixture of its own, so this is the only place either guard proves
-      // what "visible" means.
-      const probe = result.visibility;
-      const expected = {
-        rendered: true,
-        ancestorHidden: false,
-        visuallyHidden: true,
-        visibilityHiddenAncestor: false,
-        zeroArea: false,
-      };
-      const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
-      if (wrong.length > 0) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
-            wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
-        );
-      }
-      if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer facts missing: ` +
-            `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
-        );
-      }
-      if (result.footer.queueLabel !== "12 queued") {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
-        );
-      }
-      if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - footer status facts are internally clipped: ` +
-            `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
-        );
-      }
-      if (result.footer.modelClientWidth <= 0) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
-            JSON.stringify(result.footer.geometry),
-        );
-      }
-      if (
-        !result.currentWork.found ||
-        !result.currentWork.composerCardFound ||
-        !result.currentWork.controlsFound ||
-        !result.currentWork.controlsContained ||
-        !result.currentWork.controlsDoNotOverlap ||
-        !result.currentWork.sharedPaneWithoutOverflow ||
-        !result.currentWork.orderedAboveComposer
-      ) {
-        widthFailed = true;
-        console.log(
-          `${width}px ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
-        );
-      }
-      if (
-        width === 390 &&
-        (!result.subagentCard.found ||
-          !result.subagentCard.contained ||
-          !result.subagentCard.quoteWrapped ||
-          !result.subagentCard.statsContained)
-      ) {
-        widthFailed = true;
-        console.log(`${width}px ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
-      }
-      for (const disclosure of result.disclosures) {
-        if (!disclosure.openDuringOverflowScan) {
-          widthFailed = true;
-          console.log(`${width}px ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
-        }
-        if (disclosure.restoredOpen !== disclosure.originalOpen) {
-          widthFailed = true;
-          console.log(`${width}px ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
-        }
-        if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
-          widthFailed = true;
-          console.log(
-            `${width}px ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
-          );
-        }
-        const fullWidth =
-          disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
-          disclosure.bodyWidth >= disclosure.expectedWidth - 1;
-        const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
-        const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
+        let widthFailed = false;
         if (
-          disclosure.summaryDisplay !== "list-item" ||
-          disclosure.markerDisplay === "none" ||
-          !fullWidth ||
-          !stacked ||
-          !aligned
+          result.exceptionSafety.found !== 2 ||
+          !result.exceptionSafety.threw ||
+          JSON.stringify(result.exceptionSafety.originalOpen) !== JSON.stringify(result.exceptionSafety.restoredOpen)
         ) {
           widthFailed = true;
           console.log(
-            `${width}px ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
-              `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
-              `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
-              `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
+            `${label} ... FAIL - disclosure exception safety: ` +
+              `found=${result.exceptionSafety.found}, threw=${result.exceptionSafety.threw}, ` +
+              `original=${JSON.stringify(result.exceptionSafety.originalOpen)}, ` +
+              `restored=${JSON.stringify(result.exceptionSafety.restoredOpen)}`,
           );
         }
-      }
-      // Never silent about what was excluded: a 1px-wide box is a
-      // visually-hidden clip container (the standard screen-reader recipe),
-      // not a pane anyone can scroll - but it is reported, not dropped.
-      if (result.ignored.length > 0) {
-        console.log(
-          `${width}px ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
-        );
-      }
-      if (result.scrollers.length === 0) {
-        if (!widthFailed)
-          console.log(`${width}px ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
-      } else {
-        widthFailed = true;
-        console.log(`${width}px ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
-        for (const s of result.scrollers) {
+        if (result.disclosures.length !== 2) {
+          widthFailed = true;
           console.log(
-            `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
+            `${label} ... FAIL - disclosure browser contract found ${result.disclosures.length} of 2 fixtures`,
           );
-          // Deepest first: the innermost escapee is the element actually too
-          // wide; its ancestors are only carrying that width upward.
-          for (const e of s.escapees) {
-            console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+        }
+        // The footer checks below are only worth what the predicate behind them
+        // is worth, so the predicate is exercised against its own fixture first
+        // (kata bsq9). A fact under a display:none ancestor must read as missing;
+        // an intentionally visually-hidden one must not.
+        // One expectation per clause of the shared predicate
+        // (src/dev/guardVisibility.ts). spawnguard uses the same function and has
+        // no fixture of its own, so this is the only place either guard proves
+        // what "visible" means.
+        const probe = result.visibility;
+        const expected = {
+          rendered: true,
+          ancestorHidden: false,
+          visuallyHidden: true,
+          visibilityHiddenAncestor: false,
+          zeroArea: false,
+        };
+        const wrong = Object.entries(expected).filter(([name, want]) => probe[name] !== want);
+        if (wrong.length > 0) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - the shared visible() predicate behind the footer checks is broken: ` +
+              wrong.map(([name, want]) => `${name}=${probe[name]} (expected ${want})`).join(", "),
+          );
+        }
+        if (!result.footer.effortVisible || !result.footer.contextVisible || !result.footer.queueVisible) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - pressured footer facts missing: ` +
+              `effort=${result.footer.effortVisible}, context=${result.footer.contextVisible}, queue=${result.footer.queueVisible}`,
+          );
+        }
+        if (result.footer.queueLabel !== "12 queued") {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - pressured footer queue label is ${JSON.stringify(result.footer.queueLabel)}`,
+          );
+        }
+        if (result.footer.statusScrollWidth > result.footer.statusClientWidth + 1) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - footer status facts are internally clipped: ` +
+              `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
+          );
+        }
+        if (result.footer.modelClientWidth <= 0) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - pressured footer model has zero visible width: ` +
+              JSON.stringify(result.footer.geometry),
+          );
+        }
+        if (
+          !result.currentWork.found ||
+          !result.currentWork.composerCardFound ||
+          !result.currentWork.controlsFound ||
+          !result.currentWork.controlsContained ||
+          !result.currentWork.controlsDoNotOverlap ||
+          !result.currentWork.sharedPaneWithoutOverflow ||
+          !result.currentWork.orderedAboveComposer
+        ) {
+          widthFailed = true;
+          console.log(
+            `${label} ... FAIL - current work and compose controls geometry: ${JSON.stringify(result.currentWork)}`,
+          );
+        }
+        if (
+          width === 390 &&
+          (!result.subagentCard.found ||
+            !result.subagentCard.contained ||
+            !result.subagentCard.quoteWrapped ||
+            !result.subagentCard.statsContained)
+        ) {
+          widthFailed = true;
+          console.log(`${label} ... FAIL - narrow long-token subagent card: ${JSON.stringify(result.subagentCard)}`);
+        }
+        for (const disclosure of result.disclosures) {
+          if (!disclosure.openDuringOverflowScan) {
+            widthFailed = true;
+            console.log(`${label} ... FAIL - ${disclosure.kind} body was closed during horizontal-overflow scan`);
+          }
+          if (disclosure.restoredOpen !== disclosure.originalOpen) {
+            widthFailed = true;
+            console.log(`${label} ... FAIL - ${disclosure.kind} disclosure state was not restored after scan`);
+          }
+          if (disclosure.kind === "raw-notification" && disclosure.bodyTextLength < 12000) {
+            widthFailed = true;
+            console.log(
+              `${label} ... FAIL - raw-notification overflow fixture body is only ${disclosure.bodyTextLength} characters`,
+            );
+          }
+          const fullWidth =
+            disclosure.summaryWidth >= disclosure.expectedWidth - 1 &&
+            disclosure.bodyWidth >= disclosure.expectedWidth - 1;
+          const stacked = disclosure.bodyTop >= disclosure.summaryBottom - 1;
+          const aligned = Math.abs(disclosure.summaryLeft - disclosure.bodyLeft) <= 1;
+          if (
+            disclosure.summaryDisplay !== "list-item" ||
+            disclosure.markerDisplay === "none" ||
+            !fullWidth ||
+            !stacked ||
+            !aligned
+          ) {
+            widthFailed = true;
+            console.log(
+              `${label} ... FAIL - ${disclosure.kind} disclosure affordance/layout: ` +
+                `summary=${disclosure.summaryDisplay}, marker=${disclosure.markerDisplay}, ` +
+                `summary/body=${disclosure.summaryWidth.toFixed(1)}/${disclosure.bodyWidth.toFixed(1)}px, ` +
+                `expected=${disclosure.expectedWidth.toFixed(1)}px, stacked=${stacked}, aligned=${aligned}`,
+            );
           }
         }
-      }
-      if (widthFailed) failed++;
+        // Never silent about what was excluded: a 1px-wide box is a
+        // visually-hidden clip container (the standard screen-reader recipe),
+        // not a pane anyone can scroll - but it is reported, not dropped.
+        if (result.ignored.length > 0) {
+          console.log(
+            `${label} ... ignored ${result.ignored.length} visually-hidden clip box(es) (clientWidth <= 1px)`,
+          );
+        }
+        if (result.scrollers.length === 0) {
+          if (!widthFailed)
+            console.log(`${label} ... PASS - disclosures stay native/stacked and nothing scrolls horizontally`);
+        } else {
+          widthFailed = true;
+          console.log(`${label} ... FAIL - ${result.scrollers.length} horizontal scroll container(s):`);
+          for (const s of result.scrollers) {
+            console.log(
+              `    ${s.tag}.${s.cls}  content ${s.scrollWidth}px in a ${s.clientWidth}px box (+${s.overflowPx}px)`,
+            );
+            // Deepest first: the innermost escapee is the element actually too
+            // wide; its ancestors are only carrying that width upward.
+            for (const e of s.escapees) {
+              console.log(`      escapes by ${e.overflowPx.toFixed(1)}px: ${e.tag}.${e.cls}`);
+            }
+          }
+        }
+        if (widthFailed) failed++;
 
-      const settings = await measureAt(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
-        width,
-      );
-      const settingsFailures = assertSettings(settings, width);
-      if (settingsFailures.length > 0) {
-        failed++;
-        console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
-      } else {
-        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
-      }
-
-      const detailFailures = assertDetail(result, width);
-      if (detailFailures.length > 0) {
-        failed++;
-        console.log(`${width}px Verbosity ... FAIL - ${detailFailures.join("; ")}`);
-      } else {
-        console.log(
-          `${width}px Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
-            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
-            `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
-            `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
-            `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
+        const settings = await measureAt(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
+          width,
         );
+        const settingsFailures = assertSettings(settings, width);
+        if (settingsFailures.length > 0) {
+          failed++;
+          console.log(`${label} Settings ... FAIL - ${settingsFailures.join("; ")}`);
+        } else {
+          console.log(`${label} Settings ... PASS - cards stack and previews have no inner scroll`);
+        }
+
+        const detailFailures = assertDetail(result, width);
+        if (detailFailures.length > 0) {
+          failed++;
+          console.log(`${label} Verbosity ... FAIL - ${detailFailures.join("; ")}`);
+        } else {
+          console.log(
+            `${label} Verbosity ... PASS - Session actions reachable, ${result.detail.mobile ? "Sheet" : "Dialog"} contained, ` +
+              `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
+              `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px` +
+              `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
+              `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
+          );
+        }
       }
     }
   } finally {

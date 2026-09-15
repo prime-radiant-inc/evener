@@ -561,6 +561,24 @@ test("/steer sends turn/steer when a turn is active", async () => {
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
 
+test("/steer sends turn/steer while the session is active with no open turn row yet", async () => {
+  const fake = connectFake();
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  focusSession("ref_a");
+  seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
+  const c = cmd("steer");
+  if (c.args?.kind !== "free") throw new Error("expected free args");
+  await c.args.run(runContext(), "go left");
+  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+});
+
 test("/queue and /drain-as-steer each block with their own no-active-turn message", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "idle" }, activeTurnId: undefined });

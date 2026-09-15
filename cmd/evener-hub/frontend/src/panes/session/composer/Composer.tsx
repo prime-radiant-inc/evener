@@ -1304,11 +1304,20 @@ export function Composer({ ref, focused }: ComposerProps) {
       textareaRef.current?.focus();
       return;
     }
-    // Both routes steer the ACTIVE turn; without one the daemon rejects them
-    // ("no active turn to steer"). Drain needs this guard as much as steer:
-    // unguarded, a Steer-click routing to drain (non-empty queue or staged
-    // attachments) minted a durable intent the hub rejects forever (kata wr3s).
-    if ((route === "steer" || route === "drain") && !activeTurnId) {
+    // The same readiness rule as the button: the session is working (the
+    // thread status), not "the transcript has an open turn row". Neither
+    // request names a turn (appwire v3), and the daemon's v3 mutation path
+    // accepts both without one: turn/steer adds pending steering for the
+    // carrier turn (agent/session_client_mutation_queue.go clientMutationSteer)
+    // and turn/drainAsSteer (clientMutationDrain, reached through the hub's
+    // retrySafeTurns.Drain) refuses only an interrupt fence, a stale queue
+    // revision, an empty queue or a reserved entry. The "drain: no active turn
+    // to steer" refusal lives in the legacy DrainAsSteerWithInput, which this
+    // route never reaches. Gating on activeTurnId here refused a click landing
+    // between the turn/completed and turn/started of an inline turn boundary,
+    // where the daemon is mid-input (issue #1341). With the session idle Send
+    // is the route, so a steer keybinding there toasts rather than sending.
+    if (!busy) {
       toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
       return;
     }
