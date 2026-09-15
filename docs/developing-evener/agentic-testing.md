@@ -729,8 +729,9 @@ JSON.stringify({
 ```
 
 `steerRendered` is the closest thing left to the old `activeTurnId`
-probe: Steer renders only while the turn is genuinely in flight
-(`Composer.tsx:382`). If it never appears while
+probe: Steer renders while `status.type` is `active` and the daemon advertises
+steer (`Composer.tsx`'s `showSteer`; `activeTurnId` is transcript-row metadata,
+not the gate). If it never appears while
 `thread/read` reports `result.thread.status.type=active`, the AppWire socket
 did not hydrate — check `$run/hub.log`, and confirm the page is really
 the one you think it is via the `location.port` assertion above.

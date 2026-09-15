@@ -4,9 +4,10 @@
 repurposing. The web UI exposes two paths that inject a steering message into
 a running model loop — the composer's **Steer** button (and its Shift+Enter
 chord), and the command palette's `/steer` command. Both land on the AppWire
-`turn/steer` method, both require a live `activeTurnId`, and both must reach
-the model: the transcript grows a `STEERING` entry and the model's next
-output visibly follows the new instruction.
+`turn/steer` method, both are gated on `status.type === "active"` (the
+`activeTurnId` beside it is transcript-row metadata, not a control gate), and
+both must reach the model: the transcript grows a `STEERING` entry and the
+model's next output visibly follows the new instruction.
 
 This is the **classic single-text steer path**: the queue is empty and there
 are no staged attachments, so `decideSteerRoute` takes the `"steer"` branch
