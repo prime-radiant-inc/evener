@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Round 2 (variant) — Watches first</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <p class="eyebrow">Sidebar watches · round 2, variant</p>
+        <h1>Watches first</h1>
+        <p class="thesis">
+          Same rail as the primary. The difference is the Activity panel: watches
+          lead it, ordered by whether they need a person and then by name, and
+          running work follows. This is the cheaper build — watches arrive as a
+          parallel payload rendered as their own section, so no new activity-tree
+          row kind and no change to the strict parser.
+        </p>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">Toggle light / dark</button>
+      </header>
+
+      <div class="stage">
+        <!-- ------------------------------------------------------- sidebar -->
+        <div class="rail">
+          <div class="rail-head"><span>Evener</span><span>⌕ ⋯</span></div>
+          <div class="rail-section">
+            <div class="rail-section-title">Live</div>
+            <div class="rail-row is-selected">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Fix flaky sidebar tests</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss">2 subagents working · 1 job running · 3 watches</span>
+              </span>
+              <span class="right">2m</span>
+            </div>
+            <div class="children">
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">go test ./cmd/evener-hub/...</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">running</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="rail-title">Prune stale fixtures</span></span>
+                </span>
+                <span class="right">13m</span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title">Poll the queue depth</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--danger">every 10s · 8 dropped</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title">Deploy rollback check</span>
+                  </span>
+                  <span class="rail-gloss">every 15m · 3 fires</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title">Migration prints DONE</span>
+                  </span>
+                  <span class="rail-gloss">on output · armed</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Inactive subagents (3)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Completed jobs (7)</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------ activity -->
+        <div class="panel">
+          <div class="panel-head">
+            <span>▤</span>
+            <span>Activity</span>
+            <span class="spacer"></span>
+            <span class="count">3 watches · 2 running</span>
+          </div>
+
+          <div class="panel-body">
+            <div class="group">
+              <div class="group-title"><span>Watches</span><span>3 armed · 1 needs a look</span></div>
+
+              <!-- severity first, then name: the rule is stated, so the order
+                   never depends on an unbuilt next-fire instant -->
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname aname--live">Poll the queue depth</span>
+                <span class="ameta ameta--danger">every 10s · 8 dropped</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Ping me if the queue depth crosses 500.</p>
+                <span class="chip chip--danger">runaway fuse fired · 8 drops · max self-influence depth 4</span>
+                <dl class="kv">
+                  <dt>source</dt><dd>self</dd>
+                  <dt>cadence</dt><dd class="hi">every 10s</dd>
+                  <dt>fires</dt><dd>214 distinct · 206 delivered · 8 dropped</dd>
+                  <dt>armed</dt><dd>17:02:11</dd>
+                </dl>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname aname--live">Deploy rollback check</span>
+                <span class="ameta">every 15m · 3 fires</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Check the deploy log for the rollback, and wake me if it happened.</p>
+                <dl class="kv">
+                  <dt>source</dt><dd>self (this session)</dd>
+                  <dt>cadence</dt><dd class="hi">every 15m</dd>
+                  <dt>armed</dt><dd>18:40:02</dd>
+                  <dt>last fire</dt><dd>19:10:02</dd>
+                  <dt>fires</dt><dd>3 delivered · 0 dropped · 0 evicted</dd>
+                </dl>
+                <div class="deliv"><span class="dot dot--delivered"></span>d_03 delivered · timer · 19:10:02</div>
+                <div class="deliv"><span class="dot dot--delivered"></span>d_02 delivered · timer · 18:55:02</div>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname">Migration prints DONE</span>
+                <span class="ameta">on output · armed · 0 fires</span>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="group-title"><span>Running</span><span>2</span></div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">$</span>
+                <span class="aname aname--live">go test ./cmd/evener-hub/...</span>
+                <span class="ameta">12s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">⌘</span>
+                <span class="aname aname--live">Audit row memo boundary</span>
+                <span class="ameta">↑41k ↓6k · 4s</span>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="arow" style="color: var(--ink-mid)">
+                <span class="arow-toggle">▸</span>
+                <span class="aname" style="color: var(--ink-mid)">Ended watches (4)</span>
+                <span class="ameta">2 cleared · 1 fired · 1 budget</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <h2>Primary vs variant — the one real difference</h2>
+        <ul>
+          <li>
+            <b>Primary puts running work first</b> and gives watches their own
+            group beneath it, promoting only the abnormal (“Needs a look”). It
+            treats the panel as a triage surface, which is what every reviewer
+            said the sidebar family is for.
+          </li>
+          <li>
+            <b>This variant puts watches first</b>, ordered by severity then name,
+            on the reading that a person opening the Activity panel most often
+            wants “what have I got armed?” It honours the literal ask most
+            directly, at the cost of pushing running work down.
+          </li>
+          <li>
+            <b>It is also the cheaper build.</b> Watches arrive as a parallel
+            payload rendered as a section, so
+            <span class="mono">parseEntry</span>, the <span class="mono">ActivityRow</span>
+            union, the tree switch, and <span class="mono">ActivityRowDetail</span>
+            are untouched; the primary extends all four with a watch row kind.
+          </li>
+          <li>
+            Both share: neutral ink only, a drawn clock glyph, no countdown, no
+            progress track, no TTL claim, ended watches in the panel rather than a
+            third rail fold, and the <span class="mono">showsActivity</span> gate
+            change so an idle session holding only a watch still shows its count.
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      }
+    </script>
+  </body>
+</html>
