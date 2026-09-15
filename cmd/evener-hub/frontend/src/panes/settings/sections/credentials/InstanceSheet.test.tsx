@@ -866,6 +866,55 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
+  // The recovery read is asynchronous, and the sheet is free to move on while it
+  // is in flight. Steering it then would show the failed save's values under
+  // another instance's title.
+  test("a recovery read landing after the sheet moved on does not steer it", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const moved = instance({
+      name: "work",
+      providerId: "openai",
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-after",
+    });
+    const other = instance({
+      name: "other",
+      providerId: "openai",
+      baseUrl: "https://other.example.test",
+      endpointFingerprint: "fp-other",
+    });
+    let finishListing: (() => void) | undefined;
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError("the endpoint moved", -32013, { evenerErrorInfo: "endpointConflict" });
+    });
+    fake.on("evener/instance/list", () => {
+      return new Promise<InstanceListResponse>((resolve) => {
+        finishListing = () => resolve({ instances: [moved, other], availableProviders: [OPENAI] });
+      });
+    });
+    connectionStore.getState().connect(fake);
+    const { selectName } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    await waitFor(() => expect(finishListing).toBeDefined());
+    act(() => {
+      credentialsStore.setState({ instances: [moved, other], availableProviders: [OPENAI] });
+      selectName("other");
+    });
+    await act(async () => {
+      finishListing?.();
+    });
+    // The row the section moved to keeps its own values.
+    expect(field("Base URL").value).toBe("https://other.example.test");
+  });
+
   test("emptying Base URL shows the reset note and sends clearBaseUrl", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", () => ({ instances: [WORK], availableProviders: [OPENAI] }));

@@ -423,31 +423,34 @@ export function InstanceSheet({
       // instance the save went out for, and written into a sheet since
       // pointed elsewhere it blames one instance for another's failure. Same
       // for releasing the rename guard, which only this sheet's save set.
-      if (shownName.current === instance.name) {
-        setRenamingFrom(undefined);
-        if (conflict) {
-          // The hub refused the destination this save asserted, so the name
-          // moved between the listing the sheet was seeded from and the RPC.
-          // Re-read and re-anchor to the row now on screen: leaving the draft
-          // alone would resubmit the obsolete fingerprint on every retry. Only
-          // an APPLIED read may re-anchor - reseeding from a listing the failed
-          // or superseded read left stale would assert the same refused
-          // fingerprint again.
-          let applied = false;
-          try {
-            applied = await credentialsStore.getState().fetch();
-          } catch {
-            // Best-effort: with no applied read there is nothing fresh to
-            // re-anchor to, so the draft and the row on screen stay as they are.
-          }
+      if (shownName.current === instance.name) setRenamingFrom(undefined);
+      if (conflict) {
+        // The hub refused the destination this save asserted, so the name moved
+        // between the listing the sheet was seeded from and the RPC. Re-read and
+        // re-anchor to the row now on screen: leaving the draft alone would
+        // resubmit the obsolete fingerprint on every retry. Only an APPLIED read
+        // may re-anchor - reseeding from a listing the failed or superseded read
+        // left stale would assert the same refused fingerprint again.
+        let applied = false;
+        try {
+          applied = await credentialsStore.getState().fetch();
+        } catch {
+          // Best-effort: with no applied read there is nothing fresh to
+          // re-anchor to, so the draft and the row on screen stay as they are.
+        }
+        // The sheet may have been dismissed or pointed at another row while the
+        // read was in flight: steering it now would show this save's values
+        // under another instance's title, so re-check the way the success branch
+        // does after its own await.
+        if (shownName.current === instance.name) {
           const current = applied
             ? credentialsStore.getState().instances.find((i) => i.name === instance.name)
             : undefined;
           if (current !== undefined) seed(current);
           setFormError(CHANGED_INSTANCE_ERROR);
-        } else {
-          setFormError(message);
         }
+      } else if (shownName.current === instance.name) {
+        setFormError(message);
       }
       toast.push("error", `Save failed: ${conflict ? CHANGED_INSTANCE_ERROR : message}`);
     } finally {
