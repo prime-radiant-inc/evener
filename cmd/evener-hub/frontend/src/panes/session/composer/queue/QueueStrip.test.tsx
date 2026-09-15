@@ -13,12 +13,12 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 const originalClipboard = navigator.clipboard;
 
@@ -1244,6 +1244,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 
@@ -1271,6 +1273,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
@@ -1306,6 +1310,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 
