@@ -43,6 +43,12 @@ func tempRootTrusted(info fs.FileInfo) bool {
 	return cacheDirOwnedByCurrentUser(info) && info.Mode().Perm()&0o022 == 0
 }
 
+// processCopyRootTrusted reports whether a root may hold the process-lifetime
+// extraction. On Unix it is tempRootTrusted: a temp root is verified the same
+// way whether it holds the shared cache or the one private copy, so the degraded
+// path accepts exactly the roots the shared cache would.
+func processCopyRootTrusted(info fs.FileInfo) bool { return tempRootTrusted(info) }
+
 // ancestorDirTrusted reports whether a directory above the cache root cannot be
 // replaced by other users: it carries the sticky bit, or it is owned by this
 // user or by root with no group or other write. Ownership by root is accepted

@@ -103,10 +103,19 @@ var bundledSkillsDigest = sync.OnceValues(func() (string, error) {
 // that outlives every caller is not confused with the staging directories the
 // cache reaps by age, and only into a temp root the shared cache would accept:
 // the degraded path must not read skill content out of a root that was just
-// refused as replaceable by other users.
+// refused as replaceable by other users, or one this platform cannot verify at
+// all.
 func embeddedProcessSkillsDir() (string, error) {
 	processSkillsMu.Lock()
 	defer processSkillsMu.Unlock()
+	return embeddedProcessSkillsDirLocked()
+}
+
+// embeddedProcessSkillsDirLocked is embeddedProcessSkillsDir for a caller that
+// already holds processSkillsMu, so one caller can hold the mutex across the
+// directory selection and the metadata scan that belongs to the directory it
+// selected. The caller must hold the mutex.
+func embeddedProcessSkillsDirLocked() (string, error) {
 	digest, err := bundledSkillsDigest()
 	if err != nil {
 		return "", err
@@ -117,11 +126,15 @@ func embeddedProcessSkillsDir() (string, error) {
 	if processSkillsDir != "" && cacheDirUsable(processSkillsDir, digest) {
 		return processSkillsDir, nil
 	}
-	if err := ensureTrustedRoot(os.TempDir()); err != nil {
+	root, err := resolveTrustedRoot(os.TempDir(), ensureTrustedProcessRoot)
+	if err != nil {
 		return "", err
 	}
+	// The extraction is created inside the resolved root, never through a link
+	// the temp root can be: every path this process creates and hands out names
+	// the real directory that was validated.
 	dir, err := extractEmbeddedSkills(bundled.Skills(), func(_, _ string) (string, error) {
-		return os.MkdirTemp("", processSkillsTempPattern)
+		return os.MkdirTemp(root, processSkillsTempPattern)
 	})
 	if err != nil {
 		return "", err
@@ -132,20 +145,39 @@ func embeddedProcessSkillsDir() (string, error) {
 }
 
 // embeddedProcessSkills returns the metadata of the process-lifetime extraction,
-// scanning the tree at most once.
+// caching the scan so later callers reuse it. The mutex is held across the
+// directory selection and the scan: the selection clears processSkillsMeta
+// whenever it replaces the directory, so a scan that ran after the selection
+// released the mutex could cache an empty or partial map of the copy that just
+// went away, and no later call would refresh it.
 func embeddedProcessSkills() (map[string]SkillMeta, error) {
-	dir, err := embeddedProcessSkillsDir()
-	if err != nil {
-		return nil, err
-	}
 	processSkillsMu.Lock()
 	defer processSkillsMu.Unlock()
-	if processSkillsMeta == nil {
-		skills := make(map[string]SkillMeta)
-		ScanSkillsDir(dir, skills)
-		processSkillsMeta = skills
+	// Holding the mutex makes the re-check below unreachable, because nothing
+	// else can replace the directory under the scan. It is kept anyway: a map
+	// scanned from a copy that is no longer this process's own must never be
+	// stored against the copy that replaced it, so such a scan is taken again,
+	// and one that keeps losing its directory is handed back uncached.
+	const scanAttempts = 3
+	for attempt := 0; ; attempt++ {
+		dir, err := embeddedProcessSkillsDirLocked()
+		if err != nil {
+			return nil, err
+		}
+		if processSkillsMeta != nil {
+			return cloneSkillMetaMap(processSkillsMeta), nil
+		}
+		scanned := make(map[string]SkillMeta)
+		ScanSkillsDir(dir, scanned)
+		if processSkillsDir != dir {
+			if attempt < scanAttempts-1 {
+				continue
+			}
+			return cloneSkillMetaMap(scanned), nil
+		}
+		processSkillsMeta = scanned
+		return cloneSkillMetaMap(processSkillsMeta), nil
 	}
-	return cloneSkillMetaMap(processSkillsMeta), nil
 }
 
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
@@ -341,14 +373,37 @@ func defaultEmbeddedSkillsBaseDir() (string, error) {
 		// a shared temp root: joining an empty root would produce a relative name.
 		return "", errors.New("skill cache root unavailable")
 	}
-	if err := ensureTrustedRoot(root); err != nil {
+	// The root is resolved before it is verified, so a temp root that is itself a
+	// symlink is served rather than refused, and the per-user base is created
+	// under the directory the link names rather than through the link.
+	resolved, err := resolveTrustedRoot(root, ensureTrustedRoot)
+	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
+	dir := filepath.Join(resolved, embeddedSkillsPrefix+processOwnerTag())
 	if err := ensurePrivateCacheDir(dir); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// resolveTrustedRoot resolves root through symlinks and verifies the directory
+// it names with verify, returning that resolved directory. os.TempDir returns
+// TMPDIR verbatim, and a temp root that is itself a symlink — macOS /tmp, or a
+// TMPDIR pointed at one — is a shape the platform produces rather than an
+// attack, so verifying the link itself would refuse a usable root and silently
+// leave the process without bundled skills. The resolved path is what is
+// verified and what every caller creates directories under, so the link is never
+// the path this package reads or writes through.
+func resolveTrustedRoot(root string, verify func(string) error) (string, error) {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving skills root %s: %w", root, err)
+	}
+	if err := verify(resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 // ensureTrustedRoot reports whether root may hold a per-user cache. Root itself
@@ -371,6 +426,38 @@ func ensureTrustedRoot(root string) error {
 	if !tempRootTrusted(info) {
 		return fmt.Errorf("skill cache root %s can be replaced by other users", root)
 	}
+	return ensureTrustedAncestors(root)
+}
+
+// ensureTrustedProcessRoot is ensureTrustedRoot for the temp root the
+// process-lifetime extraction is created in. It differs only in the predicate
+// applied to the final component: on Windows the ownership and permission checks
+// cannot tell who created a directory, so that root is refused and the degraded
+// path fails closed instead of reading skill content out of a root the process
+// cannot vouch for. The chain above the root is checked exactly as it is for the
+// cache root.
+func ensureTrustedProcessRoot(root string) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return fmt.Errorf("checking process skills root %s: %w", root, err)
+	}
+	if !dirInfo(info) {
+		return fmt.Errorf("process skills root %s is not a directory", root)
+	}
+	if !processCopyRootTrusted(info) {
+		return fmt.Errorf("process skills root %s cannot be verified", root)
+	}
+	return ensureTrustedAncestors(root)
+}
+
+// ensureTrustedAncestors verifies the chain above root, which must already have
+// been verified by the caller. A writable ancestor lets another user replace the
+// directories on the way to root, so each one must carry the sticky bit or be
+// owned by this user or by root with no group or other write; ownership by root
+// is accepted, unlike for the root itself, because the platform's temp chain
+// above a user's own directory is normally root-owned. Ancestors are resolved
+// through symlinks the way path lookup resolves them.
+func ensureTrustedAncestors(root string) error {
 	for dir := filepath.Dir(root); ; {
 		parent := filepath.Dir(dir)
 		info, err := os.Stat(dir)

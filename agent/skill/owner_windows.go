@@ -40,6 +40,13 @@ func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }
 // protects with per-user ACLs, and the temp root is per-user by convention.
 func tempRootTrusted(fs.FileInfo) bool { return true }
 
+// processCopyRootTrusted refuses the temp root for the process-lifetime
+// extraction. Nothing here can verify from fs.FileInfo who created a directory
+// or who may replace an entry in it, and the temp root is not the per-user cache
+// directory the shared copy is protected by, so the degraded copy fails closed
+// rather than extract skill content into a root the process cannot vouch for.
+func processCopyRootTrusted(fs.FileInfo) bool { return false }
+
 // ancestorDirTrusted cannot be checked portably on Windows either: the ACLs
 // that decide whether another account can write an ancestor are not exposed
 // through fs.FileInfo, and the user cache directory's chain is protected by the

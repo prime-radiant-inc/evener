@@ -155,3 +155,90 @@ func TestEmbeddedSkillsDir_RefusesAnUntrustedTempRootForTheProcessCopy(t *testin
 		t.Fatalf("degraded copy = %q, want a process-lifetime extraction", dir)
 	}
 }
+
+// resetEmbeddedSkillsCache drops the shared copy a previous test resolved, so a
+// test that wants the default base resolves it again, and restores the cache it
+// found when the test ends.
+func resetEmbeddedSkillsCache(t *testing.T) {
+	t.Helper()
+	saved := saveEmbeddedSkillsCache()
+	embeddedSkillsCache.mu.Lock()
+	forgetEmbeddedSkillsLocked()
+	embeddedSkillsCache.mu.Unlock()
+	// forgetEmbeddedSkillsLocked released the lease the snapshot captured, so the
+	// restore must not reinstall it.
+	saved.lease = nil
+	saved.leasedDir = ""
+	t.Cleanup(func() { restoreEmbeddedSkillsCache(saved) })
+}
+
+// os.TempDir returns TMPDIR verbatim, and a temp root that is itself a symlink
+// (macOS /tmp, or a TMPDIR pointed at one) is a shape the platform produces
+// rather than an attack: resolving the root before verifying it must leave the
+// bundled skills reachable through the shared cache, in a directory under the
+// real root rather than a path that runs through the link.
+func TestEmbeddedSkillsDir_ResolvesASymlinkedTempRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	link := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("TMPDIR", link)
+	resetEmbeddedSkillsCache(t)
+
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir through a symlinked temp root: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatalf("resolve the real temp root: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolved+string(os.PathSeparator)) {
+		t.Fatalf("bundled skills are not under the real temp root %s: %q", resolved, dir)
+	}
+	if strings.HasPrefix(dir, link+string(os.PathSeparator)) || dir == link {
+		t.Fatalf("bundled skills were created through the symlink %s: %q", link, dir)
+	}
+	// The per-user base under the real root is what the shared cache publishes
+	// into; the degraded path would hand back a process- extraction instead.
+	if base := filepath.Base(filepath.Dir(dir)); base != embeddedSkillsPrefix+processOwnerTag() {
+		t.Fatalf("bundled skills were not served from the shared cache: %q lives under %q", dir, base)
+	}
+	skills := make(map[string]SkillMeta)
+	ScanSkillsDir(dir, skills)
+	if len(skills) == 0 {
+		t.Fatalf("resolved copy %q holds no skills", dir)
+	}
+}
+
+// The degraded path resolves the temp root too, and creates its extraction
+// inside the resolved directory rather than through the link.
+func TestEmbeddedSkillsDir_ProcessCopyUnderASymlinkedTempRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	link := filepath.Join(t.TempDir(), "tmp-link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("TMPDIR", link)
+	pointEmbeddedSkillsAtBase(t, filepath.Join(t.TempDir(), "missing-base"))
+	t.Cleanup(resetProcessSkills)
+
+	dir, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir through a symlinked temp root: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(dir), embeddedSkillsPrefix+"process-") {
+		t.Fatalf("degraded copy = %q, want a process-lifetime extraction", dir)
+	}
+	resolved, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatalf("resolve the real temp root: %v", err)
+	}
+	if !strings.HasPrefix(dir, resolved+string(os.PathSeparator)) {
+		t.Fatalf("process copy is not under the real temp root %s: %q", resolved, dir)
+	}
+	if strings.HasPrefix(dir, link+string(os.PathSeparator)) {
+		t.Fatalf("process copy was created through the symlink %s: %q", link, dir)
+	}
+}

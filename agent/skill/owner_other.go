@@ -22,6 +22,10 @@ func cacheDirOwnerCanWrite(fs.FileInfo) bool { return true }
 // directory is per-user, which is the accepted limit of the check.
 func tempRootTrusted(fs.FileInfo) bool { return true }
 
+// processCopyRootTrusted cannot be checked portably on these platforms either;
+// their temp directory is per-user, which is the accepted limit of the check.
+func processCopyRootTrusted(fs.FileInfo) bool { return true }
+
 // ancestorDirTrusted cannot be checked portably on these platforms; their temp
 // directory is per-user, which is the accepted limit of the check.
 func ancestorDirTrusted(fs.FileInfo) bool { return true }
