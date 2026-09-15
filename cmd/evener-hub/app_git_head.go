@@ -89,6 +89,13 @@ func sanitizeGitRemote(raw string) string {
 	if err != nil {
 		return ""
 	}
+	// A scheme with an empty authority (https:///user:token@host/path) parses
+	// with the credential sitting in the PATH rather than in userinfo, so
+	// clearing User would leave it in place. There is no host to build a link
+	// from either, so this fails closed like the other opaque shapes.
+	if parsed.Host == "" {
+		return ""
+	}
 	parsed.User = nil
 	parsed.RawQuery = ""
 	parsed.ForceQuery = false
@@ -107,7 +114,7 @@ func hasOpaqueScheme(value string) bool {
 	if colon <= 0 {
 		return false
 	}
-	for i := 0; i < colon; i++ {
+	for i := range colon {
 		c := value[i]
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':

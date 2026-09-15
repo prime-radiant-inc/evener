@@ -182,6 +182,11 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "opaque scheme with token", in: "https:token@github.com/owner/repo.git", want: ""},
 		{name: "opaque file scheme", in: "file:/srv/git/repo.git", want: ""},
 		{name: "bare host scp-like", in: "github.com:owner/repo.git", want: ""},
+		// An empty authority parses with the credential in the path, not in
+		// userinfo, and leaves no host to link to.
+		{name: "empty authority with credentials", in: "https:///user:tok@github.com/owner/repo.git", want: ""},
+		{name: "empty authority", in: "https:///github.com/owner/repo.git", want: ""},
+		{name: "file scheme no authority", in: "file:///srv/git/repo.git", want: ""},
 		{name: "empty", in: "   ", want: ""},
 		{name: "unparseable scheme fails closed", in: "https://a b@github.com/o/r.git", want: ""},
 	} {

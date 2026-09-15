@@ -87,6 +87,13 @@ test("never carries a credential from an opaque scheme form into the repo url", 
   const remote = parseRepoRemote("https:supersecret@github.com/owner/repo.git");
   expect(remote?.repoUrl).toBe("https://github.com/owner/repo");
   expect(remote?.repoUrl).not.toContain("supersecret");
+
+  // An empty authority (`https:///user:tok@host/path`) is rejected server-side,
+  // but the browser's own URL parser reads it with a real host; either way the
+  // credential must not reach repoUrl.
+  const emptyAuthority = parseRepoRemote("https:///user:tok@github.com/owner/repo.git");
+  expect(emptyAuthority?.repoUrl).toBe("https://github.com/owner/repo");
+  expect(emptyAuthority?.repoUrl).not.toContain("tok");
 });
 
 // Anything not a known forge's repo page yields null: the caller then shows the
