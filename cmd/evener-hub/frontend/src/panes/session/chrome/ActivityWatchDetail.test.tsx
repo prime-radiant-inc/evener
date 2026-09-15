@@ -233,7 +233,12 @@ describe("ActivityWatchDetail timeline", () => {
     }
   });
 
-  test("orders the now marker before the dots so a dot can never be painted over it", () => {
+  test("paints the now marker over the dots so a delivery on the clock cannot hide it", () => {
+    // These are positioned siblings with no z-index, so the last one in DOM
+    // order paints on top. The marker is the reference the rail is read
+    // against: a dot that lands exactly on the clock must not bury it, or the
+    // rail reads as having no marker at all. The dot is wider than the marker's
+    // bar, so it stays legible around it.
     render(
       <ActivityWatchDetail
         row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
@@ -245,7 +250,7 @@ describe("ActivityWatchDetail timeline", () => {
     const markerIndex = order.indexOf(screen.getByTestId("watch-timeline-now"));
     expect(markerIndex).toBeGreaterThanOrEqual(0);
     for (const dot of screen.getAllByTestId("watch-timeline-dot")) {
-      expect(order.indexOf(dot)).toBeGreaterThan(markerIndex);
+      expect(order.indexOf(dot)).toBeLessThan(markerIndex);
     }
   });
 

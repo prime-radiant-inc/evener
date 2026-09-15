@@ -153,14 +153,6 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
         aria-label={`${caption}, ${startLabel} to ${endLabel}${floatingNow}`}
       >
         <span className={CLASS.timelineLine} aria-hidden="true" />
-        {/* The marker precedes the dots in DOM order so a dot can never be
-            painted over it when positions coincide. */}
-        <span
-          className={CLASS.timelineNow}
-          data-testid="watch-timeline-now"
-          style={{ left: `${nowPosition}%` }}
-          aria-hidden="true"
-        />
         {dots.map(({ millis, key }) => (
           <span
             key={key}
@@ -170,6 +162,18 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
             aria-hidden="true"
           />
         ))}
+        {/* The marker follows the dots in DOM order because these are positioned
+            siblings with no z-index: whichever is later paints on top. A dot can
+            land exactly on the clock, and the marker is the reference the rail is
+            read against, so burying it would make the rail read as having no
+            marker at all. The dot is wider than the marker's bar, so it stays
+            legible around it. */}
+        <span
+          className={CLASS.timelineNow}
+          data-testid="watch-timeline-now"
+          style={{ left: `${nowPosition}%` }}
+          aria-hidden="true"
+        />
       </div>
       <div className={CLASS.timelineLabels}>
         <span data-testid="watch-timeline-start">{startLabel}</span>
