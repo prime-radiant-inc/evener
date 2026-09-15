@@ -83,6 +83,29 @@ function emptyPageIsPartial(tree: ActivityTreeData): boolean {
   return Boolean(tree.root.branch.continuation || tree.root.branch.error);
 }
 
+// emptyWatchTree is the page the watch group renders through when there is no
+// retained tree at all -- a load that failed, or a source that does not support
+// retained activity. Watches are session data, so they are independent of that
+// page, and the group itself lives in the tree's row list: giving the tree an
+// empty page renders exactly the watch rows, through the same machinery and the
+// same vocabulary as a loaded session, instead of a second renderer that could
+// drift from it.
+function emptyWatchTree(ref: string): ActivityTreeData {
+  return {
+    revision: 0,
+    root: {
+      kind: "session",
+      sessionId: "",
+      ref,
+      label: "",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
+}
+
 function triggerLabel(counts: ActivityCounts | undefined): string {
   if (!counts?.complete) return "Activity";
   return `Activity · ${counts.active}`;
@@ -175,22 +198,61 @@ export function ActivityPanelBody({
   }
 
   function renderBody() {
+    // A session whose watch rows were all omitted by the hub's cap still holds
+    // watch content: ActivityTree renders the watch group and its "+N more".
+    // Only a session with neither retained nor omitted watches is empty.
+    const hasWatchContent = (watches?.length ?? 0) > 0 || (omittedWatches ?? 0) > 0;
+    // The watch group is part of the tree's row list, so a session whose
+    // retained activity never loaded still renders it through the same
+    // machinery. An armed watch is often the only pending work a session has --
+    // the rail counts it on the row -- so hiding it behind the load state's
+    // message would contradict the rest of the chrome.
+    function renderWatchTree(tree: ActivityTreeData) {
+      return (
+        <div className={CLASS.panelColumn}>
+          <ActivityTree
+            ref={treeRef}
+            tree={tree}
+            watches={watches}
+            omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
+            now={now}
+            expandedFoldIDs={entry.expandedFoldIDs}
+            onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
+            continuationFailures={entry.continuationFailures}
+            onContinue={handleContinue}
+            loadingContinuationID={entry.continuationLoadingID}
+            rootRefreshing={entry.pending?.kind === "root"}
+          />
+        </div>
+      );
+    }
+    const watchFallback = hasWatchContent ? renderWatchTree(emptyWatchTree(sessionRef)) : null;
     if (entry.load.kind === "unsupported") {
       return (
-        <EmptyState title="Activity isn't available" hint="This session's source doesn't support retained activity." />
+        <>
+          {watchFallback}
+          <EmptyState
+            title="Activity isn't available"
+            hint="This session's source doesn't support retained activity."
+          />
+        </>
       );
     }
     if (entry.load.kind === "failed") {
       return (
-        <EmptyState
-          title={entry.load.error.headline}
-          hint={entry.load.error.detail}
-          action={
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
-              Try again
-            </Button>
-          }
-        />
+        <>
+          {watchFallback}
+          <EmptyState
+            title={entry.load.error.headline}
+            hint={entry.load.error.detail}
+            action={
+              <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
+                Try again
+              </Button>
+            }
+          />
+        </>
       );
     }
     if (entry.load.kind === "idle" || entry.load.kind === "loading") {
@@ -199,10 +261,6 @@ export function ActivityPanelBody({
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
     const ended = entry.load.kind === "ended";
-    // A session whose watch rows were all omitted by the hub's cap still holds
-    // watch content: ActivityTree renders the watch group and its "+N more".
-    // Only a session with neither retained nor omitted watches is empty.
-    const hasWatchContent = (watches?.length ?? 0) > 0 || (omittedWatches ?? 0) > 0;
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
@@ -274,22 +332,7 @@ export function ActivityPanelBody({
             />
           )
         ) : currentTree ? (
-          <div className={CLASS.panelColumn}>
-            <ActivityTree
-              ref={treeRef}
-              tree={currentTree}
-              watches={watches}
-              omittedWatches={omittedWatches}
-              omittedArmedWatches={omittedArmedWatches}
-              now={now}
-              expandedFoldIDs={entry.expandedFoldIDs}
-              onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
-              continuationFailures={entry.continuationFailures}
-              onContinue={handleContinue}
-              loadingContinuationID={entry.continuationLoadingID}
-              rootRefreshing={entry.pending?.kind === "root"}
-            />
-          </div>
+          renderWatchTree(currentTree)
         ) : null}
       </div>
     );

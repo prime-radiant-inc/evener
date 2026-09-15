@@ -174,4 +174,30 @@ describe("ActivityPanelBody watches", () => {
     await screen.findByTestId("watch-group");
     expect(screen.getByText("40 armed total · +8 more")).toBeTruthy();
   });
+
+  test("a failed activity load still shows the watches the rail counts", async () => {
+    // The watches are session data, not retained activity: a load that failed
+    // must not hide them, because an armed watch is often the only pending work
+    // the session has -- the exact case the rail's count exists to surface.
+    const ref = "ref_watch_failed_load";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/jobs/list", () => {
+      throw new Error("hub is down");
+    });
+
+    render(
+      <ActivityPanelBody
+        sessionRef={ref}
+        model={testModel(ref)}
+        now={NOW}
+        watches={[
+          watch({ id: "watch_failed_load", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
+        ]}
+      />,
+    );
+
+    expect(await screen.findByRole("treeitem", { name: "Watch: Poll the queue depth" })).toBeTruthy();
+    expect(screen.getByTestId("watch-facts").textContent).toContain("Fires every 10m");
+  });
 });
