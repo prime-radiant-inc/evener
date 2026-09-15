@@ -11,7 +11,10 @@ import "os"
 func defaultSkillsBaseRoot() string {
 	cache, err := os.UserCacheDir()
 	if err != nil || cache == "" {
-		return os.TempDir()
+		// An empty root sends the caller to its randomized private base. The temp
+		// root is not a substitute: the name there is predictable, and the Windows
+		// ownership predicates cannot tell whether another account created it.
+		return ""
 	}
 	return cache
 }

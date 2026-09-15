@@ -77,7 +77,9 @@ var embeddedSkillsCache struct {
 	// heldLeases keeps leases on fallback copies this process has moved on from.
 	// Sessions created while a fallback was current hold SkillFile paths inside
 	// it, so its lease is held for the process lifetime and the age reaper cannot
-	// collect the base while those paths are still needed.
+	// collect the base while those paths are still needed. A copy is added only
+	// when the cache moves off a fallback it was serving, so a retry that keeps
+	// the same copy adds nothing.
 	heldLeases []skillsLease
 }
 
@@ -85,6 +87,10 @@ var embeddedSkillsCache struct {
 // cache lives in. It is a seam so tests can point the cache at a temporary
 // directory; the default is defaultEmbeddedSkillsBaseDir.
 var embeddedSkillsBaseDir = defaultEmbeddedSkillsBaseDir
+
+// skillsBaseRoot names the per-user root the default base directory lives under.
+// It is a seam so tests can exercise a platform that cannot name that root.
+var skillsBaseRoot = defaultSkillsBaseRoot
 
 // EmbeddedSkillsDir returns a directory holding the bundled skills, published
 // once per distinct embedded content and shared by every caller and every later
@@ -122,9 +128,14 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 // ensureEmbeddedSkillsLocked publishes the bundled skills when the cached copy
 // is gone and refreshes the cached metadata. The caller holds the cache mutex.
 func ensureEmbeddedSkillsLocked() (string, error) {
+	// retryFallbackDir is a live fallback copy whose retry window has passed. It
+	// is kept while the shared cache is retried and reused if that retry fails,
+	// so an outage does not accumulate a copy and a lease per retry.
+	retryFallbackDir := ""
 	if embeddedSkillsCache.dir != "" && embeddedSkillsCache.skills != nil {
 		cached := embeddedSkillsCache.dir
-		if embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached) {
+		switch {
+		case embeddedSkillsCache.fallback && embeddedSkillsCache.verified && cacheDirExists(cached):
 			// A fallback copy is only usable while its own lease is held, and it
 			// is only reused until the shared cache is due for another try.
 			if embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() &&
@@ -132,8 +143,8 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 				touchDir(cached)
 				return cached, nil
 			}
-			forgetEmbeddedSkillsLocked()
-		} else if embeddedSkillsCache.verified && cacheDirExists(cached) {
+			retryFallbackDir = cached
+		case embeddedSkillsCache.verified && cacheDirExists(cached):
 			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
 				touchDir(cached)
 				return cached, nil
@@ -141,14 +152,14 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			// The copy was reaped or cannot be leased: forget it and publish
 			// another rather than hand back one whose files may vanish.
 			forgetEmbeddedSkillsLocked()
-		} else if !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest) {
+		case !embeddedSkillsCache.verified && cacheDirUsable(cached, embeddedSkillsCache.digest):
 			if err := claimEmbeddedSkillsLocked(cached); err == nil && cacheDirExists(cached) {
 				embeddedSkillsCache.verified = true
 				touchDir(cached)
 				return cached, nil
 			}
 			forgetEmbeddedSkillsLocked()
-		} else {
+		default:
 			forgetEmbeddedSkillsLocked()
 		}
 	}
@@ -190,6 +201,14 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		// from its window may still read skill files inside it, and the age-based
 		// reaper collects it once nothing holds it.
 		return dir, nil
+	}
+	if retryFallbackDir != "" && cacheDirExists(retryFallbackDir) &&
+		embeddedSkillsCache.lease != nil && embeddedSkillsCache.lease.Valid() {
+		// The shared cache is still unusable, so keep serving the copy this
+		// process already leased instead of publishing a replacement.
+		embeddedSkillsCache.fallbackUntil = time.Now().Add(fallbackRetryInterval)
+		touchDir(retryFallbackDir)
+		return retryFallbackDir, nil
 	}
 	// The shared cache kept being reaped. Publish a private base under the reaped
 	// per-user prefix instead, so the copy has the same lease protection and age
@@ -241,7 +260,6 @@ func claimEmbeddedSkillsLocked(dir string) error {
 		// The lock file was replaced underneath the lease, so it guards nothing.
 		releaseSkillsLeaseLocked()
 	}
-	releasePreviousSkillsLeaseLocked()
 	path, err := skillsLockPath(filepath.Dir(dir), filepath.Base(dir), true)
 	if err != nil {
 		return err
@@ -253,6 +271,10 @@ func claimEmbeddedSkillsLocked(dir string) error {
 	if err != nil {
 		return err
 	}
+	// The lease held for the previous copy is dropped only once the new copy is
+	// protected, so a failed claim leaves a fallback copy leased and a retry can
+	// keep serving it rather than publish a replacement.
+	releasePreviousSkillsLeaseLocked()
 	embeddedSkillsCache.lease = lease
 	embeddedSkillsCache.leasedDir = dir
 	return nil
@@ -316,9 +338,14 @@ func forgetEmbeddedSkillsLocked() {
 // namespaced by user and verified private, so another user on a shared host
 // cannot occupy the name or read the published copy.
 func defaultEmbeddedSkillsBaseDir() (string, error) {
-	dir := filepath.Join(defaultSkillsBaseRoot(), embeddedSkillsPrefix+processOwnerTag())
-	if err := ensurePrivateCacheDir(dir); err == nil {
-		return dir, nil
+	// A root the platform cannot name must not become a predictable path under a
+	// shared temp root: joining an empty root would produce a relative name, so
+	// the randomized private base below is used instead.
+	if root := skillsBaseRoot(); root != "" {
+		dir := filepath.Join(root, embeddedSkillsPrefix+processOwnerTag())
+		if err := ensurePrivateCacheDir(dir); err == nil {
+			return dir, nil
+		}
 	}
 	// The predictable name can still be squatted on a shared host, and the
 	// sticky bit prevents removing a foreign directory. A randomized private

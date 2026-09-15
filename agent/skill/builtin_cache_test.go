@@ -645,6 +645,76 @@ func TestClaimEmbeddedSkillsLocked_RetainsTheFallbackLease(t *testing.T) {
 	}
 }
 
+// A retry that cannot reach the shared base must keep the fallback copy it
+// already has: replacing it on every retry would leak one lease and one full
+// copy per attempt for as long as the base stays unusable.
+func TestEmbeddedSkillsDir_KeepsTheFallbackCopyAcrossRetries(t *testing.T) {
+	base := t.TempDir()
+	pointEmbeddedSkillsAtBase(t, base)
+	saved := acquireSkillsLease
+	acquireSkillsLease = func(path string, exclusive bool) (skillsLease, bool, error) {
+		if strings.HasPrefix(path, filepath.Join(base, skillsLockDirName)) {
+			return nil, true, nil
+		}
+		return saved(path, exclusive)
+	}
+	t.Cleanup(func() { acquireSkillsLease = saved })
+	t.Cleanup(releaseHeldSkillsLeases)
+
+	first, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (fallback): %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(first)) })
+
+	// The retry window passes while the shared base stays unusable.
+	embeddedSkillsCache.mu.Lock()
+	firstLease := embeddedSkillsCache.lease
+	embeddedSkillsCache.fallbackUntil = time.Now().Add(-time.Second)
+	embeddedSkillsCache.mu.Unlock()
+
+	again, err := EmbeddedSkillsDir()
+	if err != nil {
+		t.Fatalf("EmbeddedSkillsDir (retry): %v", err)
+	}
+	if again != first {
+		t.Fatalf("fallback copy was replaced on retry: %q then %q", first, again)
+	}
+	embeddedSkillsCache.mu.Lock()
+	lease, held, until := embeddedSkillsCache.lease, len(embeddedSkillsCache.heldLeases), embeddedSkillsCache.fallbackUntil
+	embeddedSkillsCache.mu.Unlock()
+	if lease == nil || lease != firstLease {
+		t.Fatal("retry did not keep the fallback copy's lease")
+	}
+	if held != 0 {
+		t.Fatalf("retry retained %d extra fallback leases", held)
+	}
+	if !until.After(time.Now()) {
+		t.Fatalf("fallback retry window was not extended: %v", until)
+	}
+}
+
+// A platform that cannot name the per-user cache root must not fall back to a
+// predictable name under a shared temp root, where another account could create
+// it first; the randomized private base is used instead.
+func TestDefaultEmbeddedSkillsBaseDir_RandomizesWhenNoRoot(t *testing.T) {
+	saved := skillsBaseRoot
+	skillsBaseRoot = func() string { return "" }
+	t.Cleanup(func() { skillsBaseRoot = saved })
+
+	dir, err := defaultEmbeddedSkillsBaseDir()
+	if err != nil {
+		t.Fatalf("defaultEmbeddedSkillsBaseDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if want := embeddedSkillsPrefix + processOwnerTag() + "-"; !strings.HasPrefix(filepath.Base(dir), want) {
+		t.Fatalf("base %q is not a randomized private directory", dir)
+	}
+	if !strings.HasPrefix(dir, os.TempDir()) {
+		t.Fatalf("base %q is not under the temp dir %q", dir, os.TempDir())
+	}
+}
+
 // A copy that cannot be leased must not be handed out: the reaper could delete it
 // mid-session. The stub blocks every lease, the private fallback's included, so
 // resolution has nothing protected to return.
