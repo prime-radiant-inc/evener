@@ -225,14 +225,15 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.getByText("No notes yet")).toBeTruthy();
   expect(screen.queryByText("Add a note…")).toBeNull();
   // The visible preview IS the accessible name - a generic label would hide
-  // the content from screen readers. The hint is a DESCRIPTION, not part of
-  // the name: rendered inside the button it would be announced twice (once
-  // via name-from-content, once via the description).
+  // the content from screen readers. The hint is aria-hidden so it stays out
+  // of the NAME while aria-describedby still resolves it as the description
+  // (one announcement, not two).
   expect(summary.getAttribute("aria-label")).toBeNull();
   const describedBy = summary.getAttribute("aria-describedby");
   expect(describedBy).toBeTruthy();
-  expect(document.getElementById(describedBy ?? "")?.textContent).toContain("Click to view");
-  expect(summary.textContent).not.toContain("Click to");
+  const hint = document.getElementById(describedBy ?? "");
+  expect(hint?.textContent).toContain("Click to view");
+  expect(hint?.getAttribute("aria-hidden")).toBe("true");
 
   // Reading still works: the body expands, but a read-only session mounts
   // no editor to type into.
@@ -388,4 +389,15 @@ test("a focus request on a read-only session waits for the session to accept wri
   view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "idle" } }} />);
   const textarea = screen.getByRole("textbox", { name: "Human note" });
   await waitFor(() => expect(document.activeElement).toBe(textarea));
+});
+
+test("clicking the hint text toggles like the rest of the bar", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // The hint is one live part of the whole-bar click target, not dead text
+  // beside it.
+  await user.click(screen.getByText("Click to expand"));
+  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
 });
