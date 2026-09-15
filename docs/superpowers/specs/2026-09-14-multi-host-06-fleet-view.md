@@ -653,7 +653,9 @@ only `local`, so the fan-out currently degenerates to one source.
   **not** issue these methods on the plain controller connection and rely on the
   handler being host-aware: the controller's handlers run against the
   controller's local environment. `RemoteHubSource` is not the path for these
-  calls — none is on the `Source` interface (component 05, §"Method-coverage
+  calls — of the set above only `model/list` is on the `Source` interface (as
+  `ListModels`, for thread model selection), and that source method does not
+  scope a spawn form's host-selection read (component 05, §"Method-coverage
   analysis") — the proxy envelope is. A remote working directory is therefore
   validated on the remote filesystem, not the controller's, and the `host` the
   form passes must be the same value it sends as `ThreadStartParams.Source`.

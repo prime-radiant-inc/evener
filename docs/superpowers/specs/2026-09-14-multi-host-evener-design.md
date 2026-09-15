@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–19)
+## Tracked code follow-ups (rounds 7–21)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -498,3 +498,43 @@ exact scope. None is a present fact.
   projection `navigation_projection.go`. Mirrors component-06 §"Migration of
   existing decisions — the uniqueness keys must be rebuilt, not just widened"
   and its canonical-local-source requirement.
+- **[04] fail-closed supervisor ambiguity (round 21)** — the cold-bootstrap
+  unit-definition match must preserve the shipped `pickSupervisor` refusal:
+  **more than one match is `ErrRestart` with no kill and no relaunch**
+  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`,
+  `multi-host-pr04b-deploy-restart`, pending merge), never a fall-through to
+  the ad hoc launch, and the same refusal applies when an identified launchd
+  label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
+  path is reached only when **no** candidate definition matches. Scope:
+  `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
+  `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
+  Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and
+  criterion 19.
+- **[05] remote image bytes (round 21)** — a host-qualified controller route
+  plus an AppWire image-fetch request on the owning host's client, and a
+  rewrite of every image URL the remote hub stamped (`/s/<id>/images/<sha>`,
+  `/doc/image?session=<id>&path=…`) in outbound thread translation and
+  notification translation, so no remote-stamped URL reaches the controller's
+  local handlers (a colliding local session id would otherwise be read).
+  Scope: `appwire/protocol.go` + `appwire/types.go` (the new hub-scoped method
+  and params, regenerated bindings); the host-side handler in
+  `cmd/evener-hub/app_rpc.go` (byte resolution mirroring `handleSessionImage`
+  and `handleDocImage`); the controller route/handler in `cmd/evener-hub/web.go`,
+  `image_serve.go`, `doc_serve.go`; `cmd/evener-hub/internal/appsource/remote_hub_refs.go`
+  (`translateOut`, `translateNotification`); the `EnrichThreadFileBackedImages`
+  gate in `cmd/evener-hub/app_rpc.go`. Mirrors component-05 §"Image URLs are
+  host-scoped and must be rewritten through the controller".
+- **[05] remote item-candidate paging (round 21; implemented on the in-flight
+  05a branch — keep it in scope)** — the spec now *requires*
+  `ItemReadCandidateSource` (`ItemCandidatesFromRead`) and
+  `ItemCandidateSource` (`ReadItemCandidates`/`ListItemCandidates`) on
+  `RemoteHubSource` (controller-minted cursor identity + `RebaseCursor`
+  translation of the remote's native cursor), because the hub packer cannot
+  emit a continuation cursor without an identity.
+  `multi-host-pr05a-remote-hub-source`
+  (`remote_hub_source.go`, `remote_hub_source_paging_test.go`) is the shape;
+  the read path must not fall back to the legacy packer, which errors with
+  `legacy transcript item source cannot page without cursor identity`. Scope:
+  `cmd/evener-hub/internal/appsource/remote_hub_source.go` (+ its paging
+  tests). Mirrors component-05 §"Remote item paging requires a source-owned
+  cursor identity".

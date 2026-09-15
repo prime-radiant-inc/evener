@@ -884,11 +884,14 @@ deploy landed.
     checks enforce (§"Stop/restart mechanics" checks 1–4);
   - it starts the host hub the **same way the restart path does** — the
     identified supervisor's start (`launchctl kickstart -k gui/<uid>/<label>` /
-    `systemctl [--user] start <unit>`) when a unit is unambiguously identified,
-    otherwise the ops doc's detached ad hoc launch of the resolved
+    `systemctl [--user] start <unit>`) when **exactly one** unit matches, and
+    the ops doc's detached ad hoc launch of the resolved
     `evener_path`/`command -v evener` with the recovered-or-default log
-    (`relaunchCommand`) — and `hub.lock` makes a losing second process exit
-    rather than bind;
+    (`relaunchCommand`) when **none** does; an **ambiguous** match starts
+    nothing and fails with `ErrRestart` (a matched unit may start its own
+    instance, so an ad hoc duplicate would split supervision —
+    §"Stop/restart mechanics") — and `hub.lock` makes a losing second process
+    exit rather than bind;
   - **the cold-bootstrap ad hoc launch needs an explicitly constructed argv,
     because there is no recovered `ps` line to tokenize.** The restart path's
     ad hoc launch reuses `relaunchCommand`, which tokenizes the recovered
@@ -1116,16 +1119,25 @@ deploy landed.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
-  it names owns the configured address; several candidates, or none, fall
-  through to the ad hoc path. "First name that contains `evener` and `hub`
-  wins" is not acceptable, because restarting an unrelated unit is exactly the
-  failure this rule prevents. (Today's implementation matches names by
-  substring in `isEvenerHubName`, but it already refuses ambiguity rather than
-  taking the first match — `pickSupervisor` requires exactly one named hub and
-  `findHubPID` requires exactly one pid from `lsof -ti :<port> -sTCP:LISTEN`;
-  what it does not do is check that the named hub *owns the configured
-  address*, and the bare path does not compare the effective user. The
-  contract above is stricter.)
+  it names owns the configured address. The three outcomes are distinct:
+  **exactly one ⇒ use it**; **none ⇒ the ad hoc path**
+  (there is genuinely no supervisor to defer to); **several ⇒ refuse
+  `ErrRestart` with no kill and no relaunch**. An ambiguous match means at
+  least one matched unit may start or restart its own instance, so an
+  unmanaged launch beside it is split supervision and `hub.lock` contention —
+  the exact failure this rule exists to prevent, the same hazard as the
+  unresolvable-address case below. "First name that contains `evener` and
+  `hub` wins" is not acceptable either, because restarting an unrelated unit
+  is the other failure this rule prevents. (Today's implementation matches
+  names by substring in `isEvenerHubName`, and `pickSupervisor` already
+  refuses ambiguity rather than taking the first match — it returns
+  `ErrRestart` for more than one match, "an ambiguous listing is fatal, not a
+  fallback" (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`, pending
+  merge) — while `findHubPID` requires exactly one pid from
+  `lsof -ti :<port> -sTCP:LISTEN`; what it does not do is check that the named
+  hub *owns the configured address*, and the bare path does not compare the
+  effective user. The contract above is stricter, and the definition-matching
+  cold-bootstrap path must preserve the same ambiguity refusal.)
   **A stopped host has no listening socket, so "owns the configured address"
   cannot be the only supervisor-detection signal on the cold-bootstrap path.**
   When the hub is stopped the address check always fails, which would force
@@ -1152,8 +1164,10 @@ deploy landed.
   (e.g. in `Description=`/`Environment=`, or an unrelated process's flag) or
   merely names a path containing `evener`/`hub` is **not** a match: without both
   facts it can select and start an unrelated service. The exactly-one-candidate
-  refusal still applies: several matches, or none, fall through to the ad hoc
-  path. **When a candidate hub definition exists but its effective address
+  rule still applies, with the same three outcomes: **several matches refuse
+  `ErrRestart` and start nothing** (no ad hoc launch chosen on top of an
+  ambiguity), and **only no match at all** falls through to the ad hoc path.
+  **When a candidate hub definition exists but its effective address
   cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
   carries no address), the cold bootstrap **refuses with `ErrRestart` and
   starts nothing** — it must not fall through to the ad hoc launch and risk a
@@ -1198,9 +1212,11 @@ deploy landed.
      `gui/$(id -u)/<label>` would reach `launchctl` as the literal string
      `gui/$(id -u)/<label>` with no expansion and never restart the unit. With
      the numeric uid and a `<label>` validated against the bare-safe set
-     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it refuses the supervised
-     path and falls through to the ad hoc path rather than injecting into the
-     remote shell), the whole `gui/<uid>/<label>` argument is one bare-safe word
+     (`[A-Za-z0-9_.-]`, no `/`; a label that fails it **refuses the restart
+     with `ErrRestart`, no signal and no relaunch**, rather than injecting into
+     the remote shell — an identified supervisor is never bypassed for an
+     unmanaged launch, and a Darwin ad hoc launch is unavailable anyway), the
+     whole `gui/<uid>/<label>` argument is one bare-safe word
      passed verbatim. Adding `gui/$(id -u)/<label>` to the raw exception list is
      rejected: the label is host-derived data, so passing it raw is exactly the
      injection the quoted path avoids. Detection is from the host's
@@ -1442,7 +1458,8 @@ with the remote hub and its daemons still running.
   returns `ErrRestart` with **no** `kill` and no relaunch argv in the runner log.
   Tokenizer unit tests cover quotes/escapes and each refusal.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
-  ad hoc path, never "first match".
+  `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
+  "first match" and never an ad hoc launch); zero candidates → the ad hoc path.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
@@ -1576,7 +1593,9 @@ with the remote hub and its daemons still running.
     supervisor (or the detached ad hoc launch), waits for `/api/health`
     `version == expected`, and attaches only after it matches; an address a hub
     already owns starts nothing, and a hub that never becomes healthy attaches
-    nothing and fails with `ErrRestart`. The cold ad hoc launch passes the
+    nothing and fails with `ErrRestart`. An **ambiguous** unit-definition match
+    starts nothing and fails with `ErrRestart` (never an ad hoc duplicate, and
+    `hub.lock` contention is not risked). The cold ad hoc launch passes the
     entry's `hub [--config <config_path>] [--addr <addr>]` (each shell-quoted,
     log under `<stateRoot>`), so a host on a non-default port becomes healthy
     rather than failing on the default address.
@@ -1600,7 +1619,9 @@ with the remote hub and its daemons still running.
     basename restarts; a non-hub executable still refuses.
 19. The supervised darwin restart passes `gui/<numeric-uid>/<label>` as one
     bare-safe word (uid from preflight), and a label outside the bare-safe set
-    falls through to the ad hoc path; no `$(id -u)` reaches the remote shell.
+    **refuses with `ErrRestart` (no signal, no relaunch)** instead of falling
+    through to an unmanaged ad hoc launch; no `$(id -u)` reaches the remote
+    shell.
 20. Restart safety is hardened against the identification/signal PID-reuse
     window. The signal is a **guarded compare-and-kill**: the pid, recovered
     argv (with `--config`/`--addr` agreeing with the entry's configured

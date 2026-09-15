@@ -70,13 +70,23 @@ refs between the controller's `host:<thread>` namespace and the remote hub's
 - Host config schema and cycle rejection: component 03.
 - Fleet fan-out, host picker UI, offline/dormant presentation: component 06.
 - Per-host settings proxying and credential push: component 07.
-- Native item-candidate paging (`appsource.ItemCandidateSource` /
-  `ItemReadCandidateSource` / `CombinedItemReadSource`,
-  `cmd/evener-hub/internal/appsource/source.go`). A source that does not
-  implement these falls back to `sourceItemCandidateResultForRead` /
-  `sourceItemCandidateResultForList`
-  (`cmd/evener-hub/app_item_page_fit.go`), so v1 is correct without them.
-  Adding them is a later optimization.
+- **Remote item paging is required, not deferred: the fallback cannot page.**
+  `appsource.ItemCandidateSource` / `ItemReadCandidateSource`
+  (`cmd/evener-hub/internal/appsource/source.go`) must be implemented by
+  `RemoteHubSource`. The legacy fallback
+  (`sourceItemCandidateResultForRead` / `sourceItemCandidateResultForList`,
+  `cmd/evener-hub/app_item_page_fit.go`) produces a candidate window with a
+  **zero** `Identity`, and the packer refuses to emit a continuation cursor it
+  cannot re-encode (`legacy transcript item source cannot page without cursor
+  identity`, `app_item_page_fit.go:229-243`) whenever the response carries a
+  non-empty `OlderCursor`/`NextCursor`. A remote hub packs its own replies, so
+  every multi-page remote read/list carries one. See §"Remote item paging
+  requires a source-owned cursor identity".
+  `CombinedItemReadSource` (`ReadThreadWithItemCandidates`) is **not**
+  required: the packer consumes the already-materialized response through
+  `ItemCandidatesFromRead`. This bullet supersedes the earlier
+  "so v1 is correct without them / adding them is a later optimization" claim,
+  which was wrong for a source whose replies carry a cursor.
 - Atomic relay handoff (`appsource.RelaySessionSource`,
   `cmd/evener-hub/internal/appsource/source.go`). v1 uses the legacy
   read-then-subscribe path (`cmd/evener-hub/app_relay.go`); see §Data
@@ -139,8 +149,8 @@ inline inside a registration function, the registration function is named.
 |---|---|---|---|---|
 | `ID` | — | — | — | local; returns host name |
 | `ListThreads` | `MethodThreadList` | `ScopeBoth` | `hubThreadList` (`app_threadlist.go`) | forward; **remap `SourceIDs`**, translate refs |
-| `ReadThread` | `MethodThreadRead` | `ScopeBoth` | inline in `registerThreadHandlers` (`app_rpc.go`) | forward; translate refs, **including the nested `Thread.Evener.Diagnostics` job/delegate refs** |
-| `ListTurns` | `MethodThreadTurnsList` | `ScopeBoth` | inline in `registerThreadHandlers` | forward |
+| `ReadThread` | `MethodThreadRead` | `ScopeBoth` | inline in `registerThreadHandlers` (`app_rpc.go`) | forward; translate refs, **including the nested `Thread.Evener.Diagnostics` job/delegate refs**, **rewrite image URLs** (§"Image URLs are host-scoped and must be rewritten through the controller"), and implement `ItemCandidatesFromRead` (§"Remote item paging requires a source-owned cursor identity") |
+| `ListTurns` | `MethodThreadTurnsList` | `ScopeBoth` | inline in `registerThreadHandlers` | forward; **implement `ListItemCandidates`** — the controller cursor is decoded and translated to the remote hub's native cursor here (§"Remote item paging requires a source-owned cursor identity") |
 | `StartThread` | `MethodThreadStart` | `ScopeHub` | `hubThreadStart` (`app_threadlifecycle.go`) | forward; **strip the controller-only `Source` field**; remote hub spawns on the host |
 | `ResumeThread` | `MethodThreadResume` | `ScopeHub` | `hubThreadResume` (`app_threadlifecycle.go`) | forward; translate refs |
 | `ForkThread` | `MethodThreadFork` | `ScopeHub` | `hubThreadFork` (`app_threadlifecycle.go`) | forward |
@@ -183,18 +193,32 @@ running the handler — the plugin preview (`MethodEvenerPluginPreview`, wire
 (`MethodEvenerInstanceList`, wire `evener/instance/list`, `app_instances.go`) —
 and the remaining spawn-form discovery reads
 (`MethodEvenerHarnessesList`, `evener/harnesses/list`;
-`MethodEvenerSpawnSlashCatalog`, `evener/spawn/slashCatalog`; `MethodModelList`,
-`model/list`, `ScopeBoth`) take no ref, so naming the host is the **only** way
-to scope them. They are forwarded as normal hub-scoped methods through the
-host-scoped request envelope `evener/host/request` (component 07, §"Proxy
-method"), which carries the selected host and method name — **not** through
-`RemoteHubSource` (none is on the `Source` interface). This is the routing
-component 06's spawn-form discovery calls use, and the exact set the
-component-07 allow-list must carry (component 06, §"Frontend changes";
-component 07, §"Proxy method"). The launch resolution the spawn form also needs
-(`MethodEvenerLaunchResolve`, `evener/launch/resolve`, `ScopeHub`) is already
-in the launch admin family (component 07, §"Proxy method"), so it is not
-repeated here.
+`MethodEvenerSpawnSlashCatalog`, `evener/spawn/slashCatalog`) take no ref, so
+naming the host is the **only** way to scope them. They are forwarded as normal
+hub-scoped methods through the host-scoped request envelope
+`evener/host/request` (component 07, §"Proxy method"), which carries the
+selected host and method name — **not** through `RemoteHubSource` (none of
+these five-plus calls is on the `Source` interface: `MethodEvenerPathsComplete`,
+`MethodEvenerDirsCreate`, `MethodEvenerProjectsRecent`,
+`MethodEvenerPathValidate`, `MethodEvenerGitHead`, `MethodEvenerPluginPreview`,
+`MethodEvenerInstanceList`, `MethodEvenerHarnessesList`,
+`MethodEvenerSpawnSlashCatalog`). This is the routing component 06's spawn-form
+discovery calls use, and the exact set the component-07 allow-list must carry
+(component 06, §"Frontend changes"; component 07, §"Proxy method").
+`MethodModelList` (`model/list`, `ScopeBoth`) is **also in this host-selection
+set** — it takes no ref, so the spawn form's host-scoped model discovery must
+route it through `evener/host/request` too — but it is additionally reachable
+as `Source.ListModels` on `RemoteHubSource` (table above), because a thread on
+a known host must be able to list that host's models over the shared client
+without a second routing seam. The two routings are not in conflict: the
+allow-list entry serves host-selection callers with no ref, the source method
+serves ref-owning callers (thread model selection). An implementer who reads
+the allow-list as exhaustive for `model/list` would silently drop
+`RemoteHubSource.ListModels`; component 06/07's single-shared-source-of-truth
+parity requirement is written over the union, not over the allow-list alone.
+The launch resolution the spawn form also needs (`MethodEvenerLaunchResolve`,
+`evener/launch/resolve`, `ScopeHub`) is already in the launch admin family
+(component 07, §"Proxy method"), so it is not repeated here.
 
 **Ref-dispatched calls — served by the controller, never forwarded.** These
 already reach the right host through the *ref*, so they must not be sent
@@ -895,6 +919,81 @@ Ref translation detail (`remote_hub_refs.go`):
   notifications are not an optional extra: every nested session-reference field
   is in scope, and a new payload that adds one inherits the rule.
 
+**Remote item paging requires a source-owned cursor identity.** The hub's
+item-page packer re-encodes the continuation cursor from the candidate result's
+`Identity` (`packedOlderCursor`, `cmd/evener-hub/app_item_page_fit.go`); the
+fallback for a source that does not implement the candidate interfaces supplies
+a zero identity and returns `legacy transcript item source cannot page without
+cursor identity` (`app_item_page_fit.go:229-243`) as soon as the response
+carries a non-empty `OlderCursor`/`NextCursor`. A remote hub packs its own
+replies, so a remote thread whose window stops short of the oldest item always
+carries one: **without these interfaces every multi-page remote read or list
+fails the request instead of returning its first page.** `RemoteHubSource` must
+therefore implement:
+
+- `ItemCandidatesFromRead` (`appsource.ItemReadCandidateSource`, `source.go`):
+  convert the already-materialized remote read into an `ItemCandidateResult` —
+  **no second transcript read** — whose `Candidates` are the response's items
+  and whose `Identity` is a **controller-minted, source-scoped** cursor
+  identity; retain the remote hub's opaque `OlderCursor` behind that identity
+  (it is the remote hub's continuation token, never a browser value).
+- `appsource.ItemCandidateSource` — `ListItemCandidates` decodes the browser's
+  controller cursor against the retained identity (`appitempaging.DecodeCursor`),
+  validates its boundary against the retained window, and translates it to the
+  remote hub's own cursor for the forwarded `thread/turns/items/list`
+  (`appitempaging.RebaseCursor`), so the cursor the browser round-trips is
+  always re-encoded under the same identity and validated before any remote
+  call. An unrecognized, stale, or identity-mismatched cursor returns
+  `appwire.TranscriptItemCursorStale()`, never a bare remote error. The
+  interface's `ReadItemCandidates` (the item-mode read entry) must be
+  implemented too — it satisfies the interface arity and may delegate to the
+  same conversion + retention path as `ItemCandidatesFromRead`.
+
+The identity must rotate when the observed window is rewritten (an item
+replaced, the transcript re-projected) so a stale continuation cannot splice
+two different projections; the retention/rotation policy and the per-thread
+serialization of paging are the implementing PR's.
+`remote_hub_source_paging_test.go` (`multi-host-pr05a-remote-hub-source`,
+pending merge) is the shape to keep — a multi-page round trip through the real
+packer, plus stale/rotated-boundary refusals.
+
+**Image URLs are host-scoped and must be rewritten through the controller.**
+A hub stamps image URLs into the thread snapshots it returns: the sha-addressed
+replay form `/s/<session>/images/<sha>` (`sessionImageURL` /
+`stampSessionImageURLs`, `cmd/evener-hub/output_images.go`; the bytes are
+re-scanned from that hub's `sessions/<id>.transcript.jsonl`) and the
+file-backed form `/doc/image?session=<session>&path=<rel>`
+(`outputImagesForToolCall`, `output_images.go`; resolved against that hub's
+session CWD). **Both routes are serving-hub-local by construction.** The
+controller's handlers resolve the session id only against its *own* state —
+`handleSessionImage` (`image_serve.go`) requires the id in the controller's
+past index, and `handleDocImage`/`localSessionCWD` (`doc_serve.go`) refuses a
+non-local route id and otherwise reads the controller's past/roster — so a URL
+stamped by the *remote* hub either 404s or, when the controller has a local
+session with the same id, resolves against the **wrong session** (the
+file-backed form would read a controller-local file relative to that session's
+CWD). The remote path must therefore:
+
+- rewrite every image URL a remote hub stamped — `OutputImages[].URL` on thread
+  snapshots in `ReadThread`/`ListThreads` and on any notification payload that
+  carries item descriptors — to a host-qualified controller route that names
+  `s.id` and the remote session/thread, so the browser never requests a
+  remote-stamped URL from the controller;
+- serve that route by fetching the bytes from the owning host over the attached
+  channel (an AppWire image-fetch request on that host's client). The host
+  hub's HTTP endpoint is dialed over loopback by the bridge and is not
+  reachable from the controller, so the controller must proxy the bytes, not
+  redirect; an unattached or unknown host is refused typed and never falls back
+  to a local read;
+- keep the controller's file-backed enrichment pass off remote threads
+  (`threadReadLocalImagePolicy` / `EnrichThreadFileBackedImages`, `app_rpc.go`),
+  so the controller never probes controller-local paths named by remote data —
+  the remote hub has already enriched its own replies; it is the *URLs* that
+  must be translated.
+
+A remote-stamped URL that reaches the local handlers is a wrong-machine read,
+not merely a 404, because session ids are namespaced per host.
+
 ## Data flow
 
 Attach and probe (component 04 drives, 05 owns the probe):
@@ -918,7 +1017,12 @@ browser: thread/read ref="host:S"
  → RemoteHubSource.ReadThread: ref "local:S" → client.Request(thread/read)
  → remote hub handler runs against its local daemon source
  → response Thread.Evener.Ref "local:S" → rewritten to "host:S"
- → controller's relay/past-image enrichment runs as for any source
+ → the remote hub's image URLs (/s/<id>/images/<sha>, /doc/image?session=<id>…)
+   are rewritten to the host-qualified controller route
+   (§"Image URLs are host-scoped and must be rewritten through the controller")
+ → controller's relay runs as for any source; the local file-backed image
+   enrichment pass does not run for a remote source (the remote hub already
+   enriched its own reply)
 ```
 
 Subscription path:
@@ -1112,6 +1216,29 @@ network.
     (`appwire.Client.Request` over a `StreamTransport` answering with the real
     JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
     assert an unrecognized `Data` payload passes through untouched.
+14. **Remote item paging round trip.** Over the scripted (or in-process) remote
+    hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
+    packed first page whose `OlderCursor` is the controller cursor — **not** the
+    `legacy transcript item source cannot page without cursor identity` error —
+    and following that cursor through `thread/turns/items/list` returns the next
+    page. Assert the cursor forwarded on the wire is the **remote hub's own**
+    (not the browser's controller-encoded one), that a garbage/unknown cursor
+    returns `appwire.TranscriptItemCursorStale()`, and that a cursor minted
+    before the retained window was rewritten (rotation) is refused rather than
+    splicing two projections. With the fallback path this test fails with the
+    identity error, so it is the regression guard.
+15. **Remote image URL translation.** A remote read/list snapshot carrying
+    `OutputImages[].URL` of each stamped form (`/s/<id>/images/<sha>`,
+    `/doc/image?session=<id>&path=…`) reaches the caller rewritten to the
+    host-qualified controller route, and a notification payload carrying item
+    descriptors is rewritten the same way; assert the typed `URL` fields (a
+    `local:`-style substring scan does not pin them). Assert the rewritten
+    route is served by proxying the fetch to the owning host's client and never
+    by the controller's local `handleSessionImage`/`handleDocImage` resolution
+    (a colliding local session id must not be read), and that the controller's
+    file-backed enrichment pass does not run for a remote source
+    (`EnrichThreadFileBackedImages`/`threadReadLocalImagePolicy` gate), so no
+    controller-local path is probed from remote data.
 
 ## Acceptance criteria
 
@@ -1168,6 +1295,19 @@ network.
   spawn whose effective source (set `Source`, or the legacy harness fallback) is
   non-local is refused and never routed, so a preserved harness naming one of
   the recipient's own configured hosts cannot bypass the guard.
+- A multi-page remote read/list round-trips through the packer: the first page
+  carries a controller cursor, the continuation forwards the remote hub's own
+  cursor, and no remote path returns
+  `legacy transcript item source cannot page without cursor identity`
+  (`RemoteHubSource` satisfies `ItemReadCandidateSource`
+  (`ItemCandidatesFromRead`) and `ItemCandidateSource`
+  (`ReadItemCandidates`/`ListItemCandidates`) with a controller-minted identity
+  and `RebaseCursor` translation).
+- Image URLs stamped by the remote hub are rewritten to the host-qualified
+  controller route in reads, lists, and notification payloads; that route
+  proxies the bytes from the owning host over the attached channel and never
+  reaches the controller's local image resolution, which would read a local
+  session with a colliding id.
 
 ## PR size estimate (LOC)
 
@@ -1176,7 +1316,8 @@ Land as a series, each independently reviewable:
 - **05a — skeleton, ref translation, read path, registration.** ~300 LOC +
   ~250 test. `remote_hub_source.go`, `remote_hub_refs.go`,
   `newHubSourceRegistry` wiring. Read-only methods (`ID`, `ListThreads`,
-  `ReadThread`, `ListTurns`, `ListModels`).
+  `ReadThread`, `ListTurns`, `ListModels`) plus the item-candidate paging pair
+  (`ItemCandidatesFromRead`/`ListItemCandidates`) the packer requires.
 - **05b — subscription fan-out.** ~200 LOC + ~200 test.
   `remote_hub_subscription.go`: shared-client fan-out, notification
   translation, `SubscribeThread`, and the per-thread reference count whose zero
@@ -1187,8 +1328,10 @@ Land as a series, each independently reviewable:
   `HostCapabilities`/`CapabilitySource`, preflight wiring.
 - **05e (optional) — `evener/host/info`.** ~60 LOC + ~30 test, only if OS/arch
   must arrive over AppWire.
-- Deferred, separate PR: native item-candidate paging and
-  `RelaySessionSource` atomic handoff.
+- Deferred, separate PR: `RelaySessionSource` atomic handoff (open question 1).
+  Native item-candidate paging is **not** deferred — the packer cannot page
+  without it (§"Remote item paging requires a source-owned cursor identity") —
+  and it is 05a scope.
 
 Total ≈ 950–1250 LOC plus tests. Component 05 is the largest of the seven;
 splitting per the above keeps each PR reviewable.

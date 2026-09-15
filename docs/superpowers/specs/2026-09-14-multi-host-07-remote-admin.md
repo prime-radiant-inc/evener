@@ -455,12 +455,16 @@ the file path or writes it. A bare `evener/auth/apiKey/set` is the old
 unconditional path and is **not** what the pusher calls; the classification and
 the write are one locked host-side operation (see "The no-clobber guarantee is
 atomic" immediately below), and the two-call "read `evener/auth/status`,
-classify, then set" form is **not** the contract.
+classify, then set" form is **not** the contract — the read may still precede
+the write to capture `ConfigRevision` for `ExpectedRevision` (below); what must
+not happen is classifying from it.
 
 **Merge / no-clobber policy.** The pusher may read the remote
 `evener/auth/status` for an instance (`app_auth.go`, `AuthStatusResponse`,
-`appwire/types.go`) **only to render the report**; it does **not** gate the
-write on that read. The permit/skip decision is made by the host inside the one
+`appwire/types.go`) to render the report **and to capture the instance's
+`ConfigRevision` for `ExpectedRevision`** (§"Where `ExpectedRevision` comes
+from"); it does **not** gate the write on that read. The permit/skip decision
+is made by the host inside the one
 locked conditional set (below), which re-resolves the source itself. A write is
 permitted **only** when the host resolves the instance's credential from the
 file layer or has none; every other source is skipped, because the pushed key
@@ -527,8 +531,11 @@ otherwise refuses without writing. Its response,
 `added`|`updated`|`skipped`; `Reason` a human-readable string; `Status` the
 post-write `AuthStatusResponse`), is the surface the push report reads: a
 `skipped` classification is delivered as a successful typed response, distinct
-from a wire error (`failed`). `evener/auth/status` is then read only to render
-the report, never to gate the write.
+from a wire error (`failed`). The `evener/auth/status` read that **supplies
+`ExpectedRevision` happens before the `conditionalSet`** (§"Where
+`ExpectedRevision` comes from"); any status read *after* the write renders the
+report only — use the response's `Status`, or a second read explicitly labelled
+report-only — and never gates or fences the write.
 
 **Where `ExpectedRevision` comes from (required, defined source).** The
 `ExpectedRevision` the controller sends is not invented: the read-only
@@ -536,11 +543,23 @@ responses the pusher already makes expose the instance's configuration
 revision. `AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`) each
 carry a `ConfigRevision string` — the same value the host re-resolves under
 `credentialWrite` (a digest/counter over the instance's effective credential
-configuration, stable while that configuration is unchanged). The controller
-captures it from the read-only `evener/auth/status` call it already makes for
-the report (and, for the implicit-provider fallback, from the joined
-`evener/instance/list` entry) **immediately before** the `conditionalSet`, and
-echoes that captured value as `ExpectedRevision`. This populates a request
+configuration, stable while that configuration is unchanged). Per instance the
+pusher's order is **normative**, and it is the order the flow diagram shows:
+
+1. read `evener/auth/status` (and, for the implicit-provider fallback, the
+   joined `evener/instance/list` entry) and capture `ConfigRevision`;
+2. issue `evener/auth/apiKey/conditionalSet` carrying that captured value as
+   `ExpectedRevision`;
+3. render the report — from the `Status` the `conditionalSet` response already
+   carries (`ApiKeyConditionalSetResponse.Status` is the post-write
+   `AuthStatusResponse`), or, only when post-write state beyond that is
+   genuinely needed, from a **second, explicitly report-only**
+   `evener/auth/status` read.
+
+Steps 1 and 2 must not be reversed: a status read taken after the write can
+only echo the post-write revision (or, if no pre-write read happened, the zero
+value), which silently removes the revision fence — exactly the check-then-act
+hazard this section exists to close. The captured value populates a request
 parameter only; it does not re-introduce a client-side gate, because the host
 compares the echoed value to its own under the lock and refuses on any change.
 A controller that has observed no revision (a first push, or a host response
@@ -654,9 +673,9 @@ Decompose component 07 into four landable PRs.
   and `Get()` (`internal/credentials/store.go`).
 - Query the remote `evener/instance/list` once with `{}` through the proxy
   channel (it takes `EmptyParams`; the join against the local store keys is on
-  the returned entries) and `evener/auth/status` per matched key to fill the
-  report and capture the instance's `ConfigRevision` (the `expectedRevision`
-  source above), and **write through the new host-side
+  the returned entries) and `evener/auth/status` per matched key **before the
+  write**, to capture the instance's `ConfigRevision` (the `expectedRevision`
+  source above), then **write through the new host-side
   `evener/auth/apiKey/conditionalSet`** with
   `{provider, value, expectedSource, expectedRevision}` — never the
   unconditional `evener/auth/apiKey/set`, which is not atomic with the
@@ -664,7 +683,9 @@ Decompose component 07 into four landable PRs.
   one `credentialWrite`-locked operation and returns
   `ApiKeyConditionalSetResponse{Action, Reason, Status}`. Every local store key
   is used verbatim as the wire `Provider` (the instance→provider join rule
-  above); a key with no remote `Name`/implicit-`ID` counterpart is skipped.
+  above); a key with no remote `Name`/implicit-`ID` counterpart is skipped. The
+  report is rendered from that response's `Status` (or a second, explicitly
+  report-only status read), not from the pre-write capture read.
 - Add the push action to the remote-credentials pane in the frontend
   (`src/panes/settings/sections/credentials/`).
 - No new on-disk state on the controller.
@@ -705,6 +726,12 @@ local credentials.toml                           host hub (remote)
   credentials.LoadStore(CredentialsPath())          |
   Names()/Get()  (store.go)               |
         |                                           |
+        |  evener/auth/status -------------------->| hubAuthController.Status (app_auth.go)
+        |    captures ConfigRevision                |
+        |    [+ the evener/instance/list entry      |
+        |     for the implicit-provider fallback]   |
+        |<-- ActiveSource, HasStoredFile, Revision -|
+        |                                           |
         |  evener/auth/apiKey/conditionalSet ------>| conditional-set handler (app_auth.go)
         |    {provider, value,                      |   under credentialWrite:
         |     expectedSource, expectedRevision}     |   re-resolve ActiveSource/
@@ -714,10 +741,8 @@ local credentials.toml                           host hub (remote)
         |<-- ApiKeyConditionalSetResponse ----------|   Action/Reason/Status
         |    {action, reason, status}               |   (skipped is a typed response, not an error)
         |                                           |
-        |  evener/auth/status (report only) ------->| hubAuthController.Status (app_auth.go)
-        |<-- ActiveSource, HasStoredFile -----------|
-        |                                           |
-  per-instance report -> browser
+  per-instance report -> browser (from the conditionalSet response's Status;
+  a second auth/status read is report-only, never a fence)
 ```
 
 Secrets flow controller→host over the AppWire channel only; the browser never
@@ -784,6 +809,15 @@ receives a key, and the controller writes nothing.
   (scripted by the fake host, matching the classification table above) rather
   than skipped controller-side, and that remote-only instances survive (fake
   host store compared before/after).
+- **Push ordering test (revision fence).** Against the fake remote, assert the
+  per-instance call sequence: the `evener/auth/status` read (or the joined
+  `evener/instance/list` entry for the implicit-provider fallback) that carries
+  `ConfigRevision` is issued **before** `apiKey/conditionalSet`, and the value
+  sent as `expectedRevision` equals what that read returned; assert a
+  `conditionalSet` is never sent with a zero/missing revision when the scripted
+  status response supplied one, and that the report is rendered from the
+  `conditionalSet` response's `Status` (any post-write status read is
+  report-only and cannot precede the write).
 - **Secret hygiene:** assert no key value appears in the push response, in the
   controller log output, or in a rendered error, reusing the secret-marked
   registry (`envvars/envvars.go`, `Secret`) and `redactEnvSecrets`
@@ -827,7 +861,12 @@ receives a key, and the controller writes nothing.
    writable. An `AuthNone` instance (`ActiveSource == "none"` with an auth-none
    transport) is **skipped**, never written: the host-side set refuses
    the key, and the `skipped`/`failed` distinction is carried by
-   `ApiKeyConditionalSetResponse.Action`/`.Reason`.
+   `ApiKeyConditionalSetResponse.Action`/`.Reason`. The revision fence is
+   delivered, not merely declared: per instance the `ConfigRevision` capture
+   read precedes the `conditionalSet` and its value is echoed as
+   `expectedRevision`; a post-write status read is report-only and never
+   substitutes for the pre-write capture, and the zero value is sent only when
+   the read itself observed no revision.
 6. The push report lists every local entry with `added`/`updated`/`skipped`/
    `failed` and a reason for skips; remote-only entries are preserved.
 7. No key value appears in the push response, controller logs, or errors; the
