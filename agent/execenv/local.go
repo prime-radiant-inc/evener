@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -1909,7 +1910,7 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	if maxResults <= 0 {
 		maxResults = 100
 	}
-	res, err := e.ExecCommand(ctx, rg+" "+shellEscapeArgs(args...), 10_000, e.RootDir, nil)
+	res, err := e.ExecCommand(ctx, rg+" "+ShellEscapeArgs(args...), 10_000, e.RootDir, nil)
 	if err == nil {
 		// Best-effort cap: keep first maxResults lines.
 		lines := strings.Split(res.Stdout, "\n")
@@ -2746,31 +2747,10 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 
 // ShellEscapeArgs joins args into a single shell command string, quoting each
 // token so it survives the shell word-splitting ExecCommand performs. It is the
-// argv-discipline helper the native worktree tools use to assemble git commands
-// (spec §2 "name validation": "Do not hand-build shell command strings"), so a
-// worktree name or path can never inject shell metacharacters.
-func ShellEscapeArgs(args ...string) string { return shellEscapeArgs(args...) }
-
-func shellEscapeArgs(args ...string) string {
-	var b strings.Builder
-	for i, a := range args {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(shellEscape(a))
-	}
-	return b.String()
-}
-
-func shellEscape(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if strings.IndexFunc(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '\\' || r == '$' || r == '`' || r == '!' || r == '(' || r == ')' || r == ';' || r == '|' || r == '&' || r == '<' || r == '>' || r == '*' || r == '?' || r == '[' || r == ']' || r == '{' || r == '}' || r == '~' || r == '#'
-	}) == -1 {
-		return s
-	}
-	// Single-quote escape strategy for bash.
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
+// argv-discipline helper used to assemble shell command strings (spec §2 "name
+// validation": "Do not hand-build shell command strings"), so a worktree name or
+// path can never inject shell metacharacters. The quoting itself lives in
+// internal/shellquote so the whole product shares one implementation; this name
+// is kept for its callers, and each argument is rendered with
+// shellquote.Literal.
+func ShellEscapeArgs(args ...string) string { return shellquote.Args(args...) }

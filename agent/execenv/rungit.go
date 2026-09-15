@@ -17,5 +17,5 @@ func RunGit(ctx context.Context, env ExecutionEnvironment, workingDir string, ti
 	if direct, ok := env.(ArgvExecutor); ok {
 		return direct.ExecArgv(ctx, "git", args, timeoutMS, workingDir, nil)
 	}
-	return env.ExecCommand(ctx, "git "+shellEscapeArgs(args...), timeoutMS, workingDir, nil)
+	return env.ExecCommand(ctx, "git "+ShellEscapeArgs(args...), timeoutMS, workingDir, nil)
 }

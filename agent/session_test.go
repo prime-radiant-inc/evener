@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,12 +16,6 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
-
-// shellQuote wraps s in single quotes so a filesystem path can be embedded
-// safely in a shell command built by these hook tests.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
 
 // marshalToMap serializes an event payload to JSON and decodes it back into a
 // map[string]any, so tests can assert the wire-level JSON shape (e.g. that a

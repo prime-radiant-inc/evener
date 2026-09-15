@@ -50,7 +50,7 @@ func TestRunGitFallsBackToShellWithoutArgvExecutor(t *testing.T) {
 	if res.Stdout != "ok" {
 		t.Fatalf("RunGit result = %+v", res)
 	}
-	want := "git " + shellEscapeArgs("commit", "-m", "a message with spaces")
+	want := "git " + ShellEscapeArgs("commit", "-m", "a message with spaces")
 	if fake.gotCommand != want {
 		t.Fatalf("ExecCommand command = %q, want %q", fake.gotCommand, want)
 	}

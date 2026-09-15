@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 var tuiE2EProjectDir = canonicalTUIE2EProjectDir()
@@ -1096,7 +1097,7 @@ func openLiveSession(t *testing.T, app *tmuxTUI) {
 func sendFirstCtrlCAndAssertNoQuitWarning(t *testing.T, app *tmuxTUI) {
 	t.Helper()
 	logPath := filepath.Join(t.TempDir(), "ctrlc-settle.log")
-	app.runTmux("pipe-pane", "-t", app.session, "cat >> "+shellQuote(logPath))
+	app.runTmux("pipe-pane", "-t", app.session, "cat >> "+shellquote.Literal(logPath))
 	t.Cleanup(func() { _ = exec.Command("tmux", "-L", app.socket, "pipe-pane", "-t", app.session).Run() })
 	app.SendKeys("C-c")
 	time.Sleep(300 * time.Millisecond)
@@ -1225,7 +1226,7 @@ func startTUITmux(t *testing.T, bin string, hub *tuiE2EHub) *tmuxTUI {
 // the launch command byte-identical on the default path.
 func tuiCoverEnvPrefix() string {
 	if dir := os.Getenv("EVENER_E2E_COVER"); dir != "" {
-		return "GOCOVERDIR=" + shellQuote(dir) + " "
+		return "GOCOVERDIR=" + shellquote.Literal(dir) + " "
 	}
 	return ""
 }
@@ -1241,10 +1242,10 @@ func tuiCoverEnvPrefix() string {
 func tuiIsolatedEnvPrefix(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	return "HOME=" + shellQuote(home) +
-		" XDG_CONFIG_HOME=" + shellQuote(filepath.Join(home, "config")) +
-		" XDG_STATE_HOME=" + shellQuote(filepath.Join(home, "state")) +
-		" XDG_CACHE_HOME=" + shellQuote(filepath.Join(home, "cache")) + " "
+	return "HOME=" + shellquote.Literal(home) +
+		" XDG_CONFIG_HOME=" + shellquote.Literal(filepath.Join(home, "config")) +
+		" XDG_STATE_HOME=" + shellquote.Literal(filepath.Join(home, "state")) +
+		" XDG_CACHE_HOME=" + shellquote.Literal(filepath.Join(home, "cache")) + " "
 }
 
 func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height int) *tmuxTUI {
@@ -1257,7 +1258,7 @@ func startTUITmuxSized(t *testing.T, bin string, hub *tuiE2EHub, width, height i
 	session := uniqueTmuxSessionName()
 	socket := session
 	stateDir := t.TempDir()
-	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " tui -debug -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir)
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellquote.Literal(bin) + " tui -debug -no-auto-start-hub -hub-addr " + shellquote.Literal(hub.URL()) + " -state-dir " + shellquote.Literal(stateDir)
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// Register cleanup the instant the session (and its dedicated server)
 	// exist, before any later setup step below that can itself t.Fatalf: a
@@ -1289,7 +1290,7 @@ func startTUITmuxAltScreen(t *testing.T, bin string, hub *tuiE2EHub, width, heig
 	// scrollback comes back blank). Blocking the shell on a read it never
 	// receives holds the pty open so tmux drains and renders the message; the
 	// test reads it via WaitForHistory and Close() tears the session down.
-	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellQuote(bin) + " tui -no-auto-start-hub -hub-addr " + shellQuote(hub.URL()) + " -state-dir " + shellQuote(stateDir) + "; read _"
+	command := tuiCoverEnvPrefix() + tuiIsolatedEnvPrefix(t) + shellquote.Literal(bin) + " tui -no-auto-start-hub -hub-addr " + shellquote.Literal(hub.URL()) + " -state-dir " + shellquote.Literal(stateDir) + "; read _"
 	runTmux(t, socket, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	// See the matching comment in startTUITmuxSized: register cleanup as
 	// soon as the session/server exist, not only once the tmuxTUI value
@@ -1743,10 +1744,6 @@ func runTmux(t *testing.T, socket string, args ...string) {
 	if err != nil {
 		t.Fatalf("tmux %s: %v\n%s", strings.Join(fullArgs, " "), err, out)
 	}
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func normalizePane(s string) string {
