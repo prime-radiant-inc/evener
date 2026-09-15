@@ -38,13 +38,19 @@ func (s *RemoteHubSource) toRemoteRef(rawRef, threadID string) (appwire.Ref, err
 
 // remapRemoteSourceIDs rewrites a thread/list SourceIDs filter from controller
 // host names into the remote hub's namespace. Only this source's own ID is
-// representable remotely ("local"); every other entry is dropped. An empty
-// result leaves the remote list unfiltered, which is the controller's intent
-// when only this host was selected: sourceAllowedForList gates whether the
-// source is called at all, and the remote side does the actual filtering.
+// representable remotely ("local"); every other entry is dropped.
+//
+// An empty controller filter means "every source the controller has", NOT
+// "whatever sources the remote hub has": this source must still ask the remote
+// for its own "local" source alone. Left unfiltered, the remote would also
+// return threads from ITS OWN nested remote sources, whose refs live in another
+// hub's namespace and cannot be represented here; fromRemoteThread refuses such
+// a ref, so one nested thread would fail the whole response and lose every
+// thread from this host. sourceAllowedForList gates whether this source is
+// called at all; within the call the answer is always exactly "local".
 func remapRemoteSourceIDs(sourceID string, ids []string) []string {
 	if len(ids) == 0 {
-		return nil
+		return []string{remoteHubNamespace}
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -190,43 +196,98 @@ func (s *RemoteHubSource) translateOut(out any) error {
 	return nil
 }
 
-// activityRefKeys are the activity-tree JSON fields that carry a session ref in
-// the remote hub's "local:" namespace. The bare-id fields (sessionId,
-// ownerSessionId, childSessionId, rootSessionId) are deliberately absent: they
-// are ids, not refs, and must pass through unchanged. transcriptRef is included
-// because a delegate turn's transcriptRef points at its child session, but a
-// shell job's value is the opaque "job:<id>" ref, which does not parse as a
-// session ref and is preserved byte-for-byte.
-var activityRefKeys = map[string]bool{
-	"ref":           true,
-	"ownerRef":      true,
-	"childRef":      true,
-	"transcriptRef": true,
+// translateActivityRefs rewrites the session refs embedded in a decoded
+// activity tree returned by a remote hub's jobs/list.
+//
+// JobsListResponse.Data is `any`, so the wire tree arrives as nested
+// map[string]any/[]any rather than typed appwire.JobActivity* nodes. The walk
+// therefore follows ONLY the structural containers JobActivityTree declares
+// (root, entries, job, delegate, delegate.child, delegate.turns) and rewrites
+// ONLY the ref fields those nodes declare (a session's ref; a job's ownerRef
+// and transcriptRef; a delegate's childRef and transcriptRef). No other key is
+// ever treated as a ref, so a key literally named "ref" or "transcriptRef"
+// inside an opaque payload — a delegate's message or structuredResult, which
+// are json.RawMessage on the typed struct — survives byte-for-byte.
+//
+// A value that does not parse as a session ref (an opaque "job:" ref, a bare
+// id from an older daemon, or a nested non-local ref) is left untouched rather
+// than failing the whole list.
+func (s *RemoteHubSource) translateActivityRefs(value any) any {
+	tree, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	s.translateActivitySession(tree["root"])
+	return value
 }
 
-// translateActivityRefs rewrites every session ref embedded in a decoded
-// activity tree (or a legacy flat job list) from the remote hub's "local:"
-// namespace into this source's "<host>:" namespace. JobsListResponse.Data is
-// `any`, so a wire response decodes as nested map[string]any/[]any rather than
-// a typed tree; the walk handles both, at any depth. A value that does not
-// parse as a session ref (an opaque "job:" ref, or an older daemon's
-// unqualified id) is left untouched rather than failing the whole list.
-func (s *RemoteHubSource) translateActivityRefs(value any) any {
-	switch node := value.(type) {
-	case map[string]any:
-		for key, child := range node {
-			if raw, ok := child.(string); ok && activityRefKeys[key] {
-				if translated, err := s.fromRemoteRefString(raw); err == nil {
-					node[key] = translated
-				}
-				continue
-			}
-			node[key] = s.translateActivityRefs(child)
-		}
-	case []any:
-		for index, child := range node {
-			node[index] = s.translateActivityRefs(child)
-		}
+// translateActivitySession rewrites one JobActivitySession node: its own ref,
+// then each entry's job or delegate.
+func (s *RemoteHubSource) translateActivitySession(value any) {
+	session, ok := value.(map[string]any)
+	if !ok {
+		return
 	}
-	return value
+	s.translateActivityRefField(session, "ref")
+	for _, entry := range activityChildren(session["entries"]) {
+		s.translateActivityEntry(entry)
+	}
+}
+
+// translateActivityEntry rewrites one JobActivityEntry node by dispatching to
+// its job or delegate child.
+func (s *RemoteHubSource) translateActivityEntry(value any) {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityJob(entry["job"])
+	s.translateActivityDelegate(entry["delegate"])
+}
+
+// translateActivityJob rewrites the ref fields one JobActivityJob node
+// declares: its owner session ref and its transcript ref (a session ref for a
+// delegate turn, the opaque "job:<id>" for a shell job).
+func (s *RemoteHubSource) translateActivityJob(value any) {
+	job, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityRefField(job, "ownerRef")
+	s.translateActivityRefField(job, "transcriptRef")
+}
+
+// translateActivityDelegate rewrites a JobActivityDelegate node's childRef and
+// transcriptRef, then recurses into its child session and its delegate turns.
+func (s *RemoteHubSource) translateActivityDelegate(value any) {
+	delegate, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityRefField(delegate, "childRef")
+	s.translateActivityRefField(delegate, "transcriptRef")
+	s.translateActivitySession(delegate["child"])
+	for _, turn := range activityChildren(delegate["turns"]) {
+		s.translateActivityJob(turn)
+	}
+}
+
+// translateActivityRefField rewrites one declared ref field in place when its
+// value parses as a remote session ref. A non-string, an empty value, or a
+// value this source cannot address (an opaque "job:" ref, a nested non-local
+// ref, a bare id) is left exactly as it arrived.
+func (s *RemoteHubSource) translateActivityRefField(node map[string]any, key string) {
+	raw, ok := node[key].(string)
+	if !ok || raw == "" {
+		return
+	}
+	if translated, err := s.fromRemoteRefString(raw); err == nil {
+		node[key] = translated
+	}
+}
+
+// activityChildren returns a decoded JSON array, or nil for any other shape.
+func activityChildren(value any) []any {
+	children, _ := value.([]any)
+	return children
 }

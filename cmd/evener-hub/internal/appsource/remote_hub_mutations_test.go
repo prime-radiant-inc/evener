@@ -500,6 +500,96 @@ func activityMap(t *testing.T, value any, label string) map[string]any {
 	return node
 }
 
+// TestRemoteHubJobsListLeavesOpaquePayloadsUntouched pins that the activity-ref
+// walk rewrites only the structural ref fields the JobActivity* types declare.
+// A delegate's message and structuredResult are opaque model-produced JSON
+// (json.RawMessage on the typed struct), so a key literally named "ref",
+// "ownerRef", or "transcriptRef" inside them is data, not a routed session
+// address, and must reach the controller byte-for-byte. The structural refs
+// alongside them must still translate.
+func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
+	rawTree := map[string]any{
+		"revision": 1,
+		"root": map[string]any{
+			"sessionId": "root",
+			"ref":       "local:root",
+			"entries": []any{
+				map[string]any{"kind": "shell", "job": map[string]any{
+					"jobId": "job_a", "ownerSessionId": "root", "ownerRef": "local:root",
+					"transcriptRef": "job:job_a",
+				}},
+				map[string]any{"kind": "delegate", "delegate": map[string]any{
+					"delegateId": "dlg_1", "ownerSessionId": "root", "childSessionId": "child",
+					"childRef": "local:child", "transcriptRef": "local:child",
+					"message":          map[string]any{"ref": "local:main", "transcriptRef": "local:main"},
+					"structuredResult": map[string]any{"ref": "local:main", "nested": []any{map[string]any{"ownerRef": "local:main", "childRef": "local:main"}}},
+					"turns": []any{
+						map[string]any{"jobId": "turn_1", "ownerRef": "local:child", "transcriptRef": "local:child"},
+					},
+					"child": map[string]any{
+						"sessionId": "child",
+						"ref":       "local:child",
+						"entries":   []any{},
+					},
+				}},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: rawTree}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	tree := activityMap(t, resp.Data, "tree")
+	root := activityMap(t, tree["root"], "root")
+	if root["ref"] != "host:root" {
+		t.Errorf("root.ref = %v, want %q", root["ref"], "host:root")
+	}
+	entries, ok := root["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("root.entries = %#v, want two entries", root["entries"])
+	}
+	delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
+	if delegate["childRef"] != "host:child" {
+		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
+	}
+	if delegate["transcriptRef"] != "host:child" {
+		t.Errorf("delegate transcriptRef = %v, want %q", delegate["transcriptRef"], "host:child")
+	}
+	turns, ok := delegate["turns"].([]any)
+	if !ok || len(turns) != 1 {
+		t.Fatalf("delegate.turns = %#v, want one turn", delegate["turns"])
+	}
+	turn := activityMap(t, turns[0], "turn 0")
+	if turn["ownerRef"] != "host:child" || turn["transcriptRef"] != "host:child" {
+		t.Errorf("turn refs = %#v, want both translated to host:child", turn)
+	}
+
+	message := activityMap(t, delegate["message"], "message")
+	if message["ref"] != "local:main" || message["transcriptRef"] != "local:main" {
+		t.Errorf("opaque message was rewritten: %#v", message)
+	}
+	structured := activityMap(t, delegate["structuredResult"], "structuredResult")
+	if structured["ref"] != "local:main" {
+		t.Errorf("opaque structuredResult.ref was rewritten: %#v", structured)
+	}
+	nested, ok := structured["nested"].([]any)
+	if !ok || len(nested) != 1 {
+		t.Fatalf("structuredResult.nested = %#v, want one element", structured["nested"])
+	}
+	nestedNode := activityMap(t, nested[0], "structuredResult.nested[0]")
+	if nestedNode["ownerRef"] != "local:main" || nestedNode["childRef"] != "local:main" {
+		t.Errorf("opaque nested payload was rewritten: %#v", nestedNode)
+	}
+}
+
 // TestRemoteHubMutationCallerContextStaysRaw asserts that a caller cancellation
 // or deadline reaching mutationCall never becomes SessionUnavailable or
 // MutationOutcomeUnknown: the caller's own context ending is not host

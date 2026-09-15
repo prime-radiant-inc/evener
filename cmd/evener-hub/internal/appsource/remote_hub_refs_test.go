@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -119,7 +120,7 @@ func TestRemapRemoteSourceIDs(t *testing.T) {
 		in   []string
 		want []string
 	}{
-		{"empty stays nil", nil, nil},
+		{"empty restricts to local", nil, []string{"local"}},
 		{"host only", []string{"host"}, []string{"local"}},
 		{"host and other drops other", []string{"host", "other"}, []string{"local"}},
 		{"other only becomes empty", []string{"other"}, []string{}},
@@ -131,5 +132,56 @@ func TestRemapRemoteSourceIDs(t *testing.T) {
 				t.Fatalf("remapRemoteSourceIDs(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRemoteHubListThreadsDefaultRestrictsToLocalSource pins the default
+// (unfiltered) thread/list forward: this source must ask the remote hub for its
+// own "local" source only. A remote hub's reflected response can advertise
+// threads from ITS OWN nested remote sources, whose refs live in another host's
+// namespace and are not representable in the controller namespace;
+// fromRemoteThread rejects such a response outright, so an unfiltered forward
+// would lose every thread from this host, not merely the nested ones. The
+// scripted remote models that: it only answers when the forwarded filter names
+// "local", and otherwise returns the nested thread that the controller refuses.
+func TestRemoteHubListThreadsDefaultRestrictsToLocalSource(t *testing.T) {
+	localThread := appwire.Thread{ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"}}
+	nestedThread := appwire.Thread{ID: "N", Source: "nested", Evener: appwire.EvenerThread{Ref: "nested:N"}}
+
+	source, calls := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadList {
+			t.Errorf("unexpected method %q", method)
+			return scriptedReply{result: map[string]any{}}
+		}
+		var forwarded struct {
+			SourceIDs []string `json:"sourceIds"`
+		}
+		if err := json.Unmarshal(params, &forwarded); err != nil {
+			t.Errorf("decode forwarded thread/list params %s: %v", params, err)
+		}
+		if !reflect.DeepEqual(forwarded.SourceIDs, []string{"local"}) {
+			// An unfiltered request reaches the remote's nested remote sources,
+			// and the nested ref then fails the controller's whole translation.
+			return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{localThread, nestedThread}}}
+		}
+		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{localThread}}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "host:S" || resp.Data[0].Source != "host" {
+		t.Fatalf("threads = %+v, want the single translated local thread", resp.Data)
+	}
+	params := lastMethodCall(t, calls(), appwire.MethodThreadList)
+	var forwarded struct {
+		SourceIDs []string `json:"sourceIds"`
+	}
+	if err := json.Unmarshal(params, &forwarded); err != nil {
+		t.Fatalf("decode forwarded params %s: %v", params, err)
+	}
+	if !reflect.DeepEqual(forwarded.SourceIDs, []string{"local"}) {
+		t.Fatalf("forwarded sourceIds = %v, want [local]", forwarded.SourceIDs)
 	}
 }
