@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createProviderParams, editProviderParams } from "./providerForm";
+import { createProviderParams, editProviderParams, openedEditParams } from "./providerForm";
 
 const providers = [
   {
@@ -69,6 +69,64 @@ it("distinguishes unchanged endpoint, replacement and explicit reset", () => {
     clearBaseUrl: true,
   });
   expect(editProviderParams({ name: "work" }, " ")).toEqual({ name: "work" });
+});
+
+it("asserts the endpoint fingerprint the editor displayed", () => {
+  const instance = {
+    name: "work",
+    baseUrl: "https://example.test/v1",
+    endpointFingerprint: "fp-work",
+  };
+  expect(editProviderParams(instance, " https://example.test/v1 ")).toEqual({
+    name: "work",
+    expectedEndpointFingerprint: "fp-work",
+  });
+  expect(editProviderParams(instance, " https://new.test ")).toEqual({
+    name: "work",
+    baseUrl: "https://new.test",
+    expectedEndpointFingerprint: "fp-work",
+  });
+  expect(editProviderParams(instance, " ")).toEqual({
+    name: "work",
+    clearBaseUrl: true,
+    expectedEndpointFingerprint: "fp-work",
+  });
+});
+
+it("asserts nothing for a row the hub could not key", () => {
+  expect(
+    editProviderParams(
+      { name: "work", baseUrl: "https://example.test/v1" },
+      " https://new.test ",
+    ),
+  ).toEqual({ name: "work", baseUrl: "https://new.test" });
+});
+
+it("asserts the endpoint the editor was opened on, not the one the listing moved to", () => {
+  const opened = {
+    name: "work",
+    baseUrl: "https://example.test/v1",
+    endpointFingerprint: "fp-v1",
+  };
+  const moved = {
+    name: "work",
+    baseUrl: "https://example.test/v2",
+    endpointFingerprint: "fp-v2",
+  };
+  // The listing refreshed under the open editor; the save still describes the
+  // endpoint the user reviewed, so the hub refuses it rather than writing the
+  // stale draft onto the replacement.
+  expect(openedEditParams(opened, moved, " https://example.test/v1/x ")).toEqual({
+    name: "work",
+    baseUrl: "https://example.test/v1/x",
+    expectedEndpointFingerprint: "fp-v1",
+  });
+  // Nothing was opened (a create): the current row is the only one there is.
+  expect(openedEditParams(undefined, moved, " https://example.test/v2 ")).toEqual({
+    name: "work",
+    expectedEndpointFingerprint: "fp-v2",
+  });
+  expect(openedEditParams(undefined, undefined, "https://example.test")).toBeNull();
 });
 
 it("does not treat environment variable names as template keys", () => {

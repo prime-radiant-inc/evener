@@ -933,6 +933,21 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		}
 	}
 
+	// The fingerprint key is resolved once, before either lock is taken, for the
+	// reason Remove resolves it there: resolving can repair the key file (an
+	// inter-process lock and a write), and the edit below holds mu and credMu
+	// exclusively, so a repair there would hold every listing and credential op
+	// behind it. Only a form that asserted an endpoint needs it, so a client
+	// that sent no assertion - the TUI, an older client - resolves nothing. One
+	// key for the whole edit, so the assertion inside the locks is checked
+	// against the key the caller's row was served with.
+	asserted := params.ExpectedEndpointFingerprint != ""
+	var key []byte
+	var keyErr error
+	if asserted {
+		key, keyErr = resolveEndpointFingerprintKey(c.authStateDir())
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// Held for the rest of the call, so the providers.toml write and the
@@ -960,6 +975,22 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 			return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 		}
 		p = registry.Provider{ID: name}
+	}
+	// The form this edit came from was opened on the row the client listed, so
+	// a name another client has re-pointed since - an edit to its base_url, or
+	// a removal and a recreation under it - is refused rather than edited: the
+	// fields typed for the old endpoint would land on its replacement. Asked
+	// here, under both locks and before anything is written, so it describes the
+	// instance this call edits and no other edit or credential write can land
+	// between the check and the store. An empty assertion asserts nothing (the
+	// TUI and older clients send none), so the check is skipped and Edit keeps
+	// its pre-fingerprint behaviour for those callers rather than the
+	// fail-closed rule the credential writes apply to an empty assertion: the
+	// field has to stay backward compatible.
+	if asserted {
+		if err := c.auth.verifyAssertedDestination(name, params.ExpectedEndpointFingerprint, key, keyErr, "review its destination and save again"); err != nil {
+			return err
+		}
 	}
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name

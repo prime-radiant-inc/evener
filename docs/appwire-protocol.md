@@ -742,6 +742,7 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `InstanceEntry`
