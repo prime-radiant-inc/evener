@@ -215,8 +215,10 @@ needs dedicated ref-translating dispatch: the controller resolves the ref to
 the owning host, translates it into that host's `local:` namespace, and issues
 the force-stop **on that host's hub** (the hub that owns the daemon process),
 mapping the response back to the controller ref. That is a separate requirement
-(component 07, §"Proxy method"), not a member of the `evener/host/request`
-allow-list.
+defined by component 07 (§"Dedicated ref-translating dispatch
+(`evener/thread/forceStop`)"), not a member of the `evener/host/request`
+allow-list, and it updates the controller's `forceStopThread`
+(`app_force_stop.go`) rather than adding a bare `evener/host/request` entry.
 
 `MethodThreadTurnItemsList` (wire string `thread/turns/items/list`) is
 `ScopeUnimplemented` — served by no evener router — and is not on the `Source`
@@ -288,6 +290,18 @@ Probe calls and their types:
 credential test (`evener/auth/test`, `protocol.go`) hits the network per
 provider; keep it out of the attach probe and expose it as an explicit refresh.
 
+**The probe reaches the handshake facts through a source-level seam, not a
+`*Channel`.** `Channel.Handshake()` exists on the component-04 `Channel`, but
+`RemoteHubSource` holds only the seams installed from `hubcore.WebConfig`, so
+component 04 must also expose the same facts for a host by name: a
+`RemoteHostHandshake func(host string) (appwire.InitializeResponse, bool)`
+seam (backed by a `Manager.HandshakeIfAttached`, component 04, §"Go surface"),
+installed as `SetHostHandshake` (§"Registration and default-source selection").
+Without it the probe cannot populate `ProtocolVersion`, `HubVersion`
+(`ServerInfo`), `HubSourceID`, or `Features` for a `RemoteHubSource` — none of
+the existing `RemoteHostClient`/`RemoteHostFacts`/`RemoteHostOnline`/
+`RemoteHostClientIfAttached` seams returns handshake data.
+
 `initialize` is `ScopeConnection` and "must be the first request" on a
 connection (`appwire/protocol.go`), so the probe cannot re-run it on the
 already-initialized channel that component 04 handed over. Component 04 must
@@ -298,8 +312,9 @@ therefore **expose the handshake facts**: `Ensure` captures the
 keeps its own `Features` copy privately and exposes no accessor, so the probe
 must not look for one on the client. Preflight supplies OS/arch and its own
 protocol/version for the version-match decision; the probe reads
-protocol/version/source/features from the handshake accessor, and makes the five
-AppWire reads in the table above and nothing else.
+protocol/version/source/features from the `RemoteHostHandshake` seam above (the
+`Channel.Handshake()` value, reached by host name), and makes the five AppWire
+reads in the table above and nothing else.
 
 ### Registration and default-source selection
 
@@ -327,6 +342,14 @@ The source's optional seams are installed once at registration, all from
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
   probe needs (`HostFacts`, `remote_hub_probe.go`).
+- `SetHostHandshake(cfg.RemoteHostHandshake)` — the attach handshake facts the
+  capability probe needs (`ProtocolVersion`, `ServerInfo`, `SourceID`,
+  `Features`), backed by `Manager.HandshakeIfAttached` (component 04, §"Go
+  surface"). It returns the `InitializeResponse` for a host only while a live
+  channel is installed, `(zero, false)` otherwise, and takes the manager-wide
+  mutex, so it is safe from the `EventAttached` callback exactly like
+  `ClientIfAttached`. Without this seam the probe cannot populate those four
+  fields for a `RemoteHubSource` (see §"Capability probe").
 - `SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)` where
   `RemoteHostClientIfAttached` is `sshManager.ClientIfAttached` (component 04,
   §"Go surface") — the **non-dialing, attached-only client lookup**. It returns
@@ -502,6 +525,14 @@ implementing PR's contract:
   on a detach/attach edge never dials a dormant host. Once it has the fresh
   client, the source starts that client's drain and attaches every registered
   consumer to it.
+  **The rebind is lock-safe inside the `EventAttached` callback.** `OnEvent`
+  runs with component 04's per-host gate held; `ClientIfAttached` reads the
+  installed channel under the **manager-wide mutex**, not that gate, so calling
+  it synchronously from the callback cannot self-deadlock (component 04,
+  §"Client handoff"). That is what lets the rebind run on the event — the
+  gap-free requirement — instead of deferring to the next call. Carrying the
+  replacement client in the event itself is the equivalent alternative; either
+  form is safe, and neither may call `Ensure`.
 
 A consumer callback must not be able to stall thread subscriptions: the broker
 hands each consumer its own buffered channel or dispatches on its own goroutine,

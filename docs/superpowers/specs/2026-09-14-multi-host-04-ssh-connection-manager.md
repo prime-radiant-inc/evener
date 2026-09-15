@@ -112,10 +112,21 @@ func (m *Manager) Attached(name string) bool
 // non-dialing lookup a background caller (component 06's 30s snapshot) and the
 // notification broker's reconnect rebind (component 05) use in place of Ensure,
 // so neither can eagerly attach a dormant host or re-dial a host that dropped
-// between a check and the call. It reads the same installed channel the
-// Attached signal derives from, so the two can never disagree within one
-// per-host lock.
+// between a check and the call. It reads the installed channel under the
+// manager-wide mutex (m.mu), NOT the per-host gate, so it is safe to call from
+// inside OnEvent (which holds the per-host gate); it derives from the same
+// installed-and-not-closed predicate the Attached signal uses, so the two can
+// never disagree within one observation.
 func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool)
+
+// HandshakeIfAttached returns the InitializeResponse captured when host's
+// current channel attached, ONLY while a live, not-closed channel is installed
+// (reports false otherwise). Like ClientIfAttached it takes the manager-wide
+// mutex, not the per-host gate, and never dials. appwire.Client keeps its
+// Features privately with no accessor, so component 05's capability probe reads
+// ProtocolVersion/ServerInfo/SourceID/Features through this seam (the
+// Channel-level source is Channel.Handshake below).
+func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool)
 
 // Channel is one owned SSH channel + the AppWire client over it.
 type Channel struct { /* host, facts, stdio, transport, client, drop/lifecycle channels */ }
@@ -143,7 +154,7 @@ type Options struct {
     ClientVersion       string        // default buildinfo.Version()
     BackoffBase         time.Duration // default 500ms
     BackoffMax          time.Duration // default 30s
-    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock: must not block and never call Ensure (non-reentrant, connection state only)
+    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock: must not block; may read Attached/ClientIfAttached (manager mutex) but never call Ensure (per-host lock, non-reentrant)
     BuildBinary         func(ctx context.Context, goos, goarch, out string) error // nil = localBuild
     HubAddr             string        // fallback host hub loopback address when the entry sets no addr; default 127.0.0.1:9180
 }
@@ -285,6 +296,30 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   non-interactive, so a credential prompt fails fast instead of hanging; mirrors
   the spike invocation `spike/client/main.go`
   (`ssh -o BatchMode=yes -o ConnectTimeout=10 <host> <remote>`).
+- **Host-key verification is the user's `known_hosts`, and it fails closed.**
+  The manager never passes `-o StrictHostKeyChecking=no` (or `accept-new`) and
+  never auto-accepts a host key. Verification uses the invoking user's own
+  `known_hosts` (plus any `UserKnownHostsFile` the user's `ssh_config` sets); an
+  unknown or changed host key makes ssh exit nonzero under `BatchMode=yes` with
+  no interactive prompt. That is terminal and classified like the auth failure
+  above: a named error telling the operator to add the host key out of band
+  (e.g. `ssh-keyscan` or a first interactive `ssh`), never a retry loop and
+  never a silent downgrade. The capability token crosses only the encrypted SSH
+  transport precisely because the host identity is verified; a first attach to
+  an unknown host therefore fails with that actionable error rather than
+  hanging, and the remedy is documented instead of inviting
+  `StrictHostKeyChecking=no`.
+- **Port, identity file, and jump hosts go through the user's `ssh_config`.**
+  The argv pins the destination as `-- <dest>` (`dest` is a bare host or
+  `user@host`, component 03), which deliberately makes `-p`/`-i`/`ProxyJump`
+  inexpressible as direct arguments: a value starting with `-` after `--` would
+  be read as the destination, and injecting such options before `--` would
+  reopen the option-injection hole `--` closes. The supported way to reach a
+  non-default port, key, or jump host is therefore the user's `ssh_config`
+  (matching `<dest>` or a `Host` alias the operator puts in the `ssh` field),
+  which ssh applies itself. This is documented as the supported path, not left
+  as an escape hatch, and no `[[hosts]]` field (nor a `dest` spelling) may
+  reintroduce raw ssh options.
 - stdin/stdout are the framed AppWire stream; stderr is diagnostics
   (spike `spike/client/main.go`, `cmd.Stderr = os.Stderr`).
 
@@ -353,8 +388,11 @@ The manager is **lazy and event-publishing, not a registry owner**:
   concurrent `Ensure`/supervisor from interleaving transitions). The callback is
   therefore **non-reentrant**: it must record state, or hand the work to another
   goroutine and call `Ensure` from there; calling `Ensure` from inside the
-  callback takes the same lock and deadlocks. Component 06's navigation poke
-  runs inside this callback and must stay non-blocking for the same reason.
+  callback takes the same lock and deadlocks. The read-only lookups `Attached`
+  and `ClientIfAttached` are the deliberate exception: they take the
+  manager-wide mutex, not this host's gate, so the callback may call them
+  directly (§"Client handoff"). Component 06's navigation poke runs inside this
+  callback and must stay non-blocking for the same reason.
 - Lifecycle events (`EventState`, `EventAttached`, `EventDetached`,
   `EventFailed`, delivered through `Options.OnEvent`) report *connection state*
   only. They drive `Online()` and navigation invalidation. **No consumer adds or
@@ -479,9 +517,25 @@ client only while a channel is live and `(nil, false)` otherwise. On the
 `EventAttached` that installs a replacement channel, the source rebinds its
 registered consumers to the new client by reading `ClientIfAttached` — never by
 calling `Ensure` (which would attach every configured host and violates the lazy
-manager, component 04, §"Channel lifecycle states"). Both the `Attached` signal
-and `ClientIfAttached` are derived under the same per-host lock, so a rebind
-cannot observe an attachment state and a client that disagree.
+manager, component 04, §"Channel lifecycle states").
+
+**The rebind is lock-safe from inside `OnEvent` — it cannot self-deadlock.**
+`OnEvent` runs with the host's **per-host gate** held (§"Channel lifecycle
+states"), so anything the callback calls must not take that same gate.
+`ClientIfAttached` deliberately does not: it reads the installed channel under
+the **manager-wide mutex** (`Manager.mu`, the `chans` map), a different lock from
+the per-host gate (`Manager.locks[name]`). `Attached` and `ClientIfAttached` are
+therefore both safe to call from the `EventAttached`/`EventDetached` callback,
+and both derive from the same installed-and-not-closed predicate, so an
+attachment signal and a client lookup can never disagree. Binding the
+replacement `Client` **on the event** rather than deferring it is what makes the
+rebind gap-free: deferring to the next call would drop the notifications the
+fresh client emits in between (component 05, §"One notification consumer per
+client"). The event carries connection state only, not the replacement client,
+so `ClientIfAttached` is the handoff; carrying the replacement client in the
+event is the equivalent alternative (the callback would then need no lookup at
+all). Either form satisfies the contract. What the callback must still never do
+is call `Ensure`: that takes the per-host gate and would deadlock.
 
 ### 3. Preflight — `preflight.go`
 
@@ -743,6 +797,24 @@ deploy landed.
     `evener_path`/`command -v evener` with the recovered-or-default log
     (`relaunchCommand`) — and `hub.lock` makes a losing second process exit
     rather than bind;
+  - **the cold-bootstrap ad hoc launch needs an explicitly constructed argv,
+    because there is no recovered `ps` line to tokenize.** The restart path's
+    ad hoc launch reuses `relaunchCommand`, which tokenizes the recovered
+    `ps -o command=` of the *running* process; a stopped host has no such line.
+    The first-attach branch must therefore resolve the executable
+    (`evener_path`, else the host's own `command -v evener`) and run it as
+    `<exe> hub [--config <config_path>] [--addr <addr>]` — passing the entry's
+    paired `config_path`/`addr` when set (component 03) and nothing when not —
+    with every argument shell-quoted by the same `shellQuote` rule as the bridge
+    argv, launched detached under `nohup` with stdin from `/dev/null` and
+    stdout/stderr redirected to a **default log path under the host's state
+    root** (e.g. `<stateRoot>/hub.log`, appending when it exists; the ops doc's
+    recovered-log path is a restart-only concept). Launching bare `evener hub`
+    with defaults would make the health probe and attach target
+    `127.0.0.1:9180` while the entry's `addr` names a custom port, so every cold
+    first attach on a non-default host would abort with `ErrRestart`;
+    `command -v evener` with no `evener_path` makes the same explicit argv with
+    the resolved absolute path;
   - it then waits for the same `/api/health` `version == expected` probe
     (`waitHealthy`), with the same bound and `ErrRestart` failure, so a start
     that never becomes healthy attaches nothing and the first host action
@@ -1143,6 +1215,9 @@ with the remote hub and its daemons still running.
   assert `--config`/`--addr` appear in that order (each value shell-quoted) and
   that the restart/health path uses the same address. Assert `--` precedes the
   destination so a `dest` beginning with `-` is never read as an ssh option.
+  Assert **no** ssh invocation carries `StrictHostKeyChecking=no`/`accept-new`
+  or any raw `-p`/`-i`/`ProxyJump` option, and that an unknown host key surfaces
+  the terminal actionable error rather than a retry.
 - **Quoting tests (`quote_test.go` + argv tables).** `shellQuote` leaves an
   all-safe word bare and single-quotes anything else, closing and escaping an
   embedded `'`; `~` stays bare so `~/bin/evener` still expands. Round-trip the
@@ -1230,7 +1305,10 @@ with the remote hub and its daemons still running.
     supervisor (or the detached ad hoc launch), waits for `/api/health`
     `version == expected`, and attaches only after it matches; an address a hub
     already owns starts nothing, and a hub that never becomes healthy attaches
-    nothing and fails with `ErrRestart`.
+    nothing and fails with `ErrRestart`. The cold ad hoc launch passes the
+    entry's `hub [--config <config_path>] [--addr <addr>]` (each shell-quoted,
+    log under `<stateRoot>`), so a host on a non-default port becomes healthy
+    rather than failing on the default address.
 16. The installer fallback passes an artifact reference derived from
     `buildinfo.BuildChannel()` — the stamped release tag for `release`,
     `snapshot` (with the mandatory `backend_git_sha == buildinfo.GitSHA`

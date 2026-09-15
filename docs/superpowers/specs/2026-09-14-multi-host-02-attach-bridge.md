@@ -32,6 +32,15 @@ over an SSH channel with no additionally exposed port.
   4. proxies `Message`s in both directions between the WebSocket transport and a
      `StreamTransport` over stdin/stdout;
   5. exits when either side closes.
+  6. refuses a **missing or invalid explicitly supplied `--config`**. The
+     default-to-`DefaultConfig()` fallback (`LoadConfig` returns the defaults
+     with a nil error when the file does not exist) applies **only** to the
+     implicit default path. When `--config <path>` is passed and that file is
+     missing or unparseable, the bridge exits nonzero with a diagnostic naming
+     the path instead of silently reading defaults and deriving the wrong state
+     root/token; the same rule applies to the hub's own `--config`
+     (`cmd/evener-hub/main.go`), since bridge and hub must agree on the layout
+     (component 03, §"Error handling").
 - This command is a **client** of the running hub. It must not start a hub, take
   `hostlock`, or bind any port. Starting a stopped host hub for a first attach
   is component 04's **bootstrap** path (component 04 §5), run as its own remote
@@ -59,6 +68,18 @@ capability token is never on the argv.
 - **stdout carries framed AppWire exclusively**; every diagnostic goes to stderr
   (a stray stdout write corrupts the stream — this is a hard rule and a test).
 - Exit 0 on clean channel close; nonzero with a stderr diagnostic on failure.
+- **The assembled URL is validated loopback-only before the token crosses it.**
+  The bridge dials an unencrypted `ws://` URL carrying the hub's capability
+  token, so the host in the resolved URL must be loopback — `127.0.0.1` or
+  `[::1]` after the wildcard/`localhost` rewrite above — with no userinfo, no
+  unexpected path or query, and a valid port. A config-supplied `addr` such as
+  `example.com:9180`, a `localhost:user@host`-style spelling, an out-of-range
+  port, or any non-`/rpc` path is refused with a named
+  `errNonLoopbackAddr`-style error and a nonzero exit, never dialed.
+- **The dial bypasses `HTTP_PROXY`.** The WebSocket dial must not use
+  `http.DefaultClient` (which honors `HTTP_PROXY`/`HTTPS_PROXY`), or a proxy in
+  the environment would receive the hub's capability token aimed at the loopback
+  join; it uses a client with `Proxy: nil`.
 
 ## Implementation
 
@@ -94,6 +115,12 @@ capability token is never on the argv.
   `spike/bridge/main.go`).
 - Token: read from the state root, `strings.TrimSpace` (the file ends with a
   newline; untrimmed it is an invalid header value — spike finding).
+- **Loopback validation and proxy bypass are shipped** (`cmd/evener-hub/attach.go`):
+  `resolveHubURL` validates the assembled `addr` and returns the `ws://…/rpc`
+  URL — refusing a non-loopback host, userinfo, a wrong path or query, and an
+  out-of-range port with `errNonLoopbackAddr` — and `attachDialClient` is the
+  `Proxy: nil` client handed to `appwire.DialWebSocketWithHeaders`. The Contract
+  bullets above are what make those guards normative rather than incidental.
 
 ## Data flow
 
@@ -115,6 +142,10 @@ sent on the other, in both directions.
 - Dial failure → stderr message, nonzero exit.
 - Either direction's error → close both transports, exit.
 - No hub running → clear stderr message ("no hub at <addr>").
+- Non-loopback or malformed address → stderr message naming the address, nonzero
+  exit, and the capability token is never dialed.
+- Explicitly supplied `--config` missing or unparseable → stderr message naming
+  the path, nonzero exit, with no fallback to defaults.
 
 ## Testing
 
@@ -126,6 +157,12 @@ sent on the other, in both directions.
   `attach` dispatch is reached and the injected streams — not the process fds —
   are the ones that carry frames. This is the regression test for the nil-stream
   failure mode.
+- **Loopback guard (negative cases).** `resolveHubURL` refuses a non-loopback
+  host (`example.com:9180`), a userinfo-in-port spelling, an out-of-range port,
+  and a non-`/rpc` path with `errNonLoopbackAddr`; assert no `Authorization`
+  header is assembled for a refused address. A configured `HTTP_PROXY` /
+  `HTTPS_PROXY` is not consulted by the dial (`attachDialClient` has
+  `Proxy: nil`), so the token cannot reach a proxy.
 
 ## Acceptance criteria
 

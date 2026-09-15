@@ -69,7 +69,10 @@ addr        = "127.0.0.1:9180"           # optional; the host hub's loopback add
   (design §5, `appwire/refs.go`).
 - `ssh` is the destination token passed to `ssh`; component 04 owns how it is
   used. If `user` is set and `ssh` already carries a user, that is a validation
-  error (ambiguous authority) — see "Error handling".
+  error (ambiguous authority) — see "Error handling". Non-default ports,
+  identity files, and jump hosts are expressed through the user's `ssh_config`,
+  never by smuggling options into `ssh` (component 04, §"SSH channel argv"):
+  `ssh` is a destination, not an option string.
 - `evener_path` and `roots` are advisory inputs to components 04/05; this
   component only stores and validates their shape (`roots` entries must be
   non-empty after trim; no path validation here).
@@ -199,8 +202,8 @@ converted `cfg.Hosts` (§"Host registry") and hands the converted entries to the
 source registry through `hubcore.WebConfig`: `newHubSourceRegistry`
 (`cmd/evener-hub/app_rpc.go`) iterates `cfg.RemoteHosts` and adds one source per
 entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
-`cfg.RemoteHostOnline` / `cfg.RemoteHostClientIfAttached` (component 05). This
-spec fixes only:
+`cfg.RemoteHostOnline` / `cfg.RemoteHostClientIfAttached` /
+`cfg.RemoteHostHandshake` (component 05). This spec fixes only:
 
 - the registry is built once at hub startup from the validated `cfg.Hosts`;
 - component 05 registers **one source per configured host at startup**, from the
@@ -320,10 +323,13 @@ spec fixes only:
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
    `ch.Client()`), `RemoteHostFacts` (the channel's `Preflight()`), and
-   `RemoteHostOnline` (`sshManager.Attached`) and `RemoteHostClientIfAttached`
+   `RemoteHostOnline` (`sshManager.Attached`), `RemoteHostClientIfAttached`
    (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
-   lookup component 05's notification rebind and component 06's snapshot use);
-   `newHubSourceRegistry`
+   lookup component 05's notification rebind and component 06's snapshot use),
+   and `RemoteHostHandshake` (`sshManager.HandshakeIfAttached` — the
+   attached-only attach handshake facts component 05's capability probe reads
+   for `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`; component 04,
+   §"Go surface"; component 05, §"Capability probe"). `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
@@ -359,6 +365,18 @@ tree and last-known-good cache (`refreshRemoteThreadSnapshot`,
 
 - Missing `hub.toml` → `DefaultConfig()` and nil error (`config.go`);
   hub starts with zero hosts. Compatibility requirement satisfied.
+- **An explicitly supplied `--config` that is missing or invalid is an error,
+  never a silent default.** `LoadConfig` (`cmd/evener-hub/config.go`) returns
+  `DefaultConfig()` with a nil error whenever the file does not exist, so today
+  an explicit `--config /nonexistent` silently yields defaults. The fallback
+  must apply **only** to the implicit default path: when the operator passes
+  `--config <path>` (hub or `hub attach --stdio`, component 02) and that file is
+  missing or unparseable, the process exits nonzero with a diagnostic naming the
+  path. Otherwise a custom-layout host attaches to the wrong state root/token
+  and `addr` and reports a misleading connection failure. Tracking
+  explicitness belongs at the flag layer (`cmd/evener-hub/main.go`,
+  `cmd/evener-hub/attach.go`) or in a `LoadConfig` variant; the shipped
+  signature cannot distinguish the two. Recorded as a code follow-up.
 - Parse error → `"parse config: %w"` (`config.go`), unchanged.
 - Invalid host entry → `LoadConfig` returns
   `fmt.Errorf("validate hosts: %w", err)` before returning `cfg`; hub startup

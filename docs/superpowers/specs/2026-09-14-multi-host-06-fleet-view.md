@@ -20,7 +20,8 @@ it drives do not exist on `main`. The frontend half (06b) is on
 Make the hub's single navigation surface present every configured host as a
 **source**: enumerate them, render each host's sessions from a live fan-out
 merge, show an unreachable host as offline with its last-known sessions
-dormant, and let a new session choose an explicit host (local by default).
+marked offline/stale, and let a new session choose an explicit host (local by
+default).
 
 ## Scope
 
@@ -33,9 +34,9 @@ dormant, and let a new session choose an explicit host (local by default).
 3. **Live fan-out and merge** — confirm and extend the existing per-source
    thread-list fan-out so the merged list is correct across hosts and search
    terms; no replicated index.
-4. **Offline / dormant** — a host that cannot be reached reports `Online:false`
-  ; its last-known sessions render as dormant and host-targeted actions are
-   refused until reconnect.
+4. **Offline / stale** — a host that cannot be reached reports `Online:false`
+  ; its last-known sessions render with the offline/stale marker and
+  host-targeted actions are refused until reconnect.
 5. **Session targeting** — a host picker in the new-session form, defaulting to
    local, threaded through `thread/start` to a specific source.
 
@@ -269,13 +270,23 @@ only `local`, so the fan-out currently degenerates to one source.
     controller (or resolves to the controller's own project at that path), so
     the call fails with `appwire.InvalidParams` ("project ID does not match
     workingDir") — or archives the controller's project, not the remote one.
+    The **session** kind has the same defect: the archive action calls
+    `setArchived("session", session.session_id, …)` (`Rail.tsx`, `actions.ts`)
+    with a bare session ID and no source, and `archiveSet` writes
+    `cfg.Archive.Set("session", params.ID, …)` keyed by that bare ID. A remote
+    session's `session_id` is its bare thread ID, so a remote session archive is
+    indistinguishable from a local one and collides with a local session of the
+    same ID. `ArchiveParams.Source` must therefore be sent by the **session**
+    action too — from the row ref's `SourceID` — and the session store key
+    becomes `(source, id)`, exactly as for projects.
   - `evener/favorite/set` (`MethodEvenerFavoriteSet`, `FavoriteSetParams`)
     writes `cfg.Favorite` keyed by the bare `params.ID` with no host dimension
     (`app_favorite.go`), so two hosts' projects whose IDs collide share one
     favorite.
 
   **Requirement.** `ArchiveParams` and `FavoriteSetParams` gain an owning
-  `Source` field (the row's `ref.SourceID` host, defaulting to `"local"`). The
+  `Source` field (the row's `ref.SourceID` host, defaulting to `"local"`), and
+  the frontend session/project archive actions send it from the ref; the
   controller keys both controller-side stores by `(source, id)`, so identical
   project IDs (or paths) on separate hosts are distinct entries — the same
   host qualification the navigation group key carries, so a favorite/archive
@@ -297,6 +308,39 @@ only `local`, so the fan-out currently degenerates to one source.
   unqualified shape today; the source field, store namespacing, and the
   non-local validation rule are the implementing PR's requirement, not a
   present fact.
+  **Project summaries must carry the owning source, and destructive
+  local-project actions must be gated by it.** The project the rail renders has
+  no host dimension today: the resolved model is `identifier.Project` =
+  `{ID, CanonicalPath}` (`identifier/project.go`), the projected entity's
+  key/name/`working_dir` reach the frontend `RailProject`
+  (`shell/rail/railNodes.ts`), and none of them names the source. Remote rows
+  are folded into the same project list, and the project context menu
+  (`projectMenuItems`, `RailRow.tsx`) unconditionally renders the destructive
+  items for every project, with the delete item wired to a **controller-local**
+  call: `onDeleteProjectRequest` → `deleteProject(key, workingDir)` →
+  `evener/project/delete` (`Rail.tsx`, `actions.ts`). A remote project row can
+  therefore trigger a delete of the controller's own sessions/project state (or
+  a colliding local project), and "New session" navigates the controller to the
+  remote path. Requirements:
+  - every navigation project summary carries its owning source — the same
+    `ref.SourceID` host qualification the group key and the archive/favorite
+    stores use, projected onto the project entity (e.g. a `source`/`host_id`
+    field beside `key`/`name`/`working_dir`), so the frontend reads it without
+    re-deriving it from a member row, and the schema validators (Go and
+    frontend) admit it;
+  - `evener/project/delete` is **local-only**: for a non-local project the menu
+    **hides** "Delete project…" (no remote deletion exists in v1), and a
+    direct call naming a non-local/unknown source is refused typed (never a
+    controller-local delete, never a deletion on the wrong machine);
+  - archive/favorite are the **route-by-source** actions (above), passing the
+    project's source with each call, and "New session" carries the project's
+    source into the spawn form (the `ThreadStartParams.Source` / picker path)
+    rather than opening the controller at a remote path.
+  **Implementation status:** none of this exists today — `identifier.Project`
+  and `RailProject` have no source field, `projectMenuItems` renders the delete
+  item unconditionally (`RailRow.tsx`), and `deleteProject` sends a bare
+  key/working-dir to the local `evener/project/delete` (`actions.ts`). This is a
+  tracked code follow-up.
   **`annotateThreadProjects` must not overwrite a validated non-local
   identity.** The merged thread-list path (and the thread-read and
   lifecycle/start responses) runs `annotateThreadProjects`
@@ -347,15 +391,29 @@ only `local`, so the fan-out currently degenerates to one source.
     today the flag flips only on the next tick; this poke is the implementing
     PR's requirement. The poke must be non-blocking (the existing buffered
     channel send), because the lock is held.
-3. **Dormant marking for offline-host rows**: `NavigationSessionSummary.Dormant`
-   is projected from `node.Dormant` (`navigation_projection.go`), and
-   `Dormant` is set for local past sessions in `hubcore/tree.go`.
-   For an offline host, last-known remote rows are not live
-   (`Live` is computed from the live inputs at `navigation_projection.go`,
-   `1137-1138`), but nothing currently sets `Dormant` for them. Set `Dormant`
-   on folded remote rows whose source is offline, at the point remote threads
-   are ingested (`web_api_tree.go`) or in the tree/projection seam —
-   pick the seam that keys off source identity, not the row's own state.
+3. **Offline-host rows need a distinct "source unreachable" field, never
+   `Dormant`.** `NavigationSessionSummary.Dormant` is projected from
+   `node.Dormant` (`navigation_projection.go`), and `Dormant` means a session
+   that **has never run**: "no model response and no accepted user input"
+   (`hubcore/tree.go`, `dormantFor`), which the rail renders as "Not started"
+   (`RailRow.tsx`, `saysNotStarted`). The earlier claim that `Dormant` is "set
+   for local past sessions" is wrong — it is set for *never-run* sessions. For
+   an offline host, last-known remote rows are not live (`Live` is computed
+   from the live inputs at `navigation_projection.go`, `1137-1138`), but they
+   genuinely **ran**; setting `Dormant` on them would label every quiet remote
+   session "Not started". Requirements:
+   - add a distinct projected field for "this row's source is unreachable"
+     (e.g. `Offline`/`Stale` on `NavigationSessionSummary`, alongside
+     `Dormant`), set on folded remote rows whose source is offline, at the
+     ingestion (`web_api_tree.go`) or tree/projection seam — key it off source
+     identity, not the row's own state;
+   - leave `Dormant` meaning never-run: correct its description here and never
+     set it for remote/offline rows;
+   - the rail renders the offline/stale affordance from the new field; "Not
+     started" stays true only of never-run sessions.
+   **Implementation status:** `NavigationSessionSummary` has only `Dormant`
+   today (`hubapi/navigation.go`); the new field and its rail rendering are the
+   implementing PR's requirement.
 4. **Session targeting in `thread/start`**:
    - `hubThreadStart` (`app_threadlifecycle.go`) currently selects a
      source via `launchSourceID(params)` (`app_threadlifecycle.go`),
@@ -437,7 +495,8 @@ only `local`, so the fan-out currently degenerates to one source.
   (`types.gen.ts`) and populated server-side. The rail render seam is
   `shell/rail/Rail.tsx` / `shell/rail/railNodes.ts` (session presentation
   contract at `railNodes.ts`). Add a host badge/tooltip for rows whose
-  `host_id` is not `"local"`, and a dormant/offline visual for dormant rows.
+  `host_id` is not `"local"`, and an offline/stale visual for rows whose source
+  is unreachable.
   Keep this to a label, not a tree re-layout.
 - **Connecting a configured host**: a configured host that has never been
   attached has no user-facing way to become usable — `Online` is attachment
@@ -491,7 +550,7 @@ appsource.Registry.Add(remoteHubSource per host)   app_rpc.go
                  │
                  ▼
       frontend: manifest.sources → host picker (spawn)
-                host_id → row badge; offline → dormant rows + refused actions
+                host_id → row badge; offline → offline/stale rows + refused actions
 ```
 
 Session start: `thread/start(source∈{local,host}, cwd, …)` →
@@ -541,8 +600,11 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     the same source named in `SourceIDs` returns the error
     (extend `app_threadlist.go` tests / `cov_threadlife_list_pass6_fuzz_test.go`
     which already exercises `SourceIDs`/`SearchTerm`).
-  - Dormant marking: an offline source's last-known rows project with
-    `HostID` set and `Dormant:true`; an online source's rows do not.
+  - Offline marking: an offline source's last-known rows project with `HostID`
+    set and the new offline/stale field true, and with `Dormant` **unchanged**
+    (a quiet remote session that ran is never labelled "Not started"); a
+    never-run session still projects `Dormant:true` only via `dormantFor`; an
+    online source's rows are not marked offline.
   - `thread/start` targeting: explicit source routes to that source's
     `StartThread`; missing source returns the existing unavailable error; empty
     source still defaults local. Extend `app_rpc_test.go` which already stubs
@@ -588,7 +650,8 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    manifest read has no probe that attaches on demand — so `Online` means
    "attached", not "reachable", in every criterion here.
 2. With one host unreachable, the manifest lists it with `Online:false`, its
-   last-known sessions remain visible and render dormant, and no fleet-wide
+   last-known sessions remain visible and render with the offline/stale marker
+   (never `Dormant`), and no fleet-wide
    list fails because of it.
 3. A host-targeted action against the offline host is refused with a typed
    `Unavailable` error naming the host; no action silently succeeds.
@@ -633,20 +696,20 @@ Estimates only (no code written yet); roughly measured, not compiled.
 | Area | Files | Est. LOC |
 |---|---|---|
 | Optional source-online interface + stub updates | `appsource/*` | 40–80 |
-| `apiTreeSources` online/kind + dormant fold | `web_api_tree.go`, tests | 60–120 |
+| `apiTreeSources` online/kind + offline/stale fold | `web_api_tree.go`, tests | 60–120 |
 | `thread/start` source field (wire type, handler, generate) | `appwire/types.go`, `app_threadlifecycle.go`, generated TS | 60–120 |
 | Frontend host picker + selector + start seam | `Spawn.tsx`, `startThread.ts`, `spawnDrafts.ts`, `selectors.ts` | 120–220 |
-| Frontend row host badge + dormant/offline styling | `railNodes.ts`, `Rail.tsx`, CSS | 60–140 |
+| Frontend row host badge + offline/stale styling | `railNodes.ts`, `Rail.tsx`, CSS | 60–140 |
 | Tests (Go + TS) | various | 200–350 |
 | **Total** | | **~540–1030** |
 
 This is larger than a single tight PR if done at once. A natural split:
 
 - **06a** (Go-only, ~200–320 LOC): connectivity interface, truthful
-  `Online`/`Kind`, dormant fold, `thread/start` source targeting + Go tests.
+  `Online`/`Kind`, offline/stale fold, `thread/start` source targeting + Go tests.
   Reviewable and landable with no UI change (picker absent → local default
   preserved).
-- **06b** (frontend, ~340–700 LOC): host picker, row host badge, dormant/offline
+- **06b** (frontend, ~340–700 LOC): host picker, row host badge, offline/stale
   affordances, TS tests. Depends on 06a's generated type/source field.
 
 ## Open questions
@@ -676,7 +739,7 @@ This is larger than a single tight PR if done at once. A natural split:
   `EventAttached`/`EventDetached` poke (§Go changes item 2b) does it on a
   connection-state change, so the manifest flips without waiting for the 30s
   refresh.
-- **Dormant vs `Live` for offline rows**: confirm no path sets `Live:true` for
+- **Offline/stale vs `Live` for offline rows**: confirm no path sets `Live:true` for
   an offline host's stale rows (`navigation_projection.go`
   compute `Live` from the live input set). If stale remote rows are pushed into
   `snapshot.live` (`web_api_tree.go`), the offline filter must run

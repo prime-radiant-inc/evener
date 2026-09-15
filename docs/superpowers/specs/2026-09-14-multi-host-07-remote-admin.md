@@ -48,6 +48,10 @@ existing local store and writes the remote one.
   (see "Contract" for the exact method families).
 - The OpenAI Codex OAuth caveat: device-code login **on the host** is the
   reliable path; a direct token-file copy is best-effort and warned.
+- A dedicated ref-translating dispatch for `evener/thread/forceStop`, so a
+  UI force-stop on a `host:<thread>` reaches the owning host instead of being
+  rejected by the controller's local-only check — separate from the generic
+  proxy, see §"Dedicated ref-translating dispatch".
 
 ## Non-scope
 
@@ -199,6 +203,46 @@ does not define that accessor.
 struct, or open a per-host browser WebSocket (`/rpc?host=…`). A wrapper method is
 one protocol row and one handler and leaves the ~40 param structs untouched; a
 per-host socket would multiply the browser handshake. See "Open questions".
+
+### Dedicated ref-translating dispatch (`evener/thread/forceStop`)
+
+`evener/thread/forceStop` (`MethodEvenerThreadForceStop`, `ScopeHub`) is the one
+admin-family method that is neither forwarded through `evener/host/request` nor
+served by the controller. The controller's `forceStopThread`
+(`cmd/evener-hub/app_force_stop.go`) verifies and signals a **local daemon
+process** through the hub's own `DaemonProcesses`/`ResumeLocks` ownership and
+refuses any ref whose `SourceID` is not `"local"`
+(`appwire.InvalidParams("force stop requires a local session ref")`). A raw
+forward of a `host:<thread>` ref therefore fails on the host hub too, and a
+forward of a bare `local:<thread>` ref would target the wrong machine's daemon
+(component 05, §"Method-coverage analysis"). Component 05 explicitly defers
+remote force-stop to this section; the earlier spec pointed there but defined no
+handler, leaving the call rejected with "force stop requires a local session
+ref".
+
+Requirement: `forceStopThread` gains a non-local branch that
+
+1. parses the ref and, when `SourceID` names a configured host, resolves it
+   through `hostreg.Registry.Get` (component 03); unknown host →
+   `appwire.InvalidParams`;
+2. refuses an unattached host with `appwire.Unavailable` (the same offline rule
+   as the proxy, §"Error handling");
+3. translates the ref to `appwire.Ref{SourceID: "local", ThreadID: ref.ThreadID}`
+   and issues `evener/thread/forceStop` **on that host's hub** through the
+   per-host `appwire.Client` (components 04/05's shared client) — **not** through
+   `evener/host/request`, which disclaims ref translation and must not carry it;
+4. maps the remote response/error back and returns it (a remote
+   `InvalidParams`/`Unavailable` surfaces unchanged, naming the host).
+
+The **local** branch (the shipped `SourceID == "local"` path) is unchanged. A UI
+force-stop on `host:<thread>` therefore terminates the wedged daemon on its own
+host instead of being rejected. `evener/thread/forceStop` is **not** added to
+the `evener/host/request` allow-list.
+
+**Implementation status:** the shipped `forceStopThread` (`app_force_stop.go`)
+rejects every non-local ref, and component 07 does not yet add this branch, so a
+remote force-stop is rejected today. The branch is the implementing PR's
+requirement.
 
 ### Notification envelope
 
@@ -393,6 +437,10 @@ Decompose component 07 into four landable PRs.
   per-host client accessor. It allow-lists methods against the **exact method
   set** enumerated under "Proxy method" (fail closed; no prefix matching); the
   allow-list is the security boundary.
+- Add the dedicated `evener/thread/forceStop` ref-translating branch to
+  `forceStopThread` (`cmd/evener-hub/app_force_stop.go`) as
+  §"Dedicated ref-translating dispatch" specifies; it is **not** part of the
+  `evener/host/request` allow-list.
 - Notification fan-out: **subscribe to component 05's source-level notification
   broker**, never to `Client.Notifications()` directly (component 05, §"One
   notification consumer per client — the broker"). `Notifications()` is a single
@@ -527,6 +575,11 @@ receives a key, and the controller writes nothing.
   allow-list against `appwire.CatalogMethodNames(appwire.ScopeHub)` so a catalog
   addition forces a deliberate allow/deny decision rather than a silent
   auto-allow.
+- **Remote force-stop test.** A `host:<thread>` force-stop resolves the host,
+  translates the ref to `local:<thread>`, issues `evener/thread/forceStop` on the
+  host's client (assert the forwarded ref and that it does **not** go through
+  `evener/host/request`), and returns the host's result; a local ref keeps the
+  shipped `forceStopThread` path; an unknown/unattached host is refused typed.
 - **Notification fan-out:** a scripted remote emits `evener/auth/updated`;
   assert one controller-side broadcast tagged with the host.
 - **Push table test:** a fake remote that records `apiKey/set` calls and reports
@@ -580,6 +633,11 @@ receives a key, and the controller writes nothing.
    token-file copy is warned and does not claim success on a refresh failure.
 9. `go test ./cmd/evener-hub/... ./internal/credentials/...` and the frontend
    store tests pass with no live SSH.
+10. A UI force-stop on a `host:<thread>` ref reaches the owning host: the
+    controller translates the ref and issues `evener/thread/forceStop` on that
+    host's hub (never `evener/host/request`), a `local:` ref keeps the shipped
+    path, and an unknown/unattached host is refused typed — no call is rejected
+    with "force stop requires a local session ref".
 
 ## PR size estimate (LOC)
 
