@@ -159,3 +159,56 @@ func TestCloneThreadDeepCopiesQueueSkillNames(t *testing.T) {
 		t.Fatalf("outer slice aliased: original[1] has %d entries, want 1", got)
 	}
 }
+
+// TestCloneEvenerDiagnosticsOwnsDelegateDiagnostics proves the diagnostics clone
+// owns the delegate-subsystem diagnostics as well. They are the slice the hub
+// appends to AFTER cloning a cached projection (app_threadread.go attaches
+// delegates.jsonl diagnostics to the returned thread), so an aliased slice there
+// lets a later write reach the cached block through the clone.
+func TestCloneEvenerDiagnosticsOwnsDelegateDiagnostics(t *testing.T) {
+	source := &EvenerDiagnostics{DelegateDiagnostics: []string{"delegates.jsonl: line too long"}}
+	clone := CloneEvenerDiagnostics(source)
+	if !reflect.DeepEqual(clone, source) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, source)
+	}
+	clone.DelegateDiagnostics[0] = "mutated"
+	if source.DelegateDiagnostics[0] != "delegates.jsonl: line too long" {
+		t.Fatalf("source delegate diagnostics changed through its clone: %+v", source.DelegateDiagnostics)
+	}
+}
+
+// TestCloneEvenerDiagnosticsOwnsWatches proves the diagnostics clone deep-copies
+// the watch list: mutating the clone's rows, cadence, or events must not reach
+// the source, which stays aliased in caches otherwise.
+func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
+	source := &EvenerDiagnostics{Watches: []EvenerWatchInfo{{
+		ID:            "w1",
+		Source:        "self",
+		Note:          "wake me",
+		Cadence:       []EvenerWatchCadence{{Kind: "every", Seconds: 10}},
+		Events:        []string{"assistant.tool"},
+		DeliveryTimes: []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"},
+		Active:        true,
+	}}}
+	clone := CloneEvenerDiagnostics(source)
+	if !reflect.DeepEqual(clone, source) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, source)
+	}
+	clone.Watches[0].ID = "mutated"
+	clone.Watches[0].Cadence[0].Kind = "mutated"
+	clone.Watches[0].Events[0] = "mutated"
+	clone.Watches[0].DeliveryTimes[0] = "mutated"
+	if source.Watches[0].ID != "w1" ||
+		source.Watches[0].Cadence[0].Kind != "every" ||
+		source.Watches[0].Events[0] != "assistant.tool" ||
+		source.Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" {
+		t.Fatalf("source watch changed through its clone: %+v", source.Watches[0])
+	}
+	clone.Watches = append(clone.Watches, EvenerWatchInfo{ID: "w2"})
+	if len(source.Watches) != 1 {
+		t.Fatalf("appending to the clone's slice changed the source: %d rows", len(source.Watches))
+	}
+	if CloneEvenerWatches(nil) != nil {
+		t.Fatal("CloneEvenerWatches(nil) must stay nil")
+	}
+}

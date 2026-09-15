@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Round 2 (primary) — Watch rows</title>
+    <link rel="stylesheet" href="mockup.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="masthead">
+        <p class="eyebrow">Sidebar watches · round 2, primary proposal</p>
+        <h1>Watch rows</h1>
+        <p class="thesis">
+          Takes direction A's shape and B's honesty, and drops C's invented
+          visuals. Watches are ordinary rows in both surfaces — a drawn clock, the
+          watch's own note as the title, and a second line naming its cadence and
+          state. Everything shown is either already on the live watch projection
+          or one cheap field away; nothing is inferred that the runtime does not
+          know.
+        </p>
+        <button class="theme-toggle" type="button" onclick="toggleTheme()">Toggle light / dark</button>
+      </header>
+
+      <div class="stage">
+        <!-- ------------------------------------------------------- sidebar -->
+        <div class="rail">
+          <div class="rail-head"><span>Evener</span><span>⌕ ⋯</span></div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Live</div>
+
+            <div class="rail-row is-selected">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Fix flaky sidebar tests</span>
+                  <span class="chev">▾</span>
+                </span>
+                <!-- The count joins the existing line, in neutral ink, before
+                     the branch (which stays the ellipsis sacrifice). -->
+                <span class="rail-gloss">
+                  2 subagents working · 1 job running · 3 watches
+                </span>
+              </span>
+              <span class="right">2m</span>
+            </div>
+
+            <div class="children">
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">go test ./cmd/evener-hub/...</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">running</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <span class="signal signal--alive"></span>
+                    <span class="rail-title">Audit row memo boundary</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--alive">1 subagent working · 4m</span>
+                </span>
+                <span class="right">4m</span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="rail-title">Prune stale fixtures</span></span>
+                </span>
+                <span class="right">13m</span>
+              </div>
+
+              <!-- WATCH ROWS: armed work, after running work. Drawn glyph, the
+                   note as title, cadence + state on the second line. The
+                   abnormal one leads its group and is the only danger ink. -->
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Ping me if the queue depth crosses 500.">Poll the queue depth</span>
+                  </span>
+                  <span class="rail-gloss rail-gloss--danger">every 10s · 8 dropped</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Check the deploy log for the rollback, and wake me if it happened.">Deploy rollback check</span>
+                  </span>
+                  <span class="rail-gloss">every 15m · 3 fires</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Wake me when the migration job prints DONE.">Migration prints DONE</span>
+                  </span>
+                  <span class="rail-gloss">on output · armed</span>
+                </span>
+              </div>
+
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Inactive subagents (3)</span></span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="chev">▸</span><span class="rail-title">Completed jobs (7)</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rail-section">
+            <div class="rail-section-title">Projects</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline"><span class="chev">▸</span><span class="rail-title">evener</span></span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------ activity -->
+        <div class="panel">
+          <div class="panel-head">
+            <span>▤</span>
+            <span>Activity</span>
+            <span class="spacer"></span>
+            <span class="count">2 running · 3 watches</span>
+          </div>
+
+          <div class="panel-body">
+            <!-- Promoted only when a watch is actually abnormal; otherwise the
+                 panel opens on running work. -->
+            <div class="group">
+              <div class="group-title group-title--look"><span>Needs a look</span></div>
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname aname--live">Poll the queue depth</span>
+                <span class="ameta ameta--danger">every 10s · 8 dropped</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Ping me if the queue depth crosses 500.</p>
+                <span class="chip chip--danger">runaway fuse fired · 8 drops · max self-influence depth 4</span>
+                <dl class="kv">
+                  <dt>source</dt><dd>self</dd>
+                  <dt>cadence</dt><dd class="hi">every 10s</dd>
+                  <dt>fires</dt><dd>214 distinct · 206 delivered · 8 dropped</dd>
+                  <dt>armed</dt><dd>17:02:11</dd>
+                </dl>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="group-title"><span>Running</span><span>2</span></div>
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <span class="aglyph aglyph--alive">$</span>
+                <span class="aname aname--live">go test ./cmd/evener-hub/...</span>
+                <span class="ameta">12s</span>
+              </div>
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <span class="aglyph aglyph--alive">⌘</span>
+                <span class="aname aname--live">Audit row memo boundary</span>
+                <span class="ameta">↑41k ↓6k · 4s</span>
+              </div>
+            </div>
+
+            <!-- Watches get their own group, after running work: an armed watch
+                 is inventory, not a call on a person. -->
+            <div class="group">
+              <div class="group-title"><span>Watches</span><span>2 armed</span></div>
+
+              <div class="arow">
+                <span class="arow-toggle">▾</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname aname--live">Deploy rollback check</span>
+                <span class="ameta">every 15m · 3 fires</span>
+              </div>
+              <div class="detail">
+                <p class="detail-why">Check the deploy log for the rollback, and wake me if it happened.</p>
+                <dl class="kv">
+                  <dt>source</dt><dd>self (this session)</dd>
+                  <dt>cadence</dt><dd class="hi">every 15m</dd>
+                  <dt>armed</dt><dd>18:40:02</dd>
+                  <dt>last fire</dt><dd>19:10:02</dd>
+                  <dt>fires</dt><dd>3 delivered · 0 dropped · 0 evicted</dd>
+                </dl>
+                <div class="deliv"><span class="dot dot--delivered"></span>d_03 delivered · timer · 19:10:02</div>
+                <div class="deliv"><span class="dot dot--delivered"></span>d_02 delivered · timer · 18:55:02</div>
+                <div class="deliv"><span class="dot dot--delivered"></span>d_01 delivered · timer · 18:40:02</div>
+              </div>
+
+              <div class="arow">
+                <span class="arow-toggle">▸</span>
+                <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <span class="sr">Watch:</span>
+                <span class="aname">Migration prints DONE</span>
+                <span class="ameta">on output · armed · 0 fires</span>
+              </div>
+            </div>
+
+            <div class="group">
+              <div class="arow" style="color: var(--ink-mid)">
+                <span class="arow-toggle">▸</span>
+                <span class="aname" style="color: var(--ink-mid)">Ended watches (4)</span>
+                <span class="ameta">2 cleared · 1 fired · 1 budget</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- --------------------------------------------------------- states -->
+      <p class="caption" style="margin-top: 40px">Edge states, in the rail</p>
+      <div class="stage">
+        <div class="rail">
+          <!-- 1. An idle session whose ONLY pending work is a watch. This is the
+               coverage hole round 1 assumed away: the gloss must render here, so
+               `showsActivity` has to learn about watches. -->
+          <div class="rail-section">
+            <div class="rail-section-title">The gate change</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="rail-title">Soak the release branch</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss">1 watch armed</span>
+              </span>
+              <span class="right">31m</span>
+            </div>
+            <div class="children">
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title" title="Ping me if the soak run goes quiet for five minutes.">Soak went quiet</span>
+                  </span>
+                  <span class="rail-gloss">on event · every 3rd · armed</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. Runaway: the count names the state instead of the inventory. -->
+          <div class="rail-section">
+            <div class="rail-section-title">Abnormal</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="signal signal--alive"></span>
+                  <span class="rail-title">Watch the queue</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss">1 subagent working · 1 watch needs a look</span>
+              </span>
+              <span class="right">0s</span>
+            </div>
+          </div>
+
+          <!-- 3. Many watches: capped, with an honest overflow note. -->
+          <div class="rail-section">
+            <div class="rail-section-title">Many</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline">
+                  <span class="rail-title">Migrate the fixtures</span>
+                  <span class="chev">▾</span>
+                </span>
+                <span class="rail-gloss">7 watches · 1 needs a look</span>
+              </span>
+              <span class="right">9m</span>
+            </div>
+            <div class="children">
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg wsvg--danger" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title">Fixture batch stuck</span>
+                  </span>
+                  <span class="rail-gloss">every 5s · 12 dropped</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline">
+                    <svg class="wsvg" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span class="sr">Watch:</span>
+                    <span class="rail-title">Batch 2 finished</span>
+                  </span>
+                  <span class="rail-gloss">on output · armed</span>
+                </span>
+              </div>
+              <div class="rail-row">
+                <span class="textcol">
+                  <span class="titleline"><span class="rail-title" style="color: var(--ink-low)">+5 more watches</span></span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. Zero: nothing changes. -->
+          <div class="rail-section">
+            <div class="rail-section-title">Zero watches</div>
+            <div class="rail-row">
+              <span class="textcol">
+                <span class="titleline"><span class="rail-title">Rename the CLI flag</span></span>
+              </span>
+              <span class="right">2h</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="legend" style="margin-top: 0; border-top: none; padding-top: 0">
+          <h2>What changed from round 1, and why</h2>
+          <ul>
+            <li>
+              <b>Neutral ink everywhere a watch appears.</b> The count sits in the
+              plain <span class="mono">.rail-gloss</span>, not the alive-tinted
+              span. Round 1 spent <span class="mono">--alive</span> on a watch in
+              A and B and <span class="mono">--accent</span> in C, which the
+              four-hue rule forbids. Danger survives only for runaway drops.
+            </li>
+            <li>
+              <b>The gate change is explicit.</b>
+              <span class="mono">showsActivity</span> gains
+              <span class="mono">watches &gt; 0</span>, so a session whose only
+              pending work is an armed watch still gets its count. This is a
+              deliberate amendment to “a quiet row is one line”, and it is the
+              one round-1 assumption every reviewer flagged.
+            </li>
+            <li>
+              <b>Count goes before the branch.</b> Branch stays the ellipsis
+              sacrifice; the count is never the thing that gets cut.
+            </li>
+            <li>
+              <b>A drawn clock, not a typed glyph.</b> No code point in the app's
+              font ranges covers <span class="mono">◷</span> (round 1's glyph), and
+              the rail names rows from their content — so round 1's row would have
+              announced a stray character. Here it is an inline SVG plus a
+              visually-hidden “Watch:” for assistive tech.
+            </li>
+            <li>
+              <b>No countdown, no progress track, no duration.</b> The runtime
+              keeps a ticker, not a next-fire instant; there is no TTL field at
+              all. So there is no “in 4m” and no “×6h” — cadence is shown as what
+              it is (<span class="mono">every 15m</span>,
+              <span class="mono">on output</span>) and state as
+              <span class="mono">armed</span>.
+            </li>
+            <li>
+              <b>Running work keeps the top of the panel.</b> Watches are their
+              own group <em>after</em> running work — an armed watch is inventory,
+              not attention. The exception is the one abnormal state, promoted to
+              a “Needs a look” group.
+            </li>
+            <li>
+              <b>Ended watches live in the panel, not the rail.</b> No third
+              disclosure on a session row; the panel gets one collapsed
+              “Ended watches (N)” line.
+            </li>
+            <li>
+              <b>“Many” is capped</b> with a <span class="mono">+N more
+              watches</span> note, matching the rail's existing overflow grammar.
+            </li>
+          </ul>
+
+          <h2>Data plan (verified against the code)</h2>
+          <ul>
+            <li>
+              <b>Already live:</b> <span class="mono">jobManager.liveWatchSummaries()</span>
+              returns <span class="mono">{id, source, condition, deliveries, createdAt}</span>
+              for the session's visible watches, and <span class="mono">recentWatchEntry</span>
+              carries onto <span class="mono">{end_reason, ended_at}</span> for ended
+              ones. Cadence and note already exist inside
+              <span class="mono">watchConditionSummary</span>'s prose.
+            </li>
+            <li>
+              <b>Cheap plumbing:</b> project that projection to the hub
+              (<span class="mono">DetailedStatus</span> → <span class="mono">EvenerDiagnostics</span>
+              → <span class="mono">NavigationSessionSummary.watches</span>), and split
+              <span class="mono">note</span> and cadence into structured fields instead of
+              parsing the condition string. Delivery timestamps exist
+              (<span class="mono">WatchSendState.CreatedAt</span>) but
+              <span class="mono">DeliveryView</span> drops them; add the field.
+            </li>
+            <li>
+              <b>Definition to pin down:</b> “active” = in the live registry and
+              visible to this session, excluding fired-pending-end entries; a
+              receiver watch counts for its receiver, not its owner, or the subtree
+              rollup double-counts.
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        const root = document.documentElement;
+        root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      }
+    </script>
+  </body>
+</html>
