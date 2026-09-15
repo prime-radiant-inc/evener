@@ -289,6 +289,18 @@ func (s *Session) releaseTerminalScratchRetention() {
 	if !ok || owner.RootSessionID != s.id {
 		return
 	}
+	// A successful restore reacquires a lease per retained-scratch reference and
+	// pools every allocation no live environment adopted (a cold/unrestored
+	// delegate, a parked or orphan binding). Release that pool first: it still
+	// holds those directories' leases, so ReleaseScratchRetention would see
+	// self-inflicted contention and skip removing their pins, leaving the
+	// directories pinned against collection forever. Handles whose lease a live
+	// environment adopted were already removed from the pool by the transfer, so
+	// this releases only unadopted handles. It is safe here because every child
+	// session has already been torn down earlier in the terminal close, so no
+	// consumer can adopt a pooled handle after this point. Retain() releases each
+	// lease without deleting the directory, preserving the retention semantics.
+	releaseRetainedScratchPool(s.retainedScratch.Swap(nil))
 	if err := sandbox.ReleaseScratchRetention(owner); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("scratch retention release failed: %v", err)})
 	}
