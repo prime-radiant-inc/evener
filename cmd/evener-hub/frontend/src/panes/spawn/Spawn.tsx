@@ -517,6 +517,14 @@ function SpawnForm({
   // resolution time rather than a dependency that reruns the effect.
   const modelRef = useRef(model);
   modelRef.current = model;
+  // The model value the uncredentialed-default fallback below installed, or
+  // null if the current model did not come from it. The fallback reads THIS
+  // controller's catalog (model/list), so a value it installed must not be
+  // forwarded to a remote target - the selected host resolves its own default
+  // - and is retired when the target becomes remote. Cleared on every
+  // user-driven model change, so a value the person chose is never treated as
+  // fallback-derived (Component 06b review, round seven).
+  const defaultModelFallbackRef = useRef<string | null>(null);
 
   function isCurrentDraft(): boolean {
     return spawnDraftsStore.getState().current?.fields === draft.fields;
@@ -980,7 +988,13 @@ function SpawnForm({
           if (!active) return;
           setDefaultPreview({ draft, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
-          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
+          // A remote target resolves its own default model from its own host's
+          // credentials and catalog, so this controller's launchable set is not
+          // evidence about it: injecting models[0] here would ride thread/start
+          // and stop the selected host from resolving its own default (round
+          // seven). The controller-local preview itself still lands above - the
+          // disclosure below the form already says those readings are ours.
+          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0 || remoteLaunch) return;
           const slash = defaultModel.indexOf("/");
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
@@ -1004,7 +1018,9 @@ function SpawnForm({
             fallback &&
             !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
           ) {
-            setModel(`${fallback.provider}/${fallback.model}`);
+            const installed = `${fallback.provider}/${fallback.model}`;
+            defaultModelFallbackRef.current = installed;
+            setModel(installed);
           }
         },
         () => {
@@ -1018,7 +1034,21 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
+  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, remoteLaunch, setModel, harness, usesEvenerModels]);
+
+  // Retire a model this fallback installed once the target becomes remote: the
+  // value describes the CONTROLLER's catalog, and forwarding it would prevent
+  // the selected host from resolving its own default (round seven). Only a
+  // value still equal to the one the fallback installed is cleared, so a
+  // person's own choice - or a sticky draft default - is never touched.
+  useEffect(() => {
+    if (!remoteLaunch) return;
+    const installed = defaultModelFallbackRef.current;
+    if (installed !== null && modelRef.current === installed) {
+      defaultModelFallbackRef.current = null;
+      setModel("");
+    }
+  }, [remoteLaunch, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, spawnSchema's
@@ -1120,6 +1150,10 @@ function SpawnForm({
   }
 
   function handleModelChange(next: string): void {
+    // Any value the person sets is their own choice, not the
+    // uncredentialed-default fallback's controller-derived pick, so it is no
+    // longer retired if the launch target becomes remote.
+    defaultModelFallbackRef.current = null;
     setModel(next);
     clearAdvancedOverride("model");
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
@@ -1322,6 +1356,22 @@ function SpawnForm({
         }
         if (builtinMatch.command.id === "model") {
           const { provider, model: modelId } = splitModelId(value);
+          // Unlike every other splitModelId caller, this input is RAW user text,
+          // not a provider/model catalog id that always contains a slash: "foo"
+          // splits to provider "foo" with an empty model, and the selected host
+          // ignores a provider with no model (its own model field stays empty),
+          // so the requested model would be silently dropped rather than
+          // refused. The host's own parser requires provider/model too, so
+          // refuse here with the same unknown-value message the local path
+          // uses - a clear pre-launch rejection instead of a silent no-op
+          // (round seven).
+          if (provider === "" || modelId === "") {
+            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
+            busyRef.current = false;
+            setBusy(false);
+            setBusyStartedAt(null);
+            return;
+          }
           slashScalars = { modelProvider: provider, model: modelId };
         } else {
           slashScalars = { reasoningEffort: value };
@@ -1442,6 +1492,10 @@ function SpawnForm({
       accessMode,
       reasoningEffort,
       harnessUsesEvenerModels: usesEvenerModels,
+      // A remote launch's cwd/model describe the selected host, not this
+      // controller, so they must not overwrite the global scalar defaults a
+      // later local spawn reads (round seven).
+      remoteLaunch,
     });
     // Reset transient form state on success, before navigating away (floor
     // §1.14 L186: the pending-attachment bag is cleared and the paste
