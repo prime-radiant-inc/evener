@@ -23,7 +23,12 @@ function envList(env, key) {
   return match[1].split(/\s+/).filter(Boolean);
 }
 
-const env = readFileSync(fileURLToPath(new URL("./source-files.env", import.meta.url)), "utf8");
+// import.meta.dirname where the runtime provides it (Node, and Vitest, set
+// it); the file-URL form only where it does not. fileURLToPath alone threw
+// under the frontend's Vitest, which imports this module across the app
+// boundary and hands it a non-file import.meta.url.
+const here = import.meta.dirname ?? fileURLToPath(new URL(".", import.meta.url));
+const env = readFileSync(join(here, "source-files.env"), "utf8");
 
 // The dot is the JS spelling; the env carries the bare word the shell globs want.
 export const SOURCE_EXTENSIONS = envList(env, "extensions").map((extension) => `.${extension}`);
