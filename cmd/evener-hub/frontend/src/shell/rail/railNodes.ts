@@ -381,11 +381,16 @@ export function armedWatchCount(watches: readonly NavigationWatchSummary[] | und
  * covers the hidden ones - and the label must never understate the session's
  * armed watches. */
 export function watchCountLabel(armed: number, retained: number, omitted: number): string {
-  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
-  if (omitted === 0) {
-    return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
+  if (omitted > 0) {
+    // The byte fitter can shed every retained row, and a leading "0 watches"
+    // would then contradict the totals beside it: the session does hold watches,
+    // the hub just could not fit a single row. Dropping the base count there
+    // matches what the panel's own watch header says in the same case.
+    const total = `${armed} armed total · +${omitted} more`;
+    return retained === 0 ? total : `${retained} watch${retained === 1 ? "" : "es"} · ${total}`;
   }
-  return `${retainedLabel} · ${armed} armed total · +${omitted} more`;
+  const retainedLabel = `${retained} watch${retained === 1 ? "" : "es"}`;
+  return retained === armed ? retainedLabel : `${retainedLabel} · ${armed} armed`;
 }
 
 function subagentIsCurrent(child: RailSession): boolean {

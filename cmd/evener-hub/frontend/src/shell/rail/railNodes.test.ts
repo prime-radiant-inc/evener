@@ -326,6 +326,11 @@ describe("resource projection semantics", () => {
       omitted_armed_watches: 0,
     });
     expect(watchCountLabel(activeWatchCount(mixed), 2, 3)).toBe("2 watches · 1 armed total · +3 more");
+
+    // The byte fitter can shed every retained row: the label then drops the base
+    // count rather than leading with "0 watches" beside a nonzero armed total.
+    expect(watchCountLabel(40, 0, 8)).toBe("40 armed total · +8 more");
+    expect(watchCountLabel(0, 0, 8)).toBe("0 armed total · +8 more");
   });
 
   test("handles cluster disclosure without a second inactive fold", () => {
