@@ -994,6 +994,27 @@ test("/notes focuses or opens the session pane, not just the notes state", () =>
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
 });
 
+test("/notes closing from a companion pane leaves the session pane unfocused", () => {
+  focusSession("ref_a");
+  seedModel("ref_a");
+  cmd("notes").run?.(runContext()); // opens
+
+  // Move focus to a details pane for the same session; notes stay expanded.
+  workspaceStore.setState({
+    panes: [
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pd1",
+  });
+
+  cmd("notes").run?.(runContext()); // closes
+
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+  // Closing must not yank focus to the session pane the user already left.
+  expect(workspaceStore.getState().focusedPaneId).toBe("pd1");
+});
+
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend
 // tried "?" and searched "shortcut" in the palette and never found it - the
 // "help" command's own keywords didn't cover "hotkey", one of the terms a

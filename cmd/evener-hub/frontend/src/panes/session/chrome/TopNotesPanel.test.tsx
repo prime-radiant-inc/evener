@@ -225,11 +225,14 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.getByText("No notes yet")).toBeTruthy();
   expect(screen.queryByText("Add a note…")).toBeNull();
   // The visible preview IS the accessible name - a generic label would hide
-  // the content from screen readers - and the hint rides along as a
-  // description rather than hidden text.
+  // the content from screen readers. The hint is a DESCRIPTION, not part of
+  // the name: rendered inside the button it would be announced twice (once
+  // via name-from-content, once via the description).
   expect(summary.getAttribute("aria-label")).toBeNull();
-  expect(summary.getAttribute("aria-describedby")).toBeTruthy();
-  expect(summary.textContent).toContain("Click to view");
+  const describedBy = summary.getAttribute("aria-describedby");
+  expect(describedBy).toBeTruthy();
+  expect(document.getElementById(describedBy ?? "")?.textContent).toContain("Click to view");
+  expect(summary.textContent).not.toContain("Click to");
 
   // Reading still works: the body expands, but a read-only session mounts
   // no editor to type into.

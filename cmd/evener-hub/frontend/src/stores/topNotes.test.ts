@@ -1,9 +1,13 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
+import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "./topNotes";
 
 beforeEach(() => {
   topNotesStore.getState().resetForTests();
+  resetPanelStoreEvictionForTests();
+  resetWorkspaceStoreForTests();
 });
 
 test("top notes is collapsed by default", () => {
@@ -84,4 +88,59 @@ test("useTopNotesExpanded and usePendingTopNotesFocus reflect store updates", ()
 
   expect(exp.current).toBe(true);
   expect(pending.current).toBe(true);
+});
+
+// --- eviction: state lives inside the session pane -------------------------
+//
+// The top-notes panel only exists while a SESSION pane holds the ref.
+// Companion panes (details/tasks/activity) keep the ref open in the
+// workspace, but they cannot show the notes bar - an expanded flag that
+// survives the session pane's close is invisible state, and the next
+// /notes on the reopened session would TOGGLE it closed instead of opening.
+
+test("expanded state does not outlive the session pane - companion panes do not keep it", async () => {
+  act(() => {
+    workspaceStore.setState({
+      panes: [
+        { id: "p_session", type: "session", params: { ref: "ref_1" }, slot: "main" },
+        { id: "p_details", type: "sessionDetails", params: { ref: "ref_1" }, slot: "secondary" },
+      ],
+      focusedPaneId: "p_session",
+    });
+  });
+  act(() => {
+    topNotesStore.getState().openAndFocus("ref_1");
+  });
+  expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
+
+  // Close the session pane; only the details pane still holds the ref.
+  act(() => {
+    workspaceStore.setState({
+      panes: [{ id: "p_details", type: "sessionDetails", params: { ref: "ref_1" }, slot: "main" }],
+      focusedPaneId: "p_details",
+    });
+  });
+  await waitFor(() => expect(topNotesStore.getState().isExpanded("ref_1")).toBe(false));
+});
+
+test("expanded state survives while the session pane holds the ref", async () => {
+  act(() => {
+    workspaceStore.setState({
+      panes: [{ id: "p_session", type: "session", params: { ref: "ref_1" }, slot: "main" }],
+      focusedPaneId: "p_session",
+    });
+  });
+  act(() => {
+    topNotesStore.getState().openAndFocus("ref_1");
+  });
+
+  // An unrelated workspace change runs the eviction sweep; the open session
+  // pane keeps the state alive.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: "p_session" });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(topNotesStore.getState().isExpanded("ref_1")).toBe(true);
 });

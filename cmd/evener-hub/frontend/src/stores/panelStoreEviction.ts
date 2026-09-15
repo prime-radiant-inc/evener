@@ -1,7 +1,12 @@
-import { type WorkspaceStoreState, workspaceStore } from "../shell/workspace";
+import { type OpenPaneRecord, type WorkspaceStoreState, workspaceStore } from "../shell/workspace";
 
 export interface PanelStoreEvictor {
   refs: () => Iterable<string>;
+  // Which open panes keep this store's per-ref state alive. Defaults to every
+  // ref-bearing pane type; a store whose state exists only inside ONE pane
+  // type (top-notes state lives in the session pane) narrows this so
+  // companion panes for the same ref cannot keep dead state alive.
+  keepAliveRefs?: (panes: OpenPaneRecord[]) => Set<string>;
   evict: (ref: string) => void;
 }
 
@@ -35,8 +40,9 @@ export function openPanelRefs(state: Pick<WorkspaceStoreState, "panes">): Set<st
 
 function evictUnreferencedEntries(): void {
   evictionScheduled = false;
-  const openRefs = openPanelRefs(workspaceStore.getState());
+  const panes = workspaceStore.getState().panes;
   for (const evictor of evictors) {
+    const openRefs = evictor.keepAliveRefs ? evictor.keepAliveRefs(panes) : openPanelRefs({ panes });
     for (const ref of evictor.refs()) {
       if (!openRefs.has(ref)) evictor.evict(ref);
     }
