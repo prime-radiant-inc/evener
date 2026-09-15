@@ -143,18 +143,24 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 // ResumeHistory extracts the history needed for session resume from transcript entries.
 // If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
 // Otherwise returns all turns.
-func ResumeHistory(entries []transcript.Entry) []schema.Turn {
-	// Scan backward for the last compaction turn.
-	compactionIdx := -1
+// retainedFrom is the index of the first entry ResumeHistory keeps: the last
+// compaction turn, or 0 when the transcript never compacted. Callers that need to
+// map a position in the full transcript onto the resumed history read it here, so
+// the window rule lives in one place.
+func retainedFrom(entries []transcript.Entry) int {
 	for i := range slices.Backward(entries) {
 		kind := entries[i].Turn.Kind
 		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
-			compactionIdx = i
-			break
+			return i
 		}
 	}
+	return 0
+}
 
-	if compactionIdx < 0 {
+func ResumeHistory(entries []transcript.Entry) []schema.Turn {
+	compactionIdx := retainedFrom(entries)
+
+	if compactionIdx == 0 {
 		// No compaction: return all turns.
 		turns := make([]schema.Turn, len(entries))
 		for i, e := range entries {
@@ -164,7 +170,7 @@ func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 		return repaired
 	}
 
-	// Return compaction turn + everything after it.
+	// Return the compaction turn + everything after it.
 	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
 	for i := compactionIdx; i < len(entries); i++ {
 		result = append(result, entries[i].Turn)

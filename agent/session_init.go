@@ -82,9 +82,9 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 // journal this session does not hold -- and a child mutation may reuse a parent's
 // client mutation id -- so they are decided by their own kinds and the write-path
 // text shape alone; only the turns the session itself created consult the
-// provenance its journal persists. A compacted history that no longer starts at
-// the beginning keeps the kind-then-shape rule for its first turns, which is the
-// honest fallback (roborev's ninth round).
+// provenance its journal persists. divergenceTurn is expressed in the units of
+// the history being escaped, not the transcript's (see the caller's shift), so a
+// compacted fork keeps its own turns' provenance (roborev's tenth round).
 func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
 	inherited := divergenceTurn - 1
 	if inherited <= 0 {
@@ -888,8 +888,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
 	// A fork's inherited prefix belongs to the parent's session, so only the
 	// session's own turns consult its journal (see
-	// escapeHistoryWithSessionProvenance).
-	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, meta.DivergenceTurn, clientMutations.steeringOrigins())
+	// escapeHistoryWithSessionProvenance). DivergenceTurn indexes the full
+	// transcript, and a compacted transcript resumes partway through it, so the
+	// bound shifts by where the retained history begins.
+	divergenceTurn := meta.DivergenceTurn
+	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
+		divergenceTurn -= retainedFrom(transcriptEntries)
+	}
+	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {

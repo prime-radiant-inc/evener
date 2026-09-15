@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -437,6 +439,91 @@ func TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal(t *testing.
 	}
 	if strings.Contains(got, ownText) {
 		t.Fatalf("the session's own note-origin turn kept its controls: %q", got)
+	}
+}
+
+// A compacted fork keeps its own turns' provenance: DivergenceTurn indexes the
+// full transcript, so a history that resumes partway through it has to shift the
+// bound -- otherwise the child's own turns are escaped as if they were the
+// parent's, and a kindless note-origin turn keeps its controls.
+func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
+	t.Parallel()
+	const sessionID = "01KCOMPACTEDFORKBOUND00000"
+	const ownID = "cm-own-after-compaction"
+	const ownText = "run the child tests\x1b[31mwith red lines\x1b[0m"
+	stateDir := t.TempDir()
+
+	store, err := newClientMutationStore(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(func(snapshot *clientMutationSnapshot) error {
+		own := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, ownID, struct{ Note string }{Note: "own note"})
+		snapshot.Journal[ownID] = clientMutationRecord{
+			ClientMutationID:  ownID,
+			Method:            own.Method,
+			Payload:           own.Payload,
+			PayloadHash:       own.PayloadHash,
+			OperationState:    clientMutationOperationTerminal,
+			ExecutionState:    "incorporated",
+			ProjectionState:   appwire.MutationProjectionReflected,
+			AttemptGeneration: 1,
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The child's transcript: two inherited turns, a compaction checkpoint, then
+	// the child's own steering turn.
+	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("new transcript writer: %v", err)
+	}
+	for _, turn := range []schema.Turn{
+		{Kind: schema.TurnSteering, ClientMutationID: "cm-parent-one", Message: llm.User("parent one")},
+		{Kind: schema.TurnSteering, ClientMutationID: "cm-parent-two", Message: llm.User("parent two")},
+		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the child wrote after inheriting")},
+		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
+	} {
+		if err := tw.AppendDurable(turn); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		// Two inherited turns precede the child's own history.
+		ParentSessionID: "01KPARENT0000000000000000",
+		DivergenceTurn:  3,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	got := modelBoundText(restored)
+	if strings.Contains(got, ownText) {
+		t.Fatalf("the child's own note-origin turn kept its controls through a compacted resume: %q", got)
 	}
 }
 
