@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,15 @@ func (f *fakeRunner) recordedStarts() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.starts...)
+}
+
+// exitStatus builds the error a failed remote command reports for a given exit
+// code. Classification reads the code from a real *exec.ExitError, so tests that
+// exercise the 127 "command not found" path must produce one rather than a plain
+// errors.New("exit status 127").
+func exitStatus(t *testing.T, code int) error {
+	t.Helper()
+	return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
 }
 
 // fakeStdio is an in-memory Stdio. Stdout is fed by a fakeBridge server; Stdin

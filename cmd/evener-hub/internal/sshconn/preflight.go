@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -220,15 +221,19 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 
 	lc, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
-		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode)) {
+		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || errors.Is(err, errExecutableMissing)) {
 			// The on-disk binary either refused the controller's appwire protocol
-			// outright or returned a contract that cannot be read. Either is a fact
-			// about the binary, not a fatal preflight: ensureOnce must be able to
-			// deploy a matching build over ssh (which uses neither appwire nor the
-			// contract) before any refusal is made terminal. Record the contract as
-			// unknown and let the decision ladder choose the deploy path. With no
-			// deploy configured there is nothing to install, so the failure stays
-			// terminal rather than being deferred to a deploy that can never run.
+			// outright, returned a contract that cannot be read, or is not there at
+			// all. Each is a fact about the binary, not a fatal preflight: ensureOnce
+			// must be able to deploy a matching build over ssh (which uses neither
+			// appwire nor the contract) before any refusal is made terminal. The
+			// absent-executable case is why this matters for the installer fallback,
+			// whose default target ~/.local/bin/evener is not on the non-interactive
+			// PATH: without it, a host that simply has no evener installed could
+			// never be deployed to. Record the contract as unknown and let the
+			// decision ladder choose the deploy path. With no deploy configured
+			// there is nothing to install, so the failure stays terminal rather than
+			// being deferred to a deploy that can never run.
 			return pf, nil
 		}
 		return pf, err
@@ -255,9 +260,34 @@ func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (laun
 		if isProtocolMismatchOutput(out) {
 			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
 		}
+		if executableMissing(err, out) {
+			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
+		}
 		return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
 	}
 	return parseLaunchCheck(out)
+}
+
+// errExecutableMissing marks a failed evener invocation that failed because there
+// is no evener executable at the resolved path: the host's non-interactive PATH
+// does not carry it. It is a fact about the command's absence, not a transport or
+// permission refusal, so a controller with a deploy configured records the launch
+// contract as unknown and lets the installer fallback install a binary at a known
+// location, instead of refusing the host outright.
+var errExecutableMissing = errors.New("sshconn: evener executable not found on the host")
+
+// executableMissing reports whether a failed evener invocation failed because the
+// executable could not be found. POSIX shells exit 127 for a command that cannot
+// be found and print a "not found" diagnostic; 126 (found but not executable) is
+// a real permission problem and is deliberately excluded, as is any failure whose
+// exit status or diagnostics do not name a missing command.
+func executableMissing(err error, out []byte) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 127 {
+		return false
+	}
+	text := strings.ToLower(string(out))
+	return strings.Contains(text, "not found") || strings.Contains(text, "no such file")
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth

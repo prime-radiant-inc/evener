@@ -1098,3 +1098,71 @@ func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
 		t.Fatalf("verifyBuildSource(clean again): %v", err)
 	}
 }
+
+// TestEnsureMissingEvenerReachesTheInstallerFallback pins the round-five High that
+// a host whose evener is absent from the non-interactive PATH was refused with
+// ErrSSHStart before any deploy ran. The installer fallback's default target
+// ~/.local/bin/evener is deliberately not on that PATH, so a missing executable is
+// a fact about the binary, not a transport failure: with a deploy configured the
+// launch contract is recorded as unknown and the installer installs a matching
+// build at the run target.
+func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
+	origChannel, origTag := buildinfo.Channel, buildinfo.ReleaseTag
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.ReleaseTag = origChannel, origTag })
+	buildinfo.Channel, buildinfo.ReleaseTag = "release", "v1.2.3"
+
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	installerRan, launched := false, false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			if strings.Contains(joined, " evener launch-check") {
+				// No evener on the host's non-interactive PATH.
+				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "curl -fsSL"):
+			installerRan = true
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/home/dev/.local/bin/evener\n"), nil
+		case strings.Contains(joined, "nohup"):
+			launched = true
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			if !launched {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(`{"version":"newsha"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v (a host with no evener on PATH must reach the installer fallback)", err)
+	}
+	if !installerRan {
+		t.Fatal("the installer fallback never ran")
+	}
+	if !launched {
+		t.Fatal("the installed hub was never started")
+	}
+}

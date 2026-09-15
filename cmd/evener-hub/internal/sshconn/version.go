@@ -867,7 +867,11 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 // accept; a basename is also not sufficient, since an unrelated binary can share
 // one. A mismatch is ErrRestart with no kill.
 func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, exe string) error {
-	actual, err := m.resolveRemotePath(ctx, host, exe)
+	resolved, err := m.resolveExecutableName(ctx, host, exe)
+	if err != nil {
+		return err
+	}
+	actual, err := m.resolveRemotePath(ctx, host, resolved)
 	if err != nil {
 		return err
 	}
@@ -880,6 +884,28 @@ func (m *Manager) hubExecutableMatches(ctx context.Context, host hostreg.Host, e
 			ErrRestart, host.Name, exe, actual, expected)
 	}
 	return nil
+}
+
+// resolveExecutableName turns a recovered hub argv[0] into a path the on-host
+// resolver can canonicalize. A bare name is a PATH lookup — the ad hoc hub is
+// commonly launched as `evener hub` — and the resolver's `test -f` cannot perform
+// one: it checks the SSH login cwd, so a bare name never resolves and a valid hub
+// would be refused. Matching expectedHubExecutable and deployTarget, a name with
+// no slash is resolved with `command -v` first; anything containing a slash is
+// already a path and is passed through.
+func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, exe string) (string, error) {
+	if strings.Contains(exe, "/") {
+		return exe, nil
+	}
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v "+shellQuote(exe)), nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: host %q resolve hub executable %q on PATH: %w: %s", ErrRestart, host.Name, exe, err, tail(out))
+	}
+	p := firstLine(string(out))
+	if p == "" {
+		return "", fmt.Errorf("%w: host %q hub executable %q is not on PATH and is not a path; refusing to restart it", ErrRestart, host.Name, exe)
+	}
+	return p, nil
 }
 
 // expectedHubExecutable resolves the canonical path of the executable the host

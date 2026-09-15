@@ -435,7 +435,10 @@ func (m *Manager) Close() error {
 //   - the deploy path is offered to every host before any terminal refusal, so a
 //     protocol-broken or flag-less host can still be upgraded over ssh;
 //   - a deploy or restart that leaves the host without a listener is retried by
-//     the next Ensure, matching ErrRestart's stated contract.
+//     the next Ensure, matching ErrRestart's stated contract;
+//   - a deploy on a host with no hub present is a fresh install, not a restart:
+//     it falls through to the explicit-attach bootstrap (below) and a reconnect
+//     never turns it into a hub start.
 //
 // explicit marks an explicit attach request (component 06's first host action),
 // which is the only place the first-attach bootstrap start may run; a reconnect
@@ -474,7 +477,21 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		m.clearPendingRestart(host.Name)
 	}
 
-	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown)
+	// A deploy replaces a hub only when one is present. The health probe is the
+	// cheap half of that question; when nothing answered but a deploy is on the
+	// table, ask whether a supervisor unit or a listener owns the hub port before
+	// deciding. This probe runs only for a deploy with no answering hub, so the
+	// common attach path pays nothing extra.
+	hubPresent := runningKnown
+	if !hubPresent && m.deployRequired(host.Name, facts, expected) {
+		present, err := m.hubIsPresent(ctx, host, facts)
+		if err != nil {
+			return nil, err
+		}
+		hubPresent = present
+	}
+
+	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
@@ -504,12 +521,20 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		} else {
 			restartErr = m.restartHub(restartCtx, host, facts, running)
 		}
+		cancelRestart()
 		if restartErr != nil {
-			cancelRestart()
 			return nil, restartErr
 		}
-		facts, err = m.refreshAfterRestart(restartCtx, host, facts)
-		cancelRestart()
+	}
+	if deploy || restart {
+		// The on-disk build changed (deploy) or the serving process was replaced
+		// (restart), so the launch contract read before either phase is stale. This
+		// must run for a deploy even when no restart followed: on a stopped host the
+		// deploy starts nothing, and judging the terminal gates — or reporting the
+		// channel's facts — against the replaced build left the metadata obsolete.
+		refreshCtx, cancelRefresh := context.WithTimeout(ctx, m.opts.deployLimit())
+		facts, err = m.refreshLaunchContract(refreshCtx, host, facts)
+		cancelRefresh()
 		if err != nil {
 			return nil, err
 		}
@@ -626,25 +651,18 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	return nil
 }
 
-// ensureDecision is the one decision table for ensureOnce. Everything it needs
-// comes from a single preflight and a single /api/health probe:
-//
-//   - deploy when the on-disk binary is not the build this controller requires:
-//     its launch-check version differs, its appwire protocol is incompatible,
-//     its launch flags are missing the required one, or its contract could not
-//     be read at all. The deploy runs over ssh, not appwire, so even a
-//     protocol-broken host is upgradable.
-//   - restart when a deploy just installed a new binary, a hub answers with a
-//     build other than the expected one, or a previous restart left the host
-//     without a listener (a pending relaunch).
-//   - attach otherwise.
-//
-// No terminal refusal is decided here: the protocol and launch-contract gates
-// are judged by ensureOnce only after a deploy/restart has run.
-func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown bool) (deploy, restart bool) {
-	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+// deployRequired reports whether the on-disk build must be replaced before the
+// host can attach: its launch-check version differs from the controller's, its
+// appwire protocol is incompatible, its launch flags are missing the required
+// one, or its contract could not be read at all. ensureOnce calls it before the
+// hub-presence probe, which is why it is a separate function from ensureDecision
+// rather than a private detail of it.
+func (m *Manager) deployRequired(name string, facts Preflight, expected string) bool {
 	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
 	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
+	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
+	deployNeeded := versionDiffers || !protocolOK || !flagsOK
+
 	// "dev" is not an identity: an unstamped controller and an unstamped host
 	// both report it, so equality cannot prove they are the same code. When a
 	// deploy is configured the controller installs its own build once per Manager
@@ -658,33 +676,79 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected string, 
 	// verifyBuildSource with ErrDeploy, which is non-terminal: the supervisor
 	// retried it forever and the cause was discarded. ensureOnce refuses the
 	// incompatible cases terminally instead.
-	deployNeeded := versionDiffers || !protocolOK || !flagsOK
-	deploy = (deployNeeded && deployPossible) || devUnverified
+	return (deployNeeded && deployPossible) || devUnverified
+}
 
+// ensureDecision is the one decision table for ensureOnce. Everything it needs
+// comes from a single preflight, a single /api/health probe, and the one
+// hub-presence probe ensureOnce runs when a deploy is on the table:
+//
+//   - deploy when the on-disk binary is not the build this controller requires:
+//     its launch-check version differs, its appwire protocol is incompatible,
+//     its launch flags are missing the required one, or its contract could not
+//     be read at all. The deploy runs over ssh, not appwire, so even a
+//     protocol-broken host is upgradable.
+//   - restart when a deploy replaces a hub that is actually present, a running
+//     hub answers with a build other than the expected one, or a previous
+//     restart left the host without a listener (a pending relaunch). A deploy
+//     that finds no hub present (hubPresent false) is a fresh install, not a
+//     restart: it must fall through to the explicit-attach bootstrap, and a
+//     reconnect must never turn it into a hub start.
+//   - attach otherwise.
+//
+// No terminal refusal is decided here: the protocol and launch-contract gates
+// are judged by ensureOnce only after a deploy/restart has run.
+func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown, hubPresent bool) (deploy, restart bool) {
+	deploy = m.deployRequired(name, facts, expected)
+	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
 	// Replace the RUNNING hub only when the binary a restart would launch (the
 	// on-disk one) already matches the controller. A restart cannot give the
 	// on-disk binary a version it does not carry, so an on-disk mismatch needs the
 	// deploy above and never a restart; requiring this is what stops a host with no
 	// build source from retrying a restart that can never succeed. Replacing a
 	// stale *process* whose on-disk binary already matches is exactly the case this
-	// covers.
+	// covers. A deploy restarts only a hub that is present; with nothing present
+	// there is nothing to replace.
 	runningStale := runningKnown && running.version != expected && !versionDiffers
-	restart = deploy || runningStale || m.pendingRestart(name).command != ""
+	restart = (deploy && hubPresent) || runningStale || m.pendingRestart(name).command != ""
 	return deploy, restart
 }
 
-// refreshAfterRestart re-reads the on-disk launch contract after a deploy or
+// hubIsPresent reports whether a hub is present on host in a form a restart can
+// replace: a live supervisor unit that owns one, or a process holding the hub
+// port. A hub that answered /api/health is already known, so the caller passes
+// runningKnown in and this runs only when the health probe found nothing. It
+// separates a deploy that must replace a running hub from a fresh install on a
+// stopped host, and it is why a reconnect never starts a hub: with nothing
+// present ensureDecision chooses no restart at all, and the first-attach
+// bootstrap stays gated to an explicit request.
+func (m *Manager) hubIsPresent(ctx context.Context, host hostreg.Host, facts Preflight) (bool, error) {
+	set, err := m.detectSupervisor(ctx, host, facts)
+	if err != nil {
+		return false, err
+	}
+	if set.live.kind != supervisorNone {
+		return true, nil
+	}
+	cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
+	if err != nil {
+		return false, err
+	}
+	return !cleared, nil
+}
+
+// refreshLaunchContract re-reads the on-disk launch contract after a deploy or
 // restart and refuses a still-incompatible protocol. The pre-restart facts
 // describe the build the restart replaced, so judging the launch contract on
 // them would let a host predating a required flag, or speaking an older
 // protocol, never be accepted even after a successful upgrade.
-func (m *Manager) refreshAfterRestart(ctx context.Context, host hostreg.Host, facts Preflight) (Preflight, error) {
+func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, facts Preflight) (Preflight, error) {
 	refreshed, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
 		return facts, err
 	}
 	if refreshed.Protocol != appwire.ProtocolVersion {
-		return facts, fmt.Errorf("%w: host %q protocol %q, want %q after restart", ErrProtocolIncompatible, host.Name, refreshed.Protocol, appwire.ProtocolVersion)
+		return facts, fmt.Errorf("%w: host %q protocol %q, want %q after deploy/restart", ErrProtocolIncompatible, host.Name, refreshed.Protocol, appwire.ProtocolVersion)
 	}
 	facts.LaunchCheckKnown = true
 	facts.Protocol = refreshed.Protocol

@@ -1154,6 +1154,45 @@ func TestHubExecutableMatchesCanonicalTarget(t *testing.T) {
 			t.Fatalf("hubExecutableMatches: %v (empty evener_path resolves the target with command -v evener)", err)
 		}
 	})
+
+	t.Run("bare argv[0] resolves through command -v", func(t *testing.T) {
+		// An ad hoc hub is commonly launched as `evener hub`, so the recovered
+		// argv[0] is a bare name. The on-host resolver's `test -f` checks the SSH
+		// login cwd and never searches PATH, so the name must be resolved with
+		// `command -v` first, exactly as expectedHubExecutable and deployTarget do.
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "command -v evener"):
+				return []byte("/opt/evener/bin/evener\n"), nil
+			case strings.Contains(joined, "evener_resolve evener"):
+				return nil, errors.New("resolver: no such file or directory")
+			case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+				return []byte("/opt/evener/bin/evener\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		if err := m.hubExecutableMatches(context.Background(), host, "evener"); err != nil {
+			t.Fatalf("hubExecutableMatches(bare argv[0]) err = %v, want nil (a PATH-launched hub must be restartable)", err)
+		}
+	})
+
+	t.Run("bare argv[0] absent from PATH refuses", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			if strings.Contains(strings.Join(argv, " "), "command -v evener") {
+				return []byte("\n"), nil
+			}
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		if err := m.hubExecutableMatches(context.Background(), host, "evener"); !errors.Is(err, ErrRestart) {
+			t.Fatalf("hubExecutableMatches(bare argv[0] not on PATH) err = %v, want ErrRestart", err)
+		}
+	})
 }
 
 func TestHubAddrFlag(t *testing.T) {
@@ -1637,6 +1676,237 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 	}
 	if got := len(fr.recordedStarts()); got != 0 {
 		t.Fatalf("Start calls = %d, want 0", got)
+	}
+}
+
+// TestFirstAttachAfterDeployBootstrapsStoppedHost pins the round-five High that a
+// deploy on a stopped ad-hoc host aborted before the first-attach bootstrap:
+// ensureDecision set restart on every deploy, so ensureOnce ran restartHub, and
+// restartBare found no listener to replace and returned ErrRestart instead of
+// reaching bootstrapHub. A deploy with no hub present is a fresh install, not a
+// restart: the explicit attach must start the stopped hub, and the channel must
+// report the freshly installed build rather than the pre-deploy contract.
+func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	launchCalls, launches := 0, 0
+	var launchCmd string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor: the ad hoc host
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil // nothing is listening
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			launches++
+			launchCmd = joined
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			if launches == 0 {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(`{"version":"newsha"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v (a deploy on a stopped host must reach the first-attach bootstrap)", err)
+	}
+	if launches == 0 {
+		t.Fatal("no hub was started for a stopped host after its deploy")
+	}
+	if !strings.Contains(launchCmd, "/opt/evener/bin/evener hub") {
+		t.Fatalf("bootstrap command = %q, want the resolved evener hub invocation", launchCmd)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+			t.Fatalf("a stopped host was restarted instead of bootstrapped: %v", argv)
+		}
+	}
+	// The deploy changed the on-disk build, so the launch contract must have been
+	// re-read: the attached channel reports the deployed build, not the stale
+	// pre-deploy contract.
+	if launchCalls < 2 {
+		t.Fatalf("launch-check calls = %d, want >= 2 (re-probe after the deploy)", launchCalls)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel preflight version = %q, want %q (the deployed build, not the pre-deploy contract)", got, "newsha")
+	}
+}
+
+// TestDeployThenExplicitAttachStartsDormantUnit pins the dormant-supervisor half
+// of the same High: a stopped host whose evener hub unit is loaded but inactive
+// must be started by the explicit-attach bootstrap (systemctl start), not routed
+// through restartHub. It also pins that the re-probed contract reaches the
+// channel when the deploy did not restart anything.
+func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	launchCalls := 0
+	var startCmd, restartCmd string
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		case strings.Contains(joined, "systemctl restart"):
+			restartCmd = joined
+			return nil, nil
+		case strings.Contains(joined, "systemctl start"):
+			startCmd = joined
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			if startCmd == "" {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(`{"version":"newsha"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v (the inactive unit must be started by the bootstrap)", err)
+	}
+	if restartCmd != "" {
+		t.Fatalf("restartHub restarted the unit instead of the bootstrap starting it: %q", restartCmd)
+	}
+	if !strings.Contains(startCmd, "systemctl start evener-hub.service") {
+		t.Fatalf("start command = %q, want systemctl start evener-hub.service", startCmd)
+	}
+	if launchCalls < 2 {
+		t.Fatalf("launch-check calls = %d, want >= 2 (re-probe after the deploy)", launchCalls)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel preflight version = %q, want %q", got, "newsha")
+	}
+}
+
+// TestReconnectDeployDoesNotStartAStoppedHub pins the round-five High that a
+// deploy during a reconnect started a stopped hub: with a dormant supervisor
+// unit, the unconditional restart sent restartHub into `systemctl restart`, which
+// starts the unit. A reconnect (explicit=false) must never start a hub; only an
+// explicit attach may bootstrap one.
+func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	launchCalls := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			return nil, errors.New("curl: (7) Failed to connect")
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+		return nil, errors.New("ssh: connect to host alpha.example port 22: Connection refused")
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	// explicit=false is the reconnect/bridge path. The deploy may install the
+	// matching build, but it must not start the stopped hub.
+	if _, err := m.ensureOnce(context.Background(), host, false); err == nil {
+		t.Fatal("ensureOnce(reconnect) reported success with nothing serving")
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		for _, forbidden := range []string{"systemctl start", "systemctl restart", "launchctl kickstart", "nohup"} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("a reconnect deploy started a hub: %v", argv)
+			}
+		}
 	}
 }
 
@@ -2128,7 +2398,7 @@ func TestValidateHubAddr(t *testing.T) {
 }
 
 // TestRefreshAfterRestartReportsTheReprobedVersion pins the Low finding that
-// refreshAfterRestart overwrote facts.Version with the expected value. The
+// refreshLaunchContract overwrote facts.Version with the expected value. The
 // re-probe reads the on-disk binary, which can still differ from what the
 // running hub reported, so the channel must report what the probe actually saw.
 func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
@@ -2138,15 +2408,15 @@ func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
 	})}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "expectedsha"})
 
-	facts, err := m.refreshAfterRestart(context.Background(), host, Preflight{})
+	facts, err := m.refreshLaunchContract(context.Background(), host, Preflight{})
 	if err != nil {
-		t.Fatalf("refreshAfterRestart: %v", err)
+		t.Fatalf("refreshLaunchContract: %v", err)
 	}
 	if facts.Version != "probedsha" {
 		t.Fatalf("facts.Version = %q, want the re-probed version %q", facts.Version, "probedsha")
 	}
 	if facts.Protocol != appwire.ProtocolVersion || !facts.LaunchCheckKnown {
-		t.Fatalf("refreshAfterRestart did not record the refreshed contract: %+v", facts)
+		t.Fatalf("refreshLaunchContract did not record the refreshed contract: %+v", facts)
 	}
 }
 
