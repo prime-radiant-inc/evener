@@ -80,14 +80,15 @@ test("useTopNotesExpanded and usePendingTopNotesFocus reflect store updates", ()
   const { result: pending } = renderHook(() => usePendingTopNotesFocus("ref_1"));
 
   expect(exp.current).toBe(false);
-  expect(pending.current).toBe(false);
+  expect(pending.current).toBeUndefined();
 
   act(() => {
     topNotesStore.getState().openAndFocus("ref_1");
   });
 
   expect(exp.current).toBe(true);
-  expect(pending.current).toBe(true);
+  // No thread model exists for ref_1, so the request is born read-only.
+  expect(pending.current).toEqual({ originReadOnly: true });
 });
 
 // --- eviction: state lives inside the session pane -------------------------

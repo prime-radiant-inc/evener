@@ -1639,7 +1639,12 @@ describe("resource-backed Rail", () => {
         sectionResource("live", [summary({ ref: "local:notable", session_id: "notable", title: "Notable" })]),
       ]);
       threadsStore.setState({
-        threads: new Map([["local:notable", { ref: "local:notable", capabilities: { sharedNotes: true } } as never]]),
+        threads: new Map([
+          [
+            "local:notable",
+            { ref: "local:notable", capabilities: { sharedNotes: true }, status: { type: "idle" } } as never,
+          ],
+        ]),
       });
       render(<Rail />);
 
