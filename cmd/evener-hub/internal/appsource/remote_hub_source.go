@@ -107,15 +107,26 @@ func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
+//
+// A caller cancellation or deadline stays raw at every step, exactly as
+// mutationCall and LocalDaemonSource.withClientCallMapper leave ctx.Err(): the
+// caller's own context ending is not host unavailability, so mapping it through
+// would fire the auto-resume gate for a request the caller abandoned.
 func (s *RemoteHubSource) call(ctx context.Context, method string, params any, out any) error {
 	if err := ctx.Err(); err != nil {
-		return s.mapCallError(err)
+		return err
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return s.mapCallError(err)
 	}
 	return s.translateOut(out)

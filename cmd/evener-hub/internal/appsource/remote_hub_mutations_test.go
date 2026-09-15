@@ -568,6 +568,64 @@ func assertRawContextError(t *testing.T, err error, want error) {
 	}
 }
 
+// TestRemoteHubCallCallerContextStaysRaw asserts that a caller cancellation or
+// deadline reaching the plain call path — the new non-mutationCall forwards
+// such as StartThread, ResumeThread, ForkThread, and CompactThread — never
+// becomes SessionUnavailable. The caller's own context ending is not host
+// unavailability, so mapping it through would incorrectly fire the hub's
+// auto-resume gate. It mirrors mutationCall and LocalDaemonSource's
+// withClientCallMapper, which return ctx.Err() raw at every step.
+func TestRemoteHubCallCallerContextStaysRaw(t *testing.T) {
+	t.Run("request deadline", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		clientConn, serverConn := net.Pipe()
+		server := appwire.NewStreamTransport(serverConn)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				if _, err := server.Recv(context.Background()); err != nil {
+					return
+				}
+				// Read the request but never answer, so the client waits on the
+				// caller context rather than on a response.
+			}
+		}()
+
+		client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+		client.Start(ctx)
+		defer func() {
+			_ = client.Close()
+			_ = serverConn.Close()
+			<-drained
+		}()
+
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer deadlineCancel()
+		_, err := source.StartThread(deadlineCtx, appwire.ThreadStartParams{})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("client acquisition deadline", func(t *testing.T) {
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer deadlineCancel()
+		source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+			// Wait for the caller's context to end, then fail the attach, so the
+			// acquisition error's classification is unambiguous.
+			<-ctx.Done()
+			return nil, errors.New("attach failed")
+		})
+		_, err := source.StartThread(deadlineCtx, appwire.ThreadStartParams{})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+}
+
 // TestRemoteHubThreadDiagnosticsTranslateNestedRefs asserts fromRemoteThread
 // rewrites the session-valued refs nested in a thread's diagnostics — a
 // delegate's and a delegate job's transcriptRef — while leaving an opaque
