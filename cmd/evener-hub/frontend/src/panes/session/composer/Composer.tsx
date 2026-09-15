@@ -1626,7 +1626,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} />
+                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} discoverActivity />
                     </div>
                   )
                 }
