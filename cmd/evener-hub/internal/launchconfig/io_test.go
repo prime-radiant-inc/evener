@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 func checkLoadLayer_Missing(t *testing.T) {
@@ -59,9 +61,7 @@ func checkSaveLayer_AtomicAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %o, want 600", info.Mode().Perm())
-	}
+	hubtest.AssertFileMode0600(t, info, "the saved layer")
 	// Temp file must not linger.
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("temp file still present")
@@ -107,9 +107,7 @@ func checkSaveMeta_AtomicAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %o, want 600", info.Mode().Perm())
-	}
+	hubtest.AssertFileMode0600(t, info, "the saved meta")
 	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("temp file still present")
 	}
