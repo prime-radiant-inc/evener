@@ -26,6 +26,17 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.Unavailable("local session ownership is not configured")
 	}
+	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
+		defer stop.Release()
+		if err := stop.Wait(ctx); err != nil {
+			return err
+		}
+	}
+	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
+		return err
+	} else if stopped {
+		return nil
+	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
 	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget)
 	if err != nil {
@@ -98,6 +109,14 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	aliases := forceStopAliases(entry)
 	finishRecovery := cfg.ResumeLocks.BeginForceStop(aliases)
 	defer func() { finishRecovery(stopErr == nil) }()
+	// A Resume can register after the initial snapshot while process discovery
+	// is running. The fence now prevents new registrations; cancel and drain
+	// any operation that entered that window before waiting for ownership.
+	releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+	if err != nil {
+		return err
+	}
+	defer releaseResumes()
 	if sources != nil {
 		if source, ok := sources.Source("local"); ok {
 			if local, ok := source.(*appsource.LocalDaemonSource); ok {
@@ -108,14 +127,18 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Clear gives one daemon stable and current session aliases. Lock both so
 	// resume or deletion through either alias cannot race exit confirmation.
-	for _, id := range aliases {
-		cfg.ResumeLocks.For(id).Lock()
-	}
+	var acquired []string
 	defer func() {
-		for _, alias := range slices.Backward(aliases) {
+		for _, alias := range slices.Backward(acquired) {
 			cfg.ResumeLocks.For(alias).Unlock()
 		}
 	}()
+	for _, id := range aliases {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			return err
+		}
+		acquired = append(acquired, id)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -183,6 +206,120 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	refreshAfterForceStop(ctx, cfg)
 	return nil
+}
+
+// cancelActiveResumes is called after Stop installed its admission fences, but
+// before it waits for ownership. It closes the discovery/registration race
+// without waiting for child reaping while holding any session mutex.
+func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliases []string) (func(), error) {
+	var stops []*hubcore.ResumeStop
+	release := func() {
+		for _, stop := range stops {
+			stop.Release()
+		}
+	}
+	for _, alias := range aliases {
+		if stop := locks.BeginActiveResumeStop(alias); stop != nil {
+			stops = append(stops, stop)
+			if err := stop.Wait(ctx); err != nil {
+				release()
+				return nil, err
+			}
+		}
+	}
+	return release, nil
+}
+
+// A missing marker is not proof of exit. Only already-confirmed durable
+// recovery authority can authorize this no-op, and only if strict discovery
+// finds no claim against ANY alias while all those aliases are reserved.
+func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, sessionID string, stopResumes bool) (bool, error) {
+	if cfg.ResumeLocks == nil || cfg.RunDir == "" {
+		return false, nil
+	}
+	state := cfg.ResumeLocks.RecoveryState(sessionID)
+	if !state.ResumeRequired || !state.ExitConfirmed || state.ResumeSessionID == "" {
+		return false, nil
+	}
+	if !stopResumes && state.Stopping != 0 {
+		return false, nil
+	}
+	aliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
+	slices.Sort(aliases)
+	if stopResumes {
+		finish := cfg.ResumeLocks.BeginForceStop(aliases)
+		defer finish(false)
+		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
+		if err != nil {
+			return false, err
+		}
+		defer releaseResumes()
+	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
+		// Ordinary shutdown is not force stop: do not cancel a pending restore,
+		// change its admission epochs, or wait behind it to manufacture a no-op.
+		return false, nil
+	}
+	// Capture after our own fences and cancellations, then compare the entire
+	// authority (including epochs/group identity) after acquiring ownership.
+	expected := make(map[string]hubcore.SessionRecoveryState, len(aliases))
+	for _, alias := range aliases {
+		current := cfg.ResumeLocks.RecoveryState(alias)
+		if !current.ResumeRequired || !current.ExitConfirmed || current.ResumeSessionID != state.ResumeSessionID {
+			if !stopResumes {
+				return false, nil
+			}
+			return false, appwire.Unavailable("session recovery authority changed; retry force stop")
+		}
+		expected[alias] = current
+	}
+	var acquired []string
+	defer func() {
+		for _, alias := range slices.Backward(acquired) {
+			cfg.ResumeLocks.For(alias).Unlock()
+		}
+	}()
+	for _, alias := range aliases {
+		if err := cfg.ResumeLocks.For(alias).LockContext(ctx); err != nil {
+			return false, err
+		}
+		acquired = append(acquired, alias)
+	}
+	currentAliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
+	slices.Sort(currentAliases)
+	if !slices.Equal(aliases, currentAliases) {
+		if !stopResumes {
+			return false, nil
+		}
+		return false, appwire.Unavailable("session recovery aliases changed; retry force stop")
+	}
+	for _, alias := range aliases {
+		if cfg.ResumeLocks.RecoveryState(alias) != expected[alias] {
+			if !stopResumes {
+				return false, nil
+			}
+			return false, appwire.Unavailable("session recovery authority changed; retry force stop")
+		}
+	}
+	if !stopResumes && cfg.ResumeLocks.HasActiveResume(aliases) {
+		return false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	entries, err := rendezvous.ListStrict(cfg.RunDir)
+	if err != nil {
+		return false, appwire.Unavailable(err.Error())
+	}
+	for _, entry := range entries {
+		for _, alias := range forceStopAliases(entry) {
+			if slices.Contains(aliases, alias) {
+				// An existing claim, even foreign or stale, must take the ordinary
+				// verified process path. Never turn its eventual error into success.
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 // forceStopOwnershipUnchanged revalidates discovery after acquiring every

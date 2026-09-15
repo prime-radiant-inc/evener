@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"maps"
@@ -19,14 +20,15 @@ type ResumeLocks struct {
 	persistenceMu sync.Mutex
 	store         *recoveryStore
 	mu            sync.Mutex
-	locks         map[string]*sync.Mutex
+	locks         map[string]*ResumeMutex
+	active        map[string]map[*ActiveResume]struct{}
 	recovery      map[string]SessionRecoveryState
 	sequence      uint64
 }
 
 // NewResumeLocks returns an empty registry ready for use.
 func NewResumeLocks() *ResumeLocks {
-	return &ResumeLocks{locks: map[string]*sync.Mutex{}}
+	return &ResumeLocks{locks: map[string]*ResumeMutex{}}
 }
 
 // NewPersistentResumeLocks restores explicit-resume authority before serving.
@@ -162,15 +164,396 @@ func (r *ResumeLocks) HasUnconfirmedRecovery() bool {
 // For returns the mutex for sessionID, creating it on first use. Repeated calls
 // with the same id return the same mutex, so callers serialize against each
 // other regardless of which path (REST or RPC) they came in on.
-func (r *ResumeLocks) For(sessionID string) *sync.Mutex {
+func (r *ResumeLocks) For(sessionID string) *ResumeMutex {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	m, ok := r.locks[sessionID]
 	if !ok {
-		m = &sync.Mutex{}
+		m = &ResumeMutex{token: make(chan struct{}, 1)}
+		m.token <- struct{}{}
 		r.locks[sessionID] = m
 	}
 	return m
+}
+
+// ResumeMutex keeps one ownership token shared with ordinary Lock callers.
+// Context cancellation never needs a goroutine waiting to acquire and release
+// a mutex after its caller has already gone away.
+type ResumeMutex struct {
+	token chan struct{}
+}
+
+func (m *ResumeMutex) Lock() { <-m.token }
+
+func (m *ResumeMutex) Unlock() {
+	select {
+	case m.token <- struct{}{}:
+	default:
+		panic("unlock of unlocked resume mutex")
+	}
+}
+
+func (m *ResumeMutex) TryLock() bool {
+	select {
+	case <-m.token:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *ResumeMutex) LockContext(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.token:
+		if err := ctx.Err(); err != nil {
+			m.Unlock()
+			return err
+		}
+		return nil
+	}
+}
+
+var ErrResumeInvalidated = errors.New("session recovery changed before resume ownership was acquired")
+
+// ActiveResume is only the lifetime of an in-flight hub Resume. It has no
+// durable identity and is removed when cleanup and ownership release finish.
+type ActiveResume struct {
+	owner          *ResumeLocks
+	target         string
+	aliases        []string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	done           chan struct{}
+	cleanupErr     error // guarded by owner.mu, including after done closes
+	handlerDone    bool
+	childPrepared  bool
+	childReaped    bool
+	launchFinished bool
+	launchFailed   bool
+	proofSettled   bool
+	proofErr       error
+	proof          map[string]SessionRecoveryState
+	cleanupDone    chan struct{}
+}
+
+func (a *ActiveResume) Context() context.Context { return a.ctx }
+
+// CleanupDone closes after failed child cleanup and its recovery proof have
+// settled, or after a successful handoff. It is not the handler completion edge.
+func (a *ActiveResume) CleanupDone() <-chan struct{} { return a.cleanupDone }
+
+// BeforeLaunch runs immediately before Start, while the caller owns all aliases.
+// A previous process's exit proof must never describe this new child, including
+// when this hub dies before the child publishes a rendezvous entry.
+func (a *ActiveResume) BeforeLaunch() error {
+	r := a.owner
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := a.ctx.Err(); err != nil {
+		return err
+	}
+	proof := make(map[string]SessionRecoveryState)
+	for _, alias := range a.aliases {
+		for other := range r.active[alias] {
+			if other != a {
+				if err := errors.Join(other.cleanupErr, other.proofErr); err != nil {
+					return err
+				}
+			}
+		}
+		state := r.recovery[alias]
+		if !state.ResumeRequired {
+			continue
+		}
+		if !state.ExitConfirmed {
+			return errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+		}
+		if state.group == nil || state.ResumeSessionID != a.target || state.group != r.recovery[a.target].group {
+			return errors.New("resume recovery authority changed before launch")
+		}
+		for _, member := range state.group.aliases {
+			current := r.recovery[member]
+			if !slices.Contains(a.aliases, member) || current.group != state.group || current.durableGroup != state.durableGroup || current.ResumeSessionID != a.target || !current.ResumeRequired || !current.ExitConfirmed {
+				return errors.New("resume recovery aliases changed before launch")
+			}
+			proof[member] = current
+		}
+	}
+	if r.store != nil && len(proof) != 0 {
+		next := maps.Clone(r.store.state)
+		for alias, state := range proof {
+			authority := next[alias]
+			if authority.Group != state.durableGroup || authority.SessionID != a.target || !authority.ExitConfirmed {
+				return errors.New("durable resume recovery authority changed before launch")
+			}
+			authority.ExitConfirmed = false
+			next[alias] = authority
+		}
+		committed, err := r.store.commit(next)
+		if err != nil {
+			if committed {
+				for alias := range proof {
+					state := r.recovery[alias]
+					state.ExitConfirmed = false
+					r.recovery[alias] = state
+				}
+				// Start will not run. Retain an uncertain invalidation until the
+				// old, still-valid exit proof can be durably restored.
+				a.proof = proof
+				a.childPrepared, a.childReaped = true, true
+				a.launchFinished, a.launchFailed = true, true
+				a.proofErr = err
+			}
+			return err
+		}
+	}
+	for alias := range proof {
+		state := r.recovery[alias]
+		state.ExitConfirmed = false
+		r.recovery[alias] = state
+	}
+	a.proof = proof
+	a.childPrepared = true
+	return nil
+}
+
+// ChildReaped is called by the original (and only) child Wait reader. Start
+// failure also calls it: no child was created, so no live ownership can remain.
+func (a *ActiveResume) ChildReaped() {
+	r := a.owner
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a.childReaped = true
+	a.settleLocked()
+}
+
+// LaunchFinished distinguishes failed startup from a ready daemon handed off
+// to ordinary verified discovery. The waiter may arrive before or after this.
+func (a *ActiveResume) LaunchFinished(failed bool, cleanupErr error) error {
+	r := a.owner
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a.launchFinished, a.launchFailed = true, failed
+	a.cleanupErr = errors.Join(a.cleanupErr, cleanupErr)
+	a.settleLocked()
+	return errors.Join(a.cleanupErr, a.proofErr)
+}
+
+// settleLocked holds both registry locks in persistenceMu -> mu order. Stop's
+// temporary epochs do not change process identity. A changed group, target, or
+// membership does: in that case the new authority is left completely untouched.
+func (a *ActiveResume) settleLocked() {
+	r := a.owner
+	if a.childPrepared && a.launchFinished && a.launchFailed && a.childReaped && !a.proofSettled {
+		matching := true
+		for alias, previous := range a.proof {
+			current := r.recovery[alias]
+			if current.group != previous.group || current.durableGroup != previous.durableGroup || current.ResumeSessionID != a.target || !current.ResumeRequired || !slices.Equal(current.group.aliases, previous.group.aliases) {
+				matching = false
+			}
+		}
+		if matching && r.store != nil && len(a.proof) != 0 {
+			next := maps.Clone(r.store.state)
+			for alias, previous := range a.proof {
+				authority := next[alias]
+				if authority.Group != previous.durableGroup || authority.SessionID != a.target {
+					a.proofErr = errors.New("durable resume cleanup authority changed")
+					return
+				}
+				authority.ExitConfirmed = true
+				next[alias] = authority
+			}
+			if _, err := r.store.commit(next); err != nil {
+				a.proofErr = err
+				return
+			}
+		}
+		if matching {
+			for alias := range a.proof {
+				state := r.recovery[alias]
+				state.ExitConfirmed = true
+				r.recovery[alias] = state
+			}
+		}
+		a.proofSettled = true
+		a.cleanupErr, a.proofErr = nil, nil
+	}
+	if !a.handlerDone || (a.childPrepared && a.launchFailed && !a.proofSettled) {
+		return
+	}
+	for _, alias := range a.aliases {
+		delete(r.active[alias], a)
+		if len(r.active[alias]) == 0 {
+			delete(r.active, alias)
+		}
+	}
+	select {
+	case <-a.cleanupDone:
+	default:
+		close(a.cleanupDone)
+	}
+}
+
+// Complete must run after child cleanup and after releasing every alias lock.
+// A normal launch failure is returned to the Resume caller, not cleanupErr;
+// only failure to confirm cleanup can prevent a waiting Stop from proceeding.
+func (a *ActiveResume) Complete(cleanupErr error) {
+	a.owner.persistenceMu.Lock()
+	defer a.owner.persistenceMu.Unlock()
+	a.owner.mu.Lock()
+	defer a.owner.mu.Unlock()
+	if a.cleanupErr == nil && !a.proofSettled {
+		a.cleanupErr = cleanupErr
+	}
+	a.handlerDone = true
+	a.cancel()
+	close(a.done)
+	a.settleLocked()
+}
+
+// ResumeCleanupError reports retained child failures to fresh connections. A
+// failed durable re-confirmation can be retried here, but never before reaping.
+func (r *ResumeLocks) ResumeCleanupError(aliases []string) error {
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		for active := range r.active[alias] {
+			if active.handlerDone {
+				active.settleLocked()
+				if err := errors.Join(active.cleanupErr, active.proofErr); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases []string, epochs map[string]uint64) (*ActiveResume, error) {
+	aliases = slices.Compact(slices.Sorted(slices.Values(aliases)))
+	if !validRecoveryAlias(target) || !slices.Contains(aliases, target) {
+		return nil, errors.New("resume target must be an ownership alias")
+	}
+	for _, alias := range aliases {
+		if !validRecoveryAlias(alias) {
+			return nil, errors.New("invalid resume ownership alias")
+		}
+		if _, ok := epochs[alias]; !ok {
+			return nil, errors.New("resume ownership alias has no recovery epoch")
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for _, alias := range aliases {
+		state := r.recovery[alias]
+		for active := range r.active[alias] {
+			if err := errors.Join(active.cleanupErr, active.proofErr); err != nil {
+				return nil, err
+			}
+		}
+		if state.Epoch != epochs[alias] || state.Stopping != 0 {
+			return nil, ErrResumeInvalidated
+		}
+	}
+	opCtx, cancel := context.WithCancel(ctx)
+	a := &ActiveResume{owner: r, target: target, aliases: aliases, ctx: opCtx, cancel: cancel, done: make(chan struct{}), cleanupDone: make(chan struct{})}
+	if r.active == nil {
+		r.active = make(map[string]map[*ActiveResume]struct{})
+	}
+	for _, alias := range aliases {
+		if r.active[alias] == nil {
+			r.active[alias] = make(map[*ActiveResume]struct{})
+		}
+		r.active[alias][a] = struct{}{}
+	}
+	return a, nil
+}
+
+// ResumeStop owns a temporary admission fence, not stopped-process authority.
+// The ordinary Stop path still has to prove which process owns the session.
+type ResumeStop struct {
+	active  []*ActiveResume
+	release func(bool)
+}
+
+func (s *ResumeStop) Wait(ctx context.Context) error {
+	var cleanupErr error
+	for _, active := range s.active {
+		select {
+		case <-ctx.Done():
+			return errors.Join(cleanupErr, ctx.Err())
+		case <-active.done:
+			_ = active.owner.ResumeCleanupError(active.aliases)
+			active.owner.mu.Lock()
+			cleanupErr = errors.Join(cleanupErr, active.cleanupErr, active.proofErr)
+			active.owner.mu.Unlock()
+		}
+	}
+	return cleanupErr
+}
+
+func (s *ResumeStop) Release() { s.release(false) }
+
+// HasActiveResume is a read-only check for shutdown's confirmed-stopped no-op.
+// Shutdown must not cancel a restore or manufacture fresh recovery authority.
+func (r *ResumeLocks) HasActiveResume(aliases []string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		if len(r.active[alias]) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ResumeLocks) BeginActiveResumeStop(alias string) *ResumeStop {
+	r.mu.Lock()
+	if len(r.active[alias]) == 0 {
+		r.mu.Unlock()
+		return nil
+	}
+	// Follow overlapping reservations as one ownership set. A waiter reached
+	// through a stable/current alias must not retain a live context or escape
+	// the fence merely because Stop named the other alias.
+	seenAliases := make(map[string]bool)
+	seenActive := make(map[*ActiveResume]bool)
+	queue := []string{alias}
+	stop := &ResumeStop{}
+	for len(queue) != 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if seenAliases[current] {
+			continue
+		}
+		seenAliases[current] = true
+		for active := range r.active[current] {
+			if !seenActive[active] {
+				seenActive[active] = true
+				stop.active = append(stop.active, active)
+				queue = append(queue, active.aliases...)
+			}
+		}
+	}
+	stop.release = r.beginForceStopLocked(slices.Sorted(maps.Keys(seenAliases)))
+	r.mu.Unlock()
+	for _, active := range stop.active {
+		active.cancel()
+	}
+	return stop
 }
 
 // SessionRecoveryState is the action admission state shared by every transport.
@@ -250,6 +633,11 @@ func (r *ResumeLocks) RecoverySequence() uint64 {
 // a new group only once its recovery authority may have reached durable storage.
 func (r *ResumeLocks) BeginForceStop(aliases []string) func(bool) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.beginForceStopLocked(aliases)
+}
+
+func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
 	if r.recovery == nil {
 		r.recovery = make(map[string]SessionRecoveryState)
 	}
@@ -261,7 +649,6 @@ func (r *ResumeLocks) BeginForceStop(aliases []string) func(bool) {
 		state.Stopping++
 		r.recovery[id] = state
 	}
-	r.mu.Unlock()
 	return func(stopped bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()

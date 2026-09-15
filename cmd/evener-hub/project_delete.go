@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -326,7 +325,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 ) (func(), *projectDeletionOwnershipError) {
 	targets := append([]hubcore.DeletionTarget(nil), record.Targets...)
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ThreadID < targets[j].ThreadID })
-	var locks []*sync.Mutex
+	var locks []*hubcore.ResumeMutex
 	var owners []*llm.APILogger
 	release := func() {
 		for _, owner := range slices.Backward(owners) {
