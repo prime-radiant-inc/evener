@@ -55,9 +55,13 @@ type Controller interface{ Open(Target) (Process, error) }
 type identity struct {
 	generation string
 	uid        int
-	startedAt  time.Time
-	argv       []string
-	ownsLog    bool
+	// startedAt is the latest the process can have started; startedAtLower
+	// the earliest. A platform that knows the start exactly sets them equal;
+	// Linux knows it to the clock tick and reports the tick's two bounds.
+	startedAt      time.Time
+	startedAtLower time.Time
+	argv           []string
+	ownsLog        bool
 }
 
 type processHandle interface {
@@ -126,8 +130,18 @@ func (p *process) verify() error {
 		if v.startedAt.IsZero() {
 			return errors.New("daemon process start time unknown")
 		}
-		if v.startedAt.After(p.target.StartedAt) {
+		// Positive evidence needs the EARLIEST the process can have started
+		// to be after the entry; a start that merely may postdate the entry
+		// (Linux knows it to the tick) refuses without claiming it.
+		lower := v.startedAtLower
+		if lower.IsZero() {
+			lower = v.startedAt
+		}
+		if lower.After(p.target.StartedAt) {
 			return notDaemonError{"daemon process started after its rendezvous identity"}
+		}
+		if v.startedAt.After(p.target.StartedAt) {
+			return errors.New("daemon process may have started after its rendezvous identity")
 		}
 		// The checks that only fail to vouch come after the ones that can
 		// prove another process, so a refusal reports the strongest fact.

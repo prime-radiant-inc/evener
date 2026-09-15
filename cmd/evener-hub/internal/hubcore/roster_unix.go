@@ -4,6 +4,7 @@ package hubcore
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"syscall"
 
@@ -42,6 +43,13 @@ func processIdentity(entry rendezvous.Entry) ProcessIdentity {
 	}
 	if target.SessionID == "" || !filepath.IsAbs(target.StateDir) || target.StartedAt.IsZero() {
 		return ProcessIdentityUnknown
+	}
+	// The hub is never a daemon: a file naming the hub's own PID is a stale
+	// file whose PID the hub reused. The verifier refuses to bind its own
+	// process (rightly, for force-stop), which would read as unknown here and
+	// keep the file listed for as long as the hub ran.
+	if entry.PID == os.Getpid() {
+		return ProcessNotOwner
 	}
 	process, err := daemonprocess.NewController().Open(target)
 	if err != nil {

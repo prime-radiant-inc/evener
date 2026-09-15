@@ -29,13 +29,20 @@ func crashedDaemonStateDir(t *testing.T, sessionID string) string {
 }
 
 // The identity probe evicts only on positive evidence. Verification that
-// cannot run at all - here the verifier refuses to bind this process's own PID,
-// the same shape as a pidfd that will not open or a /proc read racing a closing
-// descriptor on a busy daemon - is not evidence that the PID belongs to someone
-// else, and the liveness-only retention stands (review round 6 on #1325).
+// cannot vouch either way - here the daemon's API log is missing from the
+// state dir, so the inspection errors before it can judge the process; the
+// same shape as a pidfd that will not open or a /proc read racing a closing
+// descriptor on a busy daemon - is not evidence that the PID belongs to
+// someone else, and the liveness-only retention stands (review round 6 on
+// #1325).
 func TestRosterKeepsRetainedEntryWhenOwnershipCannotBeVerified(t *testing.T) {
+	other := exec.Command("sleep", "60")
+	if err := other.Start(); err != nil {
+		t.Fatalf("start stand-in process: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
 	dir := t.TempDir()
-	entry := rendezvous.Entry{PID: os.Getpid(), SessionID: "01UNVERIFIED", ThreadID: "01UNVERIFIED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01UNVERIFIED"), StartedAt: time.Now().UTC()}
+	entry := rendezvous.Entry{PID: other.Process.Pid, SessionID: "01UNVERIFIED", ThreadID: "01UNVERIFIED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: t.TempDir(), StartedAt: time.Now().UTC()}
 	writeRendezvous(t, dir, entry)
 	prober := &flakyProber{sessionID: "01UNVERIFIED"}
 	roster := NewRoster(dir, prober)
@@ -88,5 +95,24 @@ func TestRosterDropsEntryWhenAnotherProcessHoldsThePID(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The hub is never a daemon. A stale rendezvous file whose PID the hub itself
+// reused answers signal 0 and cannot be bound by the force-stop verifier
+// (which refuses its own PID), so it read as unknown and was retained for as
+// long as the hub ran. In the roster's reading, the hub's own PID is positive
+// evidence (review round 13 on #1325).
+func TestRosterTreatsItsOwnPIDAsAnotherProcess(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: os.Getpid(), SessionID: "01HUB", ThreadID: "01HUB", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StateDir: crashedDaemonStateDir(t, "01HUB"), StartedAt: time.Now().UTC()}
+	writeRendezvous(t, dir, entry)
+	roster := NewRoster(dir, &flakyProber{sessionID: "01HUB"})
+	roster.Refresh()
+	if roster.HasConfirmedEntry(entry) {
+		t.Fatal("a file naming the hub's own PID was published as a daemon")
+	}
+	if live, ok := roster.Find("01HUB"); !ok || !live.Crashed {
+		t.Fatalf("the file should read as crashed, got ok=%v entry=%+v", ok, live)
 	}
 }

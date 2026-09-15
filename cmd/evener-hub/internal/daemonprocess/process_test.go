@@ -266,3 +266,26 @@ func TestOpenRefusalsCarryPositiveEvidenceOnly(t *testing.T) {
 		}
 	})
 }
+
+// On Linux a process start is known only to the tick: the inspection
+// carries a lower and an upper bound. Positive evidence that the process is
+// not the daemon needs the LOWER bound after the entry's start; an upper
+// bound after it merely fails to vouch, so force-stop still refuses while the
+// roster keeps the entry (review round 13 on #1325).
+func TestOpenSameTickStartRefusesWithoutPositiveEvidence(t *testing.T) {
+	target := validTarget() // StartedAt 200
+	sameTick := validIdentity()
+	sameTick.startedAtLower, sameTick.startedAt = time.Unix(199, 0), time.Unix(201, 0)
+	_, err := testController(&kernelProcess{facts: sameTick}).Open(target)
+	if err == nil {
+		t.Fatal("a start that may postdate the entry was accepted")
+	}
+	if errors.Is(err, ErrNotDaemon) {
+		t.Fatalf("err = %v claims positive evidence from a same-tick start", err)
+	}
+	later := validIdentity()
+	later.startedAtLower, later.startedAt = time.Unix(201, 0), time.Unix(202, 0)
+	if _, err := testController(&kernelProcess{facts: later}).Open(target); !errors.Is(err, ErrNotDaemon) {
+		t.Fatalf("err = %v, want ErrNotDaemon for a lower bound after the entry", err)
+	}
+}

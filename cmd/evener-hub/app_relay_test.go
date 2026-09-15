@@ -851,6 +851,77 @@ func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone
 	}
 }
 
+// countingProber answers for the entry's own session and counts probe passes.
+type countingProber struct{ probes atomic.Int32 }
+
+func (p *countingProber) Probe(entry rendezvous.Entry) hubcore.ProbeResult {
+	p.probes.Add(1)
+	return hubcore.ProbeResult{SessionID: entry.SessionID, Status: appwire.ThreadStatusIdle, OK: true}
+}
+
+// The hub is never a daemon: a stale file naming the hub's own PID, even one
+// whose endpoint another daemon answers, is not listed (review round 13 on
+// #1325).
+func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnItsOwnPID(t *testing.T) {
+	_, upstream := newDaemonStandIn(t, "stale")
+	runDir := t.TempDir()
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "sessions", "stale.api.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "stale",
+		SessionID: "stale",
+		StateDir:  stateDir,
+		StartedAt: time.Now().UTC(),
+	})
+	sources, _ := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	local, ok := sources.Source("local")
+	if !ok {
+		t.Fatal("no local source")
+	}
+	listed, err := local.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(listed.Data) != 0 {
+		t.Fatalf("a stale file on the hub's own PID was listed as a daemon: %+v", listed.Data)
+	}
+}
+
+// One logical read is one scan. Navigation asks the roster three questions
+// (ownership error, live list, unresolved claims); on a roster that refreshes
+// on read they must come from one pass, or the answers can describe three
+// different moments (review round 13 on #1325).
+func TestHubNavigationReadsTheRosterInOneScan(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 4242, Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc",
+		SourceID: "local", ThreadID: "one", SessionID: "one",
+	})
+	prober := &countingProber{}
+	roster := hubcore.NewRoster(runDir, prober).RefreshOnRead().
+		SetProcessAlive(func(int) bool { return true }).
+		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Roster: roster, Past: hubcore.NewPastIndex("")}, nil)
+	prober.probes.Store(0)
+	snapshot := web.navigationSnapshotInputs(context.Background())
+	if len(snapshot.live) != 1 {
+		t.Fatalf("navigation live = %+v, want the one daemon", snapshot.live)
+	}
+	if got := prober.probes.Load(); got != 1 {
+		t.Fatalf("one navigation read ran %d roster scans, want 1", got)
+	}
+}
+
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-delivery",

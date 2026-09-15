@@ -813,6 +813,27 @@ func (r *Roster) List() []LiveEntry {
 	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.listLocked()
+}
+
+// RosterSnapshot is one scan's answer to the questions a navigation read
+// asks together. Taken under one lock after one refresh, so the three cannot
+// describe three different moments.
+type RosterSnapshot struct {
+	OwnershipError error
+	Live           []LiveEntry
+	Unconfirmed    []rendezvous.Entry
+}
+
+// Snapshot is OwnershipError, List and UnconfirmedEntries from a single scan.
+func (r *Roster) Snapshot() RosterSnapshot {
+	r.syncForRead()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return RosterSnapshot{OwnershipError: r.ownershipErr, Live: r.listLocked(), Unconfirmed: slices.Clone(r.unconfirmed)}
+}
+
+func (r *Roster) listLocked() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {

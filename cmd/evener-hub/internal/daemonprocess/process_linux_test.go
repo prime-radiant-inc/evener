@@ -157,3 +157,14 @@ func TestLinuxLargeStartTicksRefuseNewerProcess(t *testing.T) {
 		t.Fatal("signaled a newer process")
 	}
 }
+
+// The tick's two bounds: ticks/hz and (ticks+1)/hz.
+func TestLinuxStartOffsetBounds(t *testing.T) {
+	lower, upper, err := linuxStartOffsetBounds(150, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lower != 1500*time.Millisecond || upper != 1510*time.Millisecond {
+		t.Fatalf("bounds = %v..%v, want 1.5s..1.51s", lower, upper)
+	}
+}
