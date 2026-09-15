@@ -337,7 +337,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []appwire.ModelDescript
 		// fetch: bind this client's own registry root (see
 		// withScopedCodexAuth) so a custom root reads its own Codex
 		// record instead of the process default's.
-		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), 8*time.Second)
+		listCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), instanceLiveListTimeout)
 		listing, listErr := client.Models(listCtx, inst.Name)
 		cancel()
 		if listErr != nil {

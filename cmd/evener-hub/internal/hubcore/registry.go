@@ -384,14 +384,11 @@ func oauthAccountFingerprint(stateRoot, instance string) string {
 // in-memory only) into the identity: an ADC account swap rewrites the
 // file behind a stable source label ("adc", no credential value in the
 // resolution), so without it rows fetched under the old account publish
-// into the newly-credentialed instance. It mirrors the file the
-// registry's own adcAvailable consults — GOOGLE_APPLICATION_CREDENTIALS
-// first, then the well-known gcloud path under the registry's HOME —
-// the same order the GCP authenticator's FindDefaultCredentials
-// resolves. A stored credential JSON outranks the file (spec §4.2) and
-// already feeds authFingerprint through the resolved value; the file
-// hash covers only the ADC branch. Missing/unreadable contributes
-// nothing: the source label already distinguishes "no ADC" from "ADC".
+// into the newly-credentialed instance. A stored credential JSON
+// outranks the file (spec §4.2) and already feeds authFingerprint
+// through the resolved value; the file hash covers only the ADC branch.
+// Missing/unreadable contributes nothing: the source label already
+// distinguishes "no ADC" from "ADC".
 func adcFingerprint(r *registry.Registry, res registry.Resolved) string {
 	if res.Credential.Source == "store" {
 		return ""

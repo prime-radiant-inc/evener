@@ -123,6 +123,19 @@ export interface CredentialsSectionProps {
   onInstanceRemoved?: (name: string) => void;
 }
 
+// NO_PENDING_KEYS is the shared empty set a render with no sheet open hands
+// down, instead of allocating one per render.
+const NO_PENDING_KEYS: ReadonlySet<string> = new Set();
+
+// withoutKey removes one pending key, keeping the same set object when it is
+// already absent so React can bail out of an unchanged update.
+function withoutKey(current: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  if (!current.has(key)) return current;
+  const next = new Set(current);
+  next.delete(key);
+  return next;
+}
+
 export function CredentialsSection({
   fullEditor = false,
   onInstanceRenamed,
@@ -172,12 +185,7 @@ export function CredentialsSection({
     } catch (err) {
       toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
     } finally {
-      setRefreshingInstances((current) => {
-        if (!current.has(name)) return current;
-        const next = new Set(current);
-        next.delete(name);
-        return next;
-      });
+      setRefreshingInstances((current) => withoutKey(current, name));
     }
   }
   const previousInstances = useRef(instances);
@@ -248,12 +256,7 @@ export function CredentialsSection({
       toast.push("error", `Model toggle failed: ${friendlyErrorMessage(err)}`);
     } finally {
       pendingToggleKeys.current.delete(key);
-      setPendingToggles((current) => {
-        if (!current.has(key)) return current;
-        const next = new Set(current);
-        next.delete(key);
-        return next;
-      });
+      setPendingToggles((current) => withoutKey(current, key));
     }
   }
 
@@ -537,7 +540,7 @@ export function CredentialsSection({
           if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
         }}
         modelsRefreshing={selectedInstance !== null && refreshingInstances.has(selectedInstance)}
-        pendingToggles={selectedInstance !== null ? pendingToggles : new Set()}
+        pendingToggles={selectedInstance !== null ? pendingToggles : NO_PENDING_KEYS}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}

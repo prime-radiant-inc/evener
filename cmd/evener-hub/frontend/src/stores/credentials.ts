@@ -32,6 +32,7 @@ import type {
   InstanceEditParams,
   InstanceEntry,
   InstanceListResponse,
+  InstanceModelEntry,
   InstanceSetModelDisabledParams,
   ProviderDescriptor,
 } from "@evener/appwire-client";
@@ -293,6 +294,17 @@ function mergeNewerRows(instances: InstanceEntry[], generation: number, writes: 
   return merged;
 }
 
+// withToggledFlag sets one model's disabled flag in a model list: the one
+// place a toggle's outcome is written, whether it lands on the store's newer
+// inventory or reconciles a superseded answer.
+function withToggledFlag(
+  models: InstanceModelEntry[],
+  model: string,
+  disabled: boolean | undefined,
+): InstanceModelEntry[] {
+  return models.map((entry) => (entry.id === model ? { ...entry, disabled } : entry));
+}
+
 // keepRefreshedModels keeps, for the instances a refresh landed for during a
 // write's flight, the store's own (newer) model inventory instead of the
 // answer's older one. Every other field comes from the answer, which is
@@ -312,12 +324,7 @@ function keepRefreshedModels(
     const answered =
       written?.instance === entry.name ? entry.models?.find((model) => model.id === written.model) : undefined;
     if (!answered) return { ...entry, models: held.models };
-    return {
-      ...entry,
-      models: held.models.map((model) =>
-        model.id === written?.model ? { ...model, disabled: answered.disabled } : model,
-      ),
-    };
+    return { ...entry, models: withToggledFlag(held.models, answered.id, answered.disabled) };
   });
 }
 
@@ -345,10 +352,9 @@ function reconcileToggledModel(response: InstanceListResponse, params: InstanceS
   if (!toggled) return;
   const current = credentialsStore.getState().instances;
   const target = current.find((entry) => entry.name === params.name);
-  if (!target?.models?.some((model) => model.id === params.model)) return;
-  const models = target.models.map((model) =>
-    model.id === params.model ? { ...model, disabled: toggled.disabled } : model,
-  );
+  const held = target?.models;
+  if (!held?.some((model) => model.id === params.model)) return;
+  const models = withToggledFlag(held, toggled.id, toggled.disabled);
   credentialsStore.setState({
     instances: current.map((entry) => (entry.name === params.name ? { ...entry, models } : entry)),
   });
@@ -436,13 +442,16 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
       const row = response.instances.find((entry) => entry.name === name);
       if (row) {
         const current = credentialsStore.getState().instances;
-        if (listEstablished && !current.some((existing) => existing.name === name)) return;
+        const known = current.some((existing) => existing.name === name);
+        // A removal that landed while this refresh was out: merging nothing
+        // preserves it instead of resurrecting a phantom stub row.
+        if (listEstablished && !known) return;
         // Only the MODEL INVENTORY comes from this answer: every other field
         // of the row may have been updated by a newer read or write that
         // landed while this refresh was in flight, and a refresh only ever
         // knows about live models.
         const merged = current.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
-        if (!current.some((existing) => existing.name === name)) merged.push({ ...row });
+        if (!known) merged.push({ ...row });
         refreshedInstances.add(name);
         refreshGeneration++;
         credentialsStore.setState({ instances: merged, error: null });
