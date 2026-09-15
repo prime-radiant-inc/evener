@@ -791,6 +791,35 @@ func TestEstimateMessagesInputTokensForResolved_GenericFamilyClaimsNoImageFamily
 	}
 }
 
+// A row's configured image detail is what the adapter sends for images that
+// carry none of their own, so the estimate bills the low-detail formula the
+// request will actually use.
+func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetail(t *testing.T) {
+	low := "low"
+	row := registry.Resolved{
+		Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIResponses,
+		Caps: registry.Caps{ImageDetail: &low},
+	}
+	messages := []Message{{Role: RoleUser, Content: []ContentPart{
+		{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
+	}}}
+	if got, want := EstimateMessagesInputTokensForResolved(row, messages).Tokens, 85; got != want {
+		t.Fatalf("low-detail row image history = %d, want %d: the row's image_detail applies", got, want)
+	}
+}
+
+// The row's instance alias is not vendor identity for the thinking rule either:
+// with no caller-provided provider and no row facts, a row merely named
+// "anthropic" must not bill thinking text.
+func TestEstimateInputTokensForResolved_InstanceAliasDoesNotBillThinking(t *testing.T) {
+	const text = "unsigned reasoning that only an Anthropic adapter would replay"
+	row := registry.Resolved{Instance: "anthropic", ModelID: "gateway-zz"}
+	req := thinkingOnlyRequest("", "gateway-zz", text)
+	if got := EstimateInputTokensForResolved(row, req).Tokens; got != 0 {
+		t.Fatalf("alias-only row bills %d thinking tokens, want 0: an instance name is not vendor identity", got)
+	}
+}
+
 // The equivalence covers what the estimator reads, model id included: the name
 // rules consult it whenever the row's own facts do not decide the family.
 func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {

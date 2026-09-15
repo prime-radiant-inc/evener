@@ -328,7 +328,10 @@ type targetInfo struct {
 	// providerFromCaller marks a provider name that came from the caller rather
 	// than from the row's instance.
 	providerFromCaller bool
-	unsignedThinking   bool
+	// imageDetail is the row's configured image detail, which the adapter applies
+	// to images that carry none of their own.
+	imageDetail      string
+	unsignedThinking bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A
@@ -447,7 +450,19 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 	if strings.TrimSpace(model) == "" {
 		model = res.ModelID
 	}
-	return targetInfo{provider: provider, model: model, protocol: res.Protocol, surface: res.Surface, family: res.Model.Family, resolved: true, providerFromCaller: providerFromCaller, unsignedThinking: unsignedThinkingReplayed(res, provider, model)}
+	// The name fallback reads the caller's provider, never the row's instance
+	// alias: the alias says where the row was reached, not who made the model.
+	fallbackProvider := provider
+	if !providerFromCaller {
+		fallbackProvider = ""
+	}
+	return targetInfo{
+		provider: provider, model: model,
+		protocol: res.Protocol, surface: res.Surface, family: res.Model.Family,
+		resolved: true, providerFromCaller: providerFromCaller,
+		imageDetail:      stringValue(res.Caps.ImageDetail),
+		unsignedThinking: unsignedThinkingReplayed(res, fallbackProvider, model),
+	}
 }
 
 // unsignedThinkingReplayed reports whether the adapter the resolved target
@@ -525,13 +540,19 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	if !ok {
 		return fallbackMediaTokens + len(img.URL)/4 + len(img.MediaType)/4 + len(img.Detail)/4
 	}
+	detail := img.Detail
+	if strings.TrimSpace(detail) == "" {
+		// The adapter sends the row's configured detail when the image carries
+		// none, so the estimate bills what the request will actually contain.
+		detail = t.imageDetail
+	}
 	switch t.mediaFamily() {
 	case "google":
 		return estimateGoogleImageTokens(width, height)
 	case "anthropic":
 		return estimateAnthropicImageTokens(width, height)
 	case "openai":
-		return estimateOpenAIImageTokens(width, height, img.Detail)
+		return estimateOpenAIImageTokens(width, height, detail)
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
@@ -616,7 +637,19 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
 		return false
 	}
+	if stringValue(a.Caps.ImageDetail) != stringValue(b.Caps.ImageDetail) {
+		return false
+	}
 	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
+}
+
+// stringValue reads an optional string capability as its value, with absence and
+// an empty value meaning the same thing.
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"
