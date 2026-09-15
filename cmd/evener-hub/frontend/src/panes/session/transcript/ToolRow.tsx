@@ -170,28 +170,33 @@ function splitTrailingWord(text: string): [leading: string, trailing: string] {
   return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
 }
 
-/** The expanded summary line's glue: its final word (`word`, split out by
- * splitTrailingWord from the text the glyphs trail) and the trailing
- * control/body chevron ride inside ONE atomic .summaryTail unit, so a line
- * that fills exactly moves the whole unit - never a glyph alone onto a
- * wrapped line of its own (the same mechanism as the intent line's
- * .intentTail; see the grammar above and the stylesheet). */
-function SummaryTail({
-  head,
-  word,
+/** The atomic tail unit both glyph-bearing lines render through: the line's
+ * final word (split out of `text` by splitTrailingWord) and the glyphs that
+ * trail it ride inside ONE inline-flex unit, so a line that fills exactly
+ * moves the whole unit - never a glyph alone onto a wrapped line of its own
+ * (the same mechanism as NotificationCard's .secondaryTail; see the grammar
+ * above and the stylesheet). `line` picks the name pair its markup reads:
+ * .intentTail/.intentTailText on the intent line, .summaryTail/
+ * .summaryTailText on the expanded summary line. */
+function TailUnit({
+  line,
+  text,
   summaryLink,
   children,
 }: {
-  head: string;
-  word: string;
+  line: "intent" | "summary";
+  text: string;
   summaryLink?: string;
   children?: ReactNode;
 }) {
+  const [head, word] = splitTrailingWord(text);
+  const [unitClass, textClass] =
+    line === "intent" ? [CLASS.intentTail, CLASS.intentTailText] : [CLASS.summaryTail, CLASS.summaryTailText];
   return (
     <>
-      {linkifySummary(head, summaryLink)}
-      <span className={CLASS.summaryTail}>
-        <span className={CLASS.summaryTailText}>{linkifySummary(word, summaryLink)}</span>
+      {head !== "" ? linkifySummary(head, summaryLink) : null}
+      <span className={unitClass}>
+        <span className={textClass}>{linkifySummary(word, summaryLink)}</span>
         {children}
       </span>
     </>
@@ -338,12 +343,6 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
-  // The stated intent split around its final word: the plain-trigger branch
-  // renders that word and the chevron as ONE atomic unit (see the grammar above
-  // and .intentTail in the stylesheet), so a line that fills exactly moves the
-  // whole unit - never the glyph alone onto a wrapped line of its own, the bug
-  // report's screenshot.
-  const intentParts = splitTrailingWord(statedIntent ?? "");
   const failureNode = failed ? <FailureGlyph /> : null;
   // The id lets the intent-only overlay trigger name the status as its
   // description: the visible status is a SIBLING of that trigger (valid DOM
@@ -551,48 +550,38 @@ export function ToolRow({
             // strands together with the chevron exactly like the plain
             // variant below - so there the path's final word, the control,
             // and the chevron are ONE unit.
-            (() => {
-              const [head0, word0] = splitTrailingWord(anchorSplit[0]);
-              const [head1, word1] = splitTrailingWord(anchorSplit[1]);
-              return anchorSplit[1] === "" ? (
-                <SummaryTail head={head0} word={word0} summaryLink={summaryLink}>
-                  <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
-                    {trailing}
-                  </span>
-                  {bodyChevronInline ? bodyChevron : null}
-                </SummaryTail>
-              ) : (
-                <>
-                  {linkifySummary(head0, summaryLink)}
-                  {linkifySummary(word0, summaryLink)}
-                  <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
-                    {trailing}
-                  </span>
-                  {bodyChevronInline ? (
-                    <SummaryTail head={head1} word={word1} summaryLink={summaryLink}>
-                      {bodyChevron}
-                    </SummaryTail>
-                  ) : (
-                    linkifySummary(anchorSplit[1], summaryLink)
-                  )}
-                </>
-              );
-            })()
+            anchorSplit[1] === "" ? (
+              <TailUnit line="summary" text={anchorSplit[0]} summaryLink={summaryLink}>
+                <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                  {trailing}
+                </span>
+                {bodyChevronInline ? bodyChevron : null}
+              </TailUnit>
+            ) : (
+              <>
+                {linkifySummary(anchorSplit[0], summaryLink)}
+                <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                  {trailing}
+                </span>
+                {bodyChevronInline ? (
+                  <TailUnit line="summary" text={anchorSplit[1]} summaryLink={summaryLink}>
+                    {bodyChevron}
+                  </TailUnit>
+                ) : (
+                  linkifySummary(anchorSplit[1], summaryLink)
+                )}
+              </>
+            )
           ) : hasIntent && (trailing || bodyChevronInline) ? (
             // Expanded with the glyphs at the end of a plain (wrapping)
             // summary: glue them to the summary's final word. The
             // .bodyTrigger overlay button (below) carries the click target;
             // the chevron span sits inside the pointer-events-none
             // .summary, so it never double-hits.
-            (() => {
-              const [head, word] = splitTrailingWord(summary);
-              return (
-                <SummaryTail head={head} word={word} summaryLink={summaryLink}>
-                  {trailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
-                  {bodyChevronInline ? bodyChevron : null}
-                </SummaryTail>
-              );
-            })()
+            <TailUnit line="summary" text={summary} summaryLink={summaryLink}>
+              {trailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+              {bodyChevronInline ? bodyChevron : null}
+            </TailUnit>
           ) : (
             linkifySummary(summary, summaryLink)
           )}
@@ -691,11 +680,9 @@ export function ToolRow({
           {failureNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
-            {intentParts[0]}
-            <span className={CLASS.intentTail}>
-              <span className={CLASS.intentTailText}>{intentParts[1]}</span>
+            <TailUnit line="intent" text={statedIntent ?? ""}>
               {chevron}
-            </span>
+            </TailUnit>
           </span>
         </button>
       ) : (

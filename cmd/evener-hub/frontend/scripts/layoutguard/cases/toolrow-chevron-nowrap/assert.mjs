@@ -47,7 +47,7 @@ export default function assert(measurement) {
         }
       }
     }
-    if (!fixture.bindingFound) {
+    if (fixture.binding === null) {
       failures.push(
         `${fixture.id}: the unglued probe never stranded across ${fixture.widths.length} swept widths; the sweep no longer exercises the stranding geometry at this font`,
       );

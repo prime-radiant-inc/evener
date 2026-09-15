@@ -25,6 +25,7 @@ import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
+import { textAround } from "./transcriptTestUtils";
 
 // The expand/collapse state now lives in the shared disclosureStore keyed by
 // item.id (yt2q), so it MUST be reset between tests - every test's default
@@ -40,19 +41,6 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
-}
-
-// The text on either side of an inline element within its parent. The
-// expanded anchor glue renders the prefix's final word as its own text node
-// (ToolRow's summaryTail split), so "the control sits between the delegate
-// target and the status meta" is asserted over the whole run of text around
-// the control, never one sibling node.
-function textAround(el: Element): [before: string, after: string] {
-  let before = "";
-  for (let node = el.previousSibling; node; node = node.previousSibling) before = (node.textContent ?? "") + before;
-  let after = "";
-  for (let node = el.nextSibling; node; node = node.nextSibling) after += node.textContent ?? "";
-  return [before, after];
 }
 
 test.each(["running", "completed"])(

@@ -493,32 +493,19 @@
   color: var(--ink-mid);
 }
 
-/* The intent's final word and the trailing chevron are ONE atomic inline-flex
- * unit (ToolRow.tsx's splitTrailingWord): when the line runs out of room the
- * unit moves to the next line as a whole, so the glyph can never wrap to a
- * line by itself - the bug report's screenshot had a read_file row's arrow
+/* The atomic tail unit both glyph-bearing lines render (ToolRow.tsx's
+ * TailUnit): the line's final word and the glyphs that trail it ride inside
+ * ONE inline-flex unit - the intent line's .intentTail, the expanded summary
+ * line's .summaryTail, same declarations under each line's own name so its
+ * markup reads its own vocabulary. When the line runs out of room the unit
+ * moves to the next line as a whole, so the glyph can never wrap to a line
+ * by itself - the bug report's screenshot had a read_file row's arrow
  * sitting alone under its wrapped intent. Same mechanism as
  * notificationcard.module.css's .secondaryTail. max-width + the text child's
  * overflow-wrap keep a pathological final word breaking INSIDE the unit
  * instead of overflowing the row; align-items: flex-end then seats the
  * chevron on the text's last internal line. */
-.intentTail {
-  display: inline-flex;
-  align-items: flex-end;
-  max-width: 100%;
-  vertical-align: middle;
-}
-
-.intentTailText {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The EXPANDED summary line's twin of .intentTail: its final word and the
- * glyphs that trail it (the "Open beside" control, the two-level body
- * chevron) are one atomic unit, so a line that runs out of room moves the
- * whole unit and neither glyph can wrap to a line by itself. Same shape, a
- * second name, so each line's markup reads its own vocabulary. */
+.intentTail,
 .summaryTail {
   display: inline-flex;
   align-items: flex-end;
@@ -526,6 +513,7 @@
   vertical-align: middle;
 }
 
+.intentTailText,
 .summaryTailText {
   min-width: 0;
   overflow-wrap: anywhere;

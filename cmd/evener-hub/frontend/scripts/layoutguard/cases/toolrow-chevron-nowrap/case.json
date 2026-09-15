@@ -11,7 +11,7 @@
   ],
   "viewport": { "width": 1200, "height": 1600, "deviceScaleFactor": 1, "mobile": false },
   "mutation": {
-    "declaration": "ToolRow.tsx: the chevron rendered as a bare inline sibling after the intent text, with no atomic .intentTail unit around the final word (the harness's GLUED=false shape)",
+    "declaration": "ToolRow.tsx: the chevron rendered as a bare inline sibling after the intent text, with no atomic .intentTail unit around the final word (the harness's unglued probe row)",
     "verified": "2026-09-15",
     "expect": "fail",
     "note": "Verified with the final harness both ways on 2026-09-15, per shape: the intent shapes went red-first against the pre-fix production markup (bare inline chevron stranded below the intent's last text line at every binding width the sweeps found, e.g. phone 374-388px) and pass with the .intentTail unit; the summary-line shapes (body chevron, Open control ahead of it, read_file anchor meta) went red-first against the pre-fix production markup the same way (e.g. summary-chevron strands at 492-498px, the open-control shape at 492px+) and pass with the .summaryTail unit - flipping any shape's glue flag back to false is the recorded mutation and strands that shape's glyph at the same binding widths (re-verified for summary-open-control after the fix). The equivalent CSS-only mutation (reverting the tail unit's display:inline-flex to display:inline) strands identically, per the secondaryTail mechanism verified on 2026-09-11 for notification-open-last-line."

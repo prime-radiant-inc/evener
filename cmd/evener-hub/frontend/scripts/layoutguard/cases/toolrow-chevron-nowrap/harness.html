@@ -93,7 +93,7 @@ function splitTrailingWord(text) {
 //   <button class="trigger"><span class="intent">HEAD<span class="intentTail"><span class="intentTailText">WORD</span>CHEVRON</span></span></button>
 //   <div class="summaryLine"><span class="summary demoted clamped">…</span></div>
 // </div>
-function intentRow(id, intent, glued) {
+function intentRow(intent, glued) {
   const [head, word] = splitTrailingWord(intent);
   return `
     <div class="row" data-intent="true">
@@ -112,7 +112,7 @@ function intentRow(id, intent, glued) {
 //     <span class="summary demoted">HEAD<span class="summaryTail"><span class="summaryTailText">WORD</span>[CONTROL]CHEVRON</span></span>
 //   </div>
 // </div>
-function summaryRow(id, intent, summary, withControl, glued) {
+function summaryRow(intent, summary, withControl, glued) {
   const [iHead, iWord] = splitTrailingWord(intent);
   const [sHead, sWord] = splitTrailingWord(summary);
   const glyphs = `${withControl ? `<span class="summaryTrailing">${openControl()}</span>` : ""}${chevron(true)}`;
@@ -135,7 +135,7 @@ function summaryRow(id, intent, summary, withControl, glued) {
 // onto the same line. The chevron trails the LAST text, so IT is the strand
 // surface - glued to the meta's final word. Unglued:
 // [Read <path>] CONTROL [ · lines N-M] CHEVRON inline.
-function anchorRow(id, intent, path, meta, glued) {
+function anchorRow(intent, path, meta, glued) {
   const [iHead, iWord] = splitTrailingWord(intent);
   const seg0 = `Read ${path}`;
   const [a0Head, a0Word] = splitTrailingWord(seg0);
@@ -190,13 +190,13 @@ function shapeRowHtml(shape, probe) {
   const glued = probe ? false : shape.glued;
   switch (shape.kind) {
     case "intent":
-      return intentRow(shape.key, shape.intent, glued);
+      return intentRow(shape.intent, glued);
     case "summary":
-      return summaryRow(shape.key, shape.intent, shape.summary, shape.withControl, glued);
+      return summaryRow(shape.intent, shape.summary, shape.withControl, glued);
     case "anchor":
-      return anchorRow(shape.key, shape.intent, shape.path, shape.meta, glued);
+      return anchorRow(shape.intent, shape.path, shape.meta, glued);
     case "short":
-      return intentRow(shape.key, shape.intent, glued);
+      return intentRow(shape.intent, glued);
     default:
       throw new Error(`unknown shape kind ${shape.kind}`);
   }
@@ -271,13 +271,15 @@ function glyphRefs(shape) {
       ];
     case "anchor":
       return [{ glyph: "[data-chevron]", text: "[data-summary]" }];
-    default:
-      throw new Error(`unknown shape kind ${kind}`);
   }
 }
 
 function measureRowRefs(rowEl, shape) {
   const out = [];
+  // One lines pass per reference text: the with-control summary has two
+  // glyphs on the same text, and the short fixture's lineCount rides the
+  // same measurement.
+  const linesByEl = new Map();
   for (const ref of glyphRefs(shape)) {
     // The glyph selector is scoped under its reference text container: a
     // two-level row carries a chevron on the intent line as well, and an
@@ -285,7 +287,12 @@ function measureRowRefs(rowEl, shape) {
     const glyphEl = rowEl.querySelector(`${ref.text} ${ref.glyph}`);
     const textEl = rowEl.querySelector(ref.text);
     const glyph = box(glyphEl);
-    const lastLine = linesOf(textEl).at(-1);
+    let lines = linesByEl.get(textEl);
+    if (lines === undefined) {
+      lines = linesOf(textEl);
+      linesByEl.set(textEl, lines);
+    }
+    const lastLine = lines.at(-1);
     out.push({
       glyph: ref.glyph,
       sharesLastLine: glyph.top < lastLine.bottom - 1 && glyph.bottom > lastLine.top + 1,
@@ -293,6 +300,7 @@ function measureRowRefs(rowEl, shape) {
       glyphBottom: glyph.bottom,
       lineTop: lastLine.top,
       lineBottom: lastLine.bottom,
+      lineCount: lines.length,
     });
   }
   return out;
@@ -302,37 +310,40 @@ function measureRowRefs(rowEl, shape) {
 // invariant, and the probe row's - which the assert reads as the binding
 // signal (a stranded probe glyph is proof the sweep exercises the stranding
 // geometry at this font).
-function measureAt(shape, width) {
-  const boxEl = document.getElementById(`box-${shape.key}`);
-  boxEl.style.width = `${width}px`;
-  const production = measureRowRefs(boxEl.querySelector("[data-production] > div"), shape);
-  const probeRow = boxEl.querySelector("[data-probe-row] > div");
-  const probe = probeRow ? measureRowRefs(probeRow, shape) : null;
+function measureAt(shape, width, refs) {
+  refs.box.style.width = `${width}px`;
+  const production = measureRowRefs(refs.production, shape);
+  const probe = refs.probe ? measureRowRefs(refs.probe, shape) : null;
   return { width, production, probe };
 }
 
 window.measure = () => {
   const out = [];
   for (const shape of SHAPES) {
+    // The box and its rows are stable across a shape's sweep; resolve them
+    // once per shape instead of re-querying at every width.
+    const boxEl = document.getElementById(`box-${shape.key}`);
+    const refs = {
+      box: boxEl,
+      production: boxEl.querySelector("[data-production] > div"),
+      probe: boxEl.querySelector("[data-probe-row] > div"),
+    };
     if (shape.kind === "short") {
-      const m = measureAt(shape, shape.base);
-      const textEl = document.querySelector(`#box-${shape.key} [data-intent-text]`);
-      out.push({ id: shape.key, kind: shape.kind, fixed: { ...m, lineCount: linesOf(textEl).length } });
+      const m = measureAt(shape, shape.base, refs);
+      out.push({ id: shape.key, kind: shape.kind, fixed: { ...m, lineCount: m.production[0].lineCount } });
       continue;
     }
     const widths = [];
-    let bindingFound = false;
     let binding = null;
     const steps = Math.floor(SWEEP_SPAN_PX / SWEEP_STEP_PX);
     for (let i = 0; i <= steps; i++) {
-      const m = measureAt(shape, shape.base + i * SWEEP_STEP_PX);
+      const m = measureAt(shape, shape.base + i * SWEEP_STEP_PX, refs);
       widths.push(m);
       if (m.probe.some((p) => !p.sharesLastLine)) {
-        bindingFound = true;
         binding ??= m;
       }
     }
-    out.push({ id: shape.key, kind: shape.kind, widths, bindingFound, binding });
+    out.push({ id: shape.key, kind: shape.kind, widths, binding });
   }
   return out;
 };

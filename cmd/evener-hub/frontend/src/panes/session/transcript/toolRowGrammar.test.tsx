@@ -17,6 +17,7 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 import { ToolCallItem } from "./ToolCallItem";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
+import { textAround } from "./transcriptTestUtils";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
 // (its failed()/detail() hooks are the whole point of A2), so this file has to
 // register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
@@ -37,19 +38,6 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function rowCss(): string {
   const path = join(dirname(fileURLToPath(import.meta.url)), "toolcallitem.module.css");
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-// The text on either side of an inline element within its parent. The
-// expanded anchor glue renders the prefix's final word as its own text node
-// (ToolRow's summaryTail split), so "the control sits between the anchor
-// prefix and the meta" is asserted over the whole run of text around the
-// control, never one sibling node.
-function textAround(el: Element): [before: string, after: string] {
-  let before = "";
-  for (let node = el.previousSibling; node; node = node.previousSibling) before = (node.textContent ?? "") + before;
-  let after = "";
-  for (let node = el.nextSibling; node; node = node.nextSibling) after += node.textContent ?? "";
-  return [before, after];
 }
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -433,8 +421,9 @@ test("the chevron rides inline at the end of the intent text, glued to its final
   expect(intent.lastElementChild?.lastElementChild).toBe(chevron);
   expect(intent.textContent).toBe("List the directory");
   expect(intent.lastElementChild?.textContent).toBe("directory");
-  // The glue mechanism itself: the unit is atomic, so the pair moves as one.
-  expect(rowCss()).toMatch(/\.intentTail\s*\{[^}]*display:\s*inline-flex/);
+  // The glue mechanism itself: both lines' tail units are atomic - one rule
+  // under the two names the lines' markup reads - so the pair moves as one.
+  expect(rowCss()).toMatch(/\.intentTail,\s*\.summaryTail\s*\{[^}]*display:\s*inline-flex/);
 });
 
 test("the chevron rides inline at the end of the summary when there is no intent", () => {
