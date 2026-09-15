@@ -84,6 +84,16 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 // and s.env to already be set. Called once, before any turn is processed:
 // NewSession right after its struct literal, RestoreSessionFromMetaWithConfig
 // the same.
+// escapeInheritedHistory escapes a forked session's inherited prefix for the
+// model copy. No journal is in reach, and that is deliberate: the prefix belongs
+// to the parent's session, whose records the child's journal does not hold -- and
+// a child mutation may reuse a parent's client mutation id -- so a child record
+// must never decide what an inherited turn was (roborev's seventh round). The
+// prefix is decided by its own kinds and the write-path text shape alone.
+func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
+	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
+}
+
 func (s *Session) initEnvContext(persisted *envctx.State) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
@@ -323,9 +333,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// escaped copy, exactly as the parent's own requests do. The child's own
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
-		// The child's own journal holds no record for the parent's turns, so the
-		// inherited prefix is decided by kind and text shape alone.
-		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext), clientMutations.steeringOrigins())
+		s.history = escapeInheritedHistory(inheritedContext)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
