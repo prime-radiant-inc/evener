@@ -256,7 +256,15 @@ export function ActivityPanelBody({
       );
     }
     if (entry.load.kind === "idle" || entry.load.kind === "loading") {
-      return <p className={CLASS.state}>Loading activity…</p>;
+      // A request that has not answered yet is not a session without watches:
+      // the group renders above the loading line for the same reason it renders
+      // above the failure state.
+      return (
+        <>
+          {watchFallback}
+          <p className={CLASS.state}>Loading activity…</p>
+        </>
+      );
     }
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
@@ -264,10 +272,13 @@ export function ActivityPanelBody({
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
-          <EmptyState
-            title="This session has ended"
-            hint="Its daemon has exited, and there's no retained activity to fall back on."
-          />
+          <>
+            {watchFallback}
+            <EmptyState
+              title="This session has ended"
+              hint="Its daemon has exited, and there's no retained activity to fall back on."
+            />
+          </>
         )}
         {ended && currentTree && (
           <div className={CLASS.stale}>

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { NavigationWatchSummary, ThreadCapabilities } from "../../../protocol/types.gen";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { ActivityPanelBody } from "./ActivityPanel";
@@ -90,6 +91,7 @@ function watch(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatch
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetActivityPanelStoreForTests();
 });
 
 afterEach(() => {
@@ -199,5 +201,54 @@ describe("ActivityPanelBody watches", () => {
 
     expect(await screen.findByRole("treeitem", { name: "Watch: Poll the queue depth" })).toBeTruthy();
     expect(screen.getByTestId("watch-facts").textContent).toContain("Fires every 10m");
+  });
+
+  test("a still-loading activity request does not hide the watches", async () => {
+    // Same contract as the failed load: the watches are session data, and a
+    // request that has not answered yet must not hide the only pending work the
+    // session has.
+    const ref = "ref_watch_loading";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/jobs/list", () => new Promise(() => {}));
+
+    render(
+      <ActivityPanelBody
+        sessionRef={ref}
+        model={testModel(ref)}
+        now={NOW}
+        watches={[
+          watch({ id: "watch_loading", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Loading activity…")).toBeTruthy();
+    expect(await screen.findByRole("treeitem", { name: "Watch: Poll the queue depth" })).toBeTruthy();
+  });
+
+  test("an ended session with no retained tree still shows its watches", async () => {
+    // The ended-and-no-tree state is the one where the tree is gone for good, so
+    // the watch rows cannot come from retained activity at all.
+    const ref = "ref_watch_ended";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    // The request never answers, so nothing can replace the ended result with a
+    // retained tree: this is the session whose activity is gone for good.
+    fake.on("evener/jobs/list", () => new Promise(() => {}));
+
+    render(
+      <ActivityPanelBody
+        sessionRef={ref}
+        model={testModel(ref)}
+        now={NOW}
+        watches={[watch({ id: "watch_ended", note: "Deploy watch" })]}
+      />,
+    );
+    const request = activityPanelStore.getState().beginFetch(ref);
+    activityPanelStore.getState().publishFetch(ref, request, { kind: "ended" });
+
+    expect(await screen.findByText("This session has ended")).toBeTruthy();
+    expect(screen.getByRole("treeitem", { name: "Watch: Deploy watch" })).toBeTruthy();
   });
 });
