@@ -225,9 +225,10 @@ func hasRetirementBlocker(blockers []RetirementBlocker, category string) bool {
 // for the stale early-return snapshot: a refused claim's blockers are evidence
 // for that attempt, not controller state that a later attempt inherits. When a
 // subsequent TryClaim early-returns while work is admitted, it must present the
-// live obligation set — not an obligation that has since resolved. The Hub
-// resident UI renders RetirementSnapshot.Blockers verbatim, so the observable
-// consequence is asserted on the returned snapshot content.
+// CURRENT obligation set — the resolved obligation is gone, and an obligation
+// that exists now is still reported. The Hub resident UI renders
+// RetirementSnapshot.Blockers verbatim, so the observable consequence is
+// asserted on the returned snapshot content.
 func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
@@ -251,8 +252,12 @@ func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
 	root.inputQueue = nil
 	root.mu.Unlock()
 
+	// A different, CURRENT session-owned obligation exists now: an active goal.
+	// A snapshot that merely replayed the previous attempt would omit it.
+	root.getOrCreateGoalStore().Set("current objective", time.Now())
+
 	// Admitted work forces the next manual attempt down the early-return gate
-	// (len(c.active) != 0) instead of re-running evidence.
+	// (len(c.active) != 0).
 	release, err := c.BeginMutation(root.ID(), "turn")
 	if err != nil {
 		t.Fatal(err)
@@ -266,8 +271,69 @@ func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
 	if hasRetirementBlocker(snapshot.Blockers, "input") {
 		t.Fatalf("early return re-presented a resolved obligation: %+v", snapshot.Blockers)
 	}
+	if !hasRetirementBlocker(snapshot.Blockers, "autonomous") {
+		t.Fatalf("early return dropped a current session-owned obligation: %+v", snapshot.Blockers)
+	}
 	if !hasRetirementBlocker(snapshot.Blockers, "turn") {
 		t.Fatalf("early return dropped the live obligation: %+v", snapshot.Blockers)
+	}
+}
+
+// TestRetirementSnapshotDoesNotLeakPreviousRootBlocker is the regression test
+// for the cross-generation leak: a blocker recorded against the previous root
+// must never appear in a snapshot taken for its replacement root. Evidence is
+// now read from the live process on every path that returns a snapshot, so
+// there is no stored set for a root swap to leak from; this pins that property
+// through real behaviour (a refused claim on the first root, then an attached
+// replacement root whose own admission forces an early return).
+func TestRetirementSnapshotDoesNotLeakPreviousRootBlocker(t *testing.T) {
+	c, err := NewRetirementController(0, clock.Real())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := newQueuePersistTestSession(t, t.TempDir())
+	defer first.Close()
+	if err := c.AttachRoot(first); err != nil {
+		t.Fatal(err)
+	}
+
+	// A queued input is a real session-owned obligation of the first root; the
+	// refusal records it as that attempt's evidence.
+	first.mu.Lock()
+	first.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	first.mu.Unlock()
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("queued input did not refuse the claim: claim=%v err=%v state=%+v", claim, err, state)
+	}
+	if !hasRetirementBlocker(state.Blockers, "input") {
+		t.Fatalf("refusal lost the first root's input blocker: %+v", state.Blockers)
+	}
+
+	// The root is replaced; the controller starts a new generation.
+	second := newQueuePersistTestSession(t, t.TempDir())
+	defer second.Close()
+	if err := c.AttachRoot(second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Admitted work forces a manual early return for the new root.
+	release, err := c.BeginMutation(second.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	_, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	for _, blocker := range snapshot.Blockers {
+		if blocker.Category == "input" && blocker.SessionID == first.ID() {
+			t.Fatalf("snapshot for the replacement root presented the previous root's blocker: %+v", snapshot.Blockers)
+		}
+	}
+	if !hasRetirementBlocker(snapshot.Blockers, "turn") {
+		t.Fatalf("early return dropped the new root's live obligation: %+v", snapshot.Blockers)
 	}
 }
 

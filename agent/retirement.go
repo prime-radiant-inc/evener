@@ -61,14 +61,7 @@ type RetirementController struct {
 	timeout       time.Duration
 	eligibleSince time.Time
 	failure       string
-	// blockers is the refusal evidence from the current TryClaim attempt. It is
-	// carried only on claim snapshots (the immediate retire response). It is
-	// cleared when an attempt starts, so an early return that does not re-run
-	// the evidence never presents an earlier refusal's obligations as current.
-	// It is deliberately NOT read by Snapshot: a status request must never
-	// present an earlier refusal's evidence as the current obligation set.
-	blockers []RetirementBlocker
-	claim    *RetirementClaim
+	claim         *RetirementClaim
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -240,13 +233,6 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 	return c.snapshotWithBlockersLocked(nil)
 }
 
-// claimSnapshotLocked carries the current claim attempt's refusal evidence. Only
-// TryClaim's own return values use it, so a later status Snapshot can never
-// present a settled obligation's old refusal as current evidence.
-func (c *RetirementController) claimSnapshotLocked() RetirementSnapshot {
-	return c.snapshotWithBlockersLocked(c.blockers)
-}
-
 // snapshotWithBlockersLocked builds a snapshot from live controller state plus
 // any extra blockers the caller supplies.
 func (c *RetirementController) snapshotWithBlockersLocked(extra []RetirementBlocker) RetirementSnapshot {
@@ -275,9 +261,33 @@ func (c *RetirementController) snapshotWithBlockersLocked(extra []RetirementBloc
 	return state
 }
 
+// retirementLiveBlockers reads the retirement obligations a claim would face
+// right now: this Session's owners plus, when a delegate controller exists, the
+// whole tree's (which subsumes the root). Callers must hold no controller mutex,
+// because retirementEvidence takes session and job locks. It never installs the
+// claim fence — the early returns do not claim — so the read is advisory.
+func retirementLiveBlockers(root *Session) []RetirementBlocker {
+	if root == nil {
+		return nil
+	}
+	if tree := root.delegateController; tree != nil {
+		blockers, _, _ := tree.retirementEvidence()
+		return blockers
+	}
+	blockers, _ := root.retirementEvidence()
+	return blockers
+}
+
 // TryClaim never waits for admitted work. The root input predicate runs behind
 // the admission fence without holding mu. Full tree proof is still required
 // before automatic retirement can be activated.
+//
+// Every returned snapshot reflects the obligations that exist at that moment:
+// evidence is recomputed, never carried over from an earlier attempt, so a
+// resolved obligation cannot linger and a current one cannot be dropped. Only
+// the manual path's early-return snapshot is ever observed (the daemon's retire
+// RPC renders it; the automatic Run loop discards its own), so the manual early
+// returns pay for the fresh read and the automatic ones do not.
 func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, RetirementSnapshot, error) {
 	// The injected clock is a callback boundary too; do not call it under mu.
 	var now time.Time
@@ -285,24 +295,18 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		now = c.clock.Now()
 	}
 	c.mu.Lock()
-	// Refusal evidence belongs to the attempt that produced it. A prior attempt's
-	// blockers must not surface on any path that does not re-run the evidence
-	// (the early returns below); the live c.active leases are appended separately
-	// by snapshotWithBlockersLocked, so clearing here cannot drop a live
-	// obligation and cannot double-count one.
-	c.blockers = nil
 	if c.phase != "resident" {
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.earlySnapshotLocked(c.root, manual)
 		c.mu.Unlock()
 		return nil, snapshot, ErrRetirementUnavailable
 	}
 	if len(c.active) != 0 || c.root == nil {
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.earlySnapshotLocked(c.root, manual)
 		c.mu.Unlock()
 		return nil, snapshot, nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.snapshotLocked()
 		c.mu.Unlock()
 		return nil, snapshot, nil
 	}
@@ -329,17 +333,16 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.snapshotLocked()
 		c.mu.Unlock()
 		return nil, snapshot, ErrRetirementUnavailable
 	}
-	c.blockers = blockers
 	if len(blockers) != 0 || evidenceErr != nil {
 		claim.finished = true
 		c.claim = nil
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.snapshotWithBlockersLocked(blockers)
 		c.mu.Unlock()
 		// The refusal returned the controller to the resident phase and dropped
 		// the interval, exactly like Abort/AttachRoot/BeginMutation. Notify after
@@ -348,9 +351,23 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		c.Changed()
 		return nil, snapshot, evidenceErr
 	}
-	snapshot := c.claimSnapshotLocked()
+	snapshot := c.snapshotLocked()
 	c.mu.Unlock()
 	return claim, snapshot, nil
+}
+
+// earlySnapshotLocked builds an early-return snapshot and returns with c.mu
+// still held, exactly as TryClaim's caller expects. The manual snapshot is the
+// one an operator sees, so it is built from a fresh evidence read taken outside
+// mu; the automatic snapshot is discarded and skips that I/O.
+func (c *RetirementController) earlySnapshotLocked(root *Session, manual bool) RetirementSnapshot {
+	if !manual {
+		return c.snapshotLocked()
+	}
+	c.mu.Unlock()
+	extra := retirementLiveBlockers(root)
+	c.mu.Lock()
+	return c.snapshotWithBlockersLocked(extra)
 }
 
 func (c *RetirementController) validClaimLocked(claim *RetirementClaim) bool {
