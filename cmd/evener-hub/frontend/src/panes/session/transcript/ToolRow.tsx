@@ -32,9 +32,11 @@
 //     than one full line plus one clamped one.
 //   - the chevron rides INLINE at the end of the headline text - inside the
 //     intent when there is one, otherwise inside the summary - wrapping with
-//     the words it opens. The intent-only Open variant is the exception: its
-//     valid sibling order is intent, Open, chevron (never Open beyond the
-//     disclosure arrow), with one overlay trigger owning the whole line;
+//     the words it opens, glued to the final word in an atomic .intentTail
+//     unit so it can never wrap to a line by itself. The intent-only Open
+//     variant is the exception: its valid sibling order is intent, Open,
+//     chevron (never Open beyond the disclosure arrow), with one overlay
+//     trigger owning the whole line;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the intent is the agent's own stated reason for the call
@@ -71,6 +73,8 @@ const CLASS = {
   intentOverlayTrigger: requireClass(styles.intentOverlayTrigger, "toolcallitem.module.css", "intentOverlayTrigger"),
   summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
+  intentTail: requireClass(styles.intentTail, "toolcallitem.module.css", "intentTail"),
+  intentTailText: requireClass(styles.intentTailText, "toolcallitem.module.css", "intentTailText"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
@@ -146,6 +150,20 @@ export interface ToolRowProps {
    * controlling `summaryOpen`, and a separate .bodyTrigger chevron controls
    * `expanded`. Intent-less rows are unchanged regardless. */
   onToggleSummary?: () => void;
+}
+
+/** Splits `text` into everything up to and including the whitespace before
+ * its final word, and that final word - the two pieces ToolRow renders around
+ * the atomic .intentTail unit that keeps the trailing chevron and the word it
+ * opens on one line. A single-word (or empty) text returns ["", text].
+ * Mirrors NotificationCard's own splitTrailingWord (same mechanism, same
+ * edge cases); local rather than shared for the same reason that file's
+ * other copies are - the two surfaces own their presentation independently. */
+function splitTrailingWord(text: string): [leading: string, trailing: string] {
+  const match = /^(.*\s)(\S+)$/.exec(text);
+  const leading = match?.[1];
+  const trailing = match?.[2];
+  return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
 }
 
 /** The one rule for reading a tool call's stated intent (ItemModel.description):
@@ -288,6 +306,12 @@ export function ToolRow({
       <Chevron />
     </span>
   ) : null;
+  // The stated intent split around its final word: the plain-trigger branch
+  // renders that word and the chevron as ONE atomic unit (see the grammar above
+  // and .intentTail in the stylesheet), so a line that fills exactly moves the
+  // whole unit - never the glyph alone onto a wrapped line of its own, the bug
+  // report's screenshot.
+  const intentParts = splitTrailingWord(statedIntent ?? "");
   const failureNode = failed ? <FailureGlyph /> : null;
   // The id lets the intent-only overlay trigger name the status as its
   // description: the visible status is a SIBLING of that trigger (valid DOM
@@ -592,8 +616,11 @@ export function ToolRow({
           {failureNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
-            {statedIntent}
-            {chevron}
+            {intentParts[0]}
+            <span className={CLASS.intentTail}>
+              <span className={CLASS.intentTailText}>{intentParts[1]}</span>
+              {chevron}
+            </span>
           </span>
         </button>
       ) : (

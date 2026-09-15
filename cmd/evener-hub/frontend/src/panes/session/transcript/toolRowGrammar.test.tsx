@@ -400,9 +400,11 @@ test("a clean call with nothing to open leads with its summary - no chevron, no 
 
 // The chevron rides INLINE at the end of the headline text (see ToolRow.tsx's
 // grammar): inside the intent when there is one, otherwise inside the
-// summary. It is never a flex item of the row, so nothing can justify it a
-// column of whitespace away from the words it opens.
-test("the chevron rides inline at the end of the intent text when an intent exists", () => {
+// summary. On the intent line it is further GLUED to the intent's final word
+// inside an atomic .intentTail unit, so a line that fills exactly moves word
+// and glyph together - the arrow can never wrap to a line by itself (the
+// layoutguard case toolrow-chevron-nowrap pins the geometry).
+test("the chevron rides inline at the end of the intent text, glued to its final word", () => {
   registerToolRenderer({ match: "trg_chev_inline", summary: () => "Ran ls", body: () => <div>more</div> });
   render(
     <ToolCallItem
@@ -411,7 +413,15 @@ test("the chevron rides inline at the end of the intent text when an intent exis
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-intent").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  const intent = screen.getByTestId("tool-row-intent");
+  const chevron = screen.getByTestId("tool-row-chevron");
+  // The intent's last element child is the tail unit, the unit's last element
+  // child is the chevron, and the unit's text is the intent's final word.
+  expect(intent.lastElementChild?.lastElementChild).toBe(chevron);
+  expect(intent.textContent).toBe("List the directory");
+  expect(intent.lastElementChild?.textContent).toBe("directory");
+  // The glue mechanism itself: the unit is atomic, so the pair moves as one.
+  expect(rowCss()).toMatch(/\.intentTail\s*\{[^}]*display:\s*inline-flex/);
 });
 
 test("the chevron rides inline at the end of the summary when there is no intent", () => {

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>toolrow-chevron-nowrap layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* Transitions OFF (docs/testing.md): the chevron turn and the trigger's
+     hover ink wash are motion; the assertion reads settled line placement. */
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  /* The row sits inside runContent's --speaker-gutter padding in production; a
+     transcript column is what bounds it. Each fixture box is SWEPT across a
+     ladder of widths (below) rather than pinned to one, because whether an
+     intent's last line lands within a chevron-width of the edge is a property
+     of font metrics the harness must not guess - the sweep finds the binding
+     widths wherever they are, and the assert requires that it found one. */
+  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces ToolRow.tsx's intent-bearing plain-trigger branch (read_file /
+     grep_files rows: intent + demoted summary, no trailing control) against the
+     REAL classes from panes/session/transcript/toolcallitem.module.css:
+
+       <div class="row" data-intent="true">
+         <button class="trigger">
+           <span class="intent">{statedIntent}{chevron}</span>
+         </button>
+         <div class="summaryLine"><span class="summary demoted clamped">…</span></div>
+       </div>
+
+     The chevron rides INLINE at the end of the intent text. The invariant under
+     guard: it shares the line with the intent's LAST text line at EVERY swept
+     width - a line that fills exactly must move the chevron's words with it,
+     never the glyph alone onto a wrapped line of its own. The .rowIcon slot is
+     omitted (same reasoning as delegate-open-widget-inline's harness: its
+     gutter pull is not a flex item that affects the wrap decision). -->
+<div class="fixtures"></div>
+<script>
+// The real Chevron widget's "right" path (widgets/chevron/index.tsx), 14px box.
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// ToolRow.tsx's intent-bearing plain-trigger branch, with the demoted
+// (collapsed middle-truncated) summary line the grammar puts under the intent.
+// `glued` switches between the two markups the fix spans, so the same case can
+// be run against the pre-fix bare inline chevron (its own first run, and the
+// recorded mutation evidence) and the post-fix atomic tail unit:
+//
+//   pre-fix:  <span class="intent">TEXT<span class="chevron"/></span>
+//   post-fix: <span class="intent">HEAD<span class="intentTail"><span class="intentTailText">WORD</span><span class="chevron"/></span></span>
+//
+// `probe` renders the same intent WITHOUT any chevron: its text-only wrap
+// geometry is exactly what the unglued DOM's text sees (a trailing atomic
+// glyph never changes where the words wrap), so its last line's slack is the
+// binding signal - the widths where a BARE chevron would have to fit into
+// less than a chevron unit (14px box + 8px margin) and would strand.
+function toolRowHtml(id, intent, glued, probe) {
+  const cut = intent.lastIndexOf(" ") + 1;
+  const head = glued && !probe ? intent.slice(0, cut) : intent;
+  const chevron = probe
+    ? ""
+    : glued
+      ? `<span class="intentTail"><span class="intentTailText">${intent.slice(cut)}</span><span class="chevron" data-chevron aria-hidden="true">${CHEVRON_SVG}</span></span>`
+      : `<span class="chevron" data-chevron aria-hidden="true">${CHEVRON_SVG}</span>`;
+  return `
+    <div class="row" id="row-${id}" data-intent="true"${probe ? ' data-probe="true"' : ""}>
+      <button type="button" class="trigger" aria-expanded="false">
+        <span class="intent" data-intent="${id}">${head}${chevron}</span>
+      </button>
+      <div class="summaryLine"><span class="summary demoted clamped"><span class="clampedHead">Ran grep_files</span><span class="clampedTail"> · output_mode:content</span></span></div>
+    </div>`;
+}
+
+// The intent from the bug report's screenshot (a real read_file call's stated
+// intent): long enough that the phone/narrow/mid column sweeps all wrap it,
+// so the trailing chevron rides a genuinely multi-line text block.
+const LONG_INTENT = "Confirming the native textarea constraint and the smallest editor boundary that would need replacement.";
+// A desktop column fits that intent on one line, so the wide sweep uses a
+// longer stated intent - the three sentences from the same screenshot's rows,
+// joined the way a single verbose intent really reads - to keep wrapping (and
+// therefore binding widths) present at 880px and up.
+const LONG_INTENT_WIDE = "Reading the actual built-in matching call rather than surrounding suppositions, confirming the native textarea constraint and the smallest editor boundary that would need replacement, and checking that a line which fills exactly keeps the trailing disclosure arrow on the words it opens.";
+const SHORT_INTENT = "List the directory contents.";
+
+// Every swept fixture walks its box width from the base across SWEEP_SPAN_PX
+// in SWEEP_STEP_PX steps. Binding widths (last text line within 18px of the
+// column edge) occur wherever a wrap arrangement's last line nearly fills the
+// measure - once per wrap point, ~18px wide, spaced roughly a word apart - so
+// a 300px span at 2px steps cannot step over one. Whether any given width is
+// binding depends on font metrics; the assert requires each sweep to have
+// FOUND at least one, so a font or platform change that moves the geometry
+// fails the case loudly instead of letting it pass vacuously.
+const SWEEP_SPAN_PX = 300;
+const SWEEP_STEP_PX = 2;
+// A width binds only while the slack after the (unglued) intent text's last
+// line is smaller than the chevron unit (14px box + 8px margin = 22px); 18px
+// leaves margin for sub-pixel rounding without letting a full chevron fit.
+const BINDING_SLACK_PX = 18;
+
+const CONFIGS = [
+  { key: "phone-sweep", base: 360, intent: LONG_INTENT, sweep: true, label: "360px column (phone transcript), long intent" },
+  { key: "narrow-sweep", base: 420, intent: LONG_INTENT, sweep: true, label: "420px column, long intent" },
+  { key: "mid-sweep", base: 640, intent: LONG_INTENT, sweep: true, label: "640px column, long intent" },
+  { key: "wide-sweep", base: 880, intent: LONG_INTENT_WIDE, sweep: true, label: "880px column, long intent" },
+  { key: "short-inline", base: 420, intent: SHORT_INTENT, sweep: false, label: "420px column, short intent (fits one line)" },
+];
+
+// Mirrors production: the chevron rides inside the atomic .intentTail unit
+// with the intent's final word (ToolRow.tsx's splitTrailingWord). GLUED=false
+// is the pre-fix markup this case was first run against - the chevron as a
+// bare inline sibling - and doubles as the recorded mutation shape.
+const GLUED = true;
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.id = `box-${c.key}`;
+  box.style.width = `${c.base}px`;
+  box.innerHTML = toolRowHtml(c.key, c.intent, GLUED, false) + (c.sweep ? toolRowHtml(`probe-${c.key}`, c.intent, GLUED, true) : "");
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+// The intent text's wrapped LINES: every text node under .intent contributes
+// its Range rects, and rects that overlap vertically are one line. Grouping
+// (rather than counting fragments) keeps the count correct in both DOM
+// shapes - the glued intent's head and tail word are two text nodes that
+// usually share a line.
+function intentLines(intentEl) {
+  const walker = document.createTreeWalker(intentEl, NodeFilter.SHOW_TEXT);
+  const rects = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    rects.push(...range.getClientRects());
+  }
+  const lines = [];
+  for (const r of rects) {
+    const line = lines.find((l) => r.top < l.bottom - 1 && r.bottom > l.top + 1);
+    if (line) {
+      line.right = Math.max(line.right, r.right);
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+    } else {
+      lines.push({ top: r.top, bottom: r.bottom, right: r.right });
+    }
+  }
+  return lines;
+}
+
+// The LAST text node under .intent: the whole intent pre-fix, the tail word
+// post-fix. In both DOMs its last Range rect is the line the chevron must
+// share - a text-fragment rect, never the chevron's own box.
+function lastTextLine(intentEl) {
+  const walker = document.createTreeWalker(intentEl, NodeFilter.SHOW_TEXT);
+  let last = null;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) last = node;
+  const range = document.createRange();
+  range.selectNodeContents(last);
+  return [...range.getClientRects()].at(-1);
+}
+
+// One measurement at one box width: the invariant (chevron vertically shares
+// the intent's last text line, and stays inside the row), the wrapped line
+// count, and the PROBE row's binding signal - the slack after the unglued
+// text's last line, which is where a bare chevron would have to fit.
+function measureAt(config, width) {
+  const boxEl = document.getElementById(`box-${config.key}`);
+  boxEl.style.width = `${width}px`;
+  const rowEl = document.getElementById(`row-${config.key}`);
+  const intentEl = rowEl.querySelector(`[data-intent="${config.key}"]`);
+  const chevronEl = rowEl.querySelector("[data-chevron]");
+  const chevron = box(chevronEl);
+  const row = box(rowEl);
+  const intent = box(intentEl);
+  const lastLine = lastTextLine(intentEl);
+  const probeRow = document.getElementById(`row-probe-${config.key}`);
+  const probeIntent = probeRow?.querySelector(`[data-intent="probe-${config.key}"]`);
+  const probeLines = probeIntent ? intentLines(probeIntent) : [];
+  const probeLast = probeLines.at(-1);
+  const probeRight = probeIntent ? probeIntent.getBoundingClientRect().right : 0;
+  return {
+    width,
+    lineCount: intentLines(intentEl).length,
+    probeLineCount: probeLines.length,
+    // Binding: the unglued text's last line leaves less than a chevron unit
+    // of slack, so a bare chevron cannot fit after it - single-line intents
+    // that nearly fill count too (the mid sweep stranded exactly there on
+    // the pre-fix markup). Measured on the probe row only; the probe-less
+    // short fixture reports no binding signal.
+    binding: probeLast !== undefined && probeRight - probeLast.right < BINDING_SLACK_PX,
+    probeSlack: probeLast !== undefined ? probeRight - probeLast.right : -1,
+    sharesLastLine: chevron.top < lastLine.bottom - 1 && chevron.bottom > lastLine.top + 1,
+    withinRow: chevron.right <= row.right + 1,
+    chevronTop: chevron.top,
+    chevronBottom: chevron.bottom,
+    lastLineTop: lastLine.top,
+    lastLineBottom: lastLine.bottom,
+    chevronRight: chevron.right,
+    rowRight: row.right,
+  };
+}
+
+window.measure = () => {
+  const out = [];
+  for (const config of CONFIGS) {
+    if (config.sweep) {
+      const widths = [];
+      let bindingFound = false;
+      let binding = null;
+      const steps = Math.floor(SWEEP_SPAN_PX / SWEEP_STEP_PX);
+      for (let i = 0; i <= steps; i++) {
+        const width = config.base + i * SWEEP_STEP_PX;
+        const m = measureAt(config, width);
+        widths.push(m);
+        if (m.binding) {
+          bindingFound = true;
+          binding ??= m;
+        }
+      }
+      out.push({ id: config.key, label: config.label, sweep: true, widths, bindingFound, binding });
+    } else {
+      out.push({ id: config.key, label: config.label, sweep: false, fixed: measureAt(config, config.base) });
+    }
+  }
+  return out;
+};
+</script>
+</body>
+</html>

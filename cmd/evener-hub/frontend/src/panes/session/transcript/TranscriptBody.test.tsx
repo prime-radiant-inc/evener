@@ -284,7 +284,10 @@ describe("TranscriptBody", () => {
       <TranscriptBody model={fixture} config={preset("intent")} surface="preview" disclosureScope="preview:test" />,
     );
 
-    expect(screen.getByText("Inspect the tree")).toBeTruthy();
+    // The intent text renders head + glued final word (ToolRow's .intentTail);
+    // assert it through the row rather than getByText, which only matches text
+    // contained in one element.
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
     expect(screen.getByText("The tree is ready")).toBeTruthy();
     // ToolCallItem renders eagerly inside the intent group (jsdom does not hide
     // <details> children). The body (raw tool output) is still collapsed.
@@ -298,7 +301,7 @@ describe("TranscriptBody", () => {
     );
 
     expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
-    expect(screen.getByText("Inspect the tree")).toBeTruthy();
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
     expect(screen.getByTestId("tool-call-item")).toBeTruthy();
     expect(
       document.querySelector('[data-view-anchor-id="tool_1"]')?.getAttribute("data-view-anchor-source-index"),
@@ -424,7 +427,7 @@ describe("TranscriptBody", () => {
     );
 
     expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
-    expect(screen.getByText("Inspect the tree")).toBeTruthy();
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the tree");
   });
 
   test.each(["live", "readOnly"] as const)(
