@@ -252,14 +252,14 @@ function TaskCardBody({ item }: ToolRenderProps) {
   // The parsed footer keeps the backend's own outcome shape (done/cancelled/
   // remaining/total, or legacy done/total); only the displayed sentence is
   // condensed, through the same helper the panel trigger uses.
-  const progressLabel = progress
-    ? taskAggregateLabel({
-        total: progress.total,
-        done: progress.done,
-        cancelled: progress.cancelled,
-        remaining: progress.remaining,
-      })
-    : undefined;
+  // Derived unconditionally: taskAggregateLabel always returns a non-empty
+  // sentence, and the head below only renders when progress parsed.
+  const progressLabel = taskAggregateLabel({
+    total: progress?.total ?? 0,
+    done: progress?.done ?? 0,
+    cancelled: progress?.cancelled,
+    remaining: progress?.remaining,
+  });
   return (
     <div className={CLASS.card} data-testid="task-card">
       {progress && (
@@ -268,7 +268,7 @@ function TaskCardBody({ item }: ToolRenderProps) {
             {progressLabel}
           </span>
           <Meter
-            label={progressLabel ? `Task progress: ${progressLabel}` : "Task progress"}
+            label={`Task progress: ${progressLabel}`}
             value={progress.done + (progress.cancelled ?? 0)}
             max={progress.total}
             tone="neutral"
