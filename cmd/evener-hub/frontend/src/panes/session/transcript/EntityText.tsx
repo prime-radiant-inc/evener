@@ -2,6 +2,7 @@ import { findEntityIds } from "@evener/appwire-client";
 import { type ReactNode, type ReactPortal, type RefObject, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { EntityRef } from "./EntityRef";
+import { segmentEntityIds } from "./entitySegments";
 
 const ENTITY_SKIP_SELECTOR = "code, pre, script, style, a, [data-entity-host]";
 
@@ -64,14 +65,19 @@ export function useEntityTextEnhancement(rootRef: RefObject<HTMLElement | null>,
 }
 
 export function EntityText({ text }: { text: string }) {
-  const matches = findEntityIds(text);
   const out: ReactNode[] = [];
-  let cursor = 0;
-  for (const match of matches) {
-    out.push(text.slice(cursor, match.start));
-    out.push(<EntityRef key={`${match.start}:${match.id}`} id={match.id} />);
-    cursor = match.end;
+  // The segment's own offset in `text`, accumulated as we walk: it is the
+  // segment's identity for React's keys (segments are derived
+  // deterministically from `text`, and offsets never repeat).
+  let offset = 0;
+  for (const segment of segmentEntityIds(text)) {
+    if (segment.kind === "entity") {
+      out.push(<EntityRef key={`${offset}:${segment.id}`} id={segment.id} />);
+      offset += segment.id.length;
+    } else {
+      out.push(segment.text);
+      offset += segment.text.length;
+    }
   }
-  out.push(text.slice(cursor));
   return <>{out}</>;
 }

@@ -22,6 +22,13 @@
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 
+export interface TaskCounts {
+  total: number;
+  done: number;
+  cancelled?: number;
+  remaining?: number;
+}
+
 export interface TaskRow {
   id: number;
   type: string;
@@ -42,6 +49,24 @@ export interface TaskRow {
   createdAt?: string;
   updatedAt?: string;
   completedAt?: string;
+}
+
+// One condensed sentence for a task aggregate, shared by the inline card, the
+// panel trigger, and the panel body head: "N of M tasks left" while work
+// remains, "All M tasks done" when everything finished without a
+// cancellation, "All M tasks settled" when the tail is all cancellations
+// ("settled" is already the panel's word for the done+cancelled group), and
+// "No tasks" for an empty list. A missing remaining falls back to
+// total - done - cancelled, the daemon's own computation; a missing
+// cancelled reads as zero. The noun pluralizes on the total ("1 of 1 task
+// left", "All 1 task done").
+export function taskAggregateLabel(tasks: TaskCounts): string {
+  const noun = tasks.total === 1 ? "task" : "tasks";
+  if (tasks.total === 0) return "No tasks";
+  const remaining = tasks.remaining ?? Math.max(0, tasks.total - tasks.done - (tasks.cancelled ?? 0));
+  if (remaining > 0) return `${remaining} of ${tasks.total} ${noun} left`;
+  if ((tasks.cancelled ?? 0) > 0) return `All ${tasks.total} ${noun} settled`;
+  return `All ${tasks.total} ${noun} done`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

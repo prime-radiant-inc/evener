@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
   type ActivityCounts,
   type ActivityTree as ActivityTreeData,
@@ -7,6 +7,7 @@ import {
 } from "../../../protocol/activityData";
 import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
+import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
@@ -16,6 +17,7 @@ import {
 import { threadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useEntityView } from "../transcript/useEntityView";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import styles from "./activitypanel.module.css";
 import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
@@ -23,7 +25,12 @@ import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
 export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
-  now: number;
+  // The session's live watches, absent-able: an old daemon omits the list.
+  watches?: NavigationWatchSummary[];
+  // Rows the hub omitted from `watches`; the Watches header reports "+N more".
+  omittedWatches?: number;
+  // The armed subset of those omitted rows; folded into the header's armed total.
+  omittedArmedWatches?: number;
   hideTrigger?: boolean;
   // SessionChrome's desktop replacement button hides this panel's own
   // trigger, but still needs the trigger-owned background summary refresh.
@@ -38,6 +45,9 @@ export interface ActivityPanelProps {
 export interface ActivityPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  watches?: NavigationWatchSummary[];
+  omittedWatches?: number;
+  omittedArmedWatches?: number;
 }
 
 export interface ActivityPanelHandle {
@@ -71,19 +81,52 @@ function emptyPageIsPartial(tree: ActivityTreeData): boolean {
   return Boolean(tree.root.branch.continuation || tree.root.branch.error);
 }
 
+// emptyWatchTree is the page the watch group renders through when there is no
+// retained tree at all -- a load that failed, or a source that does not support
+// retained activity. Watches are session data, so they are independent of that
+// page, and the group itself lives in the tree's row list: giving the tree an
+// empty page renders exactly the watch rows, through the same machinery and the
+// same vocabulary as a loaded session, instead of a second renderer that could
+// drift from it.
+function emptyWatchTree(ref: string): ActivityTreeData {
+  return {
+    revision: 0,
+    root: {
+      kind: "session",
+      sessionId: "",
+      ref,
+      label: "",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 0, complete: true },
+      entries: [],
+      branch: {},
+    },
+  };
+}
+
 function triggerLabel(counts: ActivityCounts | undefined): string {
   if (!counts?.complete) return "Activity";
   return `Activity · ${counts.active}`;
 }
 
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps) {
+export const ActivityPanelBody = memo(function ActivityPanelBody({
+  sessionRef,
+  model,
+  watches,
+  omittedWatches,
+  omittedArmedWatches,
+}: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
   const mountedRef = useRef(false);
   const bodyGenerationRef = useRef(0);
   const currentSessionRef = useRef(sessionRef);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  // The same builder the transcript uses, over the same session: the detail
+  // strips open in this panel (the delegate line names its delegate id), and
+  // the panel is the owner that has both the session ref and the model.
+  const entities = useEntityView(sessionRef, model);
   currentSessionRef.current = sessionRef;
 
   useEffect(() => {
@@ -156,26 +199,73 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
   }
 
   function renderBody() {
+    // A session whose watch rows were all omitted by the hub's cap still holds
+    // watch content: ActivityTree renders the watch group and its "+N more".
+    // Only a session with neither retained nor omitted watches is empty.
+    const hasWatchContent = (watches?.length ?? 0) > 0 || (omittedWatches ?? 0) > 0;
+    // The watch group is part of the tree's row list, so a session whose
+    // retained activity never loaded still renders it through the same
+    // machinery. An armed watch is often the only pending work a session has --
+    // the rail counts it on the row -- so hiding it behind the load state's
+    // message would contradict the rest of the chrome.
+    function renderWatchTree(tree: ActivityTreeData) {
+      return (
+        <div className={CLASS.panelColumn}>
+          <ActivityTree
+            ref={treeRef}
+            tree={tree}
+            entities={entities}
+            watches={watches}
+            omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
+            expandedFoldIDs={entry.expandedFoldIDs}
+            onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
+            continuationFailures={entry.continuationFailures}
+            onContinue={handleContinue}
+            loadingContinuationID={entry.continuationLoadingID}
+            rootRefreshing={entry.pending?.kind === "root"}
+          />
+        </div>
+      );
+    }
+    const watchFallback = hasWatchContent ? renderWatchTree(emptyWatchTree(sessionRef)) : null;
     if (entry.load.kind === "unsupported") {
       return (
-        <EmptyState title="Activity isn't available" hint="This session's source doesn't support retained activity." />
+        <>
+          {watchFallback}
+          <EmptyState
+            title="Activity isn't available"
+            hint="This session's source doesn't support retained activity."
+          />
+        </>
       );
     }
     if (entry.load.kind === "failed") {
       return (
-        <EmptyState
-          title={entry.load.error.headline}
-          hint={entry.load.error.detail}
-          action={
-            <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
-              Try again
-            </Button>
-          }
-        />
+        <>
+          {watchFallback}
+          <EmptyState
+            title={entry.load.error.headline}
+            hint={entry.load.error.detail}
+            action={
+              <Button variant="quiet" size="sm" onClick={() => fetchRoot(undefined, true)}>
+                Try again
+              </Button>
+            }
+          />
+        </>
       );
     }
     if (entry.load.kind === "idle" || entry.load.kind === "loading") {
-      return <p className={CLASS.state}>Loading activity…</p>;
+      // A request that has not answered yet is not a session without watches:
+      // the group renders above the loading line for the same reason it renders
+      // above the failure state.
+      return (
+        <>
+          {watchFallback}
+          <p className={CLASS.state}>Loading activity…</p>
+        </>
+      );
     }
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
@@ -183,10 +273,13 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
-          <EmptyState
-            title="This session has ended"
-            hint="Its daemon has exited, and there's no retained activity to fall back on."
-          />
+          <>
+            {watchFallback}
+            <EmptyState
+              title="This session has ended"
+              hint="Its daemon has exited, and there's no retained activity to fall back on."
+            />
+          </>
         )}
         {ended && currentTree && (
           <div className={CLASS.stale}>
@@ -215,7 +308,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             {diagnostic}
           </p>
         ))}
-        {currentTree && currentTree.root.entries.length === 0 ? (
+        {currentTree && currentTree.root.entries.length === 0 && !hasWatchContent ? (
           emptyPageIsPartial(currentTree) ? (
             // A page can come back with no rows and still have more behind it:
             // the agent drops an entry it cannot encode, says so on the root
@@ -251,31 +344,22 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             />
           )
         ) : currentTree ? (
-          <div className={CLASS.panelColumn}>
-            <ActivityTree
-              ref={treeRef}
-              tree={currentTree}
-              expandedFoldIDs={entry.expandedFoldIDs}
-              onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
-              continuationFailures={entry.continuationFailures}
-              onContinue={handleContinue}
-              loadingContinuationID={entry.continuationLoadingID}
-              rootRefreshing={entry.pending?.kind === "root"}
-            />
-          </div>
+          renderWatchTree(currentTree)
         ) : null}
       </div>
     );
   }
 
   return renderBody();
-}
+});
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
   {
     sessionRef,
     model,
-    now: _now,
+    watches,
+    omittedWatches,
+    omittedArmedWatches,
     hideTrigger = false,
     refreshWhenHidden = false,
     discoverWhenHidden = refreshWhenHidden,
@@ -309,7 +393,15 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
         </Button>
       )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Activity" size="wide">
-        {open ? <ActivityPanelBody sessionRef={sessionRef} model={model} /> : null}
+        {open ? (
+          <ActivityPanelBody
+            sessionRef={sessionRef}
+            model={model}
+            watches={watches}
+            omittedWatches={omittedWatches}
+            omittedArmedWatches={omittedArmedWatches}
+          />
+        ) : null}
       </Sheet>
     </>
   );

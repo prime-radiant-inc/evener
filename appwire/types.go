@@ -992,6 +992,7 @@ type EvenerDiagnostics struct {
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
+	Watches    []EvenerWatchInfo       `json:"watches,omitempty"`
 	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`
 	Agents     []string                `json:"agents,omitempty"`
 	// DelegateDiagnostics carries delegate-SUBSYSTEM diagnostics that are
@@ -1110,6 +1111,59 @@ type EvenerJobInfo struct {
 	OriginTurnID     string `json:"originTurnId,omitempty"`
 	OriginToolCallID string `json:"originToolCallId,omitempty"`
 	OriginItemID     string `json:"originItemId,omitempty"`
+}
+
+// EvenerWatchCadence is one trigger cadence on a live watch: Kind is one of
+// "after" (one-shot timer), "every" (repeating timer), "progress" (progress
+// interval), "output" (output match), or "events" (session/job event watch).
+// Seconds carries the interval for the timer and progress kinds and is absent
+// for output and event watches. Trigger sources are orthogonal, so one watch
+// can carry more than one cadence.
+type EvenerWatchCadence struct {
+	Kind    string  `json:"kind"`
+	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is
+	// expected to fire, derived at the daemon from the install instant and the
+	// newest CLOCK fire (a repeating cadence advances from whichever of the two
+	// is later; a one-shot from the install instant alone). The delivery ring is
+	// display-only and is deliberately not consulted, because it mixes every
+	// delivery kind and an output match would move a progress cadence's date. It
+	// is approximate (the runtime keeps a ticker the scheduler can delay) and
+	// can slide later, so consumers word it with a "~". Absent for output and
+	// event cadences, which have no schedule.
+	DerivedNextFireAt string `json:"derivedNextFireAt,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; absent (zero) means fire on every matching event. Only the
+	// events kind carries it.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter in the model-facing
+	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+	// absent when the watch filters nothing. Only the events kind carries it.
+	Filter string `json:"filter,omitempty"`
+}
+
+// EvenerWatchInfo is the structured projection of one live watch, so the web
+// UI can render a watch's note and cadence without parsing the condition prose
+// job_list hands the model. It is purely additive: an older daemon omits
+// Watches entirely, and consumers treat absence as an empty list.
+type EvenerWatchInfo struct {
+	ID             string               `json:"id"`
+	Source         string               `json:"source"`
+	Target         string               `json:"target,omitempty"`
+	SendTo         string               `json:"sendTo,omitempty"`
+	Note           string               `json:"note,omitempty"`
+	Cadence        []EvenerWatchCadence `json:"cadence,omitempty"`
+	OutputMatch    string               `json:"outputMatch,omitempty"`
+	Events         []string             `json:"events,omitempty"`
+	WildcardEvents bool                 `json:"wildcardEvents,omitempty"`
+	Deliveries     int                  `json:"deliveries"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Absent when the
+	// watch has not delivered.
+	DeliveryTimes []string `json:"deliveryTimes,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	Active        bool     `json:"active"`
+	EndReason     string   `json:"endReason,omitempty"`
 }
 
 // EvenerDelegateInfo is the turn-free stable delegate projection shared by live
