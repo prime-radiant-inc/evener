@@ -2282,7 +2282,9 @@ func (jm *jobManager) appendWatchRegistryEvents(events []jobstore.Event) error {
 // liveWatchSummaries snapshots the session's active watch configs (jm.watches
 // only; terminalFlush is drain-only residue and excluded) into model-facing
 // rows for job_list. One row per live config, ordered by source for stable
-// output.
+// output. The visibility walk runs under jm.mu; the formatting and ordering it
+// feeds run outside it, so job_list's read no longer holds the lock the delivery
+// path needs for work that reads no shared state.
 // watchHistoryCap bounds the recent-watch ring surfaced by job_list. Old entries
 // are trimmed; the ring is a debugging aid, not a durable audit log.
 const watchHistoryCap = 16
@@ -2519,14 +2521,15 @@ func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResul
 }
 
 func (jm *jobManager) liveWatchSummaries() []watchListEntry {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	entries := make([]watchListEntry, 0, len(jm.watches))
-	for key, cfg := range jm.watches {
-		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
-			continue
-		}
-		_ = key
+	return formatWatchSummaries(jm.visibleWatchConfigSnapshots(jm.sessionID))
+}
+
+// formatWatchSummaries projects the supplied configs into job_list's
+// model-facing rows and orders them by (source, id). It reads only config
+// fields, so it takes no lock; its callers pass configs snapshotted under jm.mu.
+func formatWatchSummaries(cfgs []*watchConfig) []watchListEntry {
+	entries := make([]watchListEntry, 0, len(cfgs))
+	for _, cfg := range cfgs {
 		entries = append(entries, watchListEntry{
 			ID:         cfg.id,
 			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
@@ -2554,17 +2557,46 @@ func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
 // visible only when that manager is sessionID's own; otherwise a descendant's
 // keyless watch would leak onto an ancestor's projection.
 //
-// The rows are ordered by (source, id) before returning. The walk below reads a
-// map, so without this the order varies between two snapshots of unchanged
-// state -- unstable wire output, and row churn for a consumer that rebuilds its
-// rows from it. The order lives here, next to the walk, rather than at each call
-// site: four of this function's callers sorted the result afterward, and the
-// fifth published an unordered projection that no test could distinguish from a
-// changed one.
+// The map walk and its visibility predicates run under jm.mu; the formatting and
+// ordering they feed run outside it, so the hub's status-polling read no longer
+// holds the lock the delivery path needs for work that reads no shared state.
 func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatusInfo {
+	return formatWatchStatuses(jm.visibleWatchConfigSnapshots(sessionID))
+}
+
+// formatWatchStatuses projects the supplied configs into structured status rows,
+// ordered by (source, id).
+//
+// The rows are ordered before returning. The walk above reads a map, so without
+// this the order varies between two snapshots of unchanged state -- unstable
+// wire output, and row churn for a consumer that rebuilds its rows from it. The
+// order lives here, next to the projection, rather than at each call site: four
+// callers sorted the result afterward, and the fifth published an unordered
+// projection that no test could distinguish from a changed one.
+//
+// It reads only config fields, so it takes no lock: the per-instant RFC3339Nano
+// formatting and the sort run entirely outside the walk's lock.
+func formatWatchStatuses(cfgs []*watchConfig) []WatchStatusInfo {
+	statuses := make([]WatchStatusInfo, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
+	}
+	sortWatchStatuses(statuses)
+	return statuses
+}
+
+// visibleWatchConfigSnapshots gathers value copies of this manager's live configs
+// that are visible to sessionID. Both the map walk and the visibility predicates
+// run inside jm.mu; everything a projection derives from the copies runs outside
+// it. A config with no receiver key belongs to the manager that owns it, so it is
+// visible only when that manager is sessionID's own; otherwise a descendant's
+// keyless watch would leak onto an ancestor's projection. liveWatchSummaries
+// always passes the manager's own session, for which the keyless predicate is a
+// no-op, so one collector keeps the two projections' visibility sets identical.
+func (jm *jobManager) visibleWatchConfigSnapshots(sessionID string) []*watchConfig {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
+	cfgs := make([]*watchConfig, 0, len(jm.watches))
 	for _, cfg := range jm.watches {
 		if !watchConfigVisibleToSession(cfg, sessionID) {
 			continue
@@ -2572,10 +2604,23 @@ func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatu
 		if cfg.receiverSessionID == "" && jm.sessionID != sessionID {
 			continue
 		}
-		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
+		snapshot := snapshotWatchConfigForProjection(cfg)
+		cfgs = append(cfgs, &snapshot)
 	}
-	sortWatchStatuses(statuses)
-	return statuses
+	return cfgs
+}
+
+// snapshotWatchConfigForProjection copies a live config so a projection can
+// format it after jm.mu is released. The delivery path mutates deliveries and
+// the deliveryTimes ring in place under jm.mu (countWatchDeliveryLocked), so a
+// projection that formatted the live pointer after unlocking would race the
+// delivery path. The ring is copied because an at-cap delivery rewrites its
+// backing array in place; every other field a projection reads is set once at
+// install and never mutated.
+func snapshotWatchConfigForProjection(cfg *watchConfig) watchConfig {
+	snapshot := *cfg
+	snapshot.deliveryTimes = append([]time.Time(nil), cfg.deliveryTimes...)
+	return snapshot
 }
 
 func sortWatchStatuses(statuses []WatchStatusInfo) {
@@ -2717,9 +2762,18 @@ func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]Wat
 // and this manager's own session's row when it does not. A keyless watch belongs
 // to the session that owns the manager, which is what keeps a child's watch off
 // its ancestors' rows.
+//
+// The map walk and its row keying run under jm.mu; the projection that formats
+// each row runs outside it, so the hub's thread-list read does not hold the lock
+// the delivery path needs for work that reads no shared state. The walk order is
+// preserved, so each row is appended in the same order as before.
 func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo) {
+	type watchRow struct {
+		row string
+		cfg watchConfig
+	}
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	pending := make([]watchRow, 0, len(jm.watches))
 	for _, cfg := range jm.watches {
 		if cfg == nil {
 			continue
@@ -2728,7 +2782,11 @@ func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo
 		if row == "" {
 			row = jm.sessionID
 		}
-		rows[row] = append(rows[row], watchStatusInfoFromConfig(cfg))
+		pending = append(pending, watchRow{row: row, cfg: snapshotWatchConfigForProjection(cfg)})
+	}
+	jm.mu.Unlock()
+	for i := range pending {
+		rows[pending[i].row] = append(rows[pending[i].row], watchStatusInfoFromConfig(&pending[i].cfg))
 	}
 }
 
