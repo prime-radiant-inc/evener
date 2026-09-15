@@ -1,10 +1,6 @@
 import { expect, it } from "vitest";
-import { WireError } from "../../appwire-client/typescript/errors";
-import {
-  createProviderParams,
-  editProviderParams,
-  isEndpointConflict,
-} from "./providerForm";
+import { isEndpointConflict, WireError } from "../../appwire-client/typescript/errors";
+import { createProviderParams, editProviderParams } from "./providerForm";
 
 const providers = [
   {

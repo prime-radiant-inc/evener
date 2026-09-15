@@ -4,11 +4,11 @@ import type {
   InstanceEntry,
   ProviderDescriptor,
 } from "../../appwire-client/typescript/types.gen";
+import { isEndpointConflict } from "../../appwire-client/typescript/errors";
 import {
   createProviderParams,
   editProviderParams,
   ENDPOINT_CHANGED_MESSAGE,
-  isEndpointConflict,
   type ProviderDraft,
 } from "./providerForm";
 import type { ProviderInstances } from "./providerInstances";

@@ -44,6 +44,15 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
+// isEndpointConflict reports whether a rejection is the hub refusing a
+// destination the caller asserted (appwire.Conflict: data.evenerErrorInfo
+// "conflict"): the name no longer resolves where the caller was told it does.
+// The web credential flows and the native provider editor both present it as a
+// changed connection rather than a failure of the endpoint itself.
+export function isEndpointConflict(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "conflict";
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

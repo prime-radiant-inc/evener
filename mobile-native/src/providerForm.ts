@@ -1,4 +1,4 @@
-import { WireError } from "../../appwire-client/typescript/errors";
+import { isEndpointConflict } from "../../appwire-client/typescript/errors";
 import type {
   InstanceCreateParams,
   InstanceEditParams,
@@ -54,14 +54,6 @@ export function editProviderParams(
   if (baseUrl) params.baseUrl = baseUrl;
   else params.clearBaseUrl = true;
   return params;
-}
-
-/** isEndpointConflict recognizes the hub's refusal of a destination this editor
- * asserted (appwire.Conflict: data.evenerErrorInfo "conflict"): the name no
- * longer resolves where the editor was told it does. The native twin of the web
- * credential flows' credentialLabels.isEndpointConflict. */
-export function isEndpointConflict(cause: unknown): boolean {
-  return cause instanceof WireError && cause.evenerErrorInfo === "conflict";
 }
 
 /** ENDPOINT_CHANGED_MESSAGE is what the editor says when the hub refuses its
