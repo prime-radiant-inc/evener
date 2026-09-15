@@ -13,6 +13,12 @@ import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
+import {
+  loadConnectDialog,
+  resetConnectDialogLoaderForTests,
+  setConnectDialogImporterForTests,
+} from "../../spawn/connectDialogChunk";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
@@ -120,6 +126,10 @@ afterEach(() => {
   // failures must retire its singleton queue before another isolate:false
   // file mounts the notification region.
   resetToastStoreForTests();
+  // The connect dialog is a module-scoped lazy chunk with a module-scoped test
+  // importer seam; both outlive cleanup() and must not leak into a later test.
+  resetConnectDialogLoaderForTests();
+  resetConnectDialogChunkForTests();
 });
 
 // The trigger is addressed by a stable testid rather than by its accessible
@@ -129,6 +139,22 @@ afterEach(() => {
 // the one deliberate assertion below.
 function trigger(): HTMLButtonElement {
   return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
+}
+
+// "Connect another provider" mounts ConnectProviderDialog from its own lazy
+// chunk (panes/spawn/connectDialogChunk). The FIRST dynamic import of that
+// chunk pays Vite's transform of the dialog and its transitive graph
+// (instanceDialogs, oauthDialogs, oauthFlow, CredentialsSection), and on a
+// loaded machine that one-time transform can outlast testing-library's default
+// 1s async-query budget. Letting the next findByText absorb it is what made
+// this flow flake under parallel load (issue #1369): the failure named the
+// query, but what had not happened yet was the import. Wait for the import
+// itself - the boundary's own Suspense transition - rather than a fixed tick,
+// so the query below starts against an already-loaded chunk.
+async function openConnectDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  const chunkLoaded = loadConnectDialog();
+  await user.click(screen.getByRole("button", { name: "Connect another provider" }));
+  await chunkLoaded;
 }
 
 test("keyless connection refreshes the warmed real session catalog without switching until a pick", async () => {
@@ -168,7 +194,7 @@ test("keyless connection refreshes the warmed real session catalog without switc
   await user.click(trigger());
   await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
-  await user.click(screen.getByRole("button", { name: "Connect another provider" }));
+  await openConnectDialog(user);
   await user.click(await screen.findByText("Already configured access on this host?"));
   await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
   await user.click(await screen.findByRole("button", { name: "Test connection" }));
@@ -186,6 +212,38 @@ test("keyless connection refreshes the warmed real session catalog without switc
       },
     ]),
   );
+});
+
+// The same opening flow with the connect-dialog chunk made deliberately slow:
+// an import that outlasts testing-library's 1s default must not fail the flow,
+// because openConnectDialog waits on the import itself. Before that wait
+// existed this is exactly the #1369 flake - the
+// "Already configured access on this host?" query times out at 1000ms while
+// the chunk is still arriving, which is what the reported run saw under a
+// loaded machine.
+test("a connect-dialog chunk slower than the async-query default still opens the dialog", async () => {
+  resetCredentialsStoreForTests();
+  setConnectDialogImporterForTests(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    return import("../../settings/sections/credentials/ConnectProviderDialog");
+  });
+  // A fresh lazy() so the import above is the one the boundary actually awaits:
+  // an already-resolved lazy() caches its module for the life of the module,
+  // and would otherwise render from cache and never exercise a slow import.
+  resetConnectDialogChunkForTests();
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  fake.on("model/list", () => modelListResponse());
+  fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  render(<ModelSwitch sessionRef="remote:original" model={testModel()} />);
+  const user = userEvent.setup();
+  await user.click(trigger());
+  await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
+  await openConnectDialog(user);
+
+  expect(await screen.findByText("Already configured access on this host?")).toBeTruthy();
 });
 
 test("shows the current model label alongside a Change-model trigger", () => {
