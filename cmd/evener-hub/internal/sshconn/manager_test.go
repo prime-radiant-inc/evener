@@ -332,6 +332,172 @@ func TestEnsureReplacesLostChannel(t *testing.T) {
 	waitClosed(t, ch1)
 }
 
+// The registry is the authority on a name's spelling: a padded name must find
+// the same host, channel entry, and per-host lock as the canonical one.
+func TestEnsureNormalizesHostName(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	ch1, err := m.Ensure(context.Background(), "  alpha  ")
+	if err != nil {
+		t.Fatalf("Ensure(padded): %v", err)
+	}
+	ch2, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure(canonical): %v", err)
+	}
+	if ch1 != ch2 {
+		t.Fatal("a padded name produced a second channel")
+	}
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want 1", got)
+	}
+}
+
+// Preflight hands out host facts; a caller mutating them must not reach back
+// into the channel's own state.
+func TestPreflightIsIndependentCopy(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	pf := ch.Preflight()
+	if len(pf.LaunchFlags) == 0 {
+		t.Fatal("no launch flags to mutate")
+	}
+	pf.LaunchFlags[0] = "tampered"
+	if got := ch.Preflight().LaunchFlags[0]; got != "api-log" {
+		t.Fatalf("Preflight() shares its LaunchFlags backing array: got %q", got)
+	}
+}
+
+// A reconnect attempt inherits baseCtx, which lives until Close. Without a
+// per-attempt bound a single remote command that never returns would hold the
+// host's lock forever, stalling every later reconnect and Ensure.
+func TestReconnectAttemptIsBounded(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var mu sync.Mutex
+	hang := false
+	sleeps := 0
+	canned := cannedRun(nil)
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			mu.Lock()
+			hung := hang
+			mu.Unlock()
+			if hung {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return canned(ctx, argv, stdin)
+		},
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase:    time.Millisecond,
+		BackoffMax:     time.Millisecond,
+		attemptTimeout: 20 * time.Millisecond,
+		sleep: func(context.Context, time.Duration) error {
+			mu.Lock()
+			sleeps++
+			mu.Unlock()
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	mu.Lock()
+	hang = true
+	mu.Unlock()
+	ch.markLost()
+
+	// Two sleeps means the hung attempt ended at the bound and the loop went on
+	// to another attempt.
+	deadline := time.After(5 * time.Second)
+	for {
+		mu.Lock()
+		got := sleeps
+		mu.Unlock()
+		if got >= 2 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("a hung reconnect attempt never timed out: the host lock is held for good")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// When Ensure wins the race against a dropped channel's supervisor and its own
+// attach fails, the host must still recover through supervision rather than sit
+// disconnected with nothing retrying it.
+func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	failNext := false
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			fail := failNext
+			failNext = false
+			mu.Unlock()
+			if fail {
+				return nil, errors.New("ssh: connect to host alpha.example port 22: Connection refused")
+			}
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	events := make(chan Event, 128)
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached) // drain the initial attach
+
+	// Freeze the dropped channel's supervisor at its precondition check so
+	// Ensure can win the race, then let both run.
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	mu.Lock()
+	failNext = true
+	mu.Unlock()
+	ch1.markLost()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	lock.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ensure never returned")
+	}
+	// Either goroutine may have consumed the failure; both orders must end with
+	// the host attached again and supervised.
+	waitForEvent(t, events, EventAttached)
+}
+
 // The supervisor's backoff sleep can reach BackoffMax. A concurrent Ensure must
 // not be stuck behind it.
 func TestReconnectSleepDoesNotHoldHostLock(t *testing.T) {

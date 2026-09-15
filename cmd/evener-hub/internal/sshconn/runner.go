@@ -52,6 +52,12 @@ func (execRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (S
 	if len(argv) == 0 {
 		return nil, errors.New("empty argv")
 	}
+	if err := ctx.Err(); err != nil {
+		// A caller that already gave up must not leave us a child to reap. The
+		// child itself still outlives this call (see the note below); only the
+		// spawn decision is bound to ctx.
+		return nil, err
+	}
 	cmd := exec.Command(argv[0], argv[1:]...) //nolint:noctx // long-lived child must outlive ctx (see comment)
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
@@ -60,9 +66,12 @@ func (execRunner) Start(ctx context.Context, argv []string, stderr io.Writer) (S
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, err
 	}
 	return &execStdio{cmd: cmd, stdin: stdin, stdout: stdout}, nil
@@ -213,8 +222,21 @@ func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 //
 //	ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
 //	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
+//	    [--config <path>] [--addr <addr>]
+//
+// The optional flags carry the host's own hub.toml and listen address. Without
+// them the bridge resolves defaults, so it would miss the host's token and
+// socket or address the wrong process (hostreg's EvenerPath/ConfigPath/Addr
+// docs; spec 04's corrected argv contract).
 func channelArgv(o Options, h hostreg.Host) []string {
-	return evenerCommandArgv(o, h, "hub", "attach", "--stdio")
+	args := []string{"hub", "attach", "--stdio"}
+	if p := strings.TrimSpace(h.ConfigPath); p != "" {
+		args = append(args, "--config", p)
+	}
+	if a := strings.TrimSpace(h.Addr); a != "" {
+		args = append(args, "--addr", a)
+	}
+	return evenerCommandArgv(o, h, args...)
 }
 
 // diagSink forwards ssh stderr to the configured diagnostic writer and keeps a

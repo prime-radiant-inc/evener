@@ -2,6 +2,8 @@ package sshconn
 
 import (
 	"context"
+	"errors"
+	"io"
 	"reflect"
 	"slices"
 	"strings"
@@ -109,6 +111,70 @@ func TestRawAndEvenerCommandArgv(t *testing.T) {
 	}
 	if lc[len(lc)-7] != "--" {
 		t.Fatalf("evenerCommandArgv missing option terminator before the dest: %v", lc)
+	}
+}
+
+// A host with its own hub.toml or listen address must attach with them: without
+// the flags the bridge resolves defaults and addresses the wrong process.
+func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
+	host := hostreg.Host{
+		Name:       "alpha",
+		SSH:        "alpha.example",
+		EvenerPath: "/opt/evener/bin/evener",
+		ConfigPath: "/etc/evener/hub.toml",
+		Addr:       "127.0.0.1:9180",
+	}
+	got := channelArgv(Options{}, host)
+	want := []string{
+		"ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"--",
+		"alpha.example",
+		"/opt/evener/bin/evener",
+		"hub", "attach", "--stdio",
+		"--config", "/etc/evener/hub.toml",
+		"--addr", "127.0.0.1:9180",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("channelArgv:\n got %v\nwant %v", got, want)
+	}
+
+	for _, tc := range []struct {
+		name string
+		host hostreg.Host
+		want []string
+	}{
+		{"addr only", hostreg.Host{Name: "a", SSH: "a.example", Addr: "10.0.0.1:1"}, []string{"--addr", "10.0.0.1:1"}},
+		{"config only", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "/x/hub.toml"}, []string{"--config", "/x/hub.toml"}},
+		{"blank omitted", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "  ", Addr: "\t"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv := channelArgv(Options{}, tc.host)
+			idx := slices.Index(argv, "--stdio")
+			if idx < 0 {
+				t.Fatalf("no --stdio in %v", argv)
+			}
+			tailArgs := argv[idx+1:]
+			if !slices.Equal(tailArgs, tc.want) {
+				t.Fatalf("flags after --stdio = %v, want %v", tailArgs, tc.want)
+			}
+		})
+	}
+}
+
+// A caller that already gave up must not leave us a child to reap.
+func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stdio, err := (execRunner{}).Start(ctx, []string{"sh", "-c", "true"}, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start with a canceled ctx = %v, want context.Canceled", err)
+	}
+	if stdio != nil {
+		t.Fatal("Start returned a Stdio for a canceled ctx")
 	}
 }
 
