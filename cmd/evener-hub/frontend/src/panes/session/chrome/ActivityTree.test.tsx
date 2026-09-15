@@ -9,6 +9,7 @@ import type { ActivityTree as ActivityTreeData } from "../../../protocol/activit
 import * as sessionPlacementModule from "../../../shell/sessionPlacement";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
+import { detailLineByText } from "./detailLine.testFixture";
 
 // vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
 // (this file's own subject) without ever mocking this module, so under a
@@ -66,17 +67,6 @@ const activityPanelCss = readFileSync(
 
 // Pinned clock: every quiet-time assertion below measures against this instant.
 const NOW = new Date("2026-08-05T15:00:12.000Z");
-
-// A detail strip's meta line by its COMPLETE text. The delegate line's id now
-// renders through the shared entity trigger (an element, not a bare run of
-// text within the line), so a text-node query would only ever see the
-// fragments around it; the whole-text comparison asserts the line reads
-// exactly as it always has.
-function detailLineByText(text: string): HTMLElement {
-  const line = [...document.querySelectorAll<HTMLElement>("span")].find((element) => element.textContent === text);
-  if (line === undefined) throw new Error(`no detail line reads ${text}`);
-  return line;
-}
 
 function shellJob(overrides: Record<string, unknown>) {
   return {

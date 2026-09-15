@@ -5,17 +5,16 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
 import { ToolCallItem } from "./ToolCallItem";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
@@ -1747,39 +1746,6 @@ test("a body chevron sharing the intent line is raised above the overlay trigger
 // not even detectable as an id, so no card could ever attach), and the
 // collapsed head/tail clamp must split AROUND the id - never through it - so
 // the id always renders as ONE node, not two text runs.
-const ENTITY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
-function jobEntities(): ReadonlyMap<string, EntityView> {
-  const job: ActivityJob = {
-    jobId: ENTITY_JOB,
-    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
-    ownerRef: "local:s",
-    type: "shell",
-    status: "completed",
-    outcome: "success",
-    terminal: true,
-    background: false,
-    hasOutput: true,
-    description: "Compile the frontend",
-    command: "npm run build",
-    startedAt: "2026-09-13T20:00:00Z",
-    exitCode: 0,
-    outputBytes: 12,
-  };
-  const tree: ActivityTree = {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "02wMz5TxvEMoJEDTDGOTil",
-      ref: "local:s",
-      label: "root",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 1, complete: true },
-      entries: [{ kind: "shell", job }],
-      branch: {},
-    },
-  };
-  return buildEntityView({ sessionRef: "local:s", tree, turns: [], stale: false, ended: false });
-}
 
 // The same provider renderTools uses, plus an entity index so EntityRef can
 // resolve the ids the summary names.
@@ -1789,7 +1755,7 @@ function renderWithEntities(node: ReactElement) {
       config={toolsConfig}
       surface="readOnly"
       disclosureScope="trg:tools"
-      entities={jobEntities()}
+      entities={summaryEntityView()}
     >
       {node}
     </TranscriptRenderProvider>,
@@ -1797,7 +1763,7 @@ function renderWithEntities(node: ReactElement) {
 }
 
 test("a detected entity id in a collapsed summary is ONE card trigger, never split across the clamp spans", () => {
-  const summary = `Checked ${ENTITY_JOB} · running`;
+  const summary = `Checked ${SUMMARY_ENTITY_JOB} · running`;
   renderWithEntities(
     <ToolRow
       summary={summary}
@@ -1814,7 +1780,7 @@ test("a detected entity id in a collapsed summary is ONE card trigger, never spl
   // The id is one card trigger, and it lives wholly in ONE of the two clamp
   // spans (the deliberate long-summary cut would otherwise land inside it).
   const trigger = screen.getByTestId("entity-trigger");
-  expect(trigger.textContent).toBe(ENTITY_JOB);
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
   const head = screen.getByTestId("tool-row-summary-head");
   const tail = screen.getByTestId("tool-row-summary-tail");
   expect(head.contains(trigger) !== tail.contains(trigger)).toBe(true);
@@ -1827,7 +1793,7 @@ test("a collapsed summary's entity trigger opens the existing entity card", () =
   try {
     renderWithEntities(
       <ToolRow
-        summary={`Checked ${ENTITY_JOB} · running`}
+        summary={`Checked ${SUMMARY_ENTITY_JOB} · running`}
         intent="Checking the build job"
         failed={false}
         expandable
@@ -1848,18 +1814,18 @@ test("a collapsed summary's entity trigger opens the existing entity card", () =
 });
 
 test("an expanded summary renders a detected entity id as one card trigger, not two text runs", () => {
-  const summary = `Read job log ${ENTITY_JOB} · all 1 turns`;
+  const summary = `Read job log ${SUMMARY_ENTITY_JOB} · all 1 turns`;
   renderWithEntities(
     <ToolRow summary={summary} intent="Reading the job log" failed={false} expandable expanded onToggle={() => {}} />,
   );
   expect(screen.queryByTestId("tool-row-summary-head")).toBeNull();
   const trigger = screen.getByTestId("entity-trigger");
-  expect(trigger.textContent).toBe(ENTITY_JOB);
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
 });
 
 test("the inline trailing anchor still lands immediately after the entity id it opens", () => {
-  const anchor = `Sent a message to delegate ${ENTITY_JOB}`;
+  const anchor = `Sent a message to delegate ${SUMMARY_ENTITY_JOB}`;
   const summary = `${anchor} · running`;
   renderWithEntities(
     <ToolRow
@@ -1877,8 +1843,8 @@ test("the inline trailing anchor still lands immediately after the entity id it 
   const trigger = screen.getByTestId("entity-trigger");
   const trailing = screen.getByTestId("tool-row-trailing");
   // The id renders whole and the control rides AFTER it (between the id and the
-  // status meta), the anchorSplit contract delegate_send's own control uses.
-  expect(trigger.textContent).toBe(ENTITY_JOB);
+  // status meta), the anchor contract delegate_send's own control uses.
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
   expect(trigger.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // Composed text is still exactly the summary (the control is icon-only).
   expect(summaryEl.textContent).toBe(summary);

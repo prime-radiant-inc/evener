@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
 
-import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
 import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import {
@@ -13,6 +11,7 @@ import {
   TranscriptRenderProvider,
 } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
 import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
@@ -1700,39 +1699,9 @@ test.each(["chat", "intent"] as const)(
 // id at all, so no card could attach). These drive the REAL descriptors
 // through the real consumer.
 
-const SUMMARY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
 const SUMMARY_WATCH = "watch_034KEfjYFbfoUaPeHJcLXY";
 
-function summaryEntities(): ReadonlyMap<string, EntityView> {
-  const job: ActivityJob = {
-    jobId: SUMMARY_JOB,
-    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
-    ownerRef: "local:s",
-    type: "shell",
-    status: "completed",
-    outcome: "success",
-    terminal: true,
-    background: false,
-    hasOutput: true,
-    description: "Compile the frontend",
-    command: "npm run build",
-    startedAt: "2026-09-13T20:00:00Z",
-    exitCode: 0,
-    outputBytes: 12,
-  };
-  const tree: ActivityTree = {
-    revision: 1,
-    root: {
-      kind: "session",
-      sessionId: "02wMz5TxvEMoJEDTDGOTil",
-      ref: "local:s",
-      label: "root",
-      aggregate: "completed",
-      counts: { active: 0, failed: 0, completed: 1, complete: true },
-      entries: [{ kind: "shell", job }],
-      branch: {},
-    },
-  };
+function summaryEntities() {
   const watchItem = {
     id: "watch-item",
     turnId: "turn_1",
@@ -1745,13 +1714,7 @@ function summaryEntities(): ReadonlyMap<string, EntityView> {
     raw: { watch_id: SUMMARY_WATCH, watching: true, source: "job_x", condition: "output_match: ready", deliveries: 2 },
     status: "completed" as const,
   };
-  return buildEntityView({
-    sessionRef: "local:s",
-    tree,
-    turns: [{ id: "turn_1", status: "completed", items: [watchItem] }],
-    stale: false,
-    ended: false,
-  });
+  return summaryEntityView([{ id: "turn_1", status: "completed", items: [watchItem] }]);
 }
 
 function renderSummaryWithEntities(toolItem: ItemModel) {
@@ -1768,14 +1731,14 @@ function renderSummaryWithEntities(toolItem: ItemModel) {
 }
 
 test("the job_status row renders its target id whole and as an entity card", () => {
-  const output = JSON.stringify({ id: SUMMARY_JOB, type: "shell", status: "running" });
+  const output = JSON.stringify({ id: SUMMARY_ENTITY_JOB, type: "shell", status: "running" });
   renderSummaryWithEntities(
-    item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: SUMMARY_JOB }), output }),
+    item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: SUMMARY_ENTITY_JOB }), output }),
   );
   const summary = screen.getByTestId("tool-row-summary");
-  expect(summary.textContent).toBe(`Checked ${SUMMARY_JOB} · running`);
+  expect(summary.textContent).toBe(`Checked ${SUMMARY_ENTITY_JOB} · running`);
   expect(summary.textContent).not.toContain("…");
-  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_JOB);
+  expect(within(summary).getByTestId("entity-trigger").textContent).toBe(SUMMARY_ENTITY_JOB);
 });
 
 test("the job_watch clear row renders its cleared watch id whole and as an entity card", () => {

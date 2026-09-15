@@ -7,6 +7,7 @@ import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { ActivityRowDetail } from "./ActivityRowDetail";
+import { detailLineByText } from "./detailLine.testFixture";
 
 // Pinned clock: every quiet-age assertion below measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -122,16 +123,6 @@ function delegateEntities(id: string, task: string) {
   return buildEntityView({ sessionRef: "ref_root", delegates: [delegate], turns: [], stale: false, ended: false });
 }
 
-// detailLineByText finds the meta line by its COMPLETE text: the id inside it
-// is a nested trigger, so a text-node query would only ever see the fragments
-// around it.
-function detailLineByText(container: HTMLElement, text: string): HTMLElement {
-  const found = [...container.querySelectorAll<HTMLElement>("span")].filter((element) => element.textContent === text);
-  const line = found[0];
-  if (line === undefined) throw new Error(`no detail line reads ${text}`);
-  return line;
-}
-
 // setupJobOutput spies the store method (not the module) so the preview's
 // fetch stays in-process; the default resolve is an empty tail, and tests
 // override it with mockResolvedValue/mockRejectedValue on the returned spy.
@@ -230,7 +221,7 @@ describe("ActivityRowDetail", () => {
       />,
     );
 
-    const line = detailLineByText(container, `Delegate ${DELEGATE_ID} · send · stop · status`);
+    const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
     const trigger = within(line).getByTestId("entity-trigger");
     expect(trigger.textContent).toBe(DELEGATE_ID);
     expect(trigger.getAttribute("tabindex")).toBeNull();
