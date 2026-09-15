@@ -10,6 +10,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { keyID } from "../../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -216,13 +217,13 @@ test("/notes is unavailable when the focused model lacks shared-notes capability
   expect(notes?.unavailableReason).toBe(UNAVAILABLE_REASON);
 });
 
-test("/notes cannot open an unsupported workspace pane even when invoked directly", () => {
+test("/notes cannot open when unsupported even when invoked directly", () => {
   focusSession("ref_a");
   seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
 
   cmd("notes").run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("only /notes is unavailable before the focused session model hydrates", () => {
@@ -241,7 +242,7 @@ test("/notes refuses direct invocation before the focused model hydrates", () =>
   const result = cmd("notes").run?.(runContext());
 
   expect.soft(isBlocked(result)).toBe(true);
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("a previously available /notes invocation rechecks the current capability", () => {
@@ -253,7 +254,7 @@ test("a previously available /notes invocation rechecks the current capability",
 
   notes?.run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
@@ -267,9 +268,7 @@ test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
 
     notes?.run?.(runContext());
 
-    expect(workspaceStore.getState().panes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-    );
+    expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
   },
 );
 
@@ -277,6 +276,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
@@ -963,17 +963,16 @@ test("/tasks and /status toggle-close already-open panes", () => {
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
-test("/notes toggles the sessionNotes workspace pane", () => {
+test("/notes toggles the top notes panel and requests focus", () => {
   focusSession("ref_a");
   seedModel("ref_a");
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-  );
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+  expect(topNotesStore.getState().getFocusEpoch("ref_a")).toBe(1);
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionNotes")).toBe(false);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

@@ -33,7 +33,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind): void;
+  onOpenPane(pane: SessionPanelKind | "notes"): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;

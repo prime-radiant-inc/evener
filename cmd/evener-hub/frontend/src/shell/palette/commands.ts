@@ -23,6 +23,7 @@ import { selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
@@ -163,7 +164,7 @@ export function splitModelId(id: string): { provider: string; model: string } {
 // now owns Details/Tasks/Activity at every width, so those triggers never
 // render and the mobile path was a guaranteed no-op. Like the rail adapter,
 // both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails" | "sessionNotes"): void {
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -601,7 +602,14 @@ export function buildCommands(): Command[] {
       capability: "sharedNotes",
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
-        toggleSessionPane(ctx, "sessionNotes");
+        if (ctx.sessionRef) {
+          const isExp = topNotesStore.getState().isExpanded(ctx.sessionRef);
+          if (isExp) {
+            topNotesStore.getState().setExpanded(ctx.sessionRef, false);
+          } else {
+            topNotesStore.getState().openAndFocus(ctx.sessionRef);
+          }
+        }
       },
     },
     {

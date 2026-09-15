@@ -207,7 +207,6 @@ function routePlacementIsApplied(
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionActivity" ||
     focusedPane?.type === "sessionDetails" ||
-    focusedPane?.type === "sessionNotes" ||
     focusedTranscriptMatchesRoute;
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);

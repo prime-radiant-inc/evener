@@ -48,6 +48,7 @@ function isFileHref(href: string): boolean {
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
+  editorRef?: React.Ref<HTMLTextAreaElement>;
 }
 
 export interface NotesPanelProps extends NotesPanelBodyProps {
@@ -143,7 +144,7 @@ function isMissingURLEntryError(err: unknown): boolean {
   );
 }
 
-export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
+export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
   const state = useHumanNoteDraft(sessionRef);
@@ -212,6 +213,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
           <>
             <div className={CLASS.editor} data-testid="shared-notes-editor">
               <Textarea
+                ref={editorRef}
                 value={draft}
                 onChange={(event) => editHumanNote(sessionRef, event.target.value)}
                 onFocus={() => focusHumanNote(sessionRef, owner.current)}

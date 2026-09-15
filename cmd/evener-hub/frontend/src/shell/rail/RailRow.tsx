@@ -50,6 +50,7 @@ import {
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { useThreadsStore } from "../../stores/threads";
+import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
@@ -259,7 +260,7 @@ function secondLine(
 }
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind | "notes"): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -460,7 +461,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref }));
+  const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
   const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));

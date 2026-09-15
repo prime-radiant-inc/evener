@@ -14,8 +14,7 @@ function paneRef(pane: { type: string; params: unknown }): string | undefined {
     pane.type !== "session" &&
     pane.type !== "sessionTasks" &&
     pane.type !== "sessionActivity" &&
-    pane.type !== "sessionDetails" &&
-    pane.type !== "sessionNotes"
+    pane.type !== "sessionDetails"
   ) {
     return undefined;
   }
