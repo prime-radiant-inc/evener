@@ -1644,18 +1644,21 @@ function SpawnForm({
           </FormRow>
         )}
 
-        {/* A remote target's environment cannot yet be queried from here: the
-            working directory, models, providers and plugins below are read from
-            the controller, and the launch is sent to the selected source. Say so
-            rather than present the controller's environment as the target's - a
-            remote-only path or a remote-only model must not read as a fact about
-            the host the session will run on. Removed when source-aware discovery
-            (the evener/host/request proxy) lands. */}
+        {/* A remote target's environment cannot yet be queried from here. Say
+            exactly which readings are the controller's - path validation and
+            completion (evener/path/validate, evener/paths/complete), models
+            (model/list), providers (evener/instance/list) and plugins
+            (evener/plugin/preview) - rather than present them as the target's:
+            a remote-only path or a remote-only model must not read as a fact
+            about the host the session will run on. The launch itself goes to the
+            selected source, whose own hub resolves its environment when the
+            session starts. Removed when source-aware discovery (the
+            evener/host/request proxy) lands. */}
         {remoteLaunch && (
           <div className={CLASS.notice} role="status" data-testid="spawn-remote-host-notice">
             <span>
-              Running on {remoteSourceLabel}. The working directory, models, providers and plugins shown here come from
-              this controller; {remoteSourceLabel} resolves its own when the session starts.
+              Running on {remoteSourceLabel}. Path checks, models, providers and plugins below come from this
+              controller; {remoteSourceLabel} resolves its own environment when the session starts.
             </span>
           </div>
         )}
