@@ -64,8 +64,8 @@
  * is the budget statusrow.module.css's narrow-pane block was measured against,
  * so only a three-verb cluster takes its own line, right-aligned like the
  * cluster it was. The threshold is the status row's own phone-width one.
- * Tooltip clones its single child, so the buttons are the direct children
- * counted here. */
+ * Each control contributes exactly one direct child (Tooltip's wrapper span),
+ * so :nth-child(3) means three controls. */
 @container (max-width: 399px) {
   .actions:has(> :nth-child(3)) {
     flex-basis: 100%;

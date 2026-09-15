@@ -160,13 +160,15 @@ const INLINE_TURN_BOUNDARY: AnyNotification[] = [
 test("a session stays busy at every step of an inline turn boundary (turn/completed, turn/started, status active as separate frames)", () => {
   let model = activeThread();
   expect(isTurnActive(model.status.type)).toBe(true);
-  const busyAfterEachFrame = INLINE_TURN_BOUNDARY.map((frame) => {
+  const afterEachFrame = INLINE_TURN_BOUNDARY.map((frame) => {
     model = applyNotification(model, frame, 2000);
-    return { method: frame.method, busy: isTurnActive(model.status.type) };
+    return { method: frame.method, busy: isTurnActive(model.status.type), activeTurnId: model.activeTurnId };
   });
-  expect(busyAfterEachFrame).toEqual([
-    { method: "turn/completed", busy: true },
-    { method: "turn/started", busy: true },
-    { method: "thread/status/changed", busy: true },
+  // activeTurnId is the regression window: the reducer clears it on
+  // turn/completed and sets it again on turn/started, and busy must not follow.
+  expect(afterEachFrame).toEqual([
+    { method: "turn/completed", busy: true, activeTurnId: undefined },
+    { method: "turn/started", busy: true, activeTurnId: "turn_2" },
+    { method: "thread/status/changed", busy: true, activeTurnId: "turn_2" },
   ]);
 });

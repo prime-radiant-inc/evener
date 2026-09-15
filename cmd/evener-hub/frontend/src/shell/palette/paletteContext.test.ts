@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { buildPaletteContext, hasActiveTurn } from "./paletteContext";
+import { buildPaletteContext, isSessionBusy } from "./paletteContext";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -55,13 +55,13 @@ function model(overrides: Partial<ThreadModel>): ThreadModel {
   } as ThreadModel;
 }
 
-test("hasActiveTurn reads the thread status, not the transcript's open turn row", () => {
-  expect(hasActiveTurn(model({ status: { type: "active" }, activeTurnId: "t1" }))).toBe(true);
+test("isSessionBusy reads the thread status, not the transcript's open turn row", () => {
+  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: "t1" }))).toBe(true);
   // Between turn/completed and turn/started of an inline turn boundary the
   // id is gone while the session is still working.
-  expect(hasActiveTurn(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
-  expect(hasActiveTurn(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
+  expect(isSessionBusy(model({ status: { type: "active" }, activeTurnId: undefined }))).toBe(true);
+  expect(isSessionBusy(model({ status: { type: "idle" }, activeTurnId: "t1" }))).toBe(false);
   // Mid-ask the daemon advertises no steer or queue (appCapabilitiesLocked
   // derives both from an active status), and the palette agrees.
-  expect(hasActiveTurn(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
+  expect(isSessionBusy(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(false);
 });

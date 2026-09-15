@@ -68,9 +68,9 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
   return sessionRef ? threadsStore.getState().threads.get(sessionRef) : undefined;
 }
 
-// hasActiveTurn is the palette's ONE model-derived predicate, and it answers
+// isSessionBusy is the palette's ONE model-derived predicate, and it answers
 // exactly one question: is the session working right now. It belongs to
-// /steer, /queue and /drain, which are meaningless without a turn in flight.
+// /steer, /queue and /drain, which are meaningless while nothing runs.
 // It reads the thread status, the same rule as the composer's Steer button
 // (isTurnActive) and the hub's steer/queue capabilities, never
 // model.activeTurnId: the transcript clears that id between the
@@ -84,6 +84,6 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
 // configured is the hub's answer, not this module's: it advertises a
 // per-action capability for every thread, cold ones included, and resumes
 // behind the call. commands.ts reads those flags instead.
-export function hasActiveTurn(model: ThreadModel): boolean {
+export function isSessionBusy(model: ThreadModel): boolean {
   return isTurnActive(model.status.type);
 }

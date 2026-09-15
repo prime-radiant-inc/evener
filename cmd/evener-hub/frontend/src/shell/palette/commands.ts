@@ -28,7 +28,7 @@ import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
-import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
+import { focusedModel, isSessionBusy, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
 
 // A command is either global (no session needed) or session-scoped (a session
@@ -348,7 +348,7 @@ export function buildCommands(): Command[] {
       keywords: ["cancel", "stop"],
       scope: "session",
       capability: "interrupt",
-      // No hasActiveTurn gate, for the same reason /model has no busy gate
+      // No isSessionBusy gate, for the same reason /model has no busy gate
       // below: only the daemon knows. turn/interrupt names no turn (appwire v3)
       // and its precondition is the session's own quiescence, so answering "is
       // a turn in flight" here can only refuse a Stop the daemon would have
@@ -507,7 +507,7 @@ export function buildCommands(): Command[] {
         placeholder: "steer text…",
         run: (ctx, text) => {
           const model = focusedModel(ctx.sessionRef);
-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("steer failed: no active turn");
+          if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("steer failed: no active turn");
           return threadsStore.getState().steer(ctx.sessionRef, text);
         },
       },
@@ -524,7 +524,7 @@ export function buildCommands(): Command[] {
         placeholder: "queue text…",
         run: (ctx, text) => {
           const model = focusedModel(ctx.sessionRef);
-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("queue failed: no active turn");
+          if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("queue failed: no active turn");
           return threadsStore.getState().queue(ctx.sessionRef, text);
         },
       },
@@ -556,7 +556,7 @@ export function buildCommands(): Command[] {
       capability: "steer",
       run: (ctx) => {
         const model = focusedModel(ctx.sessionRef);
-        if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("drain failed: no active turn");
+        if (!ctx.sessionRef || !model || !isSessionBusy(model)) return blocked("drain failed: no active turn");
         return threadsStore.getState().drainAsSteer(ctx.sessionRef, "");
       },
     },

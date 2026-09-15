@@ -2063,6 +2063,39 @@ test("Shift+Enter routing to drain while active with no active turn id sends the
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
+// The keybinding shares the button's whole rule, capability included: a busy
+// session on a harness that advertises no steer draws no Steer button, and
+// Shift+Enter there must not send a turn/steer (or a drain) the daemon would
+// answer Unavailable. The feedback is the composer's existing "not available
+// for this session" toast, the one Send uses.
+test("Shift+Enter on a busy session whose harness advertises no steer sends nothing and says steer is unavailable", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, steer: false },
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "hi");
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(screen.getByText(/steer is not available for this session/i)).toBeTruthy());
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+});
+
 test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });

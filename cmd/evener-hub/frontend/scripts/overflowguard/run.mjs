@@ -1355,19 +1355,6 @@ async function main() {
         }
         if (widthFailed) failed++;
 
-        const settings = await measureAt(
-          cdpEndpoint,
-          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
-          width,
-        );
-        const settingsFailures = assertSettings(settings, width);
-        if (settingsFailures.length > 0) {
-          failed++;
-          console.log(`${label} Settings ... FAIL - ${settingsFailures.join("; ")}`);
-        } else {
-          console.log(`${label} Settings ... PASS - cards stack and previews have no inner scroll`);
-        }
-
         const detailFailures = assertDetail(result, width);
         if (detailFailures.length > 0) {
           failed++;
@@ -1381,6 +1368,22 @@ async function main() {
               `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
           );
         }
+      }
+    }
+    // The settings page has no composer, so it is measured once per width,
+    // outside the steer sweep above.
+    for (const width of sweep) {
+      const settings = await measureAt(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
+        width,
+      );
+      const settingsFailures = assertSettings(settings, width);
+      if (settingsFailures.length > 0) {
+        failed++;
+        console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
+      } else {
+        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
       }
     }
   } finally {

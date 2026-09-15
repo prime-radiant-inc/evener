@@ -1316,10 +1316,14 @@ export function Composer({ ref, focused }: ComposerProps) {
     // to steer" refusal lives in the legacy DrainAsSteerWithInput, which this
     // route never reaches. Gating on activeTurnId here refused a click landing
     // between the turn/completed and turn/started of an inline turn boundary,
-    // where the daemon is mid-input (issue #1341). With the session idle Send
-    // is the route, so a steer keybinding there toasts rather than sending.
-    if (!busy) {
-      toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
+    // where the daemon is mid-input (issue #1341). The rule is showSteer, the
+    // button's own, capability included: Shift+Enter reaches this handler with
+    // no button on screen, and a harness that advertises no steer must not be
+    // sent a request it answers Unavailable. With the session idle Send is the
+    // route, so a steer keybinding there toasts rather than sending.
+    if (!showSteer) {
+      const verb = route === "drain" ? "Drain" : "Steer";
+      toasts.push("error", busy ? `${verb} is not available for this session` : `${verb} failed: no active turn`);
       return;
     }
     void submitAction(route);
