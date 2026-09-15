@@ -10,6 +10,7 @@ package hostreg
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,6 +40,8 @@ var (
 	ErrMissingSSH = errors.New("missing ssh destination")
 	// ErrEmptyRoot marks an entry with a root that is empty after trim.
 	ErrEmptyRoot = errors.New("empty root")
+	// ErrUnknownHost marks an operation naming a host the registry does not hold.
+	ErrUnknownHost = errors.New("unknown host")
 )
 
 // Host is one validated remote-host entry. It mirrors the hub's HostConfig
@@ -73,23 +76,45 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// validateEntry checks a single entry's shape. It does not consult the
-// registry (duplicates and cycles are handled by Registry.Add).
+// normalize returns entry with every whitespace-sensitive field trimmed, so the
+// registry stores exactly what it validated. Without this, ssh = "  m4.local  "
+// passes validation (which trims) and is then stored untrimmed, and every
+// consumer fails to resolve a host the registry called valid. It also gives the
+// entry its own Roots backing array, so the caller's slice is never aliased by
+// registry state.
+func normalize(entry Host) Host {
+	entry.SSH = strings.TrimSpace(entry.SSH)
+	entry.User = strings.TrimSpace(entry.User)
+	entry.Roots = slices.Clone(entry.Roots)
+	for i, root := range entry.Roots {
+		entry.Roots[i] = strings.TrimSpace(root)
+	}
+	return entry
+}
+
+// cloneHost deep-copies the one field a caller could otherwise mutate through a
+// returned value: Host is a value type, but Roots is a slice.
+func cloneHost(host Host) Host {
+	host.Roots = slices.Clone(host.Roots)
+	return host
+}
+
+// validateEntry checks a single entry's shape. It expects an entry already
+// normalized by normalize, so the values it checks are the values that will be
+// stored. It does not consult the registry (duplicates and cycles are handled by
+// Registry.Add).
 func validateEntry(entry Host) error {
 	if err := ValidateName(entry.Name); err != nil {
 		return err
 	}
-	ssh := strings.TrimSpace(entry.SSH)
-	if ssh == "" {
+	if entry.SSH == "" {
 		return fmt.Errorf("%w: host %q", ErrMissingSSH, entry.Name)
 	}
-	if entry.User != "" && strings.ContainsRune(ssh, '@') {
-		return fmt.Errorf("%w: host %q sets user and ssh %q already carries one", ErrAmbiguousSSHUser, entry.Name, ssh)
+	if entry.User != "" && strings.ContainsRune(entry.SSH, '@') {
+		return fmt.Errorf("%w: host %q sets user and ssh %q already carries one", ErrAmbiguousSSHUser, entry.Name, entry.SSH)
 	}
-	for _, root := range entry.Roots {
-		if strings.TrimSpace(root) == "" {
-			return fmt.Errorf("%w: host %q", ErrEmptyRoot, entry.Name)
-		}
+	if slices.Contains(entry.Roots, "") {
+		return fmt.Errorf("%w: host %q", ErrEmptyRoot, entry.Name)
 	}
 	return nil
 }
@@ -104,7 +129,9 @@ type Registry struct {
 
 // New validates every entry and builds a registry. Entries are added in order,
 // so a duplicate name fails with ErrDuplicateHost. Entries carry no upstream
-// edges; use AddWithUpstreams to attach them.
+// edges; a config-loaded host gets them from SetUpstreams once component 05 has
+// learned them (AddWithUpstreams inserts, so it cannot be used for a host New
+// already registered).
 func New(entries []Host) (*Registry, error) {
 	r := &Registry{
 		hosts: make(map[string]Host, len(entries)),
@@ -132,6 +159,7 @@ func (r *Registry) Add(entry Host) error {
 // A refusal leaves the registry unchanged: the candidate is not inserted and no
 // edge is recorded.
 func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
+	entry = normalize(entry)
 	if err := validateEntry(entry); err != nil {
 		return err
 	}
@@ -148,9 +176,35 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	return nil
 }
 
+// SetUpstreams attaches or replaces the upstream edges of an already registered
+// host, applying the same cycle check as AddWithUpstreams. New registers
+// config-loaded hosts without edges, so this — not AddWithUpstreams — is how
+// component 05 records what the attach handshake learned about them. A refusal
+// leaves the recorded edges unchanged.
+func (r *Registry) SetUpstreams(name string, upstreamNames []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	if err := r.checkCycleLocked(name, upstreamNames); err != nil {
+		return err
+	}
+	r.edges[name] = append([]string(nil), upstreamNames...)
+	return nil
+}
+
 // checkCycleLocked walks upstream edges from the candidate. It refuses if it
 // reaches the candidate itself (a self-edge or a back-edge) or a node already
 // on the current path (a cycle among the upstreams). Callers hold r.mu.
+//
+// An upstream name the registry has no entry for is a leaf: it has no recorded
+// edges, so nothing beyond it can be traversed. That is deliberate for v1 — a
+// cycle that closes through a host running on another hub is undetectable here,
+// because no AppWire method reports a hub's configured hosts, so component 05
+// can never supply those edges. Cross-hub (multi-hop) cycle detection is
+// deferred in the component spec; this function detects every cycle whose edges
+// are all known to this registry.
 func (r *Registry) checkCycleLocked(candidate string, upstreamNames []string) error {
 	onPath := map[string]bool{candidate: true}
 	done := map[string]bool{}
@@ -188,7 +242,10 @@ func (r *Registry) Get(name string) (Host, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	host, ok := r.hosts[name]
-	return host, ok
+	if !ok {
+		return Host{}, false
+	}
+	return cloneHost(host), true
 }
 
 // All returns every registered host sorted by name, mirroring
@@ -204,7 +261,7 @@ func (r *Registry) All() []Host {
 	sort.Strings(names)
 	hosts := make([]Host, 0, len(names))
 	for _, name := range names {
-		hosts = append(hosts, r.hosts[name])
+		hosts = append(hosts, cloneHost(r.hosts[name]))
 	}
 	return hosts
 }

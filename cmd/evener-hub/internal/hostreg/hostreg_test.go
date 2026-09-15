@@ -224,3 +224,111 @@ func TestNameAcceptanceMatchesRefGrammar(t *testing.T) {
 		}
 	}
 }
+
+// A config-loaded host is registered by New, so its upstream edges have to come
+// from SetUpstreams: AddWithUpstreams inserts, and would refuse the duplicate.
+func TestSetUpstreamsAttachesEdgesToConfigLoadedHost(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.AddWithUpstreams(host("b"), []string{"a"}); !errors.Is(err, ErrDuplicateHost) {
+		t.Fatalf("AddWithUpstreams on a registered host = %v, want ErrDuplicateHost", err)
+	}
+	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
+		t.Fatalf("SetUpstreams: %v", err)
+	}
+	// The edge is live, so closing a cycle through it is refused.
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("SetUpstreams closing a cycle = %v, want ErrHostCycle", err)
+	}
+}
+
+func TestSetUpstreamsUnknownHost(t *testing.T) {
+	r, err := New([]Host{host("a")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.SetUpstreams("nope", []string{"a"}); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("SetUpstreams(unknown) = %v, want ErrUnknownHost", err)
+	}
+}
+
+// A refused SetUpstreams must leave the recorded edges alone. Had the refusal
+// left a->b behind, re-attaching b->a below would now look like a cycle.
+func TestSetUpstreamsRefusalLeavesEdgesUnchanged(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
+		t.Fatalf("SetUpstreams(b, a): %v", err)
+	}
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("SetUpstreams(a, b) = %v, want ErrHostCycle", err)
+	}
+	if err := r.SetUpstreams("b", []string{"a"}); err != nil {
+		t.Fatalf("SetUpstreams(b, a) after the refusal = %v, want success", err)
+	}
+}
+
+// An upstream the registry has no entry for is a leaf: nothing beyond it can be
+// traversed, which is the documented v1 limit on cross-hub cycle detection.
+func TestUnknownUpstreamIsALeaf(t *testing.T) {
+	r, err := New([]Host{host("a")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.SetUpstreams("a", []string{"lives-on-another-hub"}); err != nil {
+		t.Fatalf("SetUpstreams through an unknown upstream = %v, want success", err)
+	}
+}
+
+// The registry must not alias a caller's Roots array: mutating it after Add
+// would reach registry state outside the lock, and a returned Host must not
+// alias it either.
+func TestRootsAreNotAliased(t *testing.T) {
+	roots := []string{"/srv/a"}
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(Host{Name: "m4", SSH: "m4.local", Roots: roots}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	roots[0] = "/srv/HIJACKED"
+
+	got, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing")
+	}
+	if got.Roots[0] != "/srv/a" {
+		t.Fatalf("Get roots = %v, want the registry's own copy", got.Roots)
+	}
+	got.Roots[0] = "/srv/HIJACKED-AGAIN"
+	if again, _ := r.Get("m4"); again.Roots[0] != "/srv/a" {
+		t.Fatalf("roots after mutating a returned copy = %v, want the registry's own copy", again.Roots)
+	}
+	if all := r.All(); all[0].Roots[0] != "/srv/a" {
+		t.Fatalf("All roots = %v, want the registry's own copy", all[0].Roots)
+	}
+}
+
+// Validation trims, so storage must store the trimmed value: otherwise the
+// registry accepts a host and then hands consumers a value they cannot resolve.
+func TestValuesAreStoredTrimmed(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(Host{Name: "m4", SSH: "  m4.local  ", User: "  jesse  ", Roots: []string{"  /srv/a  "}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	got, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing")
+	}
+	if got.SSH != "m4.local" || got.User != "jesse" || got.Roots[0] != "/srv/a" {
+		t.Fatalf("stored host = %+v, want trimmed values", got)
+	}
+}
