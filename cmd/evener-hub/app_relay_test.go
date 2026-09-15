@@ -743,6 +743,34 @@ func TestHubWithoutRosterSharesItsFallbackRosterWithEveryConsumer(t *testing.T) 
 	}
 }
 
+// A roster-less hub's roster has no watcher; the local source refreshed it
+// before listing, and nothing else did, so navigation (and every other direct
+// reader of cfg.Roster) could read it empty or stale unless a thread listing
+// happened to run first. The roster refreshes on every read in that mode, so
+// a daemon that appears after startup is there for whichever consumer asks
+// first (review round 11 on #1325).
+func TestHubWithoutRosterListsALateDaemonInNavigationWithoutAThreadListingFirst(t *testing.T) {
+	runDir := t.TempDir()
+	web := newWebServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), RunDir: runDir, Past: hubcore.NewPastIndex("")}, nil)
+	if web.cfg.Roster == nil {
+		t.Fatal("a roster-less hub left cfg.Roster nil")
+	}
+	_, upstream := newDaemonStandIn(t, "late")
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "late",
+		SessionID: "late",
+	})
+	snapshot := web.navigationSnapshotInputs(context.Background())
+	if len(snapshot.live) != 1 || snapshot.live[0].SessionID != "late" {
+		t.Fatalf("navigation read the fallback roster as %+v, want the daemon that appeared after startup", snapshot.live)
+	}
+}
+
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {
 	thread := appwire.Thread{
 		ID:        "thread-delivery",

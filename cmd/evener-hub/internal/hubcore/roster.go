@@ -158,6 +158,12 @@ type Roster struct {
 	// that is busy from a PID the kernel handed to something else after the
 	// daemon crashed; both fail the probe and both answer signal 0.
 	procIdentity func(rendezvous.Entry) ProcessIdentity
+	// refreshOnRead makes every snapshot reader refresh first. A hub with no
+	// watcher over its rendezvous directory (one configured without a roster,
+	// which lists daemons through a roster of its own) has nothing else that
+	// would ever bring the snapshot up to date, and every consumer already
+	// reads through these methods.
+	refreshOnRead bool
 
 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
 	// been registered on runDir. Nil in production; injected by tests to
@@ -240,6 +246,21 @@ const (
 func (r *Roster) SetProcessIdentity(probe func(rendezvous.Entry) ProcessIdentity) *Roster {
 	r.procIdentity = probe
 	return r
+}
+
+// RefreshOnRead makes every snapshot reader (List, Find, OwnershipError and
+// the rest) refresh the roster first, for a roster nothing else refreshes.
+func (r *Roster) RefreshOnRead() *Roster {
+	r.refreshOnRead = true
+	return r
+}
+
+// syncForRead runs before a snapshot is read. Outside RefreshOnRead mode the
+// watcher keeps the snapshot current and this is free.
+func (r *Roster) syncForRead() {
+	if r.refreshOnRead {
+		_ = r.refresh()
+	}
 }
 
 // NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
@@ -450,9 +471,9 @@ func (r *Roster) refresh() error {
 			//
 			// Nor can it tell a busy daemon from a PID the kernel reused after
 			// the daemon crashed: both miss the probe, both answer signal 0,
-			// and the crashed daemon's file is byte-identical. The process
-			// behind the PID is asked whether it is still the daemon that
-			// wrote the entry; when it verifiably is not, the entry takes the
+			// and the crashed daemon's file is byte-identical. The identity
+			// verdict taken above folds into `alive`, so a PID verified not
+			// to be the daemon's never reaches this branch: it takes the
 			// crashed path below and leaves the listing, which is what lets
 			// the relay announce the daemon gone.
 			if prev, had := prevByPID[e.PID]; had && alive {
@@ -464,16 +485,13 @@ func (r *Roster) refresh() error {
 					retainUnconfirmed(e)
 					continue
 				}
-				if !disowned {
-					byPID[e.PID] = prev
-					if prev.SessionID != "" {
-						if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
-							bySess[prev.SessionID] = prev
-						}
+				byPID[e.PID] = prev
+				if prev.SessionID != "" {
+					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
+						bySess[prev.SessionID] = prev
 					}
-					continue
 				}
-				alive = false
+				continue
 			}
 			if alive {
 				retainUnconfirmed(e)
@@ -598,6 +616,7 @@ func (r *Roster) refresh() error {
 // OwnershipError reports an incomplete full scan. Individual daemon
 // confirmations cannot establish that the remaining ownership claims are absent.
 func (r *Roster) OwnershipError() error {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ownershipErr
@@ -607,6 +626,7 @@ func (r *Roster) OwnershipError() error {
 // daemon owner, including unresolved claims. This permits retained sessions
 // with deleted ancestry to recover without guessing which daemon owns them.
 func (r *Roster) DaemonOwnershipAbsent() bool {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.ownershipErr != nil || len(r.unconfirmed) != 0 {
@@ -686,6 +706,7 @@ func (r *Roster) refreshOwnership() {
 
 // List returns all live entries.
 func (r *Roster) List() []LiveEntry {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	bySession := make(map[string]LiveEntry, len(r.byPID))
@@ -714,7 +735,7 @@ func (r *Roster) List() []LiveEntry {
 // running in-process child. Child IDs remain outside bySess so callers cannot
 // mistake the parent's endpoint for an independently routable child daemon.
 func (r *Roster) IsSubagentActive(sessionID string) bool {
-	_, live := r.SubagentState(sessionID)
+	_, live := r.SubagentState(sessionID) // syncs for read on its own
 	return live
 }
 
@@ -730,6 +751,7 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 // is what lets a stopped persisted delegate stop reading as daemon-owned the
 // moment its parent dies, rather than when crash retention expires.
 func (r *Roster) SubagentState(sessionID string) (string, bool) {
+	r.syncForRead()
 	if sessionID == "" {
 		return "", false
 	}
@@ -769,6 +791,7 @@ func sameDaemonIdentity(a, b rendezvous.Entry) bool {
 
 // HasConfirmedEntry reports whether the exact daemon identity has a live route.
 func (r *Roster) HasConfirmedEntry(entry rendezvous.Entry) bool {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.hasConfirmedEntry(entry)
@@ -783,6 +806,7 @@ func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
 // RestartRequiredRootRef resolves metadata-only admission from one roster
 // snapshot. It never reads persisted ancestry or probes daemon endpoints.
 func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
+	r.syncForRead()
 	ref, err := appwire.ParseRef(rawRef)
 	if err != nil || ref.SourceID != "local" {
 		return "", false
@@ -838,6 +862,7 @@ func (r *Roster) RestartRequiredRootRef(rawRef string) (string, bool) {
 
 // Find returns the entry with the given session_id, or false if not present.
 func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.bySess[sessionID]
@@ -898,6 +923,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 // whose daemon identity could not be established. They are not live sessions,
 // but callers must not treat their absence from List as proof of released ownership.
 func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
+	r.syncForRead()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return slices.Clone(r.unconfirmed)
