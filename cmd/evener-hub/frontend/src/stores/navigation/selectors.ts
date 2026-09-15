@@ -42,7 +42,20 @@ export function selectSources(state = navigationStore.getState()): Source[] {
   // A stable empty array, NOT a fresh `[]`: this selector is read through
   // useSyncExternalStore, whose snapshot identity must not change on every
   // call or the store's subscribers re-render forever.
-  return state.manifest?.data?.sources ?? NO_SOURCES;
+  //
+  // Only a SETTLED manifest may name launch sources. A resource keeps its last
+  // snapshot while loading, re-validating (`stale`), or after a failed read,
+  // and for an invalidation/reconnect that snapshot can list a host the fresh
+  // manifest has since removed or taken offline. Exposing it would let a
+  // consumer treat an outdated host as launchable - the picker would offer it
+  // and the form could submit to it - instead of falling back to local. This
+  // mirrors the store's settledness contract for normalized reads
+  // (`settledPresence` also refuses a stale resource). A consumer that must not
+  // lose a persisted choice while the manifest is in flight (the spawn draft)
+  // retains its own value rather than reading this empty list as a fallback.
+  const manifest = state.manifest;
+  if (!manifest || manifest.loading || manifest.stale || manifest.error) return NO_SOURCES;
+  return manifest.data?.sources ?? NO_SOURCES;
 }
 export const selectResource = (key: ResourceKey) => {
   const resourceKey = canonicalResourceKey(key);

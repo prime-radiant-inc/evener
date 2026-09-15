@@ -783,8 +783,17 @@ function SpawnForm({
     pluginPreview.state.status === "ready" ? pluginSelectionIssues(pluginSelection, pluginPreview.state.response) : [];
   const explicitSelectionLoading =
     pluginSelectionSupported && pluginSelection.mode === "explicit" && pluginPreview.state.status === "loading";
+  // The plugin preview is the CONTROLLER's own inspection (evener/plugin/preview
+  // answers for this hub's host). A remote launch runs on the selected source's
+  // own hub, which resolves its own plugins, so a controller-local "this plugin
+  // is missing/loading" is not evidence the remote launch cannot succeed and
+  // must not disable Start or refuse the submit - the selection is forwarded and
+  // the selected host validates it at start, the same authority model the cwd
+  // preflight and provider check already follow. (Source-aware discovery needs
+  // the evener/host/request proxy, absent from this branch.) The local path
+  // keeps every gate unchanged.
   const pluginSelectionBlocked =
-    explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
+    !remoteLaunch && (explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0);
 
   // Writing the prompt is what starting an agent IS, so the caret starts
   // there rather than on whichever field happens to be first in the DOM. A
@@ -1291,6 +1300,32 @@ function SpawnForm({
       const value = builtinMatch.argsText.trim();
       if (builtinMatch.command.id === "model" && value === "") {
         // Fall through to the ordinary start below with no model override.
+      } else if (remoteLaunch) {
+        // Remote target: the selected host's own hub validates the forwarded
+        // value. This controller's catalog describes ITS providers and models
+        // - not the host's - so matching against it here would refuse a model
+        // or effort level that only the selected host supports, contradicting
+        // the host-authority model the launch already follows for cwd,
+        // providers and plugins. (Source-aware discovery needs the
+        // evener/host/request proxy, absent from this branch.) The value is
+        // forwarded verbatim: a model as "provider/model" (the split every
+        // other /model path uses), an effort level as typed. Bare /model is the
+        // "(default)" branch above and forwards no override; bare
+        // /reasoning-effort still fails closed, since an empty enum value is
+        // not a controller-catalog judgment.
+        if (value === "") {
+          toasts.push("error", "/reasoning-effort needs a value");
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+        if (builtinMatch.command.id === "model") {
+          const { provider, model: modelId } = splitModelId(value);
+          slashScalars = { modelProvider: provider, model: modelId };
+        } else {
+          slashScalars = { reasoningEffort: value };
+        }
       } else {
         // Effort validation reads the scope-stamped catalog, not the merged
         // display ladder: same staleness hole as /model (a value valid only
