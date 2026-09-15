@@ -1344,17 +1344,23 @@ func navigationWatches(watches []appwire.EvenerWatchInfo) (hubapi.NavigationArra
 				deliveryTimes = append(deliveryTimes, at)
 			}
 		}
+		// id and source are IDENTITIES to the codec, the hub schema and the rail's
+		// row keys: the rail and the panel key their rows by watch.id. A value over
+		// the identity bound is DROPPED rather than cut, because cutting trades a
+		// missing row for a wrong one -- two distinct long ids that share a prefix
+		// collapse to the same key, and every consumer that keys by it then sees one
+		// row where there were two. Every identity within the bound still passes
+		// through untouched; the omitted count below accounts for the dropped row
+		// exactly like a row whose created_at cannot be represented.
+		if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) {
+			if watch.Active {
+				omittedArmed++
+			}
+			continue
+		}
 		row := hubapi.NavigationWatchSummary{
-			// ID and Source are identities to the codec and the hub schema
-			// (identity() at maxNavigationIdentityBytes BYTES), so they are
-			// bounded in bytes rather than runes: every value within the limit
-			// passes through unchanged, and a pathological one is cut instead of
-			// failing the whole navigation response. The rail and the panel derive
-			// row keys from watch.id, which is why this is the validator's own
-			// identity limit and not the tighter 512-rune label bound -- that one
-			// would rewrite ids that are perfectly representable today.
-			ID:             truncateNavigationBytes(watch.ID, maxNavigationIdentityBytes),
-			Source:         truncateNavigationBytes(watch.Source, maxNavigationIdentityBytes),
+			ID:             watch.ID,
+			Source:         watch.Source,
 			Target:         truncateNavigationRunes(watch.Target, maxNavigationLabelRunes),
 			SendTo:         truncateNavigationRunes(watch.SendTo, maxNavigationLabelRunes),
 			Note:           truncateNavigationRunes(watch.Note, maxNavigationLabelRunes),

@@ -452,6 +452,44 @@ func TestNavigationWatchProjectionKeepsIdentityUntruncated(t *testing.T) {
 	}
 }
 
+// An identity OVER the bound is dropped, not cut. Two ids that share their first
+// maxNavigationIdentityBytes bytes would truncate to the same value, and the rail
+// and the panel key their rows by watch.id -- so cutting would show one row where
+// the session holds two. The dropped row is counted as omitted instead, like a
+// row whose created_at cannot be represented.
+func TestNavigationWatchProjectionDropsOversizedIdentities(t *testing.T) {
+	prefix := "watch-" + strings.Repeat("a", maxNavigationIdentityBytes) + "-"
+	project := hubcore.TreeProject{
+		Key:  "project",
+		Name: "project",
+		Current: []hubcore.TreeNode{{
+			ID: "session-a", Title: "a", Kind: "session", State: "idle",
+			Watches: []appwire.EvenerWatchInfo{
+				{ID: prefix + "alpha", Source: "self", CreatedAt: "2026-09-12T10:00:00Z", Active: true},
+				{ID: prefix + "bravo", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: "watch-kept", Source: strings.Repeat("s", maxNavigationIdentityBytes+1), CreatedAt: "2026-09-12T10:00:00Z"},
+				{ID: "watch-ok", Source: "self", CreatedAt: "2026-09-12T10:00:00Z"},
+			},
+		}},
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, ok := projection.Project("project")
+	if !ok {
+		t.Fatal("project missing")
+	}
+	session := resource.Current.Sessions[0]
+	if len(session.Watches) != 1 || session.Watches[0].ID != "watch-ok" {
+		t.Fatalf("watches = %+v, want only the representable row", session.Watches)
+	}
+	if session.OmittedWatches != 3 || session.OmittedArmedWatches != 1 {
+		t.Fatalf("omitted = %d (%d armed), want 3 (1 armed): every dropped row is counted",
+			session.OmittedWatches, session.OmittedArmedWatches)
+	}
+}
+
 // validNavigationTimestamp must accept exactly what the web codec accepts. Both
 // read the same shared fixture list so the Go check cannot drift from the
 // codec's rfc3339Timestamp grammar.
@@ -638,6 +676,11 @@ func TestNavigationSessionProjectMatchesCodecIdentityBytes(t *testing.T) {
 // guarded by the build's own validation, so job_type, status, watch id and
 // watch source can otherwise reach the wire unbounded and poison the whole
 // session entity exactly as an over-long cadence kind did.
+//
+// The two kinds of identity are treated differently on purpose: a DISPLAY
+// identity (job_type, job status) is cut to the cap, while an identity the rail
+// and the panel key their rows by (watch id, watch source) is DROPPED and
+// counted -- cutting it would map two distinct long ids onto one row key.
 func TestNavigationNestedIdentityFieldsMatchCodecIdentityBytes(t *testing.T) {
 	overLong := strings.Repeat("😀", 300) // 1200 bytes, 300 runes
 	if len(overLong) <= maxNavigationIdentityBytes {
@@ -668,14 +711,16 @@ func TestNavigationNestedIdentityFieldsMatchCodecIdentityBytes(t *testing.T) {
 		t.Fatalf("sessions = %+v, want one session", resource.Current.Sessions)
 	}
 	summary := resource.Current.Sessions[0]
-	if len(summary.RunningJobs) != 1 || len(summary.CompletedJobs) != 1 || len(summary.Watches) != 2 {
-		t.Fatalf("projected rows = %+v / %+v / %+v, want one running job, one completed job and two watches", summary.RunningJobs, summary.CompletedJobs, summary.Watches)
+	if len(summary.RunningJobs) != 1 || len(summary.CompletedJobs) != 1 || len(summary.Watches) != 0 {
+		t.Fatalf("projected rows = %+v / %+v / %+v, want one running job, one completed job and no watch rows", summary.RunningJobs, summary.CompletedJobs, summary.Watches)
+	}
+	if summary.OmittedWatches != 2 || summary.OmittedArmedWatches != 0 {
+		t.Fatalf("omitted watches = %d (%d armed), want both unrepresentable rows counted",
+			summary.OmittedWatches, summary.OmittedArmedWatches)
 	}
 	fields := map[string]string{
-		"job_type":     summary.RunningJobs[0].JobType,
-		"job_status":   summary.CompletedJobs[0].Status,
-		"watch_id":     summary.Watches[0].ID,
-		"watch_source": summary.Watches[1].Source,
+		"job_type":   summary.RunningJobs[0].JobType,
+		"job_status": summary.CompletedJobs[0].Status,
 	}
 	for name, value := range fields {
 		if value == overLong {
