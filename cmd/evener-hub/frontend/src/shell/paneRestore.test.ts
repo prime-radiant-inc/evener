@@ -7,8 +7,8 @@
 // A layout persisted with one of those panes open would, on the next page
 // load, reach DockHost's boot-time restoreLayout() BEFORE any such producer
 // ran and find the pane type unregistered - restoreLayout now SKIPS such a
-// panel (DockHost's structural reconciliation then removes its orphaned
-// dockview panel) rather than discarding the layout, but a skipped pane is
+// panel (removing its orphaned dockview panel from the live api
+// synchronously) rather than discarding the layout, but a skipped pane is
 // still a pane the user lost (workspace.ts:readPanelParams; the sibling
 // partial-recovery cases are workspace.test.ts's "skips a panel whose
 // paneType..." tests, which prove the skip).

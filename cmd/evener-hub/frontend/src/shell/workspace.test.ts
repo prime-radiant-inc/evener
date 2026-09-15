@@ -443,6 +443,11 @@ class FakeDockviewApi {
     this.panels = [];
     this.activePanel = undefined;
   }
+
+  removePanel(panel: { id: string }): void {
+    this.panels = this.panels.filter((p) => p.id !== panel.id);
+    if (this.activePanel?.id === panel.id) this.activePanel = undefined;
+  }
 }
 
 function asDockviewApi(fake: FakeDockviewApi): DockviewApi {
@@ -561,6 +566,11 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "a" }, slot: "main" }]);
     // The skipped panel was the active one; focus falls to the first survivor.
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+    // The skipped panel must leave the LIVE api synchronously: the render
+    // before DockHost's reconciliation runs every api panel through
+    // paneFor(), which throws for the unregistered type.
+    expect(fake.panels.map((p) => p.id)).toEqual(["p2"]);
+    expect(fake.activePanel?.id ?? null).not.toBe("p1");
   });
 
   test("restoreLayout skips a restored panel whose paneType is a valid PaneTypeId but isn't registered", () => {
@@ -639,6 +649,10 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     ]);
     // The active panel was the skipped one; focus falls to the first survivor.
     expect(workspaceStore.getState().focusedPaneId).toBe("p1");
+    // ...and the skipped panel left the live api in the same restore, not in
+    // a later reconciliation pass.
+    expect(fake.panels.map((p) => p.id)).toEqual(["p1", "p3"]);
+    expect(fake.activePanel?.id ?? null).not.toBe("p2");
   });
 
   // Restored ids come from a PREVIOUS page load's own independently-

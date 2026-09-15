@@ -1236,7 +1236,7 @@ function NavigationRail({
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
         if (pane === "notes") {
-          topNotesStore.getState().toggle(session.ref);
+          topNotesStore.getState().toggleAndFocus(session.ref);
         } else {
           workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
         }

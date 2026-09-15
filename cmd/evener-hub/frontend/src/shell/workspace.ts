@@ -224,8 +224,8 @@ function isRegistered(type: unknown): type is PaneTypeId {
 // sidebar pane) or shipped by a newer build leaves its panel in the restored
 // dockview layout, and discarding the user's ENTIRE workspace over one
 // unloadable panel is a data-loss bug, not a validation stance. restoreLayout
-// drops the skipped panel from `panes`; DockHost's structural reconciliation
-// then removes its orphaned dockview panel, so the rest of the layout recovers.
+// drops the skipped panel from `panes` and removes it from the live api in
+// the same pass, so the rest of the layout recovers from the first render.
 function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const raw = panel.params;
   if (!raw || !isRegistered(raw.paneType)) return null;
@@ -382,10 +382,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // saved JSON: api.panels is in grid order, so the FIRST panel is the one
       // in the top-left group - the main pane. Read only `panels` (plus each
       // panel's own group), never api.groups: this function's whole
-      // dockview surface stays the four members it already used
-      // (fromJSON/panels/activePanel/clear), which is also what keeps the unit
-      // doubles in workspace.test.ts/paneRestore.test.ts honest doubles rather
-      // than a growing mirror of the real api.
+      // dockview surface stays the five members it uses
+      // (fromJSON/panels/activePanel/removePanel/clear), which is also what
+      // keeps the unit doubles in workspace.test.ts/paneRestore.test.ts
+      // honest doubles rather than a growing mirror of the real api.
       //
       // A layout that somehow restores a SECOND panel into that same first
       // group leaves only the first as "main" - impossible for a layout this
@@ -393,9 +393,18 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // a stacked main group rather than a crash for anything else. Panels
       // readPanelParams skips (an unregistered/removed pane type) drop out
       // BEFORE the slot assignment, so the first SURVIVING panel is main.
-      const restored = dockviewApi.panels
-        .map((panel) => ({ panel, params: readPanelParams(panel) }))
-        .filter((entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null);
+      const entries = dockviewApi.panels.map((panel) => ({ panel, params: readPanelParams(panel) }));
+      // A panel this build cannot render must leave the live api NOW, not in
+      // DockHost's later structural reconciliation: the commit between this
+      // restore and that reconciliation renders every api panel through
+      // paneFor(), which throws for an unregistered type and can take the
+      // whole workspace chunk down with it.
+      for (const entry of entries) {
+        if (entry.params === null) dockviewApi.removePanel(entry.panel);
+      }
+      const restored = entries.filter(
+        (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null,
+      );
       const panes: OpenPaneRecord[] = restored.map((entry, index) => ({
         id: entry.panel.id,
         type: entry.params.paneType,
