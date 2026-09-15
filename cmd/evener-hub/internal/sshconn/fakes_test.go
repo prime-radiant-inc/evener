@@ -167,6 +167,21 @@ func (b *fakeBridge) serve(inR *io.PipeReader, outW *io.PipeWriter) {
 	}
 }
 
+// floodNotifications writes n AppWire notification frames to the bridge's
+// stdout, so a client that never drains its bounded notification buffer overflows.
+// An error means the stream broke first (the client tears it down on overflow);
+// the caller only cares that the frames it did write arrived, so it is reported
+// rather than fatal.
+func (b *fakeBridge) floodNotifications(n int) error {
+	srv := appwire.NewStreamTransport(&stdioReadWriter{in: b.stdio.outW, out: b.stdio.inR})
+	for i := range n {
+		if err := srv.Send(context.Background(), appwire.NotificationMessage("noop", map[string]int{"seq": i})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 const goodLaunchCheck = `{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`
 
 // cannedRun returns a runFn answering the standard preflight commands, with

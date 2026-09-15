@@ -484,8 +484,11 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 // the call.
 //
 // Liveness is decided by the same predicate Ensure and Attached use
-// (liveChannel: present, not closed, not lost), so the client and the attached
-// signal can never disagree. It deliberately does NOT take the per-host gate:
+// (liveChannel: present, not closed, not lost), read together with the manager's
+// open state so a client is never offered once shutdown has begun: the rebind
+// runs from a lifecycle callback, including Close's own Detached, and a channel
+// Close is tearing down must not be handed out. It deliberately does NOT take the
+// per-host gate:
 // EventAttached is delivered under that lock (see Options.OnEvent) and the
 // rebind that consumes this lookup runs from that callback, so a re-entrant
 // acquisition would deadlock. The installed channel is read under the manager
@@ -500,11 +503,30 @@ func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool) {
 		// instead of inventing the ErrHostNotFound Ensure would.
 		return nil, false
 	}
-	ch := m.liveChannel(host.Name)
-	if ch == nil {
+	ch, ok := m.installedLiveChannel(host.Name)
+	if !ok {
 		return nil, false
 	}
 	return ch.Client(), true
+}
+
+// installedLiveChannel returns name's channel only while the manager is still
+// open and the channel is usable, reading m.closed and the map under one mutex
+// acquisition so the two can never be observed apart. ClientIfAttached is the
+// rebind path a lifecycle callback uses, and Close emits its Detached while the
+// channel is still mapped and not yet closed: a check that is not atomic with the
+// lookup lets that callback rebind to a channel Close is tearing down.
+func (m *Manager) installedLiveChannel(name string) (*Channel, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, false
+	}
+	ch := m.chans[name]
+	if ch == nil || ch.isClosed() || ch.isLost() {
+		return nil, false
+	}
+	return ch, true
 }
 
 // lostAfterPublish retires the channel Ensure just published when the link died
@@ -518,15 +540,24 @@ func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool) {
 // the slot returns to stale exactly as the pre-publish check preserves it. When
 // Close landed between the checks that guard this path, the manager — not the
 // host — ended the attempt: the drop is then terminal, and reporting the
-// retryable one would send the caller around a loop that cannot succeed. Close
-// owns the events for the channels it tears down, so that path emits none.
+// retryable one would send the caller around a loop that cannot succeed.
+//
+// Close owns the events for the channels it tears down, but its snapshot holds
+// the replacement this call already published (or nothing) and never stale, so it
+// cannot pair stale's outstanding Attached: the Detached is emitted here, exactly
+// as the sibling pre-announce path at the isClosed/isClosed check does.
 func (m *Manager) lostAfterPublish(name string, stale *Channel) error {
 	m.clearChannel(name)
-	if m.isClosed() {
-		return ErrManagerClosed
-	}
 	if stale != nil {
-		m.restoreChannel(name, stale)
+		if !m.restoreChannel(name, stale) {
+			// Close won the race between the pre-publish check and here: its
+			// snapshot sees the replacement, so stale's Attached would otherwise
+			// leak. Pair it now that the manager is terminal.
+			m.detachEvent(name, StateDisconnected)
+			return ErrManagerClosed
+		}
+	} else if m.isClosed() {
+		return ErrManagerClosed
 	} else {
 		m.stateEvent(name, StateDisconnected)
 	}
@@ -737,6 +768,11 @@ func reapBridge(transport *appwire.StreamTransport, stdio Stdio) error {
 // after a successful read — malformed JSON, a bad length, an overflow — would
 // otherwise leave the manager holding a channel whose reader is gone. It does not
 // forward appwire.Pinger, deliberately: keepalive stays ssh's own ServerAlive*.
+//
+// Close is a link-down edge too. The client closes the transport itself on a
+// notification overflow (client.go's ErrNotificationOverflow path), which never
+// surfaces as a Recv error, so without this the manager would keep offering a
+// channel whose reader is gone and no supervisor would reconnect.
 type lossWatchingTransport struct {
 	appwire.Transport
 	onErr func()
@@ -748,6 +784,11 @@ func (t *lossWatchingTransport) Recv(ctx context.Context) (appwire.Message, erro
 		t.onErr()
 	}
 	return msg, err
+}
+
+func (t *lossWatchingTransport) Close() error {
+	t.onErr()
+	return t.Transport.Close()
 }
 
 // supervise waits for host's channel to drop, then reconnects with bounded

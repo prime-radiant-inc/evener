@@ -2716,3 +2716,145 @@ func TestAttachDiagnosticsShareOneSerializedWriter(t *testing.T) {
 		}
 	}
 }
+
+// When Close wins the race after a replacement was published and then proved
+// lost, lostAfterPublish runs with the map holding the replacement and Close's
+// snapshot never seeing the predecessor. Close's own pairing therefore claims a
+// channel that is not the predecessor, and the predecessor's supervisor stands
+// down on the canceled base context without emitting — so the Detached that drops
+// the source installed on the predecessor's Attached would leak for the life of
+// the process unless lostAfterPublish emits it itself.
+func TestLostAfterPublishDetachesThePredecessorOnClose(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	var mu sync.Mutex
+	var kinds []EventKind
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) {
+			mu.Lock()
+			kinds = append(kinds, ev.Kind)
+			mu.Unlock()
+		},
+	})
+	// A real predecessor, announced through the real Ensure path.
+	predecessor, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	// Model the race exactly as it happens: Ensure's replacement has taken the map
+	// slot, while announced still records the predecessor as the channel whose
+	// Attached has no match.
+	replacement := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.publishChannel("alpha", replacement) {
+		t.Fatal("publishChannel refused while the manager was open")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Close's snapshot held the replacement, so it paired nothing for the
+	// predecessor.
+	if err := m.lostAfterPublish("alpha", predecessor); !errors.Is(err, ErrManagerClosed) {
+		t.Fatalf("lostAfterPublish after Close = %v, want ErrManagerClosed", err)
+	}
+	mu.Lock()
+	got := append([]EventKind(nil), kinds...)
+	mu.Unlock()
+	detaches := 0
+	for _, k := range got {
+		if k == EventDetached {
+			detaches++
+		}
+	}
+	if detaches != 1 {
+		t.Fatalf("lostAfterPublish after Close emitted %d Detached, want exactly 1: the predecessor's Attached leaked (%v)", detaches, got)
+	}
+	// The Detached is a claim: the predecessor must not stay announced, or a later
+	// pairing emits a second one for the same Attached.
+	m.mu.Lock()
+	_, stillAnnounced := m.announced["alpha"]
+	m.mu.Unlock()
+	if stillAnnounced {
+		t.Fatal("the predecessor stayed announced after its Detached")
+	}
+}
+
+// ClientIfAttached is the rebind path a Detached callback uses. Close emits its
+// Detached while the channel is still mapped and not yet closed, so a lookup that
+// does not read m.closed under the same mutex acquisition would serve that
+// callback a client for the channel Close is tearing down.
+func TestClientIfAttachedRefusesDuringClose(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	var mu sync.Mutex
+	var served []bool
+	var m *Manager
+	m = newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventDetached {
+				return
+			}
+			client, ok := m.ClientIfAttached(ev.Host)
+			mu.Lock()
+			served = append(served, ok || client != nil)
+			mu.Unlock()
+		},
+	})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client == nil {
+		t.Fatal("precondition: the attached channel is not visible through the lookup")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	mu.Lock()
+	got := append([]bool(nil), served...)
+	mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("Close emitted no Detached callback to observe")
+	}
+	for i, ok := range got {
+		if ok {
+			t.Fatalf("ClientIfAttached served a client during Close (Detached callback %d)", i)
+		}
+	}
+}
+
+// An AppWire notification overflow tears the connection down inside the client,
+// not through a Recv error, so the transport wrapper must mark the channel lost
+// on Close too: otherwise the manager keeps offering a channel whose reader is
+// gone, and the supervisor that owns the host never reconnects.
+func TestNotificationOverflowMarksTheLinkLost(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	bridge := newFakeBridge(appwire.ProtocolVersion)
+	fr := &fakeRunner{
+		runFn:   cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) { return bridge.stdio, nil },
+	}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent: func(ev Event) { events <- ev },
+		// The supervisor emits its Reconnecting and Detached, then parks well past
+		// the test; the reconnect itself is not what this pins.
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	waitForEvent(t, events, EventAttached)
+
+	// One frame past the buffer cap with no consumer draining overflows it.
+	_ = bridge.floodNotifications(appwire.NotificationBufferCap + 1)
+
+	waitForEvent(t, events, EventDetached)
+	if !ch.isLost() {
+		t.Fatal("the overflow-triggered transport close did not mark the link lost")
+	}
+	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
+		t.Fatalf("the manager kept offering a channel whose reader is gone: %v, %v", client, ok)
+	}
+}
