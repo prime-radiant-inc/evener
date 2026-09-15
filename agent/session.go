@@ -847,7 +847,12 @@ type Session struct {
 	// runningTurnReleaseRetry paces re-attempts of a release write the client
 	// mutation store refused. See scheduleRunningTurnReleaseRetry
 	// (session_active_turn.go).
-	runningTurnReleaseRetry   runningTurnReleaseRetryState
+	runningTurnReleaseRetry runningTurnReleaseRetryState
+	// steeringRetryMu guards steeringCarrierRetry alone.
+	steeringRetryMu sync.Mutex
+	// steeringCarrierRetry paces the re-armed wakes for a steer a carrier turn
+	// could not record (scheduleSteeringCarrierRetry).
+	steeringCarrierRetry      runningTurnReleaseRetryState
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry
@@ -933,6 +938,15 @@ const (
 	// write error, short enough not to sit on a state dir that will never be
 	// writable (kata fbmy).
 	runningTurnReleaseRetryLimit = 8
+	// steeringCarrierRetryLimit bounds the wakes re-armed for a steer a carrier
+	// turn could not record. Each attempt is a carrier turn that fails before
+	// its model call, so the cost is a failed turn in the transcript, not
+	// tokens -- but an unbounded loop of those on a state dir that will never
+	// be writable is noise with no end. The same eight attempts against the
+	// jobNotificationRetryMaxDelay ceiling as the release retry: enough to ride
+	// out a transient write error, after which the steer stays queued for the
+	// user's next run and a warning says so.
+	steeringCarrierRetryLimit = 8
 )
 
 func (s *Session) enqueueJobNotification(n jobNotification) {

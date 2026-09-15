@@ -115,6 +115,10 @@ var envelopeSamplingForbiddenLocks = []envelopeSamplingLock{
 		s.releaseRetryMu.Lock()
 		return s.releaseRetryMu.Unlock
 	}},
+	{owner: "Session", field: "steeringRetryMu", hold: func(s *Session) func() {
+		s.steeringRetryMu.Lock()
+		return s.steeringRetryMu.Unlock
+	}},
 	{owner: "Session", field: "drainAbandonedMu", hold: func(s *Session) func() {
 		s.drainAbandonedMu.Lock()
 		return s.drainAbandonedMu.Unlock

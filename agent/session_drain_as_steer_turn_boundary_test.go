@@ -444,11 +444,14 @@ func TestSteeringCarrierAppendFailureRunsOnceAndReturnsTheSteer(t *testing.T) {
 type steerRefusingFS struct {
 	afero.Fs
 	marker []byte
+	// onRefuse, when set, runs on the refusing write before it fails -- the
+	// moment the steer is claimed and its append is about to fail.
+	onRefuse func()
 }
 
 type steerRefusingFile struct {
 	afero.File
-	marker []byte
+	fs *steerRefusingFS
 }
 
 func (fs *steerRefusingFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
@@ -456,26 +459,56 @@ func (fs *steerRefusingFS) OpenFile(name string, flag int, mode os.FileMode) (af
 	if err != nil {
 		return nil, err
 	}
-	return &steerRefusingFile{File: file, marker: fs.marker}, nil
+	return &steerRefusingFile{File: file, fs: fs}, nil
 }
 
 func (file *steerRefusingFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, file.marker) {
+	if bytes.Contains(p, file.fs.marker) {
+		if file.fs.onRefuse != nil {
+			file.fs.onRefuse()
+		}
 		return 0, errors.New("injected: no space left on device")
 	}
 	return file.File.Write(p)
 }
 
-func attachSteerRefusingFS(t *testing.T, s *Session, marker string) {
+func attachSteerRefusingFS(t *testing.T, s *Session, marker string) *steerRefusingFS {
 	t.Helper()
 	if err := s.closeAttachedTranscript(); err != nil {
 		t.Fatal(err)
 	}
-	writer, _, err := transcript.OpenWriterForSessionWithFS(&steerRefusingFS{Fs: afero.NewOsFs(), marker: []byte(marker)}, s.TranscriptPath(), s.ID())
+	fs := &steerRefusingFS{Fs: afero.NewOsFs(), marker: []byte(marker)}
+	writer, _, err := transcript.OpenWriterForSessionWithFS(fs, s.TranscriptPath(), s.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.attachTranscript(writer)
+	return fs
+}
+
+// countingUserInputWake installs the daemon's pending-input wake seam and
+// returns a channel that receives one value per wake.
+func countingUserInputWake(s *Session) <-chan struct{} {
+	wakes := make(chan struct{}, 64)
+	s.SetPendingUserInputWakeFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+	return wakes
+}
+
+func drainWakes(wakes <-chan struct{}) int {
+	n := 0
+	for {
+		select {
+		case <-wakes:
+			n++
+		default:
+			return n
+		}
+	}
 }
 
 // inputBoundary summarizes the events of one ProcessInput call: the carrier
@@ -625,5 +658,136 @@ func TestSteeringCarrierRecordedSteerSurvivesAFailedIncorporationWrite(t *testin
 	if openings != 1 || failures != 0 || !strings.HasPrefix(end, "input_complete:") {
 		t.Fatalf("within the input: carrier openings=%d turn failures=%d session end=%q, want one carrier, no failure, a clean completion (transitions: %s)",
 			openings, failures, end, strings.Join(transitions, " "))
+	}
+}
+
+// TestSteeringCarrierAppendFailureReArmsTheWake is review round 3's first
+// finding on #1329. A carrier whose steer could not be recorded returns it to
+// the queue and ends the input idle; the retry was "the next wake's", but
+// nothing armed one. The daemon's acceptance-time wake is consumed by the
+// input that just failed (or by the one retry it parks behind it), so a
+// steer refused twice sat queued until an unrelated client action. The
+// failure now arms its own wake, with the backoff the wake path already
+// uses, so the session retries on its own.
+func TestSteeringCarrierAppendFailureReArmsTheWake(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	var s *Session
+	var fs *environmentSyncFailureFS
+	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), func(string) {
+		fs.mu.Lock()
+		fs.writeFailure = errors.New("injected: no space left on device")
+		fs.transferBeforeWriteFailure = 0
+		fs.mu.Unlock()
+	})))
+	fs = attachEnvironmentFailureFS(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	wakes := countingUserInputWake(s)
+
+	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	drainWakes(wakes) // the acceptance-time wake, consumed by the input that failed
+
+	select {
+	case <-wakes:
+	// TRIPWIRE: the first backoff is jobNotificationRetryInitialDelay (250ms); only a wake never armed gets here.
+	case <-time.After(5 * time.Second):
+		t.Fatal("no wake was armed for the returned steer: an idle session leaves it queued until an unrelated client action")
+	}
+	// The wake's retry delivers (the fault was one-shot).
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("the re-armed wake's retry: ran=%v err=%v", ran, err)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("the retry made %d request(s) in total and did not carry the steer", len(requests))
+	}
+}
+
+// TestStopWhileTheCarrierIsAppendingParksTheReturnedSteer is review round 3's
+// second finding on #1329. popSteeringHead marks the steer claimed before
+// its append; a Stop landing there names the carrier and, seeing a claimed
+// steer whose id is the turn it is cancelling, arms no hold (that steer is
+// the turn, and would be gone once its append finalizes). When the append
+// then fails, the steer comes back to accepted and round 1's finalization
+// preserved it -- unparked, so the wake at the end of the Stop delivered
+// the very steer the user had just stopped. Preserving it now parks it.
+func TestStopWhileTheCarrierIsAppendingParksTheReturnedSteer(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	var s *Session
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	processDone := make(chan struct{})
+	interruptDone := make(chan error, 1)
+	s = newTestSessionForEnvctx(t, withAdapter(adapter), withConfig(carrierTestConfig(t.TempDir(), nil)))
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	fs := attachSteerRefusingFS(t, s, "second pass")
+	var stopOnce sync.Once
+	fs.onRefuse = func() {
+		// The Stop lands while the steer is claimed and its append is in
+		// flight: serve.go's cancel, wait for the runner, then finalize.
+		stopOnce.Do(func() {
+			cancelled := make(chan struct{})
+			go func() {
+				_, err := s.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
+					ClientMutationID: "stop-while-appending",
+				}, func() {
+					cancel()
+					close(cancelled)
+					<-processDone
+				})
+				interruptDone <- err
+			}()
+			<-cancelled
+		})
+	}
+	wakes := countingUserInputWake(s)
+
+	_, done := drainMidHeldLeg(ctx, t, s, adapter)
+	close(adapter.release)
+	awaitInput(t, done)
+	close(processDone)
+	if err := <-interruptDone; err != nil {
+		t.Fatalf("InterruptClientMutation: %v", err)
+	}
+	drainWakes(wakes)
+
+	snapshot := s.clientMutations.snapshot()
+	if pending, ok := snapshot.PendingExecutions["cm-drain-mid-leg"]; !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("the returned steer is pending=%v state=%q, want accepted", ok, pending.ExecutionState)
+	}
+	if !snapshot.SteeringHeld {
+		t.Fatal("the Stop's finalization preserved the returned steer unparked: the wake will deliver what the user just stopped")
+	}
+	select {
+	case <-wakes:
+		t.Fatal("a wake fired for the steer the Stop parked")
+	// TRIPWIRE: the backoff re-arm is 250ms; a second is far past it and only bounds the wait.
+	case <-time.After(time.Second):
+	}
+	if id, ok := s.claimSteeringCarrierTurn(); ok {
+		t.Fatalf("claimSteeringCarrierTurn claimed %q while the steer is parked", id)
+	}
+
+	// The user's next run releases the hold and carries it (the disk has
+	// room again).
+	fs.marker = []byte("<<nothing carries this marker>>")
+	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "cm-start-after-stop",
+		Input:            []appwire.InputItem{{Type: "text", Text: "carry on"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, _, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessClientMutationStart: %v", err)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("the user's next run made %d request(s) and did not carry the parked steer", len(requests))
 	}
 }

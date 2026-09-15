@@ -705,7 +705,15 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 		// carried by the user's next run, the way a queued message a Stop
 		// returns to the queue is (wms7). Retiring it here would leave its
 		// order entry, its in-memory copy and that hold naming nothing.
+		//
+		// Parked here as well as at the Stop's acceptance: a Stop that landed
+		// while the steer was claimed and its append in flight armed no hold
+		// for it (the steer was the turn being cancelled, about to be gone),
+		// and the append then failing is what put it back to accepted. Left
+		// unparked, the steering wake below would deliver what the user just
+		// stopped.
 		if pending.ExecutionState == "accepted" && steeringCarrierUndelivered(snapshot, pending.TurnID) {
+			snapshot.SteeringHeld = true
 			continue
 		}
 		target, ok := snapshot.Journal[id]

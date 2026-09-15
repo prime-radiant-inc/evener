@@ -2583,11 +2583,14 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		// model request now would carry nothing, and a clean completion
 		// would let the drain ladder claim the same steer again, and again.
 		// Fail the turn already announced above and stand down; the steer
-		// stays queued for the next wake, which is the retry.
+		// stays queued for the next wake, which is the retry -- and that wake
+		// is armed here, since the one that accepted the steer is spent.
 		s.emitTurnFailure(errorDataFromError(fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)))
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		s.scheduleSteeringCarrierRetry()
 		return false
 	}
+	s.clearSteeringCarrierRetry()
 	return true
 }
 
