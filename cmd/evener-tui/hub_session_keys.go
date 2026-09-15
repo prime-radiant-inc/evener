@@ -531,17 +531,15 @@ func (m hubModel) restoreInstructionMessage() string {
 // the drain request so the daemon appends and drains atomically. With nothing
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
-	if !m.sessionCanDrainQueue() {
-		if m.queueRevisionStale {
-			m.addSessionSystem("The queue is syncing after the last force-steer; retry in a moment.")
+	if controls := m.sessionControls(); !controls.drain {
+		// A plain idle composer with nothing queued: silently no-op so the
+		// keybind doesn't fight with idle-state composing. Anything else --
+		// a queue, a running turn, a harness without steer, a syncing revision
+		// -- gets the twin's own reason for refusing.
+		if m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth == 0 && !m.queueRevisionStale && m.detail.Capabilities.Steer {
 			return m, nil
 		}
-		if m.sessionComposerMode() == hubComposerModeQueue {
-			m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
-			return m, nil
-		}
-		// Not in a drainable state; nothing to do. Silently no-op so the
-		// keybind doesn't fight with idle-state composing.
+		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")
 		return m, nil
 	}
 	ref, ok := m.currentRef()

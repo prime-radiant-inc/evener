@@ -76,19 +76,32 @@ const (
 //	                          word is taken as is)
 type sessionControls struct {
 	stop, steer, drain, queue, send bool
+	// drainReason says why drain is false: the harness, the status, or the
+	// queue revision still syncing after a partial drain. Empty when true.
+	drainReason string
 }
 
 func (m hubModel) sessionControls() sessionControls {
 	active := m.detail.State == appwire.ThreadStatusActive
 	parked := m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0
 	caps := m.detail.Capabilities
-	return sessionControls{
+	c := sessionControls{
 		stop:  active && caps.Interrupt,
 		steer: active && caps.Steer,
 		drain: caps.Steer && (active || parked) && !m.queueRevisionStale,
 		queue: caps.Queue,
 		send:  caps.Send,
 	}
+	switch {
+	case c.drain:
+	case !caps.Steer:
+		c.drainReason = "source does not advertise steer"
+	case m.queueRevisionStale:
+		c.drainReason = "the queue is syncing after the last force-steer; retry in a moment"
+	default:
+		c.drainReason = "no active turn"
+	}
+	return c
 }
 
 func (m hubModel) sessionComposerMode() hubComposerMode {

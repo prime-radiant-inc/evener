@@ -2329,6 +2329,69 @@ func TestHubModelPartialDrainWaitsForTheQueueRevision(t *testing.T) {
 	}
 }
 
+// When the status, not the harness, refuses a drain (awaiting with a queue is
+// the ask boundary; that queue runs next on its own), Ctrl+S says so: the
+// banner carries the twin's drain reason, never "does not advertise steer".
+func TestHubModelForceSteerBannerNamesTheStatusReason(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusAwaiting
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 1
+	m.session.processing = true
+
+	updated, cmd := m.handleSessionForceSteer()
+	if cmd != nil {
+		t.Fatal("ctrl+s while awaiting produced a command")
+	}
+	after := updated.(hubModel)
+	view := after.sessionView()
+	if strings.Contains(view, "does not advertise steer") {
+		t.Fatalf("banner blamed the harness for a status refusal:\n%s", view)
+	}
+	if !strings.Contains(view, "no active turn") {
+		t.Fatalf("banner missing the status reason:\n%s", view)
+	}
+}
+
+// The TUI's #1330: the projector emits turn/completed, turn/started and
+// thread/status/changed(active) for a turn that runs inline behind the one that
+// ended, one WebSocket message each, and the status never leaves active. The
+// session's status follows the wire's thread/status/changed, never the
+// closing turn/completed, so Stop, Steer and Ctrl+S stay available across the
+// boundary; a real idle status frame still lands idle.
+func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = "turn_1"
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Interrupt = true
+	m.detail.Capabilities.Queue = true
+	m.session.processing = true
+
+	frames := []struct {
+		name         string
+		notification appwire.Notification
+	}{
+		{"turn/completed of the previous turn", *appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted}}).Notification},
+		{"turn/started of the next turn", *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress}}).Notification},
+		{"the status frame", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}).Notification},
+	}
+	for _, frame := range frames {
+		m.applyHubNotification(frame.notification)
+		c := m.sessionControls()
+		if !c.stop || !c.steer || !c.drain {
+			t.Fatalf("after %s: stop=%v steer=%v drain=%v state=%q, want all available while the status stays active", frame.name, c.stop, c.steer, c.drain, m.detail.State)
+		}
+	}
+
+	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}})
+	m.applyHubNotification(*idle.Notification)
+	if c := m.sessionControls(); m.detail.State != appwire.ThreadStatusIdle || c.stop || c.steer {
+		t.Fatalf("after a real idle status: state=%q stop=%v steer=%v, want idle with no controls", m.detail.State, c.stop, c.steer)
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {

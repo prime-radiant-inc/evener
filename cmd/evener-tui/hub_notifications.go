@@ -180,22 +180,24 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySessionTranscriptReducer(reducer)
 			if turnID != "" && turnID == m.detail.ActiveTurnID {
 				m.detail.ActiveTurnID = ""
-				// The turn sessionTurnRunning() was told is active just ended, so
-				// the two signals it reads must be reconciled here rather than
-				// waiting on thread/status/changed (kata s8x8). A genuine turn
-				// failure never gets one: session_lifecycle.go's
-				// processInputKindWithProvenance returns on a non-cancelled error
-				// before reaching the EventSessionEnd emit that only the
-				// clean-completion tail and the interrupt branch reach, so the
-				// projector never has a trigger to re-announce status and the
-				// composer would offer queue/steer indefinitely with no turn id to
-				// name. A successful multi-turn drain (more queued work) proves this
-				// wrong within the same notification batch — turn/started and
-				// thread/status/changed(active) ride right behind turn/completed —
-				// so clearing here costs nothing on that path.
-				m.session.processing = false
-				if m.detail.State == appwire.ThreadStatusActive {
-					m.detail.State = appwire.ThreadStatusIdle
+				// The session's status follows the wire's thread/status/changed,
+				// not the closing turn/completed: when the daemon runs the next
+				// turn inline behind this one, turn/started and
+				// thread/status/changed(active) ride right behind it as separate
+				// messages and the status never leaves active, so flipping idle
+				// here took Stop, Steer and Ctrl+S away at every inline turn
+				// boundary (the TUI's #1330). The one turn that never gets a
+				// status frame is a genuine failure (kata s8x8):
+				// session_lifecycle.go's processInputKindWithProvenance returns
+				// on a non-cancelled error before the EventSessionEnd emit that
+				// only the clean-completion tail and the interrupt branch reach,
+				// so for a failed turn the status and the optimistic processing
+				// flag are reconciled here.
+				if params.Turn.Status == appwire.TurnStatusFailed {
+					m.session.processing = false
+					if m.detail.State == appwire.ThreadStatusActive {
+						m.detail.State = appwire.ThreadStatusIdle
+					}
 				}
 			}
 			if params.Turn.Status == appwire.TurnStatusFailed {
