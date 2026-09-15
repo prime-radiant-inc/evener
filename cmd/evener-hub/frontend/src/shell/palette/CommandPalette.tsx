@@ -26,6 +26,7 @@ import { threadsStore } from "../../stores/threads";
 import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
+import { openInNewTab } from "../openInNewTab";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { cadenceStateFor } from "../rail/RailRow";
 import { navigate } from "../routing";
@@ -539,7 +540,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // uses to open a session. A bare-id URL does not route, and naming a
       // session differently from the rail can open it twice in two panes.
       const url = `/s/${encodeURIComponent(item.result.ref)}`;
-      if (newTab) window.open(url, "_blank");
+      // openInNewTab keeps the new tab from copying this tab's sessionStorage -
+      // which carries the per-client mutation identity, and a shared identity
+      // would let both tabs claim each other's durable sends.
+      if (newTab) openInNewTab(url);
       else navigate(url);
     }
   }

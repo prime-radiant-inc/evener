@@ -1,5 +1,8 @@
 # LLM Provider Configuration, Credentials & Launch Architecture
 
+**Connecting your first provider?** Follow [Connecting a provider](connecting-a-provider.md)
+for the New session → connection → model → Start walkthrough.
+
 How evener stores provider credentials, signs you in to OpenAI, and how the
 **hub** turns a launch request into a running model session.
 
@@ -265,11 +268,12 @@ The duplicate type-based Providers and Credentials screens are gone,
 replaced by one instance-aware CRUD screen
 (`cmd/evener-hub/frontend/src/panes/settings/sections/credentials/`,
 backed by `cmd/evener-hub/app_instances.go`) that calls the same functions
-the CLI does. It lists **every curated implicit provider**, whether or not
-it currently has a credential — since resolution never requires one, this
-is where a fresh install signs in to `openai-codex` or enters its first key,
-not a screen that only shows what's already configured — plus every
-explicit instance.
+the CLI does. Its instance rows follow `Registry.Instances()`'s launch-ready
+credential filter; uncredentialed implicit presets do **not** all appear there.
+The separate public provider catalogue supplies discovery and setup metadata,
+so **Connect provider** can offer a fresh install `openai-codex` sign-in or a
+first API key without broadening the launch-ready instance list. Existing
+instances remain manageable through their rows and the full editor.
 
 Editing an implicit instance, or setting it as the default, writes a
 **shadowing** entry that carries only the fields the user changed — never a

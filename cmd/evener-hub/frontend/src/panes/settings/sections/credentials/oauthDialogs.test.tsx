@@ -1,11 +1,18 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AuthLoginCompleteResponse, InstanceListResponse } from "../../../../protocol/types.gen";
+import type {
+  AuthDevicePollResponse,
+  AuthLoginCompleteResponse,
+  InstanceListResponse,
+} from "../../../../protocol/types.gen";
+import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
+import { getToasts } from "../../../../widgets/toast/store";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 
 function connectFakeClient(): FakeClient {
@@ -21,18 +28,18 @@ async function advanceTime(milliseconds: number): Promise<void> {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
+  // The auth mutations carry the page's identity on the wire now, so the
+  // assertions that pin their exact params need one that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
   vi.useRealTimers();
-  // vi.spyOn(window, "open") (DeviceCodeDialog tests below) returns the SAME
-  // spy instance - with its accumulated call history - if window.open is
-  // already spied when a later test calls spyOn again. Without restoring
-  // here, "shows the user code without auto-opening the verification URL"
-  // (which asserts NOT called) inherits the prior "Send me to OpenAI" test's
-  // one real call under any run order that puts that test first (kata ycet).
+  // Leave no spy installed between tests: each test that watches a new tab
+  // installs its own capture (openInNewTab.testSupport), and nothing should
+  // still be watching after the test that installed it.
   vi.restoreAllMocks();
 });
 
@@ -97,7 +104,12 @@ describe("OAuthRedirectDialog", () => {
   test("submitting a redirect URL calls authLoginComplete and, on success, fetches + calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/login/complete", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-1", redirectUrl: "https://redirect?code=1" });
+      expect(params).toEqual({
+        provider: "work",
+        flowId: "flow-1",
+        redirectUrl: "https://redirect?code=1",
+        originClientId: "test-tab",
+      });
       return {
         status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
       };
@@ -126,6 +138,46 @@ describe("OAuthRedirectDialog", () => {
     // test's own flow has actually completed.
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+  });
+
+  test("a completed sign-in whose listing read is lost is still reported as a sign-in", async () => {
+    const fake = connectFakeClient();
+    let complete!: (value: AuthLoginCompleteResponse) => void;
+    fake.on(
+      "evener/auth/login/complete",
+      () =>
+        new Promise<AuthLoginCompleteResponse>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    render(
+      <>
+        <OAuthRedirectDialog
+          name="work"
+          flowId="flow-1"
+          authUrl="https://x"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Redirect URL"), "https://redirect?code=1");
+    await act(async () => fireEvent.submit(screen.getByRole("button", { name: "Finish" }).closest("form")!));
+    // The connection drops while the completion is in flight. The follow-up
+    // listing read then rejects (fetch's requireClient contract) - but the
+    // sign-in itself already succeeded, so it must not be reported as failed.
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    await act(async () =>
+      complete({
+        status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
+      }),
+    );
+    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled());
+    expect(within(screen.getByRole("dialog")).queryByText(/no client connected/)).toBeNull();
   });
 
   test("failure shows an inline error and a 'Sign-in failed' toast, without closing", async () => {
@@ -158,7 +210,7 @@ describe("OAuthRedirectDialog", () => {
 describe("DeviceCodeDialog", () => {
   test("shows the user code without auto-opening the verification URL", () => {
     connectFakeClient();
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(
       <DeviceCodeDialog
         name="work"
@@ -172,16 +224,18 @@ describe("DeviceCodeDialog", () => {
       />,
     );
     expect(screen.getByText("ABCD-EFGH")).toBeTruthy();
-    expect(openSpy).not.toHaveBeenCalled();
+    // Showing the code sends the user nowhere: the button below is the only
+    // thing that opens the verification URL.
+    expect(anchors).toHaveLength(0);
   });
 
-  test("'Send me to OpenAI' stays disabled until the code is copied, then opens the verification URL", async () => {
+  test("'Send me to OpenAI' stays disabled until the code is copied, then opens the verification URL without an opener", async () => {
     connectFakeClient();
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
       configurable: true,
     });
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const anchors = captureNewTabs();
     render(
       <DeviceCodeDialog
         name="work"
@@ -201,7 +255,49 @@ describe("DeviceCodeDialog", () => {
     await screen.findByRole("button", { name: /copied/i });
     expect(sendButton.disabled).toBe(false);
     await user.click(sendButton);
-    expect(openSpy).toHaveBeenCalledWith("https://verify", "_blank", "noopener");
+    expect(openedNewTab(anchors)).toEqual({ url: "https://verify", target: "_blank", rel: NEW_TAB_POLICY });
+  });
+
+  // A verification URL the opener refuses (a non-http(s) scheme, or one the URL
+  // parser rejects) must still reach the user. openInNewTab throws loudly by
+  // design, but an event-handler throw never reaches an error boundary, so
+  // without the dialog's own catch the click would silently do nothing.
+  test("a refused verification URL reports an error toast instead of throwing", async () => {
+    connectFakeClient();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true,
+    });
+    const anchors = captureNewTabs();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="javascript:alert(1)"
+        intervalSeconds={5}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={() => {}}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /copy code/i }));
+    const sendButton = await screen.findByRole("button", { name: /send me to openai/i });
+    expect((sendButton as HTMLButtonElement).disabled).toBe(false);
+    // React 19 routes an event-handler throw to reportGlobalError instead of
+    // rethrowing it out of dispatch, so "does not throw" here describes this
+    // handler's own contract: the refusal has to become a toast, not an
+    // uncaught error, and nothing may be opened.
+    expect(() => fireEvent.click(sendButton)).not.toThrow();
+    expect(anchors).toHaveLength(0);
+    expect(
+      getToasts().some(
+        (toast) =>
+          toast.kind === "error" &&
+          toast.text === "Couldn't open the verification page: refusing to open a URL with the javascript: scheme",
+      ),
+    ).toBe(true);
   });
 
   test("a dismissed device editor ignores success after its refresh completes", async () => {
@@ -239,7 +335,7 @@ describe("DeviceCodeDialog", () => {
     vi.useFakeTimers();
     const fake = connectFakeClient();
     fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "work", flowId: "flow-2" });
+      expect(params).toEqual({ provider: "work", flowId: "flow-2", originClientId: "test-tab" });
       return { state: "authorized" };
     });
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
@@ -262,6 +358,45 @@ describe("DeviceCodeDialog", () => {
     await advanceTime(1000);
     // Asserting on onSuccess rather than toast DOM text - see the identical
     // comment on OAuthRedirectDialog's own success test for why.
+    expect(onSuccess).toHaveBeenCalled();
+    expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
+  });
+
+  test("an authorized poll whose listing read is lost still completes the sign-in", async () => {
+    vi.useFakeTimers();
+    const fake = connectFakeClient();
+    let poll!: (value: AuthDevicePollResponse) => void;
+    fake.on(
+      "evener/auth/device/poll",
+      () =>
+        new Promise<AuthDevicePollResponse>((resolve) => {
+          poll = resolve;
+        }),
+    );
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    const onSuccess = vi.fn();
+    render(
+      <>
+        <DeviceCodeDialog
+          name="work"
+          flowId="flow-2"
+          userCode="ABCD-EFGH"
+          verificationUrl="https://verify"
+          intervalSeconds={1}
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+          onRestart={() => {}}
+        />
+        <Toast />
+      </>,
+    );
+    await advanceTime(1000);
+    // The connection drops while the poll is in flight: the authorization
+    // itself succeeded, and the follow-up listing read must neither turn it
+    // into a failure nor escape this timer-driven tick as an unhandled
+    // rejection.
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    await act(async () => poll({ state: "authorized" }));
     expect(onSuccess).toHaveBeenCalled();
     expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
   });

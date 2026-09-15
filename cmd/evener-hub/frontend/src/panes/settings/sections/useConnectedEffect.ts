@@ -31,7 +31,9 @@ import { useEffect } from "react";
 import { connectionStore } from "../../../stores/connection";
 
 export function useConnectedEffect(
-  attempt: (isCancelled: () => boolean) => Promise<void>,
+  // The awaited value is the caller's own (fetch()'s applied verdict, a
+  // section's assembled state); this hook starts the call and discards it.
+  attempt: (isCancelled: () => boolean) => Promise<unknown>,
   deps: readonly unknown[],
 ): void {
   useEffect(() => {

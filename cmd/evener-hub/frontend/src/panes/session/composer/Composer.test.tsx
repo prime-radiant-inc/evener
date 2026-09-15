@@ -34,11 +34,8 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "./queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
