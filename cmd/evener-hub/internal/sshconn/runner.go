@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -27,10 +28,27 @@ type Runner interface {
 	// Run executes a one-shot command. On success it returns the command's
 	// stdout alone: ssh writes benign notices (host-key additions, a login
 	// message) to stderr, and a caller that parses the result must not see them.
-	// On failure it returns stdout and stderr together, because the cause (an
-	// ssh refusal, launch-check's complaint) may be on either stream.
+	// On failure it returns stdout and stderr together for the diagnostic, and
+	// the error is a *RunFailure carrying each stream separately, which is what
+	// lets a caller classify the cause from ssh's own stderr rather than from a
+	// concatenation the remote command's output can poison.
 	Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
 }
+
+// RunFailure reports a failed one-shot command with its two streams kept apart:
+// ssh's own diagnostics (an auth refusal, an unreachable host) arrive on stderr,
+// while the remote command's output arrives on stdout. A caller that classifies
+// the failure reads Stderr, because the remote program's stdout can contain the
+// same words for an unrelated reason.
+type RunFailure struct {
+	Stdout []byte
+	Stderr []byte
+	Err    error
+}
+
+func (e *RunFailure) Error() string { return fmt.Sprintf("run failed: %v", e.Err) }
+
+func (e *RunFailure) Unwrap() error { return e.Err }
 
 // Stdio is the byte-stream surface of a started child.
 type Stdio interface {
@@ -90,7 +108,11 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return append(stdout.Bytes(), stderr.Bytes()...), err
+		return append(stdout.Bytes(), stderr.Bytes()...), &RunFailure{
+			Stdout: stdout.Bytes(),
+			Stderr: stderr.Bytes(),
+			Err:    err,
+		}
 	}
 	return stdout.Bytes(), nil
 }
@@ -114,7 +136,12 @@ func (s *execStdio) Stdout() io.ReadCloser { return s.stdout }
 func (s *execStdio) Kill() error {
 	s.killOnce.Do(func() {
 		if s.cmd.Process != nil {
-			s.killErr = s.cmd.Process.Kill()
+			// A child that already exited on its own (a dropped link, a refused
+			// handshake) has nothing left to signal: ErrProcessDone is the normal
+			// outcome there, not a teardown failure.
+			if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				s.killErr = err
+			}
 		}
 	})
 	return s.killErr
@@ -203,19 +230,51 @@ func evenerCommand(path string) string {
 }
 
 // rawCommandArgv builds `ssh <opts> -- <dest> <remote>` for a remote command
-// that is not evener (uname, the environment probe).
+// that is not evener (uname, the environment probe). remote is a shell snippet
+// rather than a word list, so it is the one argument passed through verbatim: a
+// caller using it hands the remote shell an expression to evaluate on purpose.
 func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 	argv := sshBaseArgv(o)
 	argv = append(argv, sshDest(h)...)
 	return append(argv, remote)
 }
 
-// evenerCommandArgv builds `ssh <opts> -- <dest> <evener> <args...>`.
+// evenerCommandArgv builds `ssh <opts> -- <dest> <evener> <args...>`. Every word
+// is quoted for the remote login shell, because ssh joins the remote argv with
+// spaces and hands the result to that shell: an evener_path with a space would
+// otherwise split into two arguments, and a value carrying a metacharacter would
+// be executed there instead of passed to evener.
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
 	argv = append(argv, sshDest(h)...)
-	argv = append(argv, evenerCommand(h.EvenerPath))
-	return append(argv, args...)
+	argv = append(argv, quoteRemoteWord(evenerCommand(h.EvenerPath)))
+	for _, a := range args {
+		argv = append(argv, quoteRemoteWord(a))
+	}
+	return argv
+}
+
+// remoteShellSpecial lists the bytes that make a word unsafe to hand to a remote
+// login shell as-is. "~" is deliberately absent: it expands only at the start of
+// a word, and quoting it away would break the "~/bin/evener" spelling for no
+// safety gain.
+const remoteShellSpecial = " \t\n'\"\\$`;&|<>()*?[]{}!#"
+
+// quoteRemoteWord renders one word for the remote login shell. A word already
+// free of whitespace and shell metacharacters is returned unchanged, so the
+// ordinary argv keeps the exact form the spec documents; anything else is
+// single-quoted, with an embedded quote closed, escaped, and reopened ('\”, the
+// POSIX idiom). A quoted value is literal, so a leading "~" survives only when
+// the word did not need quoting: use an absolute path when the value itself
+// contains whitespace or a metacharacter.
+func quoteRemoteWord(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(s, remoteShellSpecial) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // channelArgv is the exact non-interactive bridge form:
