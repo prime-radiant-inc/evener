@@ -1,15 +1,17 @@
 // ActivityPanelBody plumbing: the session's watches reach the tree, and an
 // idle session whose only pending work is a watch still shows its rows instead
 // of the "no retained activity" empty state.
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import * as activityRows from "@evener/appwire-client";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { createRef } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { NavigationWatchSummary, ThreadCapabilities } from "../../../protocol/types.gen";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
-import { ActivityPanelBody } from "./ActivityPanel";
+import { ActivityPanel, ActivityPanelBody, type ActivityPanelHandle } from "./ActivityPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -109,7 +111,6 @@ describe("ActivityPanelBody watches", () => {
       <ActivityPanelBody
         sessionRef={ref}
         model={testModel(ref)}
-        now={NOW}
         watches={[
           watch({ id: "watch_plumb", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
         ]}
@@ -128,7 +129,7 @@ describe("ActivityPanelBody watches", () => {
     connectionStore.getState().connect(fake);
     fake.on("evener/jobs/list", () => ({ data: emptyTree(ref) }));
 
-    render(<ActivityPanelBody sessionRef={ref} model={testModel(ref)} now={NOW} watches={undefined} />);
+    render(<ActivityPanelBody sessionRef={ref} model={testModel(ref)} watches={undefined} />);
 
     await screen.findByText("No retained activity yet");
     expect(screen.queryByTestId("watch-group")).toBeNull();
@@ -144,9 +145,7 @@ describe("ActivityPanelBody watches", () => {
     connectionStore.getState().connect(fake);
     fake.on("evener/jobs/list", () => ({ data: emptyTree(ref) }));
 
-    render(
-      <ActivityPanelBody sessionRef={ref} model={testModel(ref)} now={NOW} watches={undefined} omittedWatches={4} />,
-    );
+    render(<ActivityPanelBody sessionRef={ref} model={testModel(ref)} watches={undefined} omittedWatches={4} />);
 
     await screen.findByTestId("watch-group");
     expect(screen.getByText("0 armed total · +4 more")).toBeTruthy();
@@ -166,7 +165,6 @@ describe("ActivityPanelBody watches", () => {
       <ActivityPanelBody
         sessionRef={ref}
         model={testModel(ref)}
-        now={NOW}
         watches={Array.from({ length: 32 }, (_, i) => watch({ id: `armed-${i}` }))}
         omittedWatches={8}
         omittedArmedWatches={8}
@@ -192,7 +190,6 @@ describe("ActivityPanelBody watches", () => {
       <ActivityPanelBody
         sessionRef={ref}
         model={testModel(ref)}
-        now={NOW}
         watches={[
           watch({ id: "watch_failed_load", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
         ]}
@@ -216,7 +213,6 @@ describe("ActivityPanelBody watches", () => {
       <ActivityPanelBody
         sessionRef={ref}
         model={testModel(ref)}
-        now={NOW}
         watches={[
           watch({ id: "watch_loading", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
         ]}
@@ -241,7 +237,6 @@ describe("ActivityPanelBody watches", () => {
       <ActivityPanelBody
         sessionRef={ref}
         model={testModel(ref)}
-        now={NOW}
         watches={[watch({ id: "watch_ended", note: "Deploy watch" })]}
       />,
     );
@@ -250,5 +245,43 @@ describe("ActivityPanelBody watches", () => {
 
     expect(await screen.findByText("This session has ended")).toBeTruthy();
     expect(screen.getByRole("treeitem", { name: "Watch: Deploy watch" })).toBeTruthy();
+  });
+
+  // The chrome hands the panel its own ticking clock as `now`. The panel must
+  // not thread that clock into the tree: the tree owns TreeNowContext and only
+  // its live-duration leaves consume it, so a tick of the chrome clock must
+  // leave the whole row list untouched. Before the fix the changed `now` prop
+  // reached WatchRowView and re-rendered the row (and its watchMeta) every tick.
+  test("the chrome's ticking clock does not re-render the watch rows", async () => {
+    const ref = "ref_watch_tick";
+    const fake = new FakeClient("ready");
+    connectionStore.getState().connect(fake);
+    fake.on("evener/jobs/list", () => ({ data: emptyTree(ref) }));
+
+    const watches = [
+      watch({ id: "watch_tick", note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }] }),
+    ];
+    // One model object across both renders, so a re-render can only come from
+    // the clock changing, never from a fresh prop identity.
+    const model = testModel(ref);
+    const handle = createRef<ActivityPanelHandle>();
+    const panel = (now: number) => (
+      <ActivityPanel ref={handle} sessionRef={ref} model={model} now={now} watches={watches} hideTrigger />
+    );
+    const { rerender } = render(panel(NOW));
+    act(() => handle.current?.open());
+    await screen.findByRole("treeitem", { name: "Watch: Poll the queue depth" });
+
+    // WatchRowView renders its right-hand meta through watchMeta, so a row
+    // re-render shows up here. Spy after the tree has settled so the count
+    // measures only the clock tick below.
+    const rowRender = vi.spyOn(activityRows, "watchMeta");
+    const atRest = rowRender.mock.calls.length;
+
+    act(() => {
+      rerender(panel(NOW + 3000));
+    });
+
+    expect(rowRender.mock.calls.length).toBe(atRest);
   });
 });
