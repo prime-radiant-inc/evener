@@ -88,9 +88,10 @@ type WebConfig struct {
 	// are the escapes a read-only harness cannot drive: the git-head AppWire
 	// method, the live-provider model query, and the directory creator. See
 	// cmd/evener-hub's sandbox_test.go.
-	ResolveGitHead func(ctx context.Context, dir string) (string, error) // nil → real `git`
-	LiveModels     func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
-	MkdirAll       func(path string, perm os.FileMode) error             // nil → os.MkdirAll
+	ResolveGitHead   func(ctx context.Context, dir string) (string, error) // nil → real `git`
+	ResolveGitOrigin func(ctx context.Context, dir string) (string, error) // nil → real `git`
+	LiveModels       func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
+	MkdirAll         func(path string, perm os.FileMode) error             // nil → os.MkdirAll
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

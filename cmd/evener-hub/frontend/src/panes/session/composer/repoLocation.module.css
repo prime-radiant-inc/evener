@@ -1,0 +1,54 @@
+/* One quiet caption line under the prompt card: the session's working dir and
+ * git branch. No border or background of its own - it is a fact beside the
+ * composer, not another box under it. The inline padding matches
+ * widgets/promptcard's own (`var(--space-2)`) so the path starts on the same
+ * column as the card's text. */
+.line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding-inline: var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+/* The path is machine text, so it takes the mono face, and it is the line's
+ * only shrinkable part: a deep path ellipsizes while the branch it sits beside
+ * stays whole. `title` carries the full path (RepoLocation.tsx). */
+.path {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
+/* The branch never shrinks: it is the line's one actionable fact, and a clipped
+ * branch name would be worse than a clipped path. */
+.branch {
+  flex: none;
+  color: var(--ink-mid);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: none;
+  color: var(--ink-mid);
+  text-decoration: none;
+}
+
+.link:hover .branch {
+  color: var(--ink-hi);
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
