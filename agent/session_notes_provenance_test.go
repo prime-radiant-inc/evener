@@ -394,3 +394,111 @@ func TestRestoredHistoryCopyCorrelatesLegacyNoteSteerWithItsOuterRecord(t *testi
 		t.Fatalf("restored model context lost the note text: %q", got)
 	}
 }
+
+// A note delivery that retried minted its inner steer under the derived id plus
+// "/attempt-N", so the correlation has to read that grammar too. A kindless retry
+// steer is still note-origin: the rebuilt entry normalizes it, carries the note
+// kind, and the same reader decides the history copy.
+func TestRebuiltLegacyNoteSteerRetryCorrelatesWithItsOuterRecord(t *testing.T) {
+	const innerID = "cm-legacy-note/note-steer/attempt-2"
+	snapshot := clientMutationSnapshot{
+		SteeringOrder: []string{innerID},
+		Journal: map[string]clientMutationRecord{
+			"cm-legacy-note": {ClientMutationID: "cm-legacy-note", Method: clientMutationMethodNotesHumanSet, ExecutionState: "accepted"},
+			innerID:          {ClientMutationID: innerID, Method: clientMutationMethodSteer, ExecutionState: "accepted"},
+		},
+		PendingExecutions: clientMutationPendingExecutions{
+			innerID: appwire.PendingMutation{
+				ExecutionState: "accepted",
+				Input:          []appwire.InputItem{{Type: "text", Text: "human updated their whiteboard: \x1b[31mretry\x1b[0m note"}},
+			},
+		},
+	}
+
+	entries := clientSteeringFromSnapshot(snapshot)
+	if len(entries) != 1 {
+		t.Fatalf("rebuilt %d steering entries, want 1", len(entries))
+	}
+	if strings.ContainsRune(entries[0].Text, 0x1b) {
+		t.Fatalf("legacy retry note steer was not normalized: %q", entries[0].Text)
+	}
+	if entries[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("legacy retry note steer kind = %q, want %q", entries[0].Kind, events.SteeringKindHumanNote)
+	}
+	// The history copy reads the same reader, so the retry resolves there too.
+	if origin := steeringOriginFromJournal(snapshot.Journal, innerID); origin.kind != events.SteeringKindHumanNote {
+		t.Fatalf("history-copy origin for the retry = %+v, want the note kind", origin)
+	}
+}
+
+// A turn that kept the note kind stays note-origin even when its journal record
+// did not. The strip exists to keep note text out of the model copy, so evidence
+// from either side decides and the record cannot demote a turn the write path
+// already marked; the reverse -- a record that proves note origin -- is covered
+// by the table test above.
+func TestHistoryCopyKeepsTheTurnsOwnNoteKindOverAKindlessRecord(t *testing.T) {
+	const text = "human updated their whiteboard: \x1b[31mnote\x1b[0m"
+	cases := map[string]struct {
+		turn    schema.Turn
+		origins map[string]steeringOrigin
+	}{
+		"kindless record leaves the turn's note kind standing": {
+			turn: schema.Turn{
+				Kind: schema.TurnSteering, SteeringKind: events.SteeringKindHumanNote,
+				ClientMutationID: "cm-note", Message: llm.User(text),
+			},
+			origins: map[string]steeringOrigin{"cm-note": {method: clientMutationMethodSteer}},
+		},
+		"a record that proves note origin still strips": {
+			turn: schema.Turn{
+				Kind: schema.TurnSteering, SteeringKind: events.SteeringKindInterrupted,
+				ClientMutationID: "cm-note", Message: llm.User(text),
+			},
+			origins: map[string]steeringOrigin{"cm-note": {kind: events.SteeringKindHumanNote}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := escapeNotesHistoryTurns([]schema.Turn{tc.turn}, tc.origins)
+			if got := out[0].Message.Text(); strings.ContainsRune(got, 0x1b) {
+				t.Fatalf("history copy = %q, want the note-origin control bytes stripped", got)
+			}
+		})
+	}
+}
+
+// A note record written since kinds were stamped proves the note write came from
+// the current writer, which mints no derived inner steer at all, so a steer whose
+// id merely imitates the retired grammar beside it is not a legacy inner note
+// steer: its bytes and its empty kind stay exactly as recorded.
+func TestRebuiltSteerImitatingTheGrammarBesideAModernNoteRecordKeepsBytes(t *testing.T) {
+	const id = "cm-note/note-steer"
+	const text = "human updated their whiteboard: \x1b[31mforged\x1b[0m bytes"
+	snapshot := clientMutationSnapshot{
+		SteeringOrder: []string{id},
+		Journal: map[string]clientMutationRecord{
+			"cm-note": {
+				ClientMutationID: "cm-note", Method: clientMutationMethodNotesHumanSet,
+				SteeringKind: events.SteeringKindHumanNote, ExecutionState: "accepted",
+			},
+			id: {ClientMutationID: id, Method: clientMutationMethodSteer, ExecutionState: "accepted"},
+		},
+		PendingExecutions: clientMutationPendingExecutions{
+			id: appwire.PendingMutation{
+				ExecutionState: "accepted",
+				Input:          []appwire.InputItem{{Type: "text", Text: text}},
+			},
+		},
+	}
+
+	entries := clientSteeringFromSnapshot(snapshot)
+	if len(entries) != 1 {
+		t.Fatalf("rebuilt %d steering entries, want 1", len(entries))
+	}
+	if entries[0].Text != text {
+		t.Fatalf("steer beside a modern note record = %q, want it verbatim (%q)", entries[0].Text, text)
+	}
+	if entries[0].Kind != "" {
+		t.Fatalf("steer beside a modern note record kind = %q, want the recorded empty kind", entries[0].Kind)
+	}
+}
