@@ -105,8 +105,16 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	}
 	defer func() { <-t.send }()
 
-	// Re-check under the lock: a context canceled while we waited must neither
-	// write a frame nor tear the stream down for the call that holds the lock.
+	// Re-check under the lock. Another call may have poisoned the transport
+	// while this one waited for it — a Recv that read an oversize frame, or a
+	// Send that wrote only part of one — and writing now would either return the
+	// stream's close error instead of the sticky cause, or, on a stream that
+	// tolerates writes after close, push a frame into a desynchronized stream.
+	if err := t.poisonErr(); err != nil {
+		return err
+	}
+	// A context canceled while we waited must neither write a frame nor tear the
+	// stream down for the call that holds the lock.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -176,6 +184,10 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 				if len(line) == 0 && len(chunk) == 0 {
 					return nil, io.EOF
 				}
+				// The stream ended mid-frame. Poisoning keeps that sticky: a
+				// later Recv would otherwise report a clean io.EOF, which reads
+				// as an orderly close rather than a truncated message.
+				t.poison(io.ErrUnexpectedEOF)
 				return nil, io.ErrUnexpectedEOF
 			}
 			return nil, err
@@ -183,7 +195,9 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 		line = append(line, chunk...)
 		// The trailing newline is framing, not payload: a frame whose payload is
 		// exactly the limit is in bounds. The delimiter was consumed, so the
-		// stream stays aligned even when the frame is rejected.
+		// stream stays aligned even when the frame is rejected — that is why this
+		// rejection deliberately does NOT poison, unlike the buffer-full path
+		// above where the rest of the frame is still on the wire.
 		if len(line)-1 > t.limit {
 			return nil, ErrStreamFrameTooLarge
 		}

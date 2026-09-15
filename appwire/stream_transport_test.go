@@ -149,6 +149,11 @@ func TestStreamTransportRejectsTornFrame(t *testing.T) {
 	if _, err := tr.readLine(); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("readLine err = %v, want io.ErrUnexpectedEOF", err)
 	}
+	// A torn frame is terminal, not a clean end of stream: a later Recv must
+	// report the truncation rather than an orderly io.EOF.
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("Recv after a torn frame = %v, want the poisoning io.ErrUnexpectedEOF", err)
+	}
 }
 
 func TestStreamTransportCleanEOFIsEOF(t *testing.T) {
@@ -346,6 +351,38 @@ func TestStreamTransportQueuedSendHonorsCancel(t *testing.T) {
 
 	close(st.release)
 	<-holder
+}
+
+// A send that was already queued on the write lock when the transport got
+// poisoned must observe the poisoning, not write into a stream that is gone.
+func TestStreamTransportQueuedSendSeesPoison(t *testing.T) {
+	st := &blockingWriteStream{release: make(chan struct{})}
+	tr := NewStreamTransport(st)
+
+	holder := make(chan error, 1)
+	go func() {
+		holder <- tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	}()
+	st.waitForWrites(t, 1)
+
+	queued := make(chan error, 1)
+	go func() {
+		queued <- tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`)))
+	}()
+
+	// Poison while the first send still holds the lock, then let it finish.
+	tr.poison(io.ErrShortWrite)
+	close(st.release)
+	<-holder
+
+	select {
+	case err := <-queued:
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("queued Send err = %v, want the poisoning io.ErrShortWrite", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued Send did not return")
+	}
 }
 
 // A canceled send that never wrote a byte must not tear the stream down for the
