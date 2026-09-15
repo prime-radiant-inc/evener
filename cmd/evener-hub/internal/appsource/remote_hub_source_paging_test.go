@@ -352,3 +352,150 @@ func TestRemoteHubSourceSerializesPerThreadItemPaging(t *testing.T) {
 		t.Fatal("two item pages for one remote thread reached the remote hub at once; per-thread paging must be serialized")
 	}
 }
+
+// itemPageWithKeyedEntries builds an item-mode page whose transcript key is
+// derived from the entry position, so pages fetched from one transcript stay
+// distinguishable across pages (unlike itemPageWithPositions, whose keys are
+// per-page ordinals).
+func itemPageWithKeyedEntries(cursor string, entries ...uint64) appwire.ThreadTurnsListResponse {
+	items := make([]appwire.ThreadItem, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, appwire.ThreadItem{
+			Type:          "text",
+			ID:            fmt.Sprintf("item-%d", entry),
+			TranscriptKey: fmt.Sprintf("key-%d", entry),
+			Position:      &appwire.ThreadItemPosition{Entry: entry},
+		})
+	}
+	return appwire.ThreadTurnsListResponse{
+		Data:       []appwire.Turn{{ID: "turn-1", Items: items}},
+		NextCursor: cursor,
+	}
+}
+
+// Replaying a cursor minted before the oldest page was reached must still be
+// answered once the continuation runs out of older pages. The remote hub returns
+// only a tail page per request, so a complete page is the oldest page, not the
+// whole transcript: retaining only it would make SelectCandidates reject a
+// boundary minted for a newer page as stale even though nothing changed. The
+// source retains the whole observed window instead, so a retried or duplicated
+// request is idempotent across every boundary it ever minted.
+func TestRemoteHubSourceCompleteContinuationAnswersEarlierBoundaries(t *testing.T) {
+	page1Cursor := remoteItemCursor(t, 10)
+	page2Cursor := remoteItemCursor(t, 7)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		switch remote.Cursor {
+		case "":
+			return scriptedReply{result: itemPageWithKeyedEntries(page1Cursor, 10, 11, 12)}
+		case page1Cursor:
+			return scriptedReply{result: itemPageWithKeyedEntries(page2Cursor, 7, 8, 9)}
+		case page2Cursor:
+			return scriptedReply{result: itemPageWithKeyedEntries("", 4, 5, 6)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+	})
+
+	page1, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if page1.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", page1)
+	}
+	page2, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: page1.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if page2.Candidates.OlderCursor == "" {
+		t.Fatalf("second page = %+v, want a live cursor", page2)
+	}
+	page3, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: page2.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("third page: %v", err)
+	}
+	if !page3.Exhausted || page3.Candidates.OlderCursor != "" {
+		t.Fatalf("third page = %+v, want exhaustion", page3)
+	}
+
+	replayed, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: page2.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("replayed cursor: %v", err)
+	}
+	if len(replayed.Candidates.Candidates) != 3 || replayed.Candidates.Candidates[0].Position.Entry != 4 {
+		t.Fatalf("replayed candidates = %+v, want the oldest page [4,5,6]", replayed.Candidates.Candidates)
+	}
+	if !replayed.Exhausted || replayed.Candidates.OlderCursor != "" {
+		t.Fatalf("replayed page = %+v, want exhaustion", replayed)
+	}
+}
+
+// A fresh observation that re-reports an already-observed position with a
+// different item is a rewrite even when the newest position is unchanged: the
+// incarnation must rotate so cursors minted against the replaced history fail
+// closed instead of being rebased onto the changed transcript.
+func TestRemoteHubSourceRotatesIdentityWhenObservedItemRewritten(t *testing.T) {
+	remoteCursor := remoteItemCursor(t, 10)
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteCursor, 8, 10)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	// The newest position (10) is unchanged, but the item at position 8 was
+	// replaced, so the retained history is not demonstrably compatible.
+	rewritten := appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithKeyedEntries("", 8, 10).Data},
+		OlderCursor: remoteCursor,
+	}
+	rewritten.Thread.Turns[0].Items[0].TranscriptKey = "key-8-rewritten"
+	result, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, rewritten)
+	if err != nil {
+		t.Fatalf("rewritten read: %v", err)
+	}
+	if result.Identity == first.Identity {
+		t.Fatalf("rewritten read kept identity %+v, want a fresh incarnation", result.Identity)
+	}
+	if _, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, result.Identity); err == nil {
+		t.Fatal("a cursor minted before the rewrite still decodes under the new incarnation")
+	}
+}
+
+// An actively paged thread must not lose its retained continuation to a newer
+// thread's insert; eviction reclaims the least recently committed continuation,
+// matching itemSnapshotStateCache's MoveToFront-on-put.
+func TestRemoteItemPagingCacheEvictsLeastRecentlyCommitted(t *testing.T) {
+	var cache remoteItemPagingCache
+	for index := range remoteItemPagingCapacity {
+		cache.put(fmt.Sprintf("k%02d", index), remoteItemPagingState{native: fmt.Sprintf("n%d", index)})
+	}
+	cache.put("k00", remoteItemPagingState{native: "touched"})
+	cache.put("overflow", remoteItemPagingState{native: "new"})
+
+	if _, ok := cache.peek("k00"); !ok {
+		t.Fatal("the most recently committed continuation was evicted")
+	}
+	if _, ok := cache.peek("k01"); ok {
+		t.Fatal("the least recently committed continuation survived eviction")
+	}
+	if _, ok := cache.peek("overflow"); !ok {
+		t.Fatal("the newly inserted continuation was evicted")
+	}
+}

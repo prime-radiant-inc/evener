@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/internal/appitempaging"
 )
 
@@ -161,6 +162,15 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
+	// Component 04's attach step returns sshconn's typed start failure for a host
+	// it could not reach or bring up (spawn, initialize, or preflight). That is
+	// host unavailability, so it maps like any other transient transport failure.
+	// sshconn.ErrSSHAuth, ErrProtocolIncompatible, ErrUnsupportedHost, and the
+	// other terminal classes are deliberately not matched: they name a host that
+	// will never attach and must stay raw so recovery is not retried forever.
+	if errors.Is(err, sshconn.ErrSSHStart) {
+		return appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": " + err.Error())
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
@@ -185,6 +195,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 func remoteHubTransportText(lower string) bool {
 	switch {
 	case containsWord(lower, "eof"),
+		strings.Contains(lower, "connection refused"),
 		strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "use of closed network connection"),
@@ -300,11 +311,13 @@ var remoteHubItemIncarnationSequence atomic.Uint64
 type remoteItemPagingState struct {
 	identity appitempaging.CursorIdentity
 	native   string
-	// candidates is the page the state was recorded from. It is retained only
-	// for a complete page (native == "") so the hub's size packer can still mint
-	// a continuable cursor: when packing drops the oldest selected items it mints
-	// one from identity, and that continuation must be answered locally from
-	// these candidates rather than rejected as stale.
+	// candidates is the chronological window observed under identity: every page
+	// fetched for this continuation, merged. It is more than the page just
+	// fetched because the remote hub returns only a tail page per request, so a
+	// complete page (native == "") is the oldest page, not the whole transcript.
+	// Retaining the merged window lets the hub's size packer mint a continuation
+	// from identity AND lets any boundary observed under identity be replayed
+	// locally, instead of failing ValidateCursorBoundary against the tail alone.
 	candidates []appitempaging.TranscriptItemCandidate
 	// complete marks a page the remote hub returned in full (it named no older
 	// cursor).
@@ -333,9 +346,14 @@ func (c *remoteItemPagingCache) put(key string, state remoteItemPagingState) {
 	if c.entries == nil {
 		c.entries = make(map[string]remoteItemPagingState)
 	}
-	if _, exists := c.entries[key]; !exists {
-		c.order = append(c.order, key)
+	// Recency is stamped on commit, matching itemSnapshotStateCache's
+	// MoveToFront-on-put: a re-put of an already retained key moves it to the
+	// back so eviction reclaims the least recently committed continuation, not
+	// the one an actively paging thread just advanced.
+	if index := slices.Index(c.order, key); index >= 0 {
+		c.order = append(c.order[:index], c.order[index+1:]...)
 	}
+	c.order = append(c.order, key)
 	c.entries[key] = state
 	for len(c.order) > remoteItemPagingCapacity {
 		oldest := c.order[0]
@@ -415,6 +433,13 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	candidates, next, err := s.remoteItemPage(ctx, remote)
 	if err != nil {
 		return ItemCandidateResult{}, err
+	}
+	// The requested boundary was validated under state.identity, so a page that
+	// contradicts the retained window means the transcript was rewritten after
+	// the cursor was minted. Answering under a rotated identity would splice old
+	// and new history together, so the continuation fails closed instead.
+	if _, compatible := remoteMergeCandidates(state.candidates, candidates); !compatible {
+		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
 	return s.recordRemoteItemPage(key, state.identity, candidates, next, state.head, state.hasHead)
 }
@@ -529,21 +554,60 @@ func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
 
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
 // remote page. The incarnation is reused while the page's newest position is
-// not older than the retained one: an untouched or appended transcript keeps
-// outstanding cursors valid, so a re-read between a page and a scroll no longer
-// invalidates them. A page that starts before the retained head is a rewrite or
-// truncation, so the incarnation rotates and outstanding cursors fail closed.
-// The remote hub stays the authority for its own opaque cursor; this fence only
-// stops the controller's cursor namespace from churning on every read.
+// not older than the retained one AND the page does not contradict the retained
+// window: an untouched or appended transcript keeps outstanding cursors valid,
+// so a re-read between a page and a scroll no longer invalidates them. A page
+// that starts before the retained head, or that re-reports an observed position
+// with a different item, is a rewrite, so the incarnation rotates and
+// outstanding cursors fail closed. The remote hub stays the authority for its
+// own opaque cursor; this fence only stops the controller's cursor namespace
+// from churning on every compatible read.
 func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appitempaging.TranscriptItemCandidate) (appitempaging.CursorIdentity, appwire.ThreadItemPosition, bool) {
 	head, hasHead := remoteItemPageHead(candidates)
 	if !hasHead {
 		return s.mintRemoteItemIdentity(key), appwire.ThreadItemPosition{}, false
 	}
 	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && remotePositionCompare(head, state.head) >= 0 {
-		return state.identity, head, true
+		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
+			return state.identity, head, true
+		}
 	}
 	return s.mintRemoteItemIdentity(key), head, true
+}
+
+// remoteMergeCandidates folds a newly observed page into the retained window,
+// keeping it chronological. It reports ok=false when a position observed before
+// now carries a different fingerprint, i.e. the item at that position was
+// replaced and the transcript rewritten under this incarnation. Items are keyed
+// by position: an item-mode projection positions every item uniquely, and a
+// replacement at an observed position must be recognized rather than silently
+// appended at the same boundary.
+func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, bool) {
+	if len(observed) == 0 {
+		return retained, true
+	}
+	if len(retained) == 0 {
+		return append([]appitempaging.TranscriptItemCandidate(nil), observed...), true
+	}
+	byPosition := make(map[appwire.ThreadItemPosition]appitempaging.TranscriptItemCandidate, len(retained))
+	for _, candidate := range retained {
+		byPosition[candidate.Position] = candidate
+	}
+	merged := append([]appitempaging.TranscriptItemCandidate(nil), retained...)
+	for _, candidate := range observed {
+		if previous, ok := byPosition[candidate.Position]; ok {
+			if transcriptItemFingerprint(previous) != transcriptItemFingerprint(candidate) {
+				return nil, false
+			}
+			continue
+		}
+		byPosition[candidate.Position] = candidate
+		merged = append(merged, candidate)
+	}
+	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
+		return remotePositionCompare(a.Position, b.Position)
+	})
+	return merged, true
 }
 
 // recordRemoteItemPage builds the controller window for one remote page and
@@ -556,14 +620,27 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	head appwire.ThreadItemPosition,
 	hasHead bool,
 ) (ItemCandidateResult, error) {
+	retained := []appitempaging.TranscriptItemCandidate(nil)
+	if previous, ok := s.itemPaging.peek(key); ok && previous.identity == identity {
+		retained = previous.candidates
+	}
+	merged, compatible := remoteMergeCandidates(retained, candidates)
+	if !compatible {
+		// The fresh page contradicts the retained window, so the transcript was
+		// rewritten under this incarnation: rotate it and discard the stale
+		// window rather than answering future cursors from it.
+		identity = s.mintRemoteItemIdentity(key)
+		merged = append([]appitempaging.TranscriptItemCandidate(nil), candidates...)
+		head, hasHead = remoteItemPageHead(merged)
+	}
 	window := appitempaging.TranscriptItemWindow{Candidates: candidates}
-	state := remoteItemPagingState{identity: identity, native: native, complete: native == "", head: head, hasHead: hasHead}
+	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, complete: native == "", head: head, hasHead: hasHead}
 	if native == "" {
 		// The identity is returned even when the page is complete: packing can
 		// still drop the oldest item for size and needs an identity to mint a
 		// continuation cursor from, exactly as the local-daemon source does. The
-		// candidates are retained so that continuation can be served locally.
-		state.candidates = candidates
+		// merged window is retained so that continuation, and every boundary
+		// observed under this identity, can be served locally.
 		s.itemPaging.put(key, state)
 		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
 	}

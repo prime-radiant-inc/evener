@@ -438,6 +438,82 @@ func TestHubRPCThreadReadDoesNotEnrichRemoteFilesAsLocal(t *testing.T) {
 	}
 }
 
+// A remote thread's sha-addressed images live on the remote host. The hub's
+// stamp pass mints /s/<session>/images/<sha>, which handleSessionImage resolves
+// against this hub's own Past index; a remote session is never in it, so the
+// stamp must not run for a remote source. The descriptor stays exactly as the
+// remote hub returned it (here: no URL, because the remote hub could not mint
+// one either).
+func TestHubRPCThreadReadDoesNotStampRemoteImageURLs(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	remoteThread := appwire.Thread{
+		ID:        "t1",
+		SessionID: "t1",
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:t1"},
+		Turns: []appwire.Turn{{
+			ID: "turn-1",
+			Items: []appwire.ThreadItem{{
+				Type:          "commandExecution",
+				ID:            "item-image",
+				TranscriptKey: "key-image",
+				Position:      &appwire.ThreadItemPosition{Entry: 0},
+				ToolName:      "shell",
+				CallID:        "call-image",
+				ArgumentsJSON: `{}`,
+				Status:        appwire.TurnStatusCompleted,
+				OutputImages:  []appwire.OutputImage{{Source: "tool-result", SHA: sha}},
+				Images:        []appwire.InputItem{{Metadata: map[string]string{"sha": sha}}},
+			}},
+			Status: appwire.TurnStatusCompleted,
+		}},
+	}
+	client, _ := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodThreadRead:
+			return appwire.ThreadReadResponse{Thread: remoteThread}
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	rpc := dialHubRPC(t, srv)
+	defer rpc.Close()
+	if _, err := rpc.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := rpc.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "h1:t1", IncludeTurns: true, ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns = %+v, want the single remote image item", resp.Thread.Turns)
+	}
+	item := resp.Thread.Turns[0].Items[0]
+	if len(item.OutputImages) != 1 {
+		t.Fatalf("output images = %+v, want the remote descriptor preserved", item.OutputImages)
+	}
+	if got := item.OutputImages[0].URL; got != "" {
+		t.Fatalf("remote output image URL = %q, want it left unstamped (this hub cannot serve a remote session)", got)
+	}
+	if len(item.Images) != 1 || item.Images[0].URL != "" {
+		t.Fatalf("remote input image = %+v, want it left unstamped", item.Images)
+	}
+}
+
 // A remote thread's CWD names the remote host's filesystem. When that path also
 // exists on the controller (a shared layout such as /home/<user>/<repo>), the
 // sidebar list must not resolve it locally and stamp a controller-local project

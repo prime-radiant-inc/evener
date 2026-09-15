@@ -135,11 +135,20 @@ type threadReadLocalImagePolicy interface {
 // enriched: running the local file pass on a remote CWD would probe unrelated
 // controller-local paths and could attach descriptors for files the thread
 // never wrote.
+//
+// A source whose images are not local is left exactly as the remote hub returned
+// it. stampThreadImageURLs mints this hub's sha-addressed /s/<session>/images/<sha>
+// route, which handleSessionImage resolves against this hub's own Past index; a
+// remote session is never in it, so stamping would hand the browser a
+// controller-local route that 404s (or, on a session-id collision, serves another
+// session's bytes). The remote hub stamps its own descriptors before replying;
+// its route is relative and needs a controller-side proxy to resolve, which is
+// not part of this read path.
 func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) appwire.Thread {
-	thread = stampThreadImageURLs(thread)
 	if policy, ok := source.(threadReadLocalImagePolicy); ok && !policy.EnrichThreadFileBackedImages() {
 		return thread
 	}
+	thread = stampThreadImageURLs(thread)
 	return enrichThreadFileBackedOutputImages(thread)
 }
 
