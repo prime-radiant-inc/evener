@@ -11979,6 +11979,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
 		appwire.MethodEvenerPluginPreview,
+		// Component 07a's remote-admin proxy.
+		appwire.MethodEvenerHostRequest,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does
