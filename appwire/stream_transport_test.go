@@ -581,6 +581,63 @@ func (s *parkedReadStream) Read([]byte) (int, error) {
 func (s *parkedReadStream) Write(p []byte) (int, error) { return len(p), nil }
 func (s *parkedReadStream) Close() error                { return nil }
 
+// blockingCloseStream parks in Close until released and reports when it has been
+// entered, so a test can hold a close in progress.
+type blockingCloseStream struct {
+	entered  chan struct{}
+	released chan struct{}
+}
+
+func (s *blockingCloseStream) Read([]byte) (int, error)    { return 0, io.EOF }
+func (s *blockingCloseStream) Write(p []byte) (int, error) { return len(p), nil }
+
+func (s *blockingCloseStream) Close() error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-s.released
+	return nil
+}
+
+// A Close that arrives while the underlying close is still running must wait for
+// it: otherwise it reports the transport closed while the stream is still open
+// and blocked I/O has not been unblocked.
+func TestStreamTransportCloseWaitsForInProgressClose(t *testing.T) {
+	stream := &blockingCloseStream{entered: make(chan struct{}, 1), released: make(chan struct{})}
+	tr := NewStreamTransport(stream)
+
+	poisoned := make(chan struct{})
+	go func() {
+		tr.poison(errors.New("teardown"))
+		close(poisoned)
+	}()
+	select {
+	case <-stream.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("poison never reached the underlying close")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		_ = tr.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the underlying close was still in progress")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(stream.released)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return after the underlying close finished")
+	}
+	<-poisoned
+}
+
 // Nothing may reach the stream after Close returns: a write that starts later is
 // refused before it touches the closer.
 func TestStreamTransportCloseAdmitsNoFurtherWrites(t *testing.T) {

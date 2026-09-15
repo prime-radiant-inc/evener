@@ -65,6 +65,11 @@ type StreamTransport struct {
 
 	mu       sync.Mutex
 	poisoned error
+	// closeOnce runs the underlying close exactly once; every later caller waits
+	// for it rather than reaching the closer again, so no caller can observe the
+	// stream as closed until it really is.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewStreamTransport returns a transport with the default frame limit.
@@ -365,8 +370,19 @@ func (t *StreamTransport) poison(err error) {
 	}
 	t.mu.Unlock()
 	if first {
-		_ = t.rw.Close()
+		_ = t.doClose()
 	}
+}
+
+// doClose closes the underlying stream, once. A caller arriving while the close
+// is in progress waits for it: io.Closer's post-close behavior is undefined, and
+// a second caller must not be able to report the transport closed while the
+// first close is still running.
+func (t *StreamTransport) doClose() error {
+	t.closeOnce.Do(func() {
+		t.closeErr = t.rw.Close()
+	})
+	return t.closeErr
 }
 
 func (t *StreamTransport) poisonErr() error {
@@ -406,13 +422,16 @@ func (t *StreamTransport) Close() error {
 	}
 	t.mu.Unlock()
 	if !first {
-		// Already terminal, but a write admitted before that is still in flight:
-		// drain it anyway. Returning early here would let Close report completion
-		// while a writer could still reach the stream.
+		// Already terminal, but the close that poisoned it may still be running
+		// and a write admitted before it may still be in flight. Wait for the
+		// close (doClose returns as soon as the one real close has finished) and
+		// then drain, so returning here never reports the transport closed while
+		// the stream is still open or a writer can still reach it.
+		_ = t.doClose()
 		t.drainWrites()
 		return nil
 	}
-	err := t.rw.Close()
+	err := t.doClose()
 	// Wait for admitted writes to finish: after this returns, no write can still
 	// reach the stream. The close above is what unblocks one already in flight,
 	// so this cannot wait forever on a write that is merely stalled.
