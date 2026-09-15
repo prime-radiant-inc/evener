@@ -9,6 +9,7 @@ import type { ModelCatalog } from "../../../widgets";
 import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
 import * as connectDialogChunk from "../../spawn/connectDialogChunk";
 import { installMobileViewport } from "../testing/mobileViewport";
+import { openConnectDialog } from "./connectDialogTestUtils";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
 
@@ -406,13 +407,13 @@ test("connect another provider refreshes the actual instance catalog without swi
   const onPick = vi.fn();
   renderTrigger({ loadCatalog, onPick });
   await user.click(screen.getByTestId("trigger"));
-  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  await openConnectDialog(user);
   expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
   await user.keyboard("{Escape}");
   expect(onPick).not.toHaveBeenCalled();
   expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   await user.click(screen.getByTestId("trigger"));
-  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
+  await openConnectDialog(user);
   await user.click(await screen.findByText("Already configured access on this host?"));
   await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
   loadCatalog.mockResolvedValue({
