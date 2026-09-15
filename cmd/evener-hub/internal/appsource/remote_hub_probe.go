@@ -155,11 +155,12 @@ func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabi
 	return HostCapabilities{}, false
 }
 
-// clone returns a deep copy of the snapshot: every slice and map a caller could
-// mutate is duplicated, so neither a cache hit nor a freshly published probe
-// shares a backing array with the stored value. Without it a caller editing a
-// returned Models.Data entry or Roots element in place would corrupt the cached
-// probe for every later caller.
+// clone returns a deep copy of the snapshot: every slice, map, and pointer
+// scalar a caller could mutate is duplicated, so neither a cache hit nor a
+// freshly published probe shares mutable state with the stored value. Without
+// it a caller editing a returned Models.Data entry, Roots element, or a
+// *LaunchGlobal scalar in place would corrupt the cached probe for every later
+// caller.
 func (c HostCapabilities) clone() HostCapabilities {
 	out := c
 	out.LaunchGlobal = cloneLaunchConfigLayer(c.LaunchGlobal)
@@ -171,8 +172,29 @@ func (c HostCapabilities) clone() HostCapabilities {
 	return out
 }
 
+// ptrClone duplicates the scalar behind p so a clone shares no pointer with the
+// original. A nil pointer stays nil.
+func ptrClone[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 func cloneLaunchConfigLayer(l appwire.LaunchConfigLayer) appwire.LaunchConfigLayer {
 	out := l
+	out.Schema = ptrClone(l.Schema)
+	out.SandboxNet = ptrClone(l.SandboxNet)
+	out.MaxRounds = ptrClone(l.MaxRounds)
+	out.MaxSubagentDepth = ptrClone(l.MaxSubagentDepth)
+	out.MaxConcurrentDelegateTurns = ptrClone(l.MaxConcurrentDelegateTurns)
+	out.MaxRetainedTerminal = ptrClone(l.MaxRetainedTerminal)
+	out.NoProjectPrompts = ptrClone(l.NoProjectPrompts)
+	out.NonInteractive = ptrClone(l.NonInteractive)
+	out.AppReplaySize = ptrClone(l.AppReplaySize)
+	out.Verbose = ptrClone(l.Verbose)
+	out.APILog = ptrClone(l.APILog)
 	out.SkillsDirs = slices.Clone(l.SkillsDirs)
 	out.PluginDirs = slices.Clone(l.PluginDirs)
 	out.MCPConfigs = slices.Clone(l.MCPConfigs)
@@ -201,6 +223,15 @@ func cloneModelListResponse(m appwire.ModelListResponse) appwire.ModelListRespon
 func cloneModelDescriptors(in []appwire.ModelDescriptor) []appwire.ModelDescriptor {
 	out := slices.Clone(in)
 	for i := range out {
+		out[i].ContextWindow = ptrClone(out[i].ContextWindow)
+		out[i].MaxInputTokens = ptrClone(out[i].MaxInputTokens)
+		out[i].SupportsTools = ptrClone(out[i].SupportsTools)
+		out[i].SupportsVision = ptrClone(out[i].SupportsVision)
+		out[i].MaxOutputTokens = ptrClone(out[i].MaxOutputTokens)
+		out[i].SupportsWebSearch = ptrClone(out[i].SupportsWebSearch)
+		out[i].SupportsReasoning = ptrClone(out[i].SupportsReasoning)
+		out[i].InputCostPerMillion = ptrClone(out[i].InputCostPerMillion)
+		out[i].OutputCostPerMillion = ptrClone(out[i].OutputCostPerMillion)
 		out[i].ReasoningEffortLevels = slices.Clone(out[i].ReasoningEffortLevels)
 		out[i].Warnings = slices.Clone(out[i].Warnings)
 	}
