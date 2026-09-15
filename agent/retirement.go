@@ -61,14 +61,7 @@ type RetirementController struct {
 	timeout       time.Duration
 	eligibleSince time.Time
 	failure       string
-	// blockers is the refusal evidence from the current TryClaim attempt. It is
-	// carried only on claim snapshots (the immediate retire response). It is
-	// cleared when an attempt starts, so an early return that does not re-run
-	// the evidence never presents an earlier refusal's obligations as current.
-	// It is deliberately NOT read by Snapshot: a status request must never
-	// present an earlier refusal's evidence as the current obligation set.
-	blockers []RetirementBlocker
-	claim    *RetirementClaim
+	claim         *RetirementClaim
 }
 
 // RetirementClaim is an identity-bound preparing fence owned by its controller.
@@ -240,11 +233,35 @@ func (c *RetirementController) snapshotLocked() RetirementSnapshot {
 	return c.snapshotWithBlockersLocked(nil)
 }
 
-// claimSnapshotLocked carries the current claim attempt's refusal evidence. Only
-// TryClaim's own return values use it, so a later status Snapshot can never
-// present a settled obligation's old refusal as current evidence.
-func (c *RetirementController) claimSnapshotLocked() RetirementSnapshot {
-	return c.snapshotWithBlockersLocked(c.blockers)
+// claimSnapshotCurrent builds a claim-attempt snapshot from the live controller
+// state plus a fresh, non-blocking evidence read of root. It never consults cached
+// evidence and never holds c.mu across the evidence read, so it cannot present a
+// settled obligation as current and cannot wait on admitted work. root is the
+// controller root captured under c.mu; a nil root yields no Session evidence (the
+// snapshot's own root check reports the missing root instead). The automatic
+// (manual=false) path skips the read because Run discards that snapshot
+// (retirement.go Run tick); only the manual response at cmd/evener/serve.go
+// renders it.
+func (c *RetirementController) claimSnapshotCurrent(root *Session, manual bool) RetirementSnapshot {
+	var evidence []RetirementBlocker
+	if manual {
+		evidence = c.nonBlockingEvidence(root)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.snapshotWithBlockersLocked(evidence)
+}
+
+// nonBlockingEvidence reads the obligations that cannot wait on admitted work,
+// mirroring the full read's root-vs-tree split. It must be called without c.mu.
+func (c *RetirementController) nonBlockingEvidence(root *Session) []RetirementBlocker {
+	if root == nil {
+		return nil
+	}
+	if tree := root.delegateController; tree != nil {
+		return tree.retirementNonBlockingEvidence()
+	}
+	return root.retirementNonBlockingEvidence()
 }
 
 // snapshotWithBlockersLocked builds a snapshot from live controller state plus
@@ -275,9 +292,15 @@ func (c *RetirementController) snapshotWithBlockersLocked(extra []RetirementBloc
 	return state
 }
 
-// TryClaim never waits for admitted work. The root input predicate runs behind
-// the admission fence without holding mu. Full tree proof is still required
-// before automatic retirement can be activated.
+// TryClaim never waits for admitted work. Every return presents current
+// obligations: the pre-evidence early returns and the invalid-claim return read
+// only the non-blocking evidence sources (root input predicate, in-memory owner
+// counters, goal store, pending job notifications, and the shared tree's
+// in-memory owner state plus its live members), while the refusal and success
+// paths use the complete evidence they just read with nothing admitted. No path
+// consults cached evidence, so a prior attempt's refusal can never surface on a
+// later one, an active-lease refusal, or a different generation/root. Full tree
+// proof is still required before automatic retirement can be activated.
 func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, RetirementSnapshot, error) {
 	// The injected clock is a callback boundary too; do not call it under mu.
 	var now time.Time
@@ -285,26 +308,20 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		now = c.clock.Now()
 	}
 	c.mu.Lock()
-	// Refusal evidence belongs to the attempt that produced it. A prior attempt's
-	// blockers must not surface on any path that does not re-run the evidence
-	// (the early returns below); the live c.active leases are appended separately
-	// by snapshotWithBlockersLocked, so clearing here cannot drop a live
-	// obligation and cannot double-count one.
-	c.blockers = nil
 	if c.phase != "resident" {
-		snapshot := c.claimSnapshotLocked()
+		root := c.root
 		c.mu.Unlock()
-		return nil, snapshot, ErrRetirementUnavailable
+		return nil, c.claimSnapshotCurrent(root, manual), ErrRetirementUnavailable
 	}
 	if len(c.active) != 0 || c.root == nil {
-		snapshot := c.claimSnapshotLocked()
+		root := c.root
 		c.mu.Unlock()
-		return nil, snapshot, nil
+		return nil, c.claimSnapshotCurrent(root, manual), nil
 	}
 	if !manual && (c.timeout == 0 || c.eligibleSince.IsZero() || now.Before(c.eligibleSince.Add(c.timeout))) {
-		snapshot := c.claimSnapshotLocked()
+		root := c.root
 		c.mu.Unlock()
-		return nil, snapshot, nil
+		return nil, c.claimSnapshotCurrent(root, manual), nil
 	}
 	c.phase = "preparing"
 	c.claim = &RetirementClaim{controller: c, root: c.root, generation: c.generation, tree: c.root.delegateController}
@@ -329,17 +346,15 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 	}
 	c.mu.Lock()
 	if !c.validClaimLocked(claim) {
-		snapshot := c.claimSnapshotLocked()
 		c.mu.Unlock()
-		return nil, snapshot, ErrRetirementUnavailable
+		return nil, c.claimSnapshotCurrent(claim.root, manual), ErrRetirementUnavailable
 	}
-	c.blockers = blockers
 	if len(blockers) != 0 || evidenceErr != nil {
 		claim.finished = true
 		c.claim = nil
 		c.phase = "resident"
 		c.eligibleSince = time.Time{}
-		snapshot := c.claimSnapshotLocked()
+		snapshot := c.snapshotWithBlockersLocked(blockers)
 		c.mu.Unlock()
 		// The refusal returned the controller to the resident phase and dropped
 		// the interval, exactly like Abort/AttachRoot/BeginMutation. Notify after
@@ -348,7 +363,7 @@ func (c *RetirementController) TryClaim(manual bool) (*RetirementClaim, Retireme
 		c.Changed()
 		return nil, snapshot, evidenceErr
 	}
-	snapshot := c.claimSnapshotLocked()
+	snapshot := c.snapshotWithBlockersLocked(blockers)
 	c.mu.Unlock()
 	return claim, snapshot, nil
 }

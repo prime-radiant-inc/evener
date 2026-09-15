@@ -271,6 +271,61 @@ func TestRetirementEarlyReturnDoesNotPresentResolvedBlocker(t *testing.T) {
 	}
 }
 
+// A refusal recorded against one root must not surface for a later root. Refusal
+// evidence belongs to the attempt that produced it and to the generation it was
+// read against; AttachRoot changes the generation, so a new root's snapshot must
+// present only the new root's current obligations — never the previous root's
+// stale refusal (roborev r12, the different-generation/root leak).
+func TestRetirementEarlyReturnDoesNotLeakPreviousRootRefusal(t *testing.T) {
+	first := newQueuePersistTestSession(t, t.TempDir())
+	defer first.Close()
+	c := retirementEvidenceController(t, first)
+
+	// A queued input is a real evidence obligation that is not an admission
+	// lease, so the first attempt runs the full evidence path and refuses.
+	first.mu.Lock()
+	first.inputQueue = []queuedInput{{ID: "held", Text: "held input"}}
+	first.mu.Unlock()
+	claim, state, err := c.TryClaim(true)
+	if err != nil || claim != nil {
+		t.Fatalf("queued input did not refuse the claim: claim=%v err=%v state=%+v", claim, err, state)
+	}
+	if !hasRetirementBlocker(state.Blockers, "input") {
+		t.Fatalf("refusal lost the queued-input blocker: %+v", state)
+	}
+
+	// Publish a new root. The first root's refusal must not follow it.
+	second := newQueuePersistTestSession(t, t.TempDir())
+	defer second.Close()
+	if err := c.AttachRoot(second); err != nil {
+		t.Fatal(err)
+	}
+
+	// Admitted work on the new root forces the next manual attempt down the
+	// early-return gate instead of re-running evidence.
+	release, err := c.BeginMutation(second.ID(), "turn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, snapshot, err := c.TryClaim(true)
+	if err != nil {
+		t.Fatalf("early-return claim: %v", err)
+	}
+	if hasRetirementBlocker(snapshot.Blockers, "input") {
+		t.Fatalf("previous root's refusal leaked into the new root: %+v", snapshot.Blockers)
+	}
+	if !hasRetirementBlocker(snapshot.Blockers, "turn") {
+		t.Fatalf("new root's live obligation missing: %+v", snapshot.Blockers)
+	}
+	for _, blocker := range snapshot.Blockers {
+		if blocker.SessionID == first.ID() {
+			t.Fatalf("snapshot presents an obligation owned by the previous root: %+v", snapshot.Blockers)
+		}
+	}
+}
+
 // A preparation belongs to one root generation, not just a preparing phase.
 // Deliberately invalidate each private identity component to exercise the exact
 // claim check independently of pointer equality (ordinary callers cannot edit it).
