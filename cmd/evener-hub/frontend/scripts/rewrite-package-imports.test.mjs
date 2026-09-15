@@ -30,6 +30,7 @@ function fixture(files) {
     "appwire-client/typescript/model.ts":
       "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
     "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
+    "appwire-client/typescript/testing/fakeClient.ts": "export class FakeClient {}\n",
     ...files,
   };
   for (const [relative, contents] of Object.entries(written)) {
@@ -362,6 +363,37 @@ test("a JavaScript consumer is swept like a TypeScript one", () => {
       readFileSync(path.join(root, "mobile-native/src/legacyScreen.js"), "utf8"),
       /from "@evener\/appwire-client"/,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a testing import is validated against the testing module's exports, like the root", () => {
+  const root = fixture({
+    "mobile/src/state.ts":
+      'import { FakeClient } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClient();\n',
+  });
+  try {
+    assert.equal(rewrite(root).status, 0);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
+      /from "@evener\/appwire-client\/testing\/fakeClient"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a symbol the testing module does not publish is reported, not rewritten", () => {
+  const root = fixture({
+    "mobile/src/state.ts":
+      'import { FakeClientz } from "../../appwire-client/typescript/testing/fakeClient";\nnew FakeClientz();\n',
+  });
+  try {
+    const result = rewrite(root);
+    assert.equal(result.status, 2);
+    assert.match(result.output, /FakeClientz/);
+    assert.match(readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"), /typescript\/testing\/fakeClient/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

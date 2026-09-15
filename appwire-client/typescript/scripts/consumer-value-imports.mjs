@@ -13,11 +13,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
 import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
-import { isTestFile } from "../../../scripts/sdk/source-files.mjs";
+import { isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
-
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts"];
 
 export function parse(file, text) {
   return parseSource(ts, file, text);
@@ -78,13 +76,11 @@ const CONSUMER_TREES = ["mobile-native", join("mobile", "src"), join("cmd", "eve
 // src/stores/testing and src/panes/session/testing, which are ordinary source
 // that happens to serve tests -- and the package's own testing/ tree is not
 // under any of these directories to begin with.
-const SKIPPED = new Set(["node_modules", "dist", "ios", "android", ".git", "__snapshots__"]);
-
 function sources(dir, found = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIPPED.has(entry.name)) sources(full, found);
+      if (!SKIPPED_DIRS.has(entry.name)) sources(full, found);
     } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(extname(entry.name)) && !isTestFile(entry.name)) {
       found.push(full);
     }

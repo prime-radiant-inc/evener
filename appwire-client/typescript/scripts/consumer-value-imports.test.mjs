@@ -138,6 +138,20 @@ test("a consumer that only re-exports the module names no value but does use it"
   }
 });
 
+test("a value a JavaScript consumer imports is collected like a TypeScript one's", () => {
+  // Metro and Vite resolve .js beside .ts, so a value only a .js file imports
+  // is still one the tarball has to provide. Sweeping .ts/.tsx/.mts alone left
+  // it out of the derivation, and resolve-check.mjs would not be held to it.
+  const root = consumerTree({
+    "mobile-native/src/legacyScreen.js": `import { errorText } from "${ROOT}";\nerrorText();\n`,
+  });
+  try {
+    expect(consumerPackageUsage(root).get(ROOT)).toEqual({ values: ["errorText"], used: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a consumer whose only use is type-only names no value but does use it", () => {
   const root = consumerTree({
     "mobile/src/state.ts": `import type { ThreadModel } from "${ROOT}";\nexport type A = ThreadModel;\n`,

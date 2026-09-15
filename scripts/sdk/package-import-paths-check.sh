@@ -44,27 +44,31 @@ done
 cd "$root" || { printf 'package-import-paths-check.sh: cannot enter %s\n' "$root" >&2; exit 2; }
 
 trees=(cmd/evener-hub/frontend/src mobile-native mobile/src)
-# The resolver configs are excluded by exact filename, and only they: mapping
-# the package name onto its path is what a resolver config is for, so a path
-# there is the fix rather than the defect. Exact names rather than a glob --
-# `vitest.config.*` also excused a vitest.config.extra.ts that is not a
-# resolver config at all. These are the files as they exist; a new resolver
-# config has to be added here, which is the point.
-# Only mobile-native/vitest.config.mts is inside the swept trees today; the
-# frontend's vite and browser-guard configs sit beside src/, not in it.
-#
-# Every extension Metro and Vite resolve, not only the TypeScript ones. A
-# JavaScript module in these trees imports the package the same way a
-# TypeScript one does and bundles the same, so sweeping .ts/.tsx/.mts alone
-# left mobile-native's .js files -- and any .jsx, .cjs or .mjs added later --
-# free to name it by path. The list is the resolvers' list rather than the
-# extensions that happen to exist today: the file this gate exists to catch is
-# one nobody has written yet.
-sources=(
-	--include='*.ts' --include='*.tsx' --include='*.mts' --include='*.cts'
-	--include='*.js' --include='*.jsx' --include='*.mjs' --include='*.cjs'
-	--exclude='vite.config.ts' --exclude='vitest.config.mts' --exclude='metro.config.js'
-	--exclude-dir=node_modules
+
+# The extensions swept and the directories skipped are the resolvers' lists,
+# not the ones that happen to exist today: the file this gate exists to catch
+# is one nobody has written yet. They are kept byte-for-byte equal to the
+# shared SOURCE_EXTENSIONS and SKIPPED_DIRS in scripts/sdk/source-files.mjs by
+# a Go audit -- the same way the loader-call set below is -- because a file the
+# rewriter sweeps and this gate skips (or the reverse) reaches the package by
+# path in one of them silently.
+extensions=(ts tsx mts cts js jsx mjs cjs)
+skip_dirs=(node_modules dist build ios android __snapshots__ .git)
+sources=()
+for extension in "${extensions[@]}"; do sources+=(--include="*.${extension}"); done
+for dir in "${skip_dirs[@]}"; do sources+=(--exclude-dir="${dir}"); done
+
+# The resolver configs are exempt, and only they: mapping the package name onto
+# its path is what a resolver config is for, so a path there is the fix rather
+# than the defect. By exact relative path, not basename -- grep's --exclude
+# matches a basename anywhere, which would also excuse a src/metro.config.js an
+# app happened to write. So the exemption is a post-sweep filter instead, keyed
+# on the path grep prints. These are the configs inside the swept trees today;
+# the frontend's vite and browser-guard configs sit beside src/, not in it. A
+# new resolver config has to be added here, which is the point.
+exempt_configs=(
+	mobile-native/vitest.config.mts
+	mobile-native/metro.config.js
 )
 
 # A module specifier, not a mention in prose. Three positions carry one:
@@ -138,7 +142,15 @@ done
 # same pattern -- but it earns its own message, because the fix is not "import
 # it by name" so much as "that directory is gone".
 old_seam=cmd/evener-hub/frontend/src/protocol/
+# The exempt configs are dropped by the exact path grep prints, anchored at the
+# line start so an app file of the same basename in a subdirectory is not.
+exempt_pattern=""
+for config in "${exempt_configs[@]}"; do
+	escaped="$(printf '%s' "$config" | sed 's/\./\\./g')"
+	exempt_pattern="${exempt_pattern:+${exempt_pattern}|}${escaped}"
+done
 if found="$(grep "${sources[@]}" -rnE "${opener}[\"'\`][^\"'\`]*(${seam}|${package})" "${trees[@]}")"; then
+	found="$(printf '%s\n' "$found" | grep -vE "^(${exempt_pattern}):" || true)"
 	old_path="$(printf '%s\n' "$found" | grep -F "$old_seam" || true)"
 	if [ -n "$old_path" ]; then
 		report "$old_path" "these imports name the protocol directory the package moved out of; it no longer exists:"

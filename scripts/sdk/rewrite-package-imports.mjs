@@ -25,19 +25,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { moduleSpecifierSites, parseSource } from "./module-specifiers.mjs";
 import { resolveSourceFile } from "./resolve-source.mjs";
+import { SKIPPED_DIRS, SOURCE_EXTENSIONS } from "./source-files.mjs";
 
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const PACKAGE_NAME = "@evener/appwire-client";
 const DOC_CONTENT_SUBPATH = `${PACKAGE_NAME}/docContent`;
 const TESTING_PREFIX = `${PACKAGE_NAME}/testing/`;
-
-const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".git", "ios", "android", "__snapshots__"]);
-// Every extension the bundlers resolve, so the sweep reads the same files the
-// grep gate does. A JavaScript module reaches the package by the same relative
-// path a TypeScript one does; the target it lands on is still TypeScript, which
-// is what resolveSpecifier below probes for.
-const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
 // TypeScript always comes from this checkout's frontend, never from --root: a
 // fixture tree has no dependency tree of its own.
@@ -95,10 +89,10 @@ function walk(dir, layout, out) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (SKIPPED_DIRS.has(entry.name)) continue;
       if (full === layout.seamDir) continue;
       walk(full, layout, out);
-    } else if (entry.isFile() && SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
+    } else if (entry.isFile() && SOURCE_EXTENSIONS.includes(path.extname(entry.name))) {
       out.push(full);
     }
   }
@@ -363,7 +357,28 @@ function main() {
         const named = site.bindings.map((binding) => binding.imported);
         let target = null;
         if (moduleID.startsWith("testing/")) {
-          target = TESTING_PREFIX + moduleID.slice("testing/".length);
+          // The testing subpath serves its own module, so a name it brings in
+          // has to be an export of that module -- validated the same way the
+          // root and docContent named imports are, against the file the
+          // specifier actually resolved to. A whole-module site names nothing
+          // to check; the subpath is the module.
+          const subpath = TESTING_PREFIX + moduleID.slice("testing/".length);
+          if (site.kind === "import-default") {
+            problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
+          } else if (wholeModule) {
+            target = subpath;
+          } else if (named.length === 0) {
+            problems.push(
+              `${where}: empty named import of "${moduleID}" binds nothing, so there is nothing to map onto ${subpath}`,
+            );
+          } else {
+            const testingExports = exportedNames(resolved);
+            if (named.every((binding) => testingExports.has(binding))) target = subpath;
+            else {
+              const missing = named.filter((binding) => !testingExports.has(binding));
+              problems.push(`${where}: "${moduleID}" exports ${missing.join(", ")}, which ${subpath} does not publish`);
+            }
+          }
         } else if (site.kind === "import-default") {
           problems.push(`${where}: default import of "${moduleID}"; the package publishes no default export`);
         } else if (wholeModule) {

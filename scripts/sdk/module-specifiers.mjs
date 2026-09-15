@@ -17,14 +17,32 @@
 // not `import`/`require`: vitest's and jest's mocking family.
 const MOCK_CALLS = new Set(["mock", "doMock", "unmock", "importActual", "importMock"]);
 
+// The ScriptKind the parser needs for each extension. It decides two things
+// that matter here: whether `<X>` opens JSX or a type assertion, and whether
+// TypeScript-only syntax is allowed at all. Guessing TS for everything but
+// .tsx dropped the specifiers nested in any .jsx file's JSX -- `<View>` read
+// as a type assertion, and the dynamic import in the markup went with the
+// derailed subtree. .tsx is TSX (JSX plus TypeScript); .jsx and the .js React
+// Native writes are JSX (JSX plus plain JavaScript, no type assertions to
+// collide with); .mjs/.cjs are plain JS; the rest is TypeScript.
+function scriptKindOf(ts, file) {
+  const extension = file.slice(file.lastIndexOf("."));
+  switch (extension) {
+    case ".tsx":
+      return ts.ScriptKind.TSX;
+    case ".jsx":
+    case ".js":
+      return ts.ScriptKind.JSX;
+    case ".mjs":
+    case ".cjs":
+      return ts.ScriptKind.JS;
+    default:
+      return ts.ScriptKind.TS;
+  }
+}
+
 export function parseSource(ts, file, text) {
-  return ts.createSourceFile(
-    file,
-    text,
-    ts.ScriptTarget.Latest,
-    true,
-    file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKindOf(ts, file));
 }
 
 function namedBindings(ts, elements) {

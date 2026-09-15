@@ -124,3 +124,17 @@ test("a site that names no binding is loaded whatever it does with what it finds
     assert.equal(isLoadedAtRuntime(site), true, source);
   }
 });
+
+test("a .jsx file with a specifier inside its JSX still yields it", () => {
+  // Parsed as TS, the `<View>` opens a type assertion, not an element, and the
+  // dynamic import nested in the markup is lost -- the whole subtree is. A
+  // .jsx file is JSX, and React Native writes JSX in .js too, so both parse as
+  // JSX and the lazy load surfaces.
+  const source = `export const Screen = () => <View>{import("${SPECIFIER}")}</View>;\n`;
+  for (const name of ["screen.jsx", "screen.js"]) {
+    const sites = moduleSpecifierSites(ts, parseSource(ts, name, source));
+    assert.equal(sites.length, 1, `${name}: expected one site, got ${sites.map((site) => site.kind).join(", ")}`);
+    assert.equal(sites[0].kind, "dynamic-import");
+    assert.equal(sites[0].text, SPECIFIER);
+  }
+});
