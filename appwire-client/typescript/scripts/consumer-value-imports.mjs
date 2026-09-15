@@ -1,7 +1,7 @@
 // The runtime values every in-repo consumer takes from this package, read off
-// their import graph. resolve-check.mjs restates that list as real imports so
-// a bare Node consumer can prove the installed tarball provides all of them;
-// this derivation is what keeps the restatement honest.
+// their import graph. qualify-package.mjs generates a real consumer program
+// from this list and runs it against the installed tarball, so the names the
+// apps import are proved to resolve from the packed package.
 //
 // All three app trees count, not just the native two. Metro's resolveRequest
 // treats cmd/evener-hub/frontend/src as shared headless source and bundles it
@@ -12,7 +12,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import ts from "typescript";
-import { isLoadedAtRuntime, moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
+import { moduleSpecifierSites, parseSource } from "../../../scripts/sdk/module-specifiers.mjs";
 import { CONSUMER_TREES, isTestFile, SKIPPED_DIRS, SOURCE_EXTENSIONS } from "../../../scripts/sdk/source-files.mjs";
 
 export const PACKAGE_SPECIFIERS = ["@evener/appwire-client", "@evener/appwire-client/docContent"];
@@ -44,20 +44,13 @@ const ACCOUNTABLE_KINDS = new Set(["import-named", "export-from"]);
 // resolvable against the tarball.
 const NAMES_NO_VALUE_KINDS = new Set(["export-namespace-from"]);
 
-// What resolve-check.mjs may do that a consumer may not. Taking a module whole
-// is how the fixture proves a specifier nobody names a value from resolves at
-// all, so those kinds are the point there rather than a gap. The ones left out
-// stay reported even in the fixture: a default import of a package that
-// publishes none, a require in an ESM file, a bare `export *` naming nothing.
-const FIXTURE_ACCEPTS = new Set([...NAMES_NO_VALUE_KINDS, "import-namespace", "import-side-effect", "dynamic-import"]);
-
-export function packageValuesIn(source, file, problems, accept = NAMES_NO_VALUE_KINDS) {
+export function packageValuesIn(source, file, problems) {
   const bySpecifier = new Map(PACKAGE_SPECIFIERS.map((specifier) => [specifier, new Set()]));
   for (const site of moduleSpecifierSites(ts, source)) {
     const names = bySpecifier.get(site.text);
     if (!names) continue;
     if (site.typeOnly) continue;
-    if (accept.has(site.kind)) continue;
+    if (NAMES_NO_VALUE_KINDS.has(site.kind)) continue;
     if (!ACCOUNTABLE_KINDS.has(site.kind)) {
       problems?.push(`${file}: ${site.kind} of ${site.text} names no binding this check can account for`);
       continue;
@@ -129,48 +122,4 @@ export function consumerPackageUsage(repoRoot) {
 // provide.
 export function consumerValueImports(repoRoot) {
   return new Map([...consumerPackageUsage(repoRoot)].map(([specifier, entry]) => [specifier, entry.values]));
-}
-
-// Whether resolve-check.mjs still says what the consumers do. A specifier the
-// consumers name values from must be imported by name, every one of them; a
-// specifier they only reach as a module must still be imported some way, so
-// running the fixture proves it resolves; and one nothing uses must still be
-// proved, since the package publishes it either way.
-export function describeResolveCheckDrift(fixtureSource, fixtureName, usage) {
-  const problems = [];
-  // The fixture is held to the same rule as a consumer: a site this check
-  // cannot account for is reported, not dropped on the floor.
-  const declaredValues = packageValuesIn(fixtureSource, fixtureName, problems, FIXTURE_ACCEPTS);
-  // isLoadedAtRuntime, not `!site.typeOnly`: the statement-level flag is false
-  // for `import { type Foo } from "pkg"`, which is erased all the same, so a
-  // fixture whose only use of a specifier was inline-type would have "proved"
-  // a resolution that never happens. The sibling walk and the package-test
-  // gate read it through the same predicate.
-  const reached = new Set(
-    moduleSpecifierSites(ts, fixtureSource)
-      .filter(isLoadedAtRuntime)
-      .map((site) => site.text),
-  );
-  for (const [specifier, entry] of usage) {
-    const declared = [...declaredValues.get(specifier)].sort();
-    if (entry.values.length > 0) {
-      if (declared.join("\u0000") !== entry.values.join("\u0000")) {
-        problems.push(
-          `${fixtureName}'s imports from ${specifier} have drifted from what this repository's consumers import: it names ${JSON.stringify(declared)}, they import ${JSON.stringify(entry.values)}`,
-        );
-      }
-      continue;
-    }
-    if (declared.length > 0) {
-      problems.push(
-        `${fixtureName} imports ${JSON.stringify(declared)} from ${specifier}, which no consumer takes a value from`,
-      );
-    }
-    if (!reached.has(specifier)) {
-      problems.push(
-        `${fixtureName} does not load ${specifier} at runtime, so running it proves nothing about that specifier`,
-      );
-    }
-  }
-  return problems.join("\n");
 }

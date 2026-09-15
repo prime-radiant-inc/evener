@@ -1,13 +1,13 @@
-// packageValuesIn reads two different things with one reader: what the repo's
-// consumers take from this package, and what resolve-check.mjs says they take.
-// Both readings decide whether `make test-api-package` passes, so the shapes a
+// packageValuesIn reads what the repo's consumers take from this package;
+// qualify-package.mjs turns that into a program run against the tarball. The
+// derivation decides whether `make test-api-package` passes, so the shapes a
 // hand-written regex used to miss are the ones worth pinning.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 import { CONSUMER_TREES } from "../../../scripts/sdk/source-files.mjs";
-import { consumerPackageUsage, describeResolveCheckDrift, packageValuesIn, parse } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, packageValuesIn, parse } from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
@@ -142,7 +142,7 @@ test("a consumer that only re-exports the module names no value but does use it"
 test("a value a JavaScript consumer imports is collected like a TypeScript one's", () => {
   // Metro and Vite resolve .js beside .ts, so a value only a .js file imports
   // is still one the tarball has to provide. Sweeping .ts/.tsx/.mts alone left
-  // it out of the derivation, and resolve-check.mjs would not be held to it.
+  // it out of the derivation, and the generated resolve program would not name it.
   const root = consumerTree({
     "mobile-native/src/legacyScreen.js": `import { errorText } from "${ROOT}";\nerrorText();\n`,
   });
@@ -162,77 +162,4 @@ test("a consumer whose only use is type-only names no value but does use it", ()
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
-
-test("a specifier no consumer takes a value from qualifies as long as the fixture loads it", () => {
-  const usage = new Map([
-    [ROOT, { values: ["errorText"], used: true }],
-    [DOC_CONTENT, { values: [], used: true }],
-  ]);
-  const loaded = parse(
-    "resolve-check.mjs",
-    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
-  );
-  expect(describeResolveCheckDrift(loaded, "resolve-check.mjs", usage)).toEqual("");
-
-  // ... but it has to load it somehow, or running the fixture proves nothing.
-  const missing = parse("resolve-check.mjs", `import { errorText } from "${ROOT}";\nvoid errorText;\n`);
-  expect(describeResolveCheckDrift(missing, "resolve-check.mjs", usage)).toMatch(
-    /does not load .*docContent at runtime/,
-  );
-});
-
-test("a specifier consumers DO name values from still has to name every one", () => {
-  const usage = new Map([
-    [ROOT, { values: ["errorText", "formatElapsed"], used: true }],
-    [DOC_CONTENT, { values: [], used: true }],
-  ]);
-  const short = parse(
-    "resolve-check.mjs",
-    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
-  );
-  expect(describeResolveCheckDrift(short, "resolve-check.mjs", usage)).toMatch(/have drifted/);
-
-  const extra = parse(
-    "resolve-check.mjs",
-    `import { errorText } from "${ROOT}";\nimport { readDocFile } from "${DOC_CONTENT}";\nvoid errorText;\nvoid readDocFile;\n`,
-  );
-  expect(describeResolveCheckDrift(extra, "resolve-check.mjs", usage)).toMatch(/no consumer takes a value from/);
-});
-
-test("an inline-type import proves no resolution", () => {
-  // `import { type X } from "pkg"` is erased exactly as `import type` is, and
-  // the statement-level flag does not say so -- a fixture resting on one
-  // would claim a resolution that never happens.
-  const usage = new Map([
-    [ROOT, { values: ["errorText"], used: true }],
-    [DOC_CONTENT, { values: [], used: true }],
-  ]);
-  const erased = parse(
-    "resolve-check.mjs",
-    `import { errorText } from "${ROOT}";\nimport { type DocFileContent } from "${DOC_CONTENT}";\nvoid errorText;\nexport type A = DocFileContent;\n`,
-  );
-  expect(describeResolveCheckDrift(erased, "resolve-check.mjs", usage)).toMatch(
-    /does not load .*docContent at runtime/,
-  );
-
-  const loaded = parse(
-    "resolve-check.mjs",
-    `import { errorText } from "${ROOT}";\nimport * as doc from "${DOC_CONTENT}";\nvoid errorText;\nvoid doc;\n`,
-  );
-  expect(describeResolveCheckDrift(loaded, "resolve-check.mjs", usage)).toEqual("");
-});
-
-test("a fixture that takes a specifier as a whole module is reported, not swallowed", () => {
-  const usage = new Map([
-    [ROOT, { values: [], used: true }],
-    [DOC_CONTENT, { values: [], used: true }],
-  ]);
-  const whole = parse(
-    "resolve-check.mjs",
-    `const everything = require("${ROOT}");\nimport * as doc from "${DOC_CONTENT}";\nvoid everything;\nvoid doc;\n`,
-  );
-  expect(describeResolveCheckDrift(whole, "resolve-check.mjs", usage)).toMatch(
-    /require of @evener\/appwire-client names no binding this check can account for/,
-  );
 });

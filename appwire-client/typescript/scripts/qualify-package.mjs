@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerPackageUsage, describeResolveCheckDrift, parse } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -600,24 +600,26 @@ ${presenceLoop}${surface.smoke ?? ""}`,
 // Every app tree imports this package by name but declares no dependency on
 // it: each resolves the name through a repo alias onto TypeScript source, so
 // `make test-web` and `make test-native` can be green while the installed
-// tarball is missing an export. resolve-check.mjs answers that question in the
-// one place it can be answered - a real consumer with the tarball in
-// node_modules - and this is where it runs. What it imports is checked against
-// what the consumers import first, so the fixture cannot quietly fall behind.
+// tarball is missing an export. This answers that question in the one place it
+// can be answered - a real consumer with the tarball in node_modules. The
+// program is generated from what the apps actually import, read off their
+// graph, so there is no fixture to fall behind: a specifier with values is
+// imported by name, one used only as a whole module is imported for effect.
 function runConsumerResolveCheck() {
   const fixture = "resolve-check.mjs";
-  const fixturePath = join(packageDir, "scripts", fixture);
-  // Parsed, not matched: the fixture may take one specifier across several
-  // statements, in either quote style, with the type-only members split off,
-  // and a regex that reads only the first clause would quietly check half a
-  // list. The comparison lives beside the derivation it compares against.
-  const drift = describeResolveCheckDrift(
-    parse(fixturePath, readFileSync(fixturePath, "utf8")),
-    fixture,
-    consumerPackageUsage(resolve(packageDir, "..", "..")),
-  );
-  assert(drift === "", `${drift}\nUpdate ${fixture} to say what the consumers do.`);
-  copyFileSync(fixturePath, join(consumerDir, fixture));
+  const usage = consumerPackageUsage(resolve(packageDir, "..", ".."));
+  // Each name is aliased under its specifier's index: docImageURL is a value of
+  // both the root and ./docContent, and importing it twice under one name would
+  // not compile.
+  const program = `${[...usage]
+    .map(([specifier, entry], index) => {
+      if (entry.values.length === 0) return `import "${specifier}";`;
+      const locals = entry.values.map((name) => `v${index}_${name}`);
+      const imported = entry.values.map((name, at) => `${name} as ${locals[at]}`);
+      return `import { ${imported.join(", ")} } from "${specifier}";\nvoid [${locals.join(", ")}];`;
+    })
+    .join("\n")}\n`;
+  writeFileSync(join(consumerDir, fixture), program);
   run(process.execPath, [join(consumerDir, fixture)], consumerDir);
 }
 
