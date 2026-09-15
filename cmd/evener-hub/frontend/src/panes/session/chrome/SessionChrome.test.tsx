@@ -358,6 +358,9 @@ test.each([
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Notes" }));
     expect(topNotesStore.getState().isExpanded("ref_notes")).toBe(true);
+    // Menu invocation requests editor focus too, matching the palette /notes
+    // instead of leaving keyboard and mouse openers inconsistent.
+    expect(topNotesStore.getState().hasPendingFocus("ref_notes")).toBe(true);
 
     const model = threadsStore.getState().threads.get("ref_notes")!;
     render(<TopNotesPanel sessionRef="ref_notes" model={model} />);

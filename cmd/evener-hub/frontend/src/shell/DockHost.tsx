@@ -413,12 +413,14 @@ export function DockHost() {
     // the saved layout or the routed intent is absent.
     //
     // Failure-mode floor, preserved exactly: restoreLayout()'s own
-    // structural-validation failure (corrupt localStorage, or a restored
-    // panel referencing an unregistered pane type) clears the store back to
-    // empty (see workspace.ts) BEFORE the routed re-apply runs - so a
-    // corrupt saved layout still leaves the routed pane as the ONLY thing
-    // that ends up open, the same "deep link wins alone" guarantee the
-    // pre-merge implementation always provided.
+    // structural-validation failure (a layout dockview itself rejects) clears
+    // the store back to empty (see workspace.ts) BEFORE the routed re-apply
+    // runs - so a corrupt saved layout still leaves the routed pane as the
+    // ONLY thing that ends up open, the same "deep link wins alone"
+    // guarantee the pre-merge implementation always provided. A restored
+    // panel naming an unregistered pane type no longer clears anything:
+    // restoreLayout skips it, removes it from the live api synchronously,
+    // and focus falls to a surviving pane.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS

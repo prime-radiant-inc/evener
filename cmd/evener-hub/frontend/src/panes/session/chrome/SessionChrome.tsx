@@ -202,7 +202,7 @@ export function SessionChrome({
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    topNotesStore.getState().toggle(sessionRef);
+    topNotesStore.getState().toggleAndFocus(sessionRef);
   };
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 

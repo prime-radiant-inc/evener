@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
@@ -31,6 +31,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   const expanded = useTopNotesExpanded(sessionRef);
   const pendingFocus = usePendingTopNotesFocus(sessionRef);
   const readable = canReadSharedNotes(model);
+  const canWrite = canWriteHumanNote(model);
   // Subscribed before the canReadSharedNotes guard below so the early return
   // can never skip a hook (Rules of Hooks).
   const draftState = useHumanNoteDraft(sessionRef);
@@ -40,6 +41,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   // every render (the latest-ref pattern).
   const latestSessionRef = useRef(sessionRef);
   latestSessionRef.current = sessionRef;
+  const hintId = useId();
 
   useEffect(() => {
     // Gated on readability so a session without the notes capability never
@@ -55,6 +57,10 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   // once, so a pane reused for another session neither misses its own
   // request nor serves the other session's.
   useEffect(() => {
+    // A read-only session has no editor to focus, so it must not consume the
+    // request either: held here, /notes on an ended session still lands focus
+    // if the session resumes without a remount.
+    if (!canWrite) return;
     if (!expanded || !pendingFocus) return;
     if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
     // The pane can be reused for another session between the take and the
@@ -65,11 +71,10 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
     requestAnimationFrame(() => {
       if (latestSessionRef.current === requestedRef) editorRef.current?.focus();
     });
-  }, [sessionRef, expanded, pendingFocus]);
+  }, [sessionRef, canWrite, expanded, pendingFocus]);
 
   if (!readable) return null;
 
-  const canWrite = canWriteHumanNote(model);
   // While the session accepts writes, the summary mirrors the editor's
   // draft - kept equal to the model between edits by the sync effect above,
   // while edits themselves land in the draft store immediately (the 10s
@@ -117,7 +122,12 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
         className={expanded ? CLASS.expandedHeader : CLASS.summary}
         onClick={toggle}
         aria-expanded={expanded}
-        aria-label={expanded ? "Collapse session notes" : isPlaceholder && canWrite ? "Add a note" : "Session notes"}
+        // Collapsed, the visible preview IS the accessible name (the note
+        // text, the link count, or the placeholder) - a generic label would
+        // hide that content from screen readers. The hint rides along as a
+        // description instead of aria-hidden text.
+        aria-label={expanded ? "Collapse session notes" : undefined}
+        aria-describedby={hintId}
         data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
       >
         <span className={CLASS.summaryLeft}>
@@ -137,7 +147,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
             </>
           )}
         </span>
-        <span className={CLASS.hint} aria-hidden="true">
+        <span className={CLASS.hint} id={hintId}>
           {expanded
             ? "Click to collapse"
             : isPlaceholder

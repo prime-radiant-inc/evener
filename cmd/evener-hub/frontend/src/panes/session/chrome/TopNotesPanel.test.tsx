@@ -224,7 +224,11 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   const summary = screen.getByTestId("top-notes-summary");
   expect(screen.getByText("No notes yet")).toBeTruthy();
   expect(screen.queryByText("Add a note…")).toBeNull();
-  expect(summary.getAttribute("aria-label")).toBe("Session notes");
+  // The visible preview IS the accessible name - a generic label would hide
+  // the content from screen readers - and the hint rides along as a
+  // description rather than hidden text.
+  expect(summary.getAttribute("aria-label")).toBeNull();
+  expect(summary.getAttribute("aria-describedby")).toBeTruthy();
   expect(summary.textContent).toContain("Click to view");
 
   // Reading still works: the body expands, but a read-only session mounts
@@ -363,4 +367,22 @@ test("a focus request never lands on another session's editor after pane reuse",
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+test("a focus request on a read-only session waits for the session to accept writes", async () => {
+  const model = makeModel({ status: { type: "ended" }, humanNote: "Saved note" });
+  const view = render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // /notes on an ended session: the panel opens, but there is no editor to
+  // focus, so the request must be held rather than consumed.
+  topNotesStore.getState().openAndFocus(model.ref);
+  await waitFor(() => expect(screen.getByTestId("top-notes-expanded-content")).toBeTruthy());
+  expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+  expect(topNotesStore.getState().hasPendingFocus(model.ref)).toBe(true);
+
+  // The session resumes without remounting: the held request focuses the
+  // now-mounted editor.
+  view.rerender(<TopNotesPanel sessionRef={model.ref} model={{ ...model, status: { type: "idle" } }} />);
+  const textarea = screen.getByRole("textbox", { name: "Human note" });
+  await waitFor(() => expect(document.activeElement).toBe(textarea));
 });
