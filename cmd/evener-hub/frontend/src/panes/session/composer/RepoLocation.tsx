@@ -1,12 +1,16 @@
 // RepoLocation: the session composer's one-line origin strip - the working
-// directory this session runs in, and the git branch checked out there. It sits
-// directly under the prompt card (Composer.tsx renders it below the form), so
-// "where is this agent working, and on what branch" is answerable without
-// opening Session details.
+// directory this session runs in, and the repository and branch checked out
+// there. It sits directly under the prompt card (Composer.tsx renders it below
+// the form), so "where is this agent working, and on what" is answerable
+// without opening Session details.
 //
-// The branch is a link to its forge repo page when the origin remote is one the
-// web UI recognizes (GitHub/GitLab/Bitbucket), carrying that forge's mark;
-// otherwise it is plain text. The cwd is never a link - only the branch is.
+// When the origin remote is a forge the web UI recognizes
+// (GitHub/GitLab/Bitbucket), the repository is named the way a forge does -
+// `owner/repo#branch` - and links to the forge's repo page, carrying that
+// forge's mark. The cwd stays beside it because it is the one thing the repo
+// reference cannot say; a worktree session's cwd is not its project root, and a
+// repo can be cloned anywhere. Without a recognized forge the branch alone is
+// shown, as plain text. The cwd is never a link.
 //
 // Facts come from the hub's evener/git/head method keyed on the session's cwd,
 // resolved once per cwd and cached by state, failing soft to "no branch shown"
@@ -39,6 +43,7 @@ const CLASS = {
   line: requireClass(styles.line, "repoLocation.module.css", "line"),
   path: requireClass(styles.path, "repoLocation.module.css", "path"),
   branch: requireClass(styles.branch, "repoLocation.module.css", "branch"),
+  ref: requireClass(styles.ref, "repoLocation.module.css", "ref"),
   link: requireClass(styles.link, "repoLocation.module.css", "link"),
 };
 
@@ -90,8 +95,12 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
             data-testid="composer-repo-link"
           >
             <ForgeMark forge={remote.forge} />
-            <span className={CLASS.branch} data-testid="composer-repo-branch">
-              {branch}
+            <span
+              className={CLASS.ref}
+              data-testid="composer-repo-ref"
+              title={`${remote.owner}/${remote.repo}#${branch}`}
+            >
+              {`${remote.owner}/${remote.repo}#${branch}`}
             </span>
           </a>
         ) : (
