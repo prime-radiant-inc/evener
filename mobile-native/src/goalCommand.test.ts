@@ -589,7 +589,11 @@ it.each([
 				turn: () =>
 					method === "turn/interrupt"
 						? null
-						: { activeTurnId: "turn", queue: { revision: 7 } },
+						: {
+								status: "active",
+								capabilities: { steer: true, queue: true },
+								queue: { revision: 7, depth: 0 },
+							},
 			});
 			expect(received).toBe(1);
 			expect(document.getSnapshot().record).toMatchObject({

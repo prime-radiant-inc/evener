@@ -2304,7 +2304,7 @@ export function ConversationScreen({
 								maxHeight={Math.min(160, viewportHeight * 0.32)}
 								client={client}
 								sessionRef={route.params.ref}
-								capabilities={conversation.capabilities}
+								session={conversation}
 								query={slashToken.query}
 								close={() => setCompletionClosedAt(draft.record.draft)}
 								choose={(item) => {

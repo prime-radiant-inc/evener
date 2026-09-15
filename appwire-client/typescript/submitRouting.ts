@@ -109,7 +109,10 @@ export interface SessionControls {
   reason: Partial<Record<SessionControlName, string>>;
 }
 
-type ControlCapabilities = Pick<ThreadCapabilities, "steer" | "interrupt" | "queue" | "send">;
+// Partial, because a client's capability snapshot may not carry every flag
+// (native's completion registry filters on whatever the hub advertised); an
+// absent flag reads as false, the same as the hub withholding it.
+type ControlCapabilities = Partial<Pick<ThreadCapabilities, "steer" | "interrupt" | "queue" | "send">>;
 
 export function sessionControls(
   statusType: string,
@@ -142,13 +145,13 @@ export function isTurnActive(statusType: string): boolean {
   return statusType === "active";
 }
 
-export function canSteer(statusType: string, capabilities: Pick<ThreadCapabilities, "steer">): boolean {
+export function canSteer(statusType: string, capabilities: Partial<Pick<ThreadCapabilities, "steer">>): boolean {
   return isTurnActive(statusType) && capabilities.steer === true;
 }
 
 export function canDrainQueue(
   statusType: string,
-  capabilities: Pick<ThreadCapabilities, "steer">,
+  capabilities: Partial<Pick<ThreadCapabilities, "steer">>,
   queueDepth: number,
 ): boolean {
   if (capabilities.steer !== true) return false;

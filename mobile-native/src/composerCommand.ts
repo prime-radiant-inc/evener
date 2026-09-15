@@ -9,6 +9,7 @@ import {
   effortOptionLevels,
 } from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
 import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
+import { sessionControls } from "../../appwire-client/typescript/submitRouting";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,
@@ -38,22 +39,42 @@ const commands = [
   { id: "model", args: true, capability: "changeModel", label: "Set model" },
   { id: "reasoning-effort", args: true, capability: null, label: "Set effort" },
   { id: "interrupt", capability: "interrupt", label: "Interrupt" },
-  { id: "steer", args: true, capability: "steer", label: "Steer" },
-  { id: "queue", args: true, capability: "queue", label: "Queue" },
-  { id: "drain-as-steer", capability: "steer", label: "Drain queue" },
+  // Steering commands read the session's controls (appwire-client/typescript/
+  // submitRouting.ts sessionControls): the hub advertises steer as harness
+  // support alone, so the status -- and, for a drain, the queue a Stop parked
+  // -- is applied here, the same rule the web's composer and palette use.
+  { id: "steer", args: true, capability: "steer", control: "steer", label: "Steer" },
+  { id: "queue", args: true, capability: "queue", control: "queue", label: "Queue" },
+  { id: "drain-as-steer", capability: "steer", control: "drain", label: "Drain queue" },
   { id: "aside", capability: "forkFromTurn", label: "Aside" },
   { id: "clear", capability: "clear", label: "Clear" },
 ] as const;
 
+/** What the completion registry and submission both read off the session. */
+export interface ComposerCommandSession {
+  status: string;
+  capabilities: Partial<MobileConversation["capabilities"]>;
+  queue: { revision: number; depth: number };
+}
+
+function controlsFor(session: ComposerCommandSession) {
+  return sessionControls(
+    session.status,
+    session.capabilities,
+    session.queue.depth,
+  );
+}
+
 /** Completion and submission share one supported-command registry. */
-export function builtinComposerItems(
-  capabilities: Partial<MobileConversation["capabilities"]>,
-) {
+export function builtinComposerItems(session: ComposerCommandSession) {
+  const controls = controlsFor(session);
   return mergeSlashCommands(
     commands
-      .filter(
-        (command) =>
-          command.capability === null || capabilities[command.capability],
+      .filter((command) =>
+        "control" in command
+          ? controls[command.control]
+          : command.capability === null ||
+            session.capabilities[command.capability],
       )
       .map((command) => ({ id: command.id, hint: command.label })),
     [],
@@ -67,7 +88,7 @@ interface CommandContext {
   local(command: LocalComposerCommand): Promise<void>;
   openAside(ref: string, title: string): void;
   cleared(response: ThreadClearResponse): void;
-  turn(): { activeTurnId?: string; queue: { revision: number } } | null;
+  turn(): ComposerCommandSession | null;
   reasoning(): Pick<
     MobileConversation,
     "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -137,9 +158,15 @@ export async function submitComposerCommand(
         );
     };
   } else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
+    // The v3 mutations name no turn; readiness is the session's controls,
+    // the same rule that offered the command in completion.
     const turn = context.turn();
-    if (!turn?.activeTurnId)
-      throw new CommandArgumentError(`/${id}: no active turn`);
+    const control = id === "drain-as-steer" ? "drain" : id;
+    const controls = turn ? controlsFor(turn) : null;
+    if (!turn || !controls || !controls[control])
+      throw new CommandArgumentError(
+        `/${id}: ${controls?.reason[control] ?? "no active turn"}`,
+      );
     const input = buildComposerInput(match.argsText);
     // The explicit /steer command preserves waiting queue entries. Draining
     // uses its own command and the observed queue revision, as on web.
