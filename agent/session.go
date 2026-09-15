@@ -852,7 +852,12 @@ type Session struct {
 	steeringRetryMu sync.Mutex
 	// steeringCarrierRetry paces the re-armed wakes for a steer a carrier turn
 	// could not record (scheduleSteeringCarrierRetry).
-	steeringCarrierRetry      runningTurnReleaseRetryState
+	steeringCarrierRetry runningTurnReleaseRetryState
+	// steeringDrainRefused latches, for the input being processed, that a
+	// steering append failed: every later injection point of the same input
+	// (tool rounds, the drain ladder's carrier claim) stands down, and the
+	// carrier retry owns the next attempt. Cleared when an input starts.
+	steeringDrainRefused      bool
 	delegateAttentionArmIDs   map[string]struct{}
 	delegateAttentionArmRetry notificationRetry
 	stableAttentionRetry      notificationRetry

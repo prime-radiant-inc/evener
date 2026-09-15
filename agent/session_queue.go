@@ -949,7 +949,12 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 			s.mu.Lock()
 			s.steeringQueue = append([]steeringMessage{entry}, s.steeringQueue...)
 			s.mu.Unlock()
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v", err)})
+			// A refused store write, not a benign race: the steer is back in
+			// the queue accepted and this turn will not take it again (rule L),
+			// so the carrier retry owns the next attempt.
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v; the steering retry claims again", err)})
+			s.latchSteeringDrainRefused()
+			s.scheduleSteeringCarrierRetry()
 			return steeringMessage{}, false
 		}
 		return entry, true
@@ -984,6 +989,11 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 // TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
 // behavior.
 func (s *Session) injectDrainedSteering() {
+	if s.steeringDrainRefusedThisInput() {
+		// Rule L: this input already spent its attempt; the carrier retry
+		// owns the next one, after the backoff.
+		return
+	}
 	for range s.peekSteeringForTurn() {
 		msg, ok := s.popSteeringHead()
 		if !ok {
@@ -1053,15 +1063,22 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			// carrier retry is re-armed); a refused store write re-arms the
 			// same retry. This turn is the caller, not a turn in flight.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			s.latchSteeringDrainRefused()
 			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
 			return false
 		}
-		// Recorded: whatever carried it, the steer is in the transcript, so a
-		// carrier retry episode that may have been running for it is over.
-		s.clearSteeringCarrierRetry()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
-			return true
+			// Recorded but not incorporated: the steer would sit claimed,
+			// absent from the queue, with nothing to retry it. Row 6 finalizes
+			// a recorded steer; run the table now (this turn is the caller),
+			// and a store still refusing re-arms the retry from there.
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; reconciling", err)})
+			s.reconcileClientSteering(steeringReconcileInputs{callerTurn: s.activeTurnOwner()})
+		} else {
+			// Incorporated: whatever carried it, the steer is in the transcript
+			// and the store agrees, so a carrier retry episode that may have
+			// been running for it is over.
+			s.clearSteeringCarrierRetry()
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)

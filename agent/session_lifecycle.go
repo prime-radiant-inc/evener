@@ -1047,9 +1047,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// current objective, so a clear/retarget during the interleaved notification turn
 	// cannot run a stale continuation.
 	var haveDeferredCont bool
-	// carrierUndelivered latches a steering carrier that could not record its
-	// steer; see the tail of the loop.
-	var carrierUndelivered bool
+	// A new input opens a new first attempt at recording steering (rule L of
+	// reconcileClientSteering's contract).
+	s.clearSteeringDrainRefused()
 	for {
 		// Fail closed on a transcript that has stopped accepting records, before
 		// every turn rather than once at admission. A turn from here would run
@@ -1085,13 +1085,6 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// and checks cancellation before registering its own release. A no-op
 		// on the ordinary path, where that release already ran.
 		s.releaseRunningTurnID(ranSteeringCarrier)
-		// A carrier that returned its steer undelivered (a failed durable
-		// append, see acceptSteeringCarrierInput) must not be claimed again
-		// by this input: the retry belongs to the next wake, not to a loop
-		// here that would burn a model turn per attempt. Latched for the
-		// whole input, not this iteration: a queued message or a
-		// notification turn running next is not a reason to try again.
-		carrierUndelivered = carrierUndelivered || s.steeringCarrierUndelivered(ranSteeringCarrier)
 		processCtx = withSteeringCarrierTurn(processCtx, "")
 		// True when the completion below finalized an interrupt fence naming
 		// this turn: a Stop is what ended it, and the drain branch further down
@@ -1297,8 +1290,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// when nothing is queued: a queued message drains the steering itself.
 		// The claim refuses a held rail (a Stop parked the steer) and an
 		// occupied slot, the same gate the wake's claim uses.
+		// Rule L: an input whose steering append already failed does not
+		// claim a carrier again -- the retry belongs to the backoff timer,
+		// not to a loop here that would burn a model turn per attempt,
+		// whatever turn (queued, notification) ran in between.
 		var carrierTurnID string
-		if noFollowUpOrQueued && !carrierUndelivered && s.hasPendingUserSteering() {
+		if noFollowUpOrQueued && !s.steeringDrainRefusedThisInput() && s.hasPendingUserSteering() {
 			carrierTurnID, _ = s.claimSteeringCarrierTurn()
 			if carrierTurnID != "" && s.cfg.testOnly.steeringCarrierClaimed != nil {
 				s.cfg.testOnly.steeringCarrierClaimed(carrierTurnID)
@@ -1438,6 +1435,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
 		goalKicked := s.settleGoalOnIdle()
+		// Rule B: the input is over and no turn is in flight, so a claimed
+		// steer that was not this input's to touch -- a carrier's double
+		// failure left it -- comes back through the table now (row 8 returns
+		// it and re-arms the retry). Before armAwaitingAtSettle, so a
+		// returned steer counts as runnable work.
+		s.reconcileClientSteering(steeringReconcileInputs{})
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
 		if !s.sessionEndEmitted {

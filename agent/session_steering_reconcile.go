@@ -99,6 +99,26 @@ func (in steeringReconcileInputs) isRecorded(id string) bool {
 //	   naming nothing swallows the next steer the user sends (#710). This is
 //	   a release only, never an arm: restore is not a Stop.
 //
+// Two more rules are the callers', not the rows', and are listed here so the
+// whole contract reads in one place:
+//
+//	B  the input boundary: every input runs the table with no turn in flight
+//	   as it settles (processInputKindWithProvenance's idle tail). Row 5 leaves
+//	   a claimed steer alone while ANY turn runs -- a passenger mid-append and
+//	   a stale claim look the same from the store, both claimed under an id
+//	   that is not the running turn's -- so the turn that just ended is the
+//	   moment a stale claim (a carrier whose append and claim return both
+//	   failed) comes back through row 8. Nothing else runs the table after a
+//	   turn the steer did not belong to.
+//	L  the per-input latch: a steering append that fails inside an input
+//	   (consumeSteeringMessage) latches steeringDrainRefused for that input;
+//	   every later injection point of the same input -- the next tool round,
+//	   the drain ladder's carrier claim -- stands down, so one input spends
+//	   one attempt and the carrier retry owns the next. Cleared when the
+//	   next input starts. A refused pop claim (popSteeringHead) and a refused
+//	   incorporation write (row 6 re-run from consumeSteeringMessage) re-arm
+//	   the same retry; the retry budget clears only once incorporation lands.
+//
 // A stale slot: a release write the store refused leaves the slot named until
 // the release retry lands (scheduleRunningTurnReleaseRetry). Until then a
 // caller outside any turn reads the slot as in flight (turnInFlight) and rows
@@ -222,6 +242,28 @@ func (s *Session) reconcileClientSteering(in steeringReconcileInputs) steeringRe
 		s.scheduleSteeringCarrierRetry()
 	}
 	return out
+}
+
+// latchSteeringDrainRefused records, for the input being processed, that a
+// steering append failed (rule L).
+func (s *Session) latchSteeringDrainRefused() {
+	s.steeringRetryMu.Lock()
+	s.steeringDrainRefused = true
+	s.steeringRetryMu.Unlock()
+}
+
+// steeringDrainRefusedThisInput reports rule L's latch.
+func (s *Session) steeringDrainRefusedThisInput() bool {
+	s.steeringRetryMu.Lock()
+	defer s.steeringRetryMu.Unlock()
+	return s.steeringDrainRefused
+}
+
+// clearSteeringDrainRefused opens the next input's first attempt (rule L).
+func (s *Session) clearSteeringDrainRefused() {
+	s.steeringRetryMu.Lock()
+	s.steeringDrainRefused = false
+	s.steeringRetryMu.Unlock()
 }
 
 // recordedClientSteering samples, under s.mu, which client mutations the
