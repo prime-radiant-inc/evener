@@ -844,7 +844,7 @@ func TestWaitHealthyQuotesPort(t *testing.T) {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	remote := strings.Join(fr.recordedRuns()[0], " ")
-	if !strings.Contains(remote, "'127.0.0.1:9180;id/api/health'") {
+	if !strings.Contains(remote, "'http://127.0.0.1:9180;id/api/health'") {
 		t.Fatalf("health URL does not quote the address: %q", remote)
 	}
 }
@@ -1172,17 +1172,19 @@ func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
 // maps to ::1 rather than forcing the IPv4 family, and every non-wildcard
 // address (including a valid loopback like 127.0.0.2) is probed verbatim. The
 // invocation is also pinned to carry -q/--noproxy (so a host-side .curlrc or
-// proxy cannot answer in place of the loopback hub) and the per-request
-// timeouts (so a listener that never answers cannot stall the health loop).
+// proxy cannot answer in place of the loopback hub), an explicit http:// scheme
+// (curl only guesses one from the host part, unreliably for a bracketed IPv6
+// literal), and the per-request timeouts (so a listener that never answers cannot
+// stall the health loop).
 func TestHubHealthRemoteNormalizesWildcardBinds(t *testing.T) {
 	const prefix = "curl -q --noproxy '*' -fsS --connect-timeout 5 --max-time 10 "
 	cases := map[string]string{
-		"127.0.0.2:9180": "127.0.0.2:9180/api/health",
-		"127.0.0.1:9999": "127.0.0.1:9999/api/health",
-		"0.0.0.0:9180":   "127.0.0.1:9180/api/health",
-		"localhost:9180": "127.0.0.1:9180/api/health",
-		"[::]:9180":      "'[::1]:9180/api/health'",
-		"[::1]:9180":     "'[::1]:9180/api/health'",
+		"127.0.0.2:9180": "http://127.0.0.2:9180/api/health",
+		"127.0.0.1:9999": "http://127.0.0.1:9999/api/health",
+		"0.0.0.0:9180":   "http://127.0.0.1:9180/api/health",
+		"localhost:9180": "http://127.0.0.1:9180/api/health",
+		"[::]:9180":      "'http://[::1]:9180/api/health'",
+		"[::1]:9180":     "'http://[::1]:9180/api/health'",
 	}
 	for addr, want := range cases {
 		if got := hubHealthRemote(addr); got != prefix+want {
@@ -1978,8 +1980,8 @@ func TestDetectSupervisorSurfacesListingFailure(t *testing.T) {
 		}}
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		sup, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
-		if err != nil || sup.kind != supervisorNone {
-			t.Fatalf("detectSupervisor = (%+v,%v), want no supervisor and no error", sup, err)
+		if err != nil || sup.live.kind != supervisorNone {
+			t.Fatalf("detectSupervisor = (%+v,%v), want no live supervisor and no error", sup, err)
 		}
 	})
 }
@@ -2033,5 +2035,267 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 	}
 	if got := ch.Preflight().Version; got != "newsha" {
 		t.Fatalf("channel version = %q, want newsha", got)
+	}
+}
+
+// TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus pins the High
+// finding that detectSupervisor ran `systemctl --user list-units` unconditionally
+// and aborted with ErrRestart when it failed. A headless host reached over
+// non-interactive ssh exports no XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS, so the
+// user listing exits nonzero with "Failed to connect to bus: ...", which matches
+// none of supervisorListingAbsent's markers — even though the system listing had
+// already named the hub's unit. ErrRestart is non-terminal, so the supervisor
+// retried forever and the host stayed on the old build, silently defeating
+// version auto-match. Before the fix both cases failed with ErrRestart; now the
+// system listing settles the host and the user listing is never consulted.
+func TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	busErr := errors.New("exit status 1")
+	busOut := []byte("Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=@.host --user to connect to the system bus of the host)\n")
+
+	cases := []struct {
+		name string
+		sys  []byte
+		want supervisorSet
+	}{
+		{
+			name: "running system unit",
+			sys:  []byte("evener-hub.service loaded active running Evener Hub\n"),
+			want: supervisorSet{live: supervisor{supervisorSystemd, "evener-hub.service"}},
+		},
+		{
+			name: "inactive system unit",
+			sys:  []byte("evener-hub.service loaded inactive dead Evener Hub\n"),
+			want: supervisorSet{dormant: supervisor{supervisorSystemd, "evener-hub.service"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			userListed := false
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(joined, "systemctl --user"):
+					userListed = true
+					return busOut, busErr
+				case strings.Contains(joined, "list-units"):
+					return tc.sys, nil
+				default:
+					return nil, fmt.Errorf("unexpected remote command: %v", argv)
+				}
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+			got, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
+			if err != nil {
+				t.Fatalf("detectSupervisor: %v (an unavailable user bus must not defeat a system listing that named the hub's unit)", err)
+			}
+			if got != tc.want {
+				t.Fatalf("detectSupervisor = %+v, want %+v", got, tc.want)
+			}
+			if userListed {
+				t.Fatal("the user listing was consulted although the system listing named an evener hub unit")
+			}
+		})
+	}
+}
+
+// TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree pins the Medium
+// finding that load-but-inactive evener hub units were dropped entirely, so a
+// host with the unit stopped and no ad-hoc hub was restarted by searching for a
+// bare PID and failing with "no hub listening" — the unit that owns the hub was
+// never started. Before the fix restartHub returned ErrRestart; now it starts the
+// inactive unit (a plain `systemctl restart` starts it) and verifies health.
+func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	restarted, killed := false, false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			restarted = true
+			return nil, nil
+		case strings.Contains(joined, "kill "):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			return []byte(`{"version":"newsha"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+		t.Fatalf("restartHub: %v (a stopped hub unit with a free port must be started)", err)
+	}
+	if !restarted {
+		t.Fatal("the inactive supervisor was never started")
+	}
+	if killed {
+		t.Fatal("restartHub killed a bare process instead of starting the stopped unit")
+	}
+}
+
+// TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor guards the dormant
+// path: an inactive unit must NOT be started while an ad-hoc hub holds the hub
+// port, because starting it would race hub.lock and leave the ad-hoc hub (on the
+// old build) still serving. The bare-process restart is the correct repair there.
+func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	killed, restarted := false, false
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
+		case strings.Contains(joined, "/proc/4242/cmdline"):
+			return []byte("/opt/evener/bin/evener\x00hub\x00-addr\x00127.0.0.1:9180\x00"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			if !killed {
+				return []byte("4242\n"), nil
+			}
+			return []byte(noListenerMarker + "\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			killed = true
+			return nil, nil
+		case strings.Contains(joined, "systemctl restart"):
+			restarted = true
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			return []byte(`{"version":"newsha"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+		t.Fatalf("restartHub: %v", err)
+	}
+	if restarted {
+		t.Fatal("restartHub started the inactive unit while an ad-hoc hub held the port")
+	}
+	if !killed {
+		t.Fatal("the ad-hoc hub was never restarted")
+	}
+}
+
+// TestRestartBareFailsClosedOnUnusableProcArgv pins the Medium finding that a
+// readable /proc/<pid>/cmdline containing an empty word (e.g. `evener hub -config
+// ""`) was rejected by splitNullArgv and then silently recovered through the
+// space-joined `ps` fallback, which drops the empty value and relaunches as
+// `evener hub -config`. The old hub is already killed by then, so the broken
+// relaunch bricks the host and recovery retries the same broken command. The
+// probe must fail closed instead of falling back.
+func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/proc/4242/cmdline"):
+			// Readable, but the trailing empty argument makes it ambiguous.
+			return []byte("/opt/evener/bin/evener\x00hub\x00-config\x00\x00"), nil
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for a readable but unusable /proc argv", err)
+	}
+	if !strings.Contains(err.Error(), "not a usable argv") {
+		t.Fatalf("error does not explain the unusable exact argv: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "-ww -o ") {
+			t.Fatalf("fell back to lossy ps despite a readable /proc: %v", argv)
+		}
+		if strings.Contains(joined, "kill 4242") {
+			t.Fatalf("the process was killed before its argv could be recovered: %v", argv)
+		}
+	}
+}
+
+// TestEnsureVersionMismatchWithoutADeploySourceIsRefused pins the High finding
+// that a known on-disk version mismatch with no deploy source neither deployed
+// nor refused: ensureDecision produced no deploy and no restart, and neither
+// terminal gate looked at the version, so ensureOnce attached to a host running a
+// build the controller did not ask for — silently defeating version auto-match.
+// Before the fix Ensure attached (Start called); now it is refused terminally.
+func TestEnsureVersionMismatchWithoutADeploySourceIsRefused(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: cannedRun(map[string][]byte{
+			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+		}),
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Fatalf("err = %v, want ErrVersionMismatch (a mismatch with no deploy source must be refused, not attached)", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal rather than an endless retry", err)
+	}
+	if got := len(fr.recordedStarts()); got != 0 {
+		t.Fatalf("Start calls = %d, want 0 (no bridge to a host whose build the controller cannot match)", got)
+	}
+}
+
+// TestDetectSupervisorConsultsTheUserListingWhenTheSystemListingHasNone covers
+// the other half of the lazy user-listing change: when the system listing names
+// no evener hub unit at all, the user listing IS consulted and a running
+// systemd --user unit is still detected. It also pins the plumbing of that
+// output back out of the conditional (an accidentally shadowed variable would
+// discard it and report no supervisor).
+func TestDetectSupervisorConsultsTheUserListingWhenTheSystemListingHasNone(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "systemctl --user"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("sshd.service loaded active running OpenSSH server\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	got, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
+	if err != nil {
+		t.Fatalf("detectSupervisor: %v", err)
+	}
+	want := supervisorSet{live: supervisor{supervisorSystemdUser, "evener-hub.service"}}
+	if got != want {
+		t.Fatalf("detectSupervisor = %+v, want %+v", got, want)
 	}
 }

@@ -338,6 +338,17 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 		t.Fatalf("resolver printed %q for a missing path, want nothing", out)
 	}
 
+	// A directory must not resolve either: `mv` would move the staged binary
+	// inside it and report success, leaving the real executable un-upgraded. The
+	// pre-fix `[ -e "$p" ]` test accepted a directory; `[ -f "$p" ]` refuses it.
+	dir := filepath.Join(root, "a-directory")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, _, err := run(resolveDeployCommand(dir)); err == nil {
+		t.Fatalf("resolver accepted a directory (stdout %q)", out)
+	}
+
 	// A symlink cycle must fail like ELOOP instead of looping forever: the
 	// unbounded `while [ -L "$p" ]` hung the whole deploy ssh command.
 	cycleA := filepath.Join(root, "cycle-a")
@@ -788,4 +799,67 @@ func clearBuildSHA(t *testing.T) {
 	orig := buildinfo.GitSHA
 	buildinfo.GitSHA = ""
 	t.Cleanup(func() { buildinfo.GitSHA = orig })
+}
+
+// TestVerifyBuildRevisionRefusesDirtySource pins the Medium finding that a clean
+// controller accepted a BuildSource whose HEAD matched but whose tracked files
+// were modified (or which carried untracked files). localBuild compiles the
+// working tree, so that source produces a different binary that still reports the
+// controller's clean version, and version auto-match would accept it. HEAD
+// equality alone cannot see the difference; the worktree must be clean.
+func TestVerifyBuildRevisionRefusesDirtySource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tracked := filepath.Join(root, "tracked.txt")
+	if err := os.WriteFile(tracked, []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+
+	orig := buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.GitSHA = orig })
+	buildinfo.GitSHA = short
+
+	if _, err := verifyBuildSource(root); err != nil {
+		t.Fatalf("verifyBuildSource(clean source): %v", err)
+	}
+
+	// A modified tracked file builds different code that still claims the
+	// controller's clean version.
+	if err := os.WriteFile(tracked, []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := verifyBuildSource(root)
+	if err == nil {
+		t.Fatal("verifyBuildSource accepted a build source with modified tracked files")
+	}
+	if !strings.Contains(err.Error(), "uncommitted") || !strings.Contains(err.Error(), "refusing to deploy") {
+		t.Fatalf("error does not explain the dirty source: %v", err)
+	}
+
+	// An untracked file is part of what `go build` compiles, so it counts too.
+	gitIn(t, root, "checkout", "--", "tracked.txt")
+	if err := os.WriteFile(filepath.Join(root, "untracked.go"), []byte("package extra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyBuildSource(root); err == nil {
+		t.Fatal("verifyBuildSource accepted a build source with an untracked file")
+	}
+
+	// Removing the untracked file returns the source to a deployable state, so the
+	// refusal is keyed off the worktree and not the checkout.
+	if err := os.Remove(filepath.Join(root, "untracked.go")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyBuildSource(root); err != nil {
+		t.Fatalf("verifyBuildSource(clean again): %v", err)
+	}
 }

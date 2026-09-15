@@ -517,6 +517,18 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
 		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
 	}
+	// A known on-disk version mismatch on a Manager with no build source can
+	// never be resolved: nothing can be installed, and a restart cannot give the
+	// on-disk binary a version it does not carry. Attaching anyway would quietly
+	// violate version auto-match — the guarantee this component exists for — so
+	// refuse terminally rather than serve a build the controller did not ask for.
+	// It fires after the deploy/restart phase so a configured deploy still gets
+	// its chance (that case never reaches here with a mismatch: the re-probed
+	// facts carry the deployed build's version).
+	if !m.canDeploy() && facts.LaunchCheckKnown && facts.Version != expected {
+		return nil, fmt.Errorf("%w: host %q runs version %q, want %q, and no build source is configured to deploy the controller's build; set Options.BuildSource",
+			ErrVersionMismatch, host.Name, facts.Version, expected)
+	}
 	m.stateEvent(host.Name, StateAttaching)
 	return m.attach(ctx, host, facts)
 }
@@ -781,6 +793,7 @@ func isTerminal(err error) bool {
 	case errors.Is(err, ErrProtocolIncompatible),
 		errors.Is(err, ErrUnsupportedHost),
 		errors.Is(err, ErrLaunchContract),
+		errors.Is(err, ErrVersionMismatch),
 		errors.Is(err, ErrSSHAuth),
 		errors.Is(err, ErrHostNotFound),
 		errors.Is(err, ErrHostAddr),

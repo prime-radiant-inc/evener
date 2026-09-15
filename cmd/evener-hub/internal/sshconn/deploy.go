@@ -183,6 +183,17 @@ func verifyBuildRevision(root string) error {
 	if got != head {
 		return fmt.Errorf("build source %q is at commit %s, but this controller was built from %s; refusing to deploy code other than the controller's own", root, head, want)
 	}
+	// HEAD equality does not pin the code: the builder compiles the working tree,
+	// so a modified or untracked file at that same commit produces a different
+	// binary that still reports this controller's clean version, and version
+	// auto-match would accept it. Require a clean worktree.
+	status, err := gitStatus(root)
+	if err != nil {
+		return fmt.Errorf("build source %q: cannot read its working-tree status to check it against this controller's build %q: %w", root, want, err)
+	}
+	if changes := strings.TrimSpace(status); changes != "" {
+		return fmt.Errorf("build source %q has uncommitted changes (%s); refusing to deploy code other than the controller's own", root, firstLine(changes))
+	}
 	return nil
 }
 
@@ -195,6 +206,18 @@ func gitCommit(root, rev string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// gitStatus returns `git status --porcelain` for the checkout at root. Porcelain
+// output is stable and machine-readable: one line per staged, modified, or
+// untracked path, empty for a clean tree. Untracked files count because they are
+// part of what `go build` compiles.
+func gitStatus(root string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output() //nolint:noctx // local, fast; no request context to thread here
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // declaresEvenerModule reports whether dir holds a go.mod for this module.
@@ -281,9 +304,12 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host) (string, 
 // GNU/coreutils extension which BSD `readlink` (macOS) rejects with `readlink:
 // illegal option -- f`, so every darwin/arm64 deploy failed at path resolution.
 // It prints nothing and exits nonzero when the path does not resolve to an
-// existing file, which the caller reads as a clear error rather than a silent
-// fallback to the symlink. The traversal is bounded so a symlink cycle returns
-// nonzero like ELOOP instead of looping until the ssh command times out.
+// existing regular file, which the caller reads as a clear error rather than a
+// silent fallback to the symlink. A `-f` (not `-e`) test is what makes a
+// directory an error: `mv` would happily move the temporary binary *inside* the
+// directory and report success, leaving the real executable un-upgraded. The
+// traversal is bounded so a symlink cycle returns nonzero like ELOOP instead of
+// looping until the ssh command times out.
 const resolvePathScript = `evener_resolve() {
   p=$1
   n=0
@@ -297,7 +323,7 @@ const resolvePathScript = `evener_resolve() {
       *) p=$d/$t ;;
     esac
   done
-  [ -e "$p" ] || return 1
+  [ -f "$p" ] || return 1
   d=$(cd -P "$(dirname "$p")" 2>/dev/null && pwd) || return 1
   printf '%s\n' "$d/${p##*/}"
 }

@@ -33,6 +33,14 @@ var (
 	// the version-match deploy that fixes it is 04b.
 	ErrLaunchContract = errors.New("sshconn: host launch contract not satisfied")
 
+	// ErrVersionMismatch marks a host whose on-disk build is not the build this
+	// controller requires, on a Manager with no build source to install instead.
+	// Version auto-match exists to make the attached runtime match the
+	// controller: with nothing to deploy there is no way to resolve the
+	// difference, so attaching would silently serve the wrong build. Terminal,
+	// like the other contract refusals.
+	ErrVersionMismatch = errors.New("sshconn: host version does not match the controller")
+
 	// ErrPreflightDecode marks preflight output (launch-check JSON or the
 	// environment probe) that could not be parsed. Treated as an incompatible
 	// host: terminal.

@@ -184,6 +184,17 @@ type supervisor struct {
 	label string
 }
 
+// supervisorSet is everything one host's supervisor listings yield: at most one
+// live supervisor (a RUNNING hub unit) and at most one dormant supervisor (a
+// loaded but inactive hub unit). Both are kept because an inactive unit is still
+// the right way to bring the hub back on a host that is not currently serving —
+// but only while nothing else holds the hub port, since starting a second hub
+// races hub.lock.
+type supervisorSet struct {
+	live    supervisor
+	dormant supervisor
+}
+
 // restartRemote is the remote command that restarts the supervised hub.
 func (s supervisor) restartRemote() string {
 	switch s.kind {
@@ -208,25 +219,51 @@ func (s supervisor) restartStatusIsAdvisory() bool {
 	return s.kind == supervisorLaunchd
 }
 
-// detectSupervisorFrom classifies a host from raw supervisor listings. It is
-// pure so the table test needs no ssh: launchd for darwin, systemd (system,
-// then --user) for linux, otherwise a bare process.
+// detectSupervisorsFrom classifies a host from raw supervisor listings. It is
+// pure so the table tests need no ssh: launchd for darwin, systemd (system,
+// then --user) for linux, otherwise a bare process. A running unit anywhere wins
+// over an inactive one; among inactive units a system unit wins over a user one,
+// because a loaded system evener-hub unit is the documented deployment for this
+// component and is authoritative over a user-scoped one.
 //
-// More than one matching label or unit is an error rather than a silent pick of
-// the first: restarting the wrong evener service would leave the hub the
-// controller meant to replace untouched while reporting success.
-func detectSupervisorFrom(goos string, launchctlOut, systemdOut, systemdUserOut []byte) (supervisor, error) {
+// More than one matching label or unit in the same listing is an error rather
+// than a silent pick of the first: restarting the wrong evener service would
+// leave the hub the controller meant to replace untouched while reporting
+// success.
+func detectSupervisorsFrom(goos string, launchctlOut, systemdOut, systemdUserOut []byte) (supervisorSet, error) {
 	switch goos {
 	case "darwin":
-		return pickSupervisor(supervisorLaunchd, "launchd", parseLaunchdHubs(launchctlOut))
-	case "linux":
-		if sup, err := pickSupervisor(supervisorSystemd, "systemd", parseSystemdHubs(systemdOut)); err != nil || sup.kind != supervisorNone {
-			return sup, err
+		live, dormant := parseLaunchdHubs(launchctlOut)
+		sup, err := pickSupervisor(supervisorLaunchd, "launchd", live)
+		if err != nil || sup.kind != supervisorNone {
+			return supervisorSet{live: sup}, err
 		}
-		return pickSupervisor(supervisorSystemdUser, "systemd --user", parseSystemdHubs(systemdUserOut))
+		dorm, err := pickSupervisor(supervisorLaunchd, "launchd", dormant)
+		return supervisorSet{dormant: dorm}, err
+	case "linux":
+		sysLive, sysDorm := parseSystemdHubs(systemdOut)
+		if sup, err := pickSupervisor(supervisorSystemd, "systemd", sysLive); err != nil || sup.kind != supervisorNone {
+			return supervisorSet{live: sup}, err
+		}
+		userLive, userDorm := parseSystemdHubs(systemdUserOut)
+		if sup, err := pickSupervisor(supervisorSystemdUser, "systemd --user", userLive); err != nil || sup.kind != supervisorNone {
+			return supervisorSet{live: sup}, err
+		}
+		if dorm, err := pickSupervisor(supervisorSystemd, "systemd", sysDorm); err != nil || dorm.kind != supervisorNone {
+			return supervisorSet{dormant: dorm}, err
+		}
+		dorm, err := pickSupervisor(supervisorSystemdUser, "systemd --user", userDorm)
+		return supervisorSet{dormant: dorm}, err
 	default:
-		return supervisor{}, nil
+		return supervisorSet{}, nil
 	}
+}
+
+// detectSupervisorFrom is the live-only view of detectSupervisorsFrom, for the
+// callers and tests that judge only whether a RUNNING supervised hub exists.
+func detectSupervisorFrom(goos string, launchctlOut, systemdOut, systemdUserOut []byte) (supervisor, error) {
+	set, err := detectSupervisorsFrom(goos, launchctlOut, systemdOut, systemdUserOut)
+	return set.live, err
 }
 
 // pickSupervisor turns the matches from one listing into a supervisor: none is
@@ -243,41 +280,44 @@ func pickSupervisor(kind supervisorKind, what string, matches []string) (supervi
 	}
 }
 
-// parseLaunchdHubs finds launchd jobs whose labels name an evener hub and that
-// are actually running. `launchctl list` prints "PID Status Label" per line; a
-// loaded-but-not-running job shows "-" in the PID column. Treating such a job as
-// a live hub would make restartHub start a second hub (which then fails on
-// hub.lock) while an ad hoc hub kept serving the old version, so it must fall
-// through to the bare-process path instead. The doc's precedent is
-// `launchctl list | grep evener-hub`.
-func parseLaunchdHubs(out []byte) []string {
-	var labels []string
+// parseLaunchdHubs classifies launchd jobs whose labels name an evener hub.
+// `launchctl list` prints "PID Status Label" per line; a loaded-but-not-running
+// job shows "-" in the PID column. A numeric PID is a RUNNING hub (live); "-" is
+// a job that exists but is not serving (dormant). The two are kept apart because
+// treating a dormant job as live would make restartHub start a second hub while
+// an ad hoc hub kept serving the old version, whereas a dormant job with the hub
+// port free is exactly the case where restarting the job is the correct repair.
+// The doc's precedent is `launchctl list | grep evener-hub`.
+func parseLaunchdHubs(out []byte) (live, dormant []string) {
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 3 || fields[0] == "PID" {
 			continue
 		}
-		if fields[0] == "-" {
+		label := fields[len(fields)-1]
+		if !isEvenerHubName(label) {
 			continue
 		}
-		if label := fields[len(fields)-1]; isEvenerHubName(label) {
-			labels = append(labels, label)
+		if fields[0] == "-" {
+			dormant = append(dormant, label)
+			continue
 		}
+		live = append(live, label)
 	}
-	return labels
+	return live, dormant
 }
 
-// parseSystemdHubs finds evener hub units in `systemctl list-units` output.
+// parseSystemdHubs classifies evener hub units in `systemctl list-units` output.
 // Each line starts with the unit name followed by LOAD, ACTIVE, and SUB, e.g.
 // "evener-hub.service loaded active running". A leading status glyph (●) is
-// stripped. `--all` also lists loaded-but-inactive units, which must not be read
-// as a live hub: restarting one would start a second hub while an ad hoc one
-// still holds hub.lock. SUB must be `running` too: `loaded active exited` is a
-// unit that is loaded and enabled but has no process serving, so treating it as
-// a live supervised hub would restart a unit instead of the ad hoc hub holding
-// the port.
-func parseSystemdHubs(out []byte) []string {
-	var units []string
+// stripped. `loaded active running` is the only live shape: `loaded active
+// exited` is a unit that is loaded but has no process serving, and
+// `loaded inactive dead` is a stopped one. Both are dormant — reloading them is
+// the repair for a host left without a listener, but they must never be read as
+// live (restarting one then would start a second hub while an ad hoc hub still
+// holds hub.lock). A unit that is not `loaded` (not-found) is ignored entirely:
+// starting it would fail.
+func parseSystemdHubs(out []byte) (live, dormant []string) {
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "●"))
 		if len(fields) < 4 {
@@ -287,14 +327,16 @@ func parseSystemdHubs(out []byte) []string {
 		if !strings.HasSuffix(unit, ".service") {
 			continue
 		}
-		if fields[1] != "loaded" || fields[2] != "active" || fields[3] != "running" {
+		if fields[1] != "loaded" || !isEvenerHubName(strings.TrimSuffix(unit, ".service")) {
 			continue
 		}
-		if isEvenerHubName(strings.TrimSuffix(unit, ".service")) {
-			units = append(units, unit)
+		if fields[2] == "active" && fields[3] == "running" {
+			live = append(live, unit)
+			continue
 		}
+		dormant = append(dormant, unit)
 	}
-	return units
+	return live, dormant
 }
 
 // isEvenerHubName reports whether a label or unit base name names an evener hub.
@@ -327,32 +369,44 @@ func supervisorListingAbsent(out []byte) bool {
 // detectSupervisor runs the host's supervisor listings. Only a listing that
 // proves the supervisor is absent falls through to the bare-process path; any
 // other failure is surfaced. An ambiguous listing is fatal, not a fallback.
-func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisor, error) {
+//
+// The user listing is consulted only when the system listing named no evener hub
+// unit at all. A headless host reached over non-interactive ssh exports no
+// XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS, so `systemctl --user list-units`
+// exits nonzero with "Failed to connect to bus: ...", which matches none of
+// supervisorListingAbsent's markers; running it unconditionally aborted the
+// restart with ErrRestart even though the system listing had already found the
+// hub's unit, so version auto-match could never repair such a host.
+func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisorSet, error) {
 	switch facts.OS {
 	case "darwin":
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "launchctl list"), nil)
 		if err != nil && !supervisorListingAbsent(out) {
-			return supervisor{}, fmt.Errorf("%w: host %q launchctl list: %w: %s", ErrRestart, host.Name, err, tail(out))
+			return supervisorSet{}, fmt.Errorf("%w: host %q launchctl list: %w: %s", ErrRestart, host.Name, err, tail(out))
 		}
-		return detectSupervisorFrom("darwin", out, nil, nil)
+		return detectSupervisorsFrom("darwin", out, nil, nil)
 	case "linux":
 		sysOut, sysErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnits), nil)
 		if sysErr != nil {
 			if !supervisorListingAbsent(sysOut) {
-				return supervisor{}, fmt.Errorf("%w: host %q systemctl list-units: %w: %s", ErrRestart, host.Name, sysErr, tail(sysOut))
+				return supervisorSet{}, fmt.Errorf("%w: host %q systemctl list-units: %w: %s", ErrRestart, host.Name, sysErr, tail(sysOut))
 			}
 			sysOut = nil
 		}
-		userOut, userErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnitsUser), nil)
-		if userErr != nil {
-			if !supervisorListingAbsent(userOut) {
-				return supervisor{}, fmt.Errorf("%w: host %q systemctl --user list-units: %w: %s", ErrRestart, host.Name, userErr, tail(userOut))
+		var userOut []byte
+		if live, dormant := parseSystemdHubs(sysOut); len(live) == 0 && len(dormant) == 0 {
+			out, userErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnitsUser), nil)
+			if userErr != nil {
+				if !supervisorListingAbsent(out) {
+					return supervisorSet{}, fmt.Errorf("%w: host %q systemctl --user list-units: %w: %s", ErrRestart, host.Name, userErr, tail(out))
+				}
+			} else {
+				userOut = out
 			}
-			userOut = nil
 		}
-		return detectSupervisorFrom("linux", nil, sysOut, userOut)
+		return detectSupervisorsFrom("linux", nil, sysOut, userOut)
 	default:
-		return supervisor{}, nil
+		return supervisorSet{}, nil
 	}
 }
 
@@ -365,9 +419,24 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 // successful replacement.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
 	expected := m.opts.controllerVersion()
-	sup, err := m.detectSupervisor(ctx, host, facts)
+	set, err := m.detectSupervisor(ctx, host, facts)
 	if err != nil {
 		return err
+	}
+	sup := set.live
+	if sup.kind == supervisorNone && set.dormant.kind != supervisorNone {
+		// A loaded-but-inactive evener hub unit owns this host's hub: restarting
+		// it starts it, which is the repair for a host left with no listener after
+		// a deploy, a crash, or a failed restart. Only do so while the hub port is
+		// free — with an ad hoc hub holding it, starting the unit would race
+		// hub.lock and leave the ad hoc hub (on the old build) still serving.
+		cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
+		if err != nil {
+			return err
+		}
+		if cleared {
+			sup = set.dormant
+		}
 	}
 	if sup.kind != supervisorNone {
 		remote := sup.restartRemote()
@@ -582,12 +651,16 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 // /api/health. The address is the configured host address, normalized for a
 // wildcard bind the way the attach path normalizes it, and the whole URL is
 // quoted as one word so a host-derived address cannot inject a shell command.
+// The scheme is explicit: without it curl only guesses from the host part, which
+// is unreliable for a bracketed IPv6 literal ("[::1]:9180/api/health") and is
+// not what the documented probe (`curl -fsS http://127.0.0.1:9180/api/health`,
+// docs/evener-hub.md) uses.
 // -q (which must lead the option list) and --noproxy '*' keep a host-side
 // .curlrc or proxy environment from answering in place of the loopback hub, and
 // the timeouts bound a listener that accepts but never answers.
 func hubHealthRemote(addr string) string {
 	return "curl -q --noproxy '*' -fsS --connect-timeout " + healthCurlConnectTimeout +
-		" --max-time " + healthCurlMaxTime + " " + shellQuote(loopbackAddr(addr)+"/api/health")
+		" --max-time " + healthCurlMaxTime + " " + shellQuote("http://"+loopbackAddr(addr)+"/api/health")
 }
 
 // probeRunningHub asks the host hub's /api/health once and returns the identity
@@ -660,16 +733,27 @@ func parseHubHealth(out []byte) (hubIdentity, bool) {
 // /proc/<pid>/cmdline (Linux), the only form that preserves argument boundaries:
 // `ps -o command=` joins argv with single spaces, so a path containing a space
 // would be split and a wrong argv relaunched. Where the null-delimited source is
-// unavailable (macOS), it falls back to ps and refuses a command line whose word
-// boundaries are ambiguous rather than guessing.
+// unavailable (nothing printed: no readable /proc, as on macOS), it falls back
+// to ps and refuses a command line whose word boundaries are ambiguous rather
+// than guessing.
+//
+// A readable /proc whose bytes cannot be parsed (an empty word, as
+// `evener hub -config ""` produces) does NOT fall back: the exact source was
+// available and is unusable, and the ps fallback is lossy in exactly that way —
+// it would drop the empty value and relaunch as `evener hub -config`. The old
+// hub is already stopped by then, so the wrong relaunch would leave the host
+// with no hub and recovery would retry the same broken command. Fail closed.
 func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
 	if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubArgvRemote(pid)), nil); err == nil && len(out) > 0 {
-		if argv, ok := splitNullArgv(out); ok {
-			if err := validateHubArgv(argv); err != nil {
-				return nil, fmt.Errorf("%w: host %q pid %s: %w", ErrRestart, host.Name, pid, err)
-			}
-			return argv, nil
+		argv, ok := splitNullArgv(out)
+		if !ok {
+			return nil, fmt.Errorf("%w: host %q pid %s: /proc/%s/cmdline was readable but not a usable argv (an empty argument makes it ambiguous); refusing to recover it through ps",
+				ErrRestart, host.Name, pid, pid)
 		}
+		if err := validateHubArgv(argv); err != nil {
+			return nil, fmt.Errorf("%w: host %q pid %s: %w", ErrRestart, host.Name, pid, err)
+		}
+		return argv, nil
 	}
 
 	// `-o command=` (trailing `=`) suppresses the `COMMAND` header line, so the
