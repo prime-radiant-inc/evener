@@ -92,8 +92,9 @@ type Options struct {
 	initializeTimeout time.Duration
 	attemptTimeout    time.Duration
 	// afterPublish, when set, runs under the host lock immediately after a
-	// successful publishChannel and before the post-publish validation. Tests use
-	// it to drop the just-published channel deterministically.
+	// successful publishChannel and before the post-publish validation, on both
+	// the Ensure and the reconnect paths. Tests use it to drop the just-published
+	// channel deterministically.
 	afterPublish func(name string, ch *Channel)
 }
 
@@ -194,8 +195,15 @@ type Manager struct {
 
 	mu     sync.Mutex
 	closed bool
-	locks  map[string]*sync.Mutex
-	chans  map[string]*Channel
+	// closeDone is closed by the first Close once every teardown wait is done. A
+	// later concurrent Close blocks on it instead of returning while the first is
+	// still closing channels and waiting on ensureWG/supervisorsWG, so "Close
+	// returned" means no lifecycle event remains to be delivered for every caller,
+	// not just the first.
+	closeDone chan struct{}
+	closeErr  error
+	locks     map[string]*sync.Mutex
+	chans     map[string]*Channel
 	// supervisors holds each host's live reconnect loop cancel func, so a terminal
 	// failure can end that loop even while it waits out a backoff.
 	supervisors map[string]context.CancelFunc
@@ -223,6 +231,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		runner:      opts.runner(),
 		baseCtx:     baseCtx,
 		cancel:      cancel,
+		closeDone:   make(chan struct{}),
 		locks:       map[string]*sync.Mutex{},
 		chans:       map[string]*Channel{},
 		supervisors: map[string]context.CancelFunc{},
@@ -257,7 +266,16 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	name = host.Name
 
 	lock := m.hostLock(name)
-	lock.Lock()
+	// Honor the caller's context while waiting for the host gate: a canceled
+	// caller must not park behind another Ensure's or a supervisor's long
+	// preflight/attach, and must not be handed a channel afterwards.
+	if err := lockHostCtx(ctx, lock); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		lock.Unlock()
+		return nil, err
+	}
 
 	if ch := m.liveChannel(name); ch != nil {
 		err := m.channelUsable(name, ch)
@@ -464,11 +482,18 @@ func errChannelDropped(name string) error {
 // Close cancels every supervisor and closes every live channel. It is terminal
 // for the Manager: the base context stays canceled, and a later Ensure reports
 // ErrManagerClosed rather than attaching a channel nothing would supervise.
+//
+// Concurrent callers all wait for the same teardown. A second Close blocks until
+// the first has finished closing channels and joining ensureWG/supervisorsWG, so
+// each caller can treat its own return as the point after which no lifecycle
+// event will be delivered; every caller receives the same teardown error.
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	if m.closed {
+		done := m.closeDone
 		m.mu.Unlock()
-		return nil
+		<-done
+		return m.closeErr
 	}
 	m.closed = true
 	m.cancel()
@@ -517,6 +542,11 @@ func (m *Manager) Close() error {
 	// terminal. OnEvent runs synchronously, so any event a supervisor still emits
 	// is delivered before this returns.
 	m.supervisorsWG.Wait()
+	// Publish the outcome and release every concurrent caller at once. The write
+	// happens-before the close, and each waiter's receive happens-after it, so the
+	// closeErr a waiter reads is ordered without the mutex.
+	m.closeErr = first
+	close(m.closeDone)
 	return first
 }
 
@@ -779,6 +809,20 @@ func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sy
 			m.stateEvent(host.Name, StateDisconnected)
 			return false
 		}
+		if m.opts.afterPublish != nil {
+			m.opts.afterPublish(host.Name, nch)
+		}
+		if nch.isLost() || nch.isClosed() {
+			// The link dropped between the pre-publish check and the announcement.
+			// Announcing it would install an unusable channel and leak the source a
+			// consumer builds from the Attached, so give the slot back, reap it, and
+			// take another turn through the backoff. This supervisor owns the host,
+			// so clearing the slot does not orphan it.
+			m.clearChannel(host.Name)
+			_ = nch.Close()
+			m.stateEvent(host.Name, StateReconnecting)
+			return true
+		}
 		m.attachEvent(host.Name, nch, StateAttached)
 		if !m.startSupervise(host, nch, lock) {
 			// Close set its flag before supervision began: pair the Attached and
@@ -829,14 +873,15 @@ func nextBackoff(delay, limit time.Duration) time.Duration {
 }
 
 // isTerminal reports whether err ends the reconnect loop instead of being
-// retried. Auth failures and every contract violation are terminal, matching
-// spec 04's "Error handling".
+// retried. Every contract violation is terminal, matching spec 04's "Error
+// handling". An authentication-shaped failure is deliberately not: ssh forwards
+// a remote command's stderr and exit status, so the refusal cannot be attributed
+// to ssh, and retrying is the safe side of that ambiguity (see ErrSSHAuth).
 func isTerminal(err error) bool {
 	switch {
 	case errors.Is(err, ErrProtocolIncompatible),
 		errors.Is(err, ErrUnsupportedHost),
 		errors.Is(err, ErrLaunchContract),
-		errors.Is(err, ErrSSHAuth),
 		errors.Is(err, ErrHostNotFound),
 		errors.Is(err, ErrPreflightDecode),
 		errors.Is(err, ErrManagerClosed):
@@ -855,6 +900,41 @@ func (m *Manager) hostLock(name string) *sync.Mutex {
 		m.locks[name] = lock
 	}
 	return lock
+}
+
+// lockHostCtx acquires the per-host gate, giving up when ctx is done. The host
+// lock itself is a plain sync.Mutex: Close and the reconnect supervisors take it
+// without a context and must not be made to fail, so a canceled waiter cannot be
+// woken out of Lock directly. This helper parks a goroutine on Lock instead and,
+// when the caller gives up first, has that goroutine hand the lock straight back
+// once it acquires it — the gate is never left held by a caller that returned.
+func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Fast path: an uncontended acquire needs neither a goroutine nor a select.
+	if mu.TryLock() {
+		return nil
+	}
+	acquired := make(chan struct{})
+	abandon := make(chan struct{})
+	go func() {
+		mu.Lock()
+		// The unbuffered send completes only if the caller is still waiting; once
+		// it has given up, nothing will receive, so release the lock here.
+		select {
+		case acquired <- struct{}{}:
+		case <-abandon:
+			mu.Unlock()
+		}
+	}()
+	select {
+	case <-acquired:
+		return nil
+	case <-ctx.Done():
+		close(abandon)
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) currentChannel(name string) *Channel {

@@ -259,8 +259,12 @@ func TestEnsureStartFailureClassification(t *testing.T) {
 		wantErr error
 	}{
 		{
-			// Under BatchMode ssh never prompts, so a refusal must not be retried.
-			name:    "auth refusal is terminal",
+			// A failed Start never spawned a remote command, so the marker is
+			// necessarily ssh's own — the one case classified ErrSSHAuth. It is still
+			// retryable: a real spawn failure carries no diagnostic, so an
+			// authentication refusal ordinarily reaches the manager as ErrSSHStart,
+			// and retrying is the safe side of that ambiguity (see ErrSSHAuth).
+			name:    "auth-shaped start failure is classified but stays retryable",
 			stderr:  "bob@alpha.example: Permission denied (publickey).\n",
 			wantErr: ErrSSHAuth,
 		},
@@ -285,6 +289,9 @@ func TestEnsureStartFailureClassification(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
+			if isTerminal(tc.wantErr) {
+				t.Fatalf("%v must stay retryable", tc.wantErr)
+			}
 		})
 	}
 }
@@ -302,6 +309,64 @@ func TestEnsureAfterCloseFailsWithErrManagerClosed(t *testing.T) {
 	}
 	if len(fr.recordedRuns()) != 0 || len(fr.recordedStarts()) != 0 {
 		t.Fatal("Ensure on a closed manager still ran commands")
+	}
+}
+
+// A canceled Ensure must not park behind another caller's (or a supervisor's)
+// long preflight/attach on the same host. The per-host gate is context-aware, so
+// the caller gets its own error back instead of waiting out the holder.
+func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	// Hold the host gate, the way a long preflight or attach does.
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	defer lock.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(ctx, "alpha")
+		done <- err
+	}()
+	// Let the caller reach the gate before canceling, so the waiting path is the
+	// one under test.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Ensure with a canceled context = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure stayed parked on the host gate despite its canceled context")
+	}
+}
+
+// An already-canceled Ensure must report the context, not hand back an attached
+// channel the caller can no longer use.
+func TestEnsureCanceledContextDoesNotReturnALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ch, err := m.Ensure(ctx, "alpha")
+	if err == nil {
+		t.Fatal("an already-canceled Ensure returned a channel")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if ch != nil {
+		t.Fatalf("Ensure returned a channel with a canceled context: %+v", ch)
 	}
 }
 
@@ -1191,6 +1256,65 @@ func TestLostPublishedReplacementPreservesSupervision(t *testing.T) {
 	}
 }
 
+// A reconnect that publishes a channel whose link drops before the announcement
+// must not announce it: the initial Ensure path revalidates after publishing and
+// the reconnect path must too, or a consumer installs a source for a channel
+// that is already gone.
+func TestReconnectLostPublishedChannelIsNotAnnounced(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var drop atomic.Bool
+	var armed atomic.Bool
+	var announcedLost atomic.Int32
+	liveAttached := make(chan struct{})
+	var liveOnce sync.Once
+
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	var m *Manager
+	m = newTestManager(t, testRegistry(t, host), fr, Options{
+		// Drop exactly the first reconnect's just-published channel, between the
+		// publish and the announcement.
+		afterPublish: func(_ string, ch *Channel) {
+			if drop.CompareAndSwap(true, false) {
+				ch.markLost()
+			}
+		},
+		OnEvent: func(ev Event) {
+			if ev.Kind != EventAttached || !armed.Load() {
+				return
+			}
+			if ch := m.currentChannel(ev.Host); ch != nil && ch.isLost() {
+				announcedLost.Add(1)
+				return
+			}
+			liveOnce.Do(func() { close(liveAttached) })
+		},
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	armed.Store(true)
+	drop.Store(true)
+	ch.markLost()
+
+	select {
+	case <-liveAttached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never announced a usable replacement channel")
+	}
+	if got := announcedLost.Load(); got != 0 {
+		t.Fatalf("%d already-lost channels were announced as attached", got)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // A frame the codec rejects is not a read error, so the byte-level monitor never
 // sees it: without the transport wrapper the manager would keep the channel and
 // hand it out with its reader gone.
@@ -1374,13 +1498,18 @@ func TestAttemptIsCappedEvenWithCallerDeadline(t *testing.T) {
 }
 
 // ErrManagerClosed means the manager is finished, so the reconnect loop must not
-// sleep and announce one more round before giving up.
+// sleep and announce one more round before giving up. ErrSSHAuth stays retryable:
+// ssh forwards a remote command's stderr and exit status, so no failure the
+// manager can observe proves an ssh-level refusal (see ErrSSHAuth).
 func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	if !isTerminal(ErrManagerClosed) {
 		t.Fatal("ErrManagerClosed is not terminal")
 	}
 	if isTerminal(ErrSSHStart) {
 		t.Fatal("a transport failure must stay retryable")
+	}
+	if isTerminal(ErrSSHAuth) {
+		t.Fatal("ErrSSHAuth must not be terminal: the refusal cannot be attributed to ssh")
 	}
 }
 
@@ -1772,6 +1901,69 @@ func TestReconnectAttachAuthMarkerIsRetryable(t *testing.T) {
 	}
 }
 
+// A failed Start is the one case the classifier attributes to ssh itself (no
+// remote command ran, so the marker is ssh's), but it must not be terminal
+// either: a real spawn failure carries no diagnostic, so an authentication
+// refusal ordinarily reaches the manager as the ambiguous ErrSSHStart. Ending
+// the loop on ErrSSHAuth would still stop supervision for an unauthenticable
+// host only by accident, so the contract is that it retries under backoff.
+func TestReconnectFailedStartAuthMarkerIsRetryable(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+
+	var mu sync.Mutex
+	startCalls := 0
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			startCalls++
+			if startCalls == 1 {
+				return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+			}
+			// Reconnect: ssh never spawns, and the sink carries a BatchMode marker.
+			_, _ = stderr.Write([]byte("bob@alpha.example: Permission denied (publickey).\n"))
+			return nil, errors.New("fork/exec ssh: no such file or directory")
+		},
+	}
+	events := make(chan Event, 128)
+	var sleeps atomic.Int32
+	retried := make(chan struct{})
+	var retriedOnce sync.Once
+	m := newTestManager(t, reg, fr, Options{
+		OnEvent:     func(ev Event) { events <- ev },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		// The loop sleeps before each attempt, so the second sleep proves the first
+		// attempt failed and another turn was taken; park it until Close cancels.
+		sleep: func(ctx context.Context, _ time.Duration) error {
+			if sleeps.Add(1) >= 2 {
+				retriedOnce.Do(func() { close(retried) })
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	ch.markLost()
+
+	select {
+	case <-retried:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an ErrSSHAuth-classified failure stopped the reconnect loop instead of retrying")
+	}
+	assertNoFailedEvent(t, events)
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // stdioReadWriter's pipes are closed from two directions — Channel.Close and the
 // child exiting on its own — so an already-closed pipe must not surface as a
 // Manager.Close error. os.File reports a repeat close as os.ErrClosed; a pipe
@@ -1811,6 +2003,18 @@ func waitForEvent(t *testing.T, ch <-chan Event, kind EventKind) Event {
 	}
 }
 
+// waitUntil polls cond until it holds, failing the test at the deadline.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func assertNoHubStart(t *testing.T, runs, starts [][]string) {
 	t.Helper()
 	all := append(append([][]string(nil), runs...), starts...)
@@ -1846,8 +2050,9 @@ func containsToken(argv []string, token string) bool {
 // the same sink, so the text alone cannot separate them, and ssh forwards the
 // remote command's exit status unchanged — including 255. A started bridge is
 // therefore ambiguous and stays retryable, matching the one-shot preflight rule
-// (isSSHAuthFailure); only a failure to spawn ssh is terminal, because no remote
-// command could then have produced the marker.
+// (isSSHAuthFailure); only a failure to spawn ssh can be attributed to ssh at
+// all, because no remote command could then have produced the marker — and even
+// that class is not terminal (see ErrSSHAuth).
 func TestAttachAuthClassificationRequiresSSHExitStatus(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	const marker = "bob@alpha.example: Permission denied (publickey).\n"
@@ -1860,7 +2065,7 @@ func TestAttachAuthClassificationRequiresSSHExitStatus(t *testing.T) {
 		{"a started ssh exiting 255 with the marker stays retryable", exitStatus(t, 255), nil, ErrSSHStart},
 		{"a remote program's exit with the marker stays retryable", exitStatus(t, 1), nil, ErrSSHStart},
 		{
-			"an ssh that never started ran no remote command, so the marker is terminal",
+			"an ssh that never started ran no remote command, so the marker is ssh's",
 			nil, errors.New("fork/exec ssh: no such file or directory"), ErrSSHAuth,
 		},
 	}
@@ -1942,6 +2147,77 @@ func TestCloseWaitsForSupervisors(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close never returned after the supervisor finished")
+	}
+}
+
+// A second concurrent Close must not return while the first is still tearing
+// channels down: a consumer that treats its own Close return as "no further
+// lifecycle events" would otherwise observe the first teardown's events.
+func TestSecondCloseWaitsForTheFirst(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+
+	sleepEntered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce, releaseOnce sync.Once
+	var events atomic.Int32
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		OnEvent:     func(Event) { events.Add(1) },
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		// Deliberately ignores ctx: the supervisor is still running when the first
+		// Close is called, so Close has to wait for it rather than return ahead.
+		sleep: func(context.Context, time.Duration) error {
+			enterOnce.Do(func() { close(sleepEntered) })
+			<-release
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
+	})
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	defer releaseOnce.Do(func() { close(release) })
+
+	ch.markLost()
+	select {
+	case <-sleepEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the supervisor never entered its backoff sleep")
+	}
+
+	first := make(chan error, 1)
+	go func() { first <- m.Close() }()
+	// Once closed is set the first caller is committed to its waits, so a second
+	// caller necessarily takes the concurrent branch.
+	waitUntil(t, "the first Close to commit", m.isClosed)
+
+	second := make(chan error, 1)
+	go func() { second <- m.Close() }()
+	select {
+	case <-second:
+		t.Fatal("a second Close returned while the first was still tearing down")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	for i, waits := range []chan error{first, second} {
+		select {
+		case err := <-waits:
+			if err != nil {
+				t.Fatalf("Close #%d: %v", i+1, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Close #%d never returned", i+1)
+		}
+	}
+
+	// Every caller can treat its return as quiescent: no event may follow.
+	before := events.Load()
+	time.Sleep(50 * time.Millisecond)
+	if after := events.Load(); after != before {
+		t.Fatalf("lifecycle events (%d -> %d) were emitted after Close returned", before, after)
 	}
 }
 

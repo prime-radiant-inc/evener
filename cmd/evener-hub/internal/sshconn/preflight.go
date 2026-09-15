@@ -264,11 +264,13 @@ func isAuthFailure(stderr string) bool {
 	return false
 }
 
-// sshRunFailure classifies a failed one-shot ssh invocation. An authentication
-// refusal is terminal (ErrSSHAuth): under BatchMode ssh never prompts, so
-// retrying only hammers a host that cannot let us in. Everything else is a
-// transport failure and stays retryable (ErrSSHStart). diag is carried either
-// way, because it names the cause.
+// sshRunFailure classifies a failed one-shot ssh invocation. An
+// authentication-shaped failure that no remote command could have produced (a
+// failed Start) is reported as ErrSSHAuth; everything else is the transport
+// class ErrSSHStart. Neither is terminal: ssh forwards the remote command's
+// stderr and exit status, so a refusal cannot be proven to be ssh's own, and
+// retrying is the safe side of that ambiguity (see ErrSSHAuth). diag is carried
+// either way, because it names the cause.
 func sshRunFailure(hostName, what string, err error, diag string) error {
 	if isSSHAuthFailure(err, diag) {
 		return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHAuth, hostName, what, err, diag)
@@ -276,8 +278,9 @@ func sshRunFailure(hostName, what string, err error, diag string) error {
 	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
 }
 
-// isSSHAuthFailure decides an authentication refusal. It is the ONE rule the
-// attach path shares (manager.attach): an authentication marker is terminal only
+// isSSHAuthFailure decides whether a failure can be attributed to ssh's own
+// non-interactive authentication refusal. It is the ONE rule the attach path
+// shares (manager.attach): an authentication marker is attributable to ssh only
 // when no remote command could have produced it.
 //
 // A failed one-shot Run cannot prove that. ssh forwards the remote command's own
@@ -290,7 +293,9 @@ func sshRunFailure(hostName, what string, err error, diag string) error {
 //
 // A failed Start is different: ssh never spawned, so no remote command ran and
 // the marker on the diagnostic stream is necessarily ssh's own. The caller
-// classifies that case from the marker alone.
+// classifies that case from the marker alone — and, because a real spawn failure
+// produces no diagnostic at all, an unauthenticable host ordinarily lands in the
+// retryable ErrSSHStart class instead. ErrSSHAuth is not terminal either way.
 func isSSHAuthFailure(err error, diag string) bool {
 	if !isAuthFailure(sshDiagnostic(err, diag)) {
 		return false

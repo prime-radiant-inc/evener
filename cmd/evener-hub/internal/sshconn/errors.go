@@ -14,10 +14,20 @@ var (
 	// the manager supervises a channel.
 	ErrSSHStart = errors.New("sshconn: ssh channel start failed")
 
-	// ErrSSHAuth marks a non-interactive authentication failure (BatchMode
-	// refused a password prompt, host key not trusted, no key/agent). It is
-	// terminal: the reconnect loop never spams ssh against a host that cannot
-	// authenticate.
+	// ErrSSHAuth names a non-interactive authentication refusal (BatchMode
+	// refused a password prompt, host key not trusted, no key/agent).
+	//
+	// It is NOT terminal, and in production the manager classifies no failure as
+	// ErrSSHAuth. ssh forwards a remote command's stderr onto the same stream as
+	// its own diagnostics and forwards the remote command's exit status unchanged
+	// — including 255, the status ssh(1) uses for its own failures — so neither
+	// signal can prove that a refusal is ssh's own. An authentication-shaped
+	// failure is therefore reported as the retryable ErrSSHStart and retried under
+	// backoff rather than ending the reconnect loop for a host that may merely be
+	// unreachable. The sentinel is retained for spec 04's error taxonomy and for
+	// callers that match it; the one case the classifier attributes to ssh itself
+	// is a failed Start, which never spawned a remote command and, in practice,
+	// carries no diagnostic to match.
 	ErrSSHAuth = errors.New("sshconn: ssh authentication failed")
 
 	// ErrProtocolIncompatible marks a host whose appwire protocol is not the

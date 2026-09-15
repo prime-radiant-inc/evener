@@ -177,8 +177,9 @@ func TestIsAuthFailure(t *testing.T) {
 // same stream, and ssh forwards the remote command's exit status unchanged —
 // including 255, the status ssh(1) uses for its own failures. Neither signal can
 // separate the two, so a completed Run that carries an auth marker stays
-// retryable; only a failure to start ssh, which never ran a remote command, is
-// unambiguous.
+// retryable; only a failure to start ssh, which never ran a remote command, can
+// be attributed to ssh at all — and that class is not terminal either (see
+// ErrSSHAuth).
 func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 	const marker = "bob@alpha.example: Permission denied (publickey).\n"
 	sshExit := exitStatus(t, 255)
@@ -211,7 +212,9 @@ func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 		},
 		{
 			// A failed Start never spawned ssh, so no remote command ran and the
-			// marker is necessarily ssh's own: the one unambiguous case.
+			// marker is necessarily ssh's own: the one attributable case. It stays
+			// retryable because a real spawn failure carries no diagnostic, so an
+			// authentication refusal ordinarily lands in ErrSSHStart.
 			name: "a failed Start never ran a remote command, so the marker decides",
 			err:  errors.New("fork/exec ssh: no such file or directory"),
 			diag: marker,
