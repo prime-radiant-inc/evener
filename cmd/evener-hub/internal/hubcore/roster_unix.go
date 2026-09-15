@@ -4,7 +4,12 @@ package hubcore
 
 import (
 	"errors"
+	"path/filepath"
 	"syscall"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // processAlive reports whether a process with the given PID currently exists.
@@ -17,4 +22,27 @@ func processAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// processIdentity asks the same verifier force-stop binds to
+// (daemonprocess.Controller): process generation, owner, a `serve` argv, a
+// start no later than the rendezvous start time, and possession of the
+// session's API log. An entry a daemon wrote without the fields that
+// verification needs cannot be checked, and says so.
+func processIdentity(entry rendezvous.Entry) ProcessIdentity {
+	target := daemonprocess.Target{
+		PID:       entry.PID,
+		SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID),
+		StateDir:  entry.StateDir,
+		StartedAt: entry.StartedAt,
+	}
+	if target.SessionID == "" || !filepath.IsAbs(target.StateDir) || target.StartedAt.IsZero() {
+		return ProcessIdentityUnknown
+	}
+	process, err := daemonprocess.NewController().Open(target)
+	if err != nil {
+		return ProcessNotOwner
+	}
+	_ = process.Close()
+	return ProcessOwnsEntry
 }

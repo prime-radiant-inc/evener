@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -543,6 +544,78 @@ func TestHubSourceRegistryWithoutRosterKeepsOutAStaleFileOnALivePID(t *testing.T
 	}
 	if len(listed.Data) != 0 {
 		t.Fatalf("a stale file on a live PID was listed as a daemon: %+v", listed.Data)
+	}
+}
+
+// The roster keeps a confirmed daemon through a probe miss as long as its PID
+// answers signal 0, so a daemon that crashed and had its PID reused stayed
+// listed, the relay kept dialling the dead endpoint, and the subscriber was
+// never told (review round 5 on #1325). Once the process behind the PID is
+// verified not to be the daemon, the entry reads as crashed, leaves the
+// listing, and recovery announces the daemon gone.
+func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon, upstream := newDaemonStandIn(t, "reused")
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(), // alive for the whole test, like a reused PID
+		Protocol:  appwire.ProtocolVersion,
+		Address:   strings.TrimPrefix(upstream.URL, "http://"),
+		Endpoint:  "ws://" + strings.TrimPrefix(upstream.URL, "http://"),
+		SourceID:  "local",
+		ThreadID:  "reused",
+		SessionID: "reused",
+		StateDir:  t.TempDir(),
+		StartedAt: time.Now().UTC(),
+	})
+	var identity atomic.Int32
+	identity.Store(int32(hubcore.ProcessOwnsEntry))
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{}).
+		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentity(identity.Load()) })
+	roster.Refresh()
+	if _, ok := roster.Find("reused"); !ok {
+		t.Fatal("the stand-in daemon was not confirmed into the roster")
+	}
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer wire.Close()
+	client := dialHubRPC(t, wire)
+	defer client.Close()
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:reused", Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The daemon crashes and its PID is reused: the endpoint stops answering,
+	// signal 0 still succeeds, the process is no longer the daemon.
+	identity.Store(int32(hubcore.ProcessNotOwner))
+	if err := daemon.Shutdown(ctx); err != nil {
+		t.Fatalf("daemon shutdown: %v", err)
+	}
+	roster.Refresh()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			var params appwire.ThreadResyncParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("resync params: %v", err)
+			}
+			if params.Ref != "local:reused" {
+				t.Fatalf("resync names %q, want local:reused", params.Ref)
+			}
+			return
+		case <-deadline:
+			t.Fatal("the subscriber was never told to re-read: the reused PID kept the crashed daemon listed")
+		}
 	}
 }
 

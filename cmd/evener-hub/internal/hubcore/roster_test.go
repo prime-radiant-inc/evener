@@ -1552,3 +1552,60 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
 	}
 }
+
+// A daemon that crashed leaves its rendezvous file, and the kernel may hand
+// its PID to anything. To liveness that reuse looks exactly like a busy
+// daemon missing one probe, so a confirmed entry stayed listed for as long as
+// the unrelated process lived and the relay never announced the daemon gone
+// (review round 5 on #1325). The process-identity probe tells the two apart;
+// only the reused PID is dropped, and it reads as a crash.
+func TestRosterDropsRetainedEntryWhoseProcessIsNoLongerItsDaemon(t *testing.T) {
+	dir := t.TempDir()
+	entry := rendezvous.Entry{PID: 1001, SessionID: "01REUSED", ThreadID: "01REUSED", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
+	writeRendezvous(t, dir, entry)
+	prober := &flakyProber{sessionID: "01REUSED"}
+	roster := NewRoster(dir, prober)
+	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessOwnsEntry })
+	roster.Refresh()
+	if !roster.HasConfirmedEntry(entry) {
+		t.Fatal("confirmed entry did not acquire its route")
+	}
+
+	prober.fail = true
+	roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return ProcessNotOwner })
+	roster.Refresh()
+	if roster.HasConfirmedEntry(entry) {
+		t.Fatal("a PID that no longer belongs to the daemon kept the daemon's route")
+	}
+	live, ok := roster.Find("01REUSED")
+	if !ok || !live.Crashed {
+		t.Fatalf("the daemon behind a reused PID should read as crashed, got ok=%v entry=%+v", ok, live)
+	}
+}
+
+// The other side of the same probe: a daemon that is alive and still itself,
+// merely too busy to answer, keeps its route exactly as before, and so does a
+// daemon on a host that cannot say either way.
+func TestRosterRetainsBusyDaemonThatIsStillItself(t *testing.T) {
+	for _, identity := range []ProcessIdentity{ProcessOwnsEntry, ProcessIdentityUnknown} {
+		dir := t.TempDir()
+		entry := rendezvous.Entry{PID: 1001, SessionID: "01BUSY", ThreadID: "01BUSY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc", StartedAt: time.Now().UTC()}
+		writeRendezvous(t, dir, entry)
+		prober := &flakyProber{sessionID: "01BUSY"}
+		roster := NewRoster(dir, prober)
+		roster.procAlive = func(int) bool { return true }
+		roster.SetProcessIdentity(func(rendezvous.Entry) ProcessIdentity { return identity })
+		roster.Refresh()
+		prober.fail = true
+		for range 3 {
+			roster.Refresh()
+			if !roster.HasConfirmedEntry(entry) {
+				t.Fatalf("identity %d: a busy daemon lost its route on a transient probe failure", identity)
+			}
+			if live, ok := roster.Find("01BUSY"); !ok || live.Crashed {
+				t.Fatalf("identity %d: a busy daemon reads as crashed: ok=%v entry=%+v", identity, ok, live)
+			}
+		}
+	}
+}

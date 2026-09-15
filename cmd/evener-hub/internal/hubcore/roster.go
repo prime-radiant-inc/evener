@@ -153,6 +153,11 @@ type Roster struct {
 	// probe to a live process means the daemon is busy, not gone, so its session
 	// is kept; injectable for tests.
 	procAlive func(pid int) bool
+	// procIdentity reports whether the live process at an entry's PID is still
+	// the daemon that wrote the entry. Liveness alone cannot tell a daemon
+	// that is busy from a PID the kernel handed to something else after the
+	// daemon crashed; both fail the probe and both answer signal 0.
+	procIdentity func(rendezvous.Entry) ProcessIdentity
 
 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
 	// been registered on runDir. Nil in production; injected by tests to
@@ -189,6 +194,7 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		byPID:             make(map[int]LiveEntry),
 		entryPublishedGen: make(map[int]uint64),
 		procAlive:         processAlive,
+		procIdentity:      processIdentity,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
 			return fsnotifyWatcher{w}, err
@@ -209,6 +215,30 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 // rendezvous claims must not depend on whether their PIDs exist on the host.
 func (r *Roster) SetProcessAlive(probe func(int) bool) *Roster {
 	r.procAlive = probe
+	return r
+}
+
+// ProcessIdentity is what the host can say about the process behind a
+// rendezvous entry whose daemon stopped answering.
+type ProcessIdentity int
+
+const (
+	// ProcessIdentityUnknown: the host cannot verify ownership (platform
+	// without generation-bound process inspection, or an entry from a daemon
+	// that recorded no state directory or start time). Liveness alone decides,
+	// as it always has.
+	ProcessIdentityUnknown ProcessIdentity = iota
+	// ProcessOwnsEntry: the live process is the daemon that wrote the entry.
+	ProcessOwnsEntry
+	// ProcessNotOwner: the PID is alive but belongs to something else, or the
+	// daemon has exited.
+	ProcessNotOwner
+)
+
+// SetProcessIdentity overrides the process-identity probe, for the same reason
+// SetProcessAlive exists.
+func (r *Roster) SetProcessIdentity(probe func(rendezvous.Entry) ProcessIdentity) *Roster {
+	r.procIdentity = probe
 	return r
 }
 
@@ -395,6 +425,14 @@ func (r *Roster) refresh() error {
 			// A transient probe miss preserves a route only while the complete
 			// rendezvous identity is unchanged. PID liveness cannot confirm a
 			// replacement's ownership of either the old or the new session.
+			//
+			// Nor can it tell a busy daemon from a PID the kernel reused after
+			// the daemon crashed: both miss the probe, both answer signal 0,
+			// and the crashed daemon's file is byte-identical. The process
+			// behind the PID is asked whether it is still the daemon that
+			// wrote the entry; when it verifiably is not, the entry takes the
+			// crashed path below and leaves the listing, which is what lets
+			// the relay announce the daemon gone.
 			if prev, had := prevByPID[e.PID]; had && alive {
 				if !sameDaemonIdentity(prev.Entry, e) {
 					retainUnconfirmed(prev.Entry)
@@ -404,13 +442,16 @@ func (r *Roster) refresh() error {
 					retainUnconfirmed(e)
 					continue
 				}
-				byPID[e.PID] = prev
-				if prev.SessionID != "" {
-					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
-						bySess[prev.SessionID] = prev
+				if r.procIdentity(e) != ProcessNotOwner {
+					byPID[e.PID] = prev
+					if prev.SessionID != "" {
+						if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
+							bySess[prev.SessionID] = prev
+						}
 					}
+					continue
 				}
-				continue
+				alive = false
 			}
 			if alive {
 				retainUnconfirmed(e)
