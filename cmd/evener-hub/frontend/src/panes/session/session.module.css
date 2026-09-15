@@ -1,5 +1,30 @@
-.transcript {
+/* Column layout for the pane body's content: the top-notes bar takes its
+ * natural height and the transcript flexes to whatever remains, so the
+ * notes bar and the transcript share the body's one scroll allocation
+ * instead of stacking (nested overflow) inside it. */
+.contentColumn {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
+}
+
+/* The pane's transcript viewport (Session.tsx's transcriptContent): a flex
+ * item of .contentColumn, so it takes the height remaining under the notes
+ * bar. */
+.transcript {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* TranscriptBody's root (TranscriptBody.tsx): a plain block child of
+ * .transcript, so it fills it by percentage height - a flex value would be
+ * inert here (.transcript is not a flex container) and leave this box
+ * content-sized, collapsing the height chain below it (.wrap ->
+ * .transcriptContent -> the virtual list's scroll port) with it. */
+.transcriptBody {
+  height: 100%;
+  min-height: 0;
 }
 
 .transcriptContent {
