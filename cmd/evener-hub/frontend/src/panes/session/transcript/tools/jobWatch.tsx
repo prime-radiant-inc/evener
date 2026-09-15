@@ -33,7 +33,7 @@ import {
 import type { ReactNode } from "react";
 import { useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { clip, clipJobID, parseArgs, str } from "../../../../protocol/toolCallText";
+import { clip, parseArgs, str } from "../../../../protocol/toolCallText";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
@@ -417,7 +417,7 @@ function jobWatchSummary(item: ItemModel): string {
     case "clear": {
       const args = parseArgs(item.argumentsJSON);
       const id = strField(raw, "watch_id") ?? str(args, "watch_id") ?? "";
-      return id ? `Cleared ${clipJobID(id)}` : "Cleared watch";
+      return id ? `Cleared ${id}` : "Cleared watch";
     }
     default:
       return summarizeCreate(raw, item);
@@ -625,7 +625,7 @@ function WatchListRow({ row }: { row: WatchRow }) {
       <div className={CLASS.rowStatic} data-testid="job-watch-row">
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
-          <EntityRef id={row.id} display={clipJobID(row.id)} />
+          <EntityRef id={row.id} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </div>
@@ -645,7 +645,7 @@ function WatchListRow({ row }: { row: WatchRow }) {
         <Chip>{chip}</Chip>
         <span className={CLASS.rowId} title={row.id}>
           {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. */}
-          <EntityRef id={row.id} display={clipJobID(row.id)} embedded />
+          <EntityRef id={row.id} embedded />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
       </button>
