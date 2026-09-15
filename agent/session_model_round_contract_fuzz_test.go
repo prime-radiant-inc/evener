@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FuzzModelRoundContracts covers the deterministic bookkeeping and recovery
