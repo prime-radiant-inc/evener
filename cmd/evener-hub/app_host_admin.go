@@ -26,8 +26,9 @@ import (
 // proxy is not (design §6 "secret handling").
 //
 // The families are the settings panes' own hub-scoped handlers: provider
-// instances, launch config, marketplaces/plugins, auth/credentials, and the
-// personal AGENTS.md. Nothing else.
+// instances, launch config, marketplaces/plugins, auth/credentials, the
+// personal AGENTS.md, and the host-dependent discovery helpers the remote
+// settings panes and the spawn form call. Nothing else.
 var remoteHostAdminMethods = map[string]struct{}{
 	// Provider instances (hubInstancesController, app_instances.go). These are
 	// exactly the five handlers the catalog defines; there is no
@@ -82,6 +83,30 @@ var remoteHostAdminMethods = map[string]struct{}{
 	// Personal AGENTS.md (registerAgentsDocHandlers, app_rpc_agents_doc.go).
 	appwire.MethodEvenerSettingsAgentsDocGet: {},
 	appwire.MethodEvenerSettingsAgentsDocSet: {},
+
+	// Host-dependent discovery — the remote settings panes' and the spawn form's
+	// own filesystem/discovery calls (component 06 §"Frontend changes"). Every
+	// one is answered by the host hub against ITS local environment, which is the
+	// point: path validation, auto-completion, directory creation, recent
+	// projects, harnesses, and the slash catalog must describe the selected host,
+	// not the controller. They are read-mostly; the only mutation is creating the
+	// directory the user just asked for (dirs/create), and none exposes a secret
+	// the admin families above do not already carry. Without these rows a remote
+	// settings pane or spawn form fails closed with appwire.InvalidParams.
+	appwire.MethodEvenerPathsComplete:     {},
+	appwire.MethodEvenerPathValidate:      {},
+	appwire.MethodEvenerDirsCreate:        {},
+	appwire.MethodEvenerProjectsRecent:    {},
+	appwire.MethodEvenerHarnessesList:     {},
+	appwire.MethodEvenerSpawnSlashCatalog: {},
+	// evener/git/head is read-only branch metadata for a remote working
+	// directory (protocol.go: ScopeHub, GitHeadParams/GitHeadResponse); the
+	// spawn form needs the branch of the path it is about to launch.
+	appwire.MethodEvenerGitHead: {},
+	// model/list is ScopeBoth rather than ScopeHub — the serve daemon answers it
+	// too — but the hub answers it, and the spawn form asks the selected host for
+	// that host's own model inventory.
+	appwire.MethodModelList: {},
 }
 
 // remoteHostConfigNotifications is the exact set of host-owned config
@@ -100,9 +125,26 @@ var remoteHostConfigNotifications = map[string]struct{}{
 	appwire.NotifyEvenerSettingsAgentsDocChanged: {},
 }
 
-// hostNotificationRetry bounds how long the fan-out waits before re-binding a
-// host whose client is not available yet (offline) or went away (reconnect).
-const hostNotificationRetry = time.Second
+const (
+	// hostNotificationRetryBase is the fan-out's first retry delay after a host
+	// is offline or a subscription ends.
+	hostNotificationRetryBase = time.Second
+	// hostNotificationRetryMax caps the exponential retry delay. It matches the
+	// component-04 supervisor's own ceiling, so a terminally failed host costs
+	// one cheap in-memory Online() check per interval — never an SSH preflight
+	// per second for the life of the process.
+	hostNotificationRetryMax = 30 * time.Second
+)
+
+// isRemoteHostConfigNotification reports whether method is one of the host-owned
+// config notifications the fan-out re-emits. It is installed on each remote
+// source as the host subscription's publish-time filter: a burst of thread
+// notifications must not evict the rare config update from the fan-out's bounded
+// buffer. relayHostNotifications keeps its own check as defense in depth.
+func isRemoteHostConfigNotification(method string) bool {
+	_, ok := remoteHostConfigNotifications[method]
+	return ok
+}
 
 // hostNotificationBroadcaster is the slice of *appserver.Server the fan-out
 // needs. It is an interface so the fan-out can be driven by a recorder in
@@ -206,6 +248,10 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 		if !ok {
 			continue
 		}
+		// Filter at publish time, before the notification reaches the bounded
+		// per-subscription buffer, so a thread-notification burst cannot evict the
+		// rare config update the fan-out exists to deliver.
+		remote.SetHostNotificationFilter(isRemoteHostConfigNotification)
 		go c.fanOut(ctx, remote)
 	}
 }
@@ -219,23 +265,40 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // Each cycle runs under its own child context, cancelled before the next cycle
 // begins, so the subscription's pump goroutine ends with the cycle that created
 // it and a flapping host never accumulates one goroutine per reconnect.
+//
+// A host with no live channel is never driven through the connector: Online()
+// reads the component-04 attachment signal without spawning SSH, and the
+// component-04 supervisor owns (re)connecting the host. Retries use bounded
+// exponential backoff, so a permanently-down host costs one in-memory check per
+// interval rather than an SSH preflight every second.
 func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
 	host := remote.ID()
+	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {
+		if !remote.Online() {
+			if !hostNotificationBackoff(ctx, delay) {
+				return
+			}
+			delay = nextHostNotificationBackoff(delay)
+			continue
+		}
 		subCtx, cancel := context.WithCancel(ctx)
 		notifications, err := remote.SubscribeHostNotifications(subCtx)
 		if err != nil {
 			cancel()
-			if !hostNotificationBackoff(ctx) {
+			if !hostNotificationBackoff(ctx, delay) {
 				return
 			}
+			delay = nextHostNotificationBackoff(delay)
 			continue
 		}
+		delay = hostNotificationRetryBase
 		c.relayHostNotifications(ctx, host, notifications)
 		cancel()
-		if !hostNotificationBackoff(ctx) {
+		if !hostNotificationBackoff(ctx, delay) {
 			return
 		}
+		delay = nextHostNotificationBackoff(delay)
 	}
 }
 
@@ -264,10 +327,9 @@ func (c *hubHostAdminController) relayHostNotifications(ctx context.Context, hos
 	}
 }
 
-// hostNotificationBackoff waits one retry interval, reporting false when ctx
-// ended first.
-func hostNotificationBackoff(ctx context.Context) bool {
-	timer := time.NewTimer(hostNotificationRetry)
+// hostNotificationBackoff waits delay, reporting false when ctx ended first.
+func hostNotificationBackoff(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -275,4 +337,13 @@ func hostNotificationBackoff(ctx context.Context) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// nextHostNotificationBackoff doubles delay, capped at hostNotificationRetryMax.
+func nextHostNotificationBackoff(delay time.Duration) time.Duration {
+	next := delay * 2
+	if next > hostNotificationRetryMax {
+		return hostNotificationRetryMax
+	}
+	return next
 }

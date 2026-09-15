@@ -56,6 +56,11 @@ type RemoteHubSource struct {
 	// fan-out. They are fed by the same drainLoop that routes thread
 	// notifications, never by a second reader of Client.Notifications().
 	hostSubs map[*remoteHubHostSubscription]struct{}
+	// hostFilter is the optional publish-time method filter for host-level
+	// consumers: nil accepts every notification. It exists so a consumer can
+	// exclude the noisy notification families it does not own before they reach
+	// its bounded buffer. Guarded by subMu; installed once before serving.
+	hostFilter func(method string) bool
 	// hostNotifyDropped counts host-level notifications dropped because a
 	// consumer's buffer was full. Host fan-out is deliberately non-blocking so a
 	// stalled consumer cannot stall thread routing; this counter makes the
@@ -97,6 +102,16 @@ func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) { s.facts = fn }
 // expected to be called once at registration before the source serves. With
 // no signal installed the source reports online (the pre-06 default).
 func (s *RemoteHubSource) SetHostOnline(fn func() bool) { s.online = fn }
+
+// SetHostNotificationFilter installs the optional publish-time method filter
+// for host-level notification consumers: only methods it accepts are published
+// to them (nil accepts every notification). It is expected to be called once at
+// registration before the source serves, like SetHostFacts and SetHostOnline.
+func (s *RemoteHubSource) SetHostNotificationFilter(fn func(method string) bool) {
+	s.subMu.Lock()
+	s.hostFilter = fn
+	s.subMu.Unlock()
+}
 
 // Online reports whether this source can currently serve requests.
 func (s *RemoteHubSource) Online() bool {
@@ -276,19 +291,22 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // component-07a remote-admin fan-out.
 //
 // Two channels with one writer each, mirroring remoteHubSubscription. in is
-// written only by the owning client's drainLoop and closed only by that same
-// drainLoop on client teardown; because it is never closed while a send can run,
-// a delivery can never panic on a closed channel, and a full buffer drops rather
+// written only by the owning client's drainLoop and is NEVER closed, so a
+// delivery can never panic on a closed channel, and a full buffer drops rather
 // than blocking the shared drain. out is written and closed only by the
 // subscription's pump goroutine, so it is out's sole owner: the pump closes it
-// on context end or when in closes, which is what makes the returned channel's
-// documented closure contract hold on every path. done is closed by the pump on
-// exit so the drain can skip a subscription whose pump is already gone.
+// on context end or on client teardown, which is what makes the returned
+// channel's documented closure contract hold on every path. done is closed by
+// the pump on exit so a publisher can skip a subscription whose pump is already
+// gone. clientDone is closed by the owning client's drainLoop when that client
+// is torn down, which unblocks a pump parked on a full out and ends the
+// subscription even though in is never closed.
 type remoteHubHostSubscription struct {
-	client *appwire.Client
-	in     chan appwire.Notification
-	out    chan appwire.Notification
-	done   chan struct{}
+	client     *appwire.Client
+	in         chan appwire.Notification
+	out        chan appwire.Notification
+	done       chan struct{}
+	clientDone chan struct{}
 }
 
 // SubscribeHostNotifications registers a consumer for this remote hub's
@@ -313,10 +331,11 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 		return nil, s.mapCallError(err)
 	}
 	sub := &remoteHubHostSubscription{
-		client: client,
-		in:     make(chan appwire.Notification, remoteHubSubBuffer),
-		out:    make(chan appwire.Notification, remoteHubSubBuffer),
-		done:   make(chan struct{}),
+		client:     client,
+		in:         make(chan appwire.Notification, remoteHubSubBuffer),
+		out:        make(chan appwire.Notification, remoteHubSubBuffer),
+		done:       make(chan struct{}),
+		clientDone: make(chan struct{}),
 	}
 	s.subMu.Lock()
 	s.hostSubs[sub] = struct{}{}
@@ -326,10 +345,11 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 	return sub.out, nil
 }
 
-// publishHostNotification delivers one remote notification to every registered
-// host-level consumer. It runs on the drain goroutine only, so it is the sole
-// writer of each subscription's in channel; in is never closed while a send can
-// run, so no send can race a close.
+// publishHostNotification delivers one remote notification to every host-level
+// consumer owned by client. It runs on that client's drain goroutine only, so it
+// is the sole writer of each of its subscriptions' in channels; in is never
+// closed, so no send can race a close, and no notification from one client
+// connection can reach a subscription owned by another.
 //
 // Delivery is non-blocking: a full consumer buffer drops the notification and
 // counts it. Unlike thread routing — where a dropped turn/completed is the
@@ -338,13 +358,19 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 // would stall the shared drain and therefore every thread notification for the
 // same client. A healthy consumer's pump keeps reading in, so drops are the
 // exception rather than the rule.
-func (s *RemoteHubSource) publishHostNotification(notification appwire.Notification) {
+func (s *RemoteHubSource) publishHostNotification(client *appwire.Client, notification appwire.Notification) {
 	s.subMu.Lock()
+	filter := s.hostFilter
 	subs := make([]*remoteHubHostSubscription, 0, len(s.hostSubs))
 	for sub := range s.hostSubs {
-		subs = append(subs, sub)
+		if sub.client == client {
+			subs = append(subs, sub)
+		}
 	}
 	s.subMu.Unlock()
+	if filter != nil && !filter(notification.Method) {
+		return
+	}
 	for _, sub := range subs {
 		select {
 		case sub.in <- notification:
@@ -357,7 +383,9 @@ func (s *RemoteHubSource) publishHostNotification(notification appwire.Notificat
 
 // pumpHostSubscription owns sub.out and sub.done: it is out's only sender and
 // only closer, so the returned channel closes on every termination path — its
-// context ending or the drain closing in on client teardown.
+// context ending or the owning client being torn down. The clientDone case in
+// the out send is what makes the second path reachable even when a full out
+// would otherwise park the pump.
 func (s *RemoteHubSource) pumpHostSubscription(ctx context.Context, sub *remoteHubHostSubscription) {
 	defer close(sub.out)
 	defer close(sub.done)
@@ -366,13 +394,14 @@ func (s *RemoteHubSource) pumpHostSubscription(ctx context.Context, sub *remoteH
 		select {
 		case <-ctx.Done():
 			return
-		case notification, ok := <-sub.in:
-			if !ok {
-				return
-			}
+		case <-sub.clientDone:
+			return
+		case notification := <-sub.in:
 			select {
 			case sub.out <- notification:
 			case <-ctx.Done():
+				return
+			case <-sub.clientDone:
 				return
 			}
 		}

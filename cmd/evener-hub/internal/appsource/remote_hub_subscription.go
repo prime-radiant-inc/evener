@@ -159,12 +159,13 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 			}
 		}
 		s.subMu.Unlock()
-		// Closing in (never out) keeps drainLoop the in channel's only writer and
-		// closer, so a host-fan-out send can never race a close. The
-		// subscription's pump sees in close, ends, and closes out, so the
-		// consumer observes the close and re-subscribes against the next client.
+		// Signal teardown on a dedicated channel and never close in: in stays
+		// the drain goroutine's alone, so a host-fan-out send can never race a
+		// close, and a pump parked on a full out is still unblocked (it selects
+		// on clientDone) so the consumer observes the close and re-subscribes
+		// against the next client.
 		for _, sub := range orphaned {
-			close(sub.in)
+			close(sub.clientDone)
 		}
 	}()
 	for {
@@ -172,7 +173,7 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 		if !ok {
 			return
 		}
-		s.routeNotification(notification)
+		s.routeNotification(client, notification)
 	}
 }
 
@@ -181,10 +182,11 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // outside it; a stale reference is harmless because in is never closed.
 // Blocking rather than dropping is deliberate: a dropped turn/completed is
 // exactly the failure this component exists to prevent.
-func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
-	// Host-level consumers see every notification; the admin fan-out filters
-	// to the config methods it owns. Thread routing below is unchanged.
-	s.publishHostNotification(notification)
+func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
+	// Host-level consumers see the notifications their filter accepts; delivery
+	// is scoped to the owning client so one connection's traffic never reaches
+	// another's subscriptions. Thread routing below is unchanged.
+	s.publishHostNotification(client, notification)
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
 		return
