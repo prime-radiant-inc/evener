@@ -20,15 +20,6 @@ const remoteHubSubBuffer = 128
 // subscription path) open indefinitely.
 const remoteHubUnsubscribeTimeout = 2 * time.Second
 
-// remoteHubRouteStallTimeout bounds how long the shared drain waits to hand a
-// notification to one subscription before treating that subscription's
-// consumer as stalled and retiring it. It is a var rather than a const only so
-// tests can shorten it (the same seam hubRelayIdleInterval provides); the
-// value is deliberately far longer than any scheduling jitter the 128-slot
-// per-subscription buffer is sized to absorb, so a merely slow consumer is
-// still served from the buffer instead of being resynced.
-var remoteHubRouteStallTimeout = 5 * time.Second
-
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
 //
@@ -61,8 +52,9 @@ type remoteHubSubscription struct {
 	// it directly, because no pump was started to do so.
 	pumpDone chan struct{}
 	// cancel stops the subscription's pump. It is called when the relay context
-	// is cancelled, when a newer subscription replaces this one, or when the
-	// owning client's notification stream ends.
+	// is cancelled, when a newer subscription replaces this one, when the
+	// owning client's notification stream ends, or when the shared drain finds
+	// its consumer so far behind that its buffers are full.
 	cancel context.CancelFunc
 }
 
@@ -152,24 +144,82 @@ func (s *RemoteHubSource) installSubscriber(sub *remoteHubSubscription) *remoteH
 }
 
 // discardSubscriber undoes a failed install. It restores the subscription it
-// displaced, which was never cancelled, so a transient subscribe failure leaves
-// the healthy previous subscription serving. It also closes pumpDone because no
-// pump was started to close it: a fan-out that already grabbed sub and filled
-// its in buffer would otherwise wait on in/pumpDone forever and freeze the
-// shared drain for every thread on the host.
+// displaced so a transient subscribe failure leaves a healthy previous
+// subscription serving — but only while that subscription can still serve. A
+// displaced subscription whose pump has exited (its relay context was
+// cancelled, the drain retired it as stalled), or whose client's notification
+// stream has ended, can never deliver again: putting it back in the routing
+// table would leave the relay waiting forever on an out nothing will close, and
+// its own retireSubscription already skipped the remote-side unsubscribe
+// because sub had displaced it. Such a subscription is dropped and cancelled
+// here instead.
+//
+// It closes sub.pumpDone because no pump was started to close it, so sub is
+// never mistaken for a live subscription; subscriberLiveLocked keys on that.
+//
+// A subscribe request that was cancelled (or lost) after reaching the server
+// can leave a remote-side subscription behind that nothing on this side will
+// ever retire, so the discard also sends a best-effort thread/unsubscribe —
+// unless a live sibling still owns that remote ref on the same client, where
+// the remote subscription is the sibling's to keep.
 func (s *RemoteHubSource) discardSubscriber(sub, previous *remoteHubSubscription) {
 	close(sub.pumpDone)
 	s.remoteMu.Lock()
 	s.subMu.Lock()
+	restore := previous != nil && previous != sub && s.subscriberLiveLocked(previous)
 	if s.subs[sub.threadID] == sub {
-		if previous == nil {
-			delete(s.subs, sub.threadID)
-		} else {
+		if restore {
 			s.subs[sub.threadID] = previous
+		} else {
+			delete(s.subs, sub.threadID)
 		}
 	}
+	orphanRemote := !s.remoteRefOwnedLocked(sub)
 	s.subMu.Unlock()
+	if previous != nil && previous != sub && !restore {
+		// The displaced subscription is dead, so unlike installSubscriber's
+		// successful path nothing else will cancel it. Cancel it here so a
+		// relay already blocked on its out unwinds and re-subscribes instead of
+		// hanging on a pump that will never deliver again.
+		previous.cancel()
+	}
+	if orphanRemote {
+		s.unsubscribeRemoteLocked(sub)
+	}
 	s.remoteMu.Unlock()
+}
+
+// subscriberLiveLocked reports whether sub can still deliver. Called with subMu
+// held. A subscription is live while its pump is running and its client's
+// notification stream is still being drained: once the drain has exited for
+// that client, nothing will ever feed sub.in again and the pump would block
+// forever, so restoring such a subscription would strand the relay.
+func (s *RemoteHubSource) subscriberLiveLocked(sub *remoteHubSubscription) bool {
+	if sub == nil {
+		return false
+	}
+	select {
+	case <-sub.pumpDone:
+		return false
+	default:
+	}
+	if _, draining := s.drains[sub.client]; !draining {
+		return false
+	}
+	return true
+}
+
+// remoteRefOwnedLocked reports whether a subscription other than sub still
+// holds sub's remote ref on sub's client. Remote subscriptions live per
+// (connection, thread), so unsubscribing a ref a live sibling still needs would
+// drop that sibling's feed. Called with subMu held.
+func (s *RemoteHubSource) remoteRefOwnedLocked(sub *remoteHubSubscription) bool {
+	for _, other := range s.subs {
+		if other != sub && other.client == sub.client && other.remoteRef == sub.remoteRef {
+			return true
+		}
+	}
+	return false
 }
 
 // pumpSubscription owns sub.out (and closes it on exit) and sub.pumpDone. It is
@@ -214,12 +264,24 @@ func (s *RemoteHubSource) retireSubscription(sub *remoteHubSubscription) {
 		delete(s.subs, sub.threadID)
 	}
 	s.subMu.Unlock()
-	if latest && sub.remoteRef != "" && sub.client != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), remoteHubUnsubscribeTimeout)
-		_, _ = sub.client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: sub.remoteRef})
-		cancel()
+	if latest {
+		s.unsubscribeRemoteLocked(sub)
 	}
 	s.remoteMu.Unlock()
+}
+
+// unsubscribeRemoteLocked drops sub's remote-side subscription with a bounded,
+// best-effort thread/unsubscribe. The shared client is long-lived, so without
+// it the remote hub would keep forwarding the thread's notifications for the
+// rest of the connection's life. Called with remoteMu held, so it can never
+// overtake a replacement's subscribe request.
+func (s *RemoteHubSource) unsubscribeRemoteLocked(sub *remoteHubSubscription) {
+	if sub == nil || sub.remoteRef == "" || sub.client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteHubUnsubscribeTimeout)
+	defer cancel()
+	_, _ = sub.client.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: sub.remoteRef})
 }
 
 // ensureDrainLocked starts the single notification-drain goroutine for client
@@ -235,10 +297,10 @@ func (s *RemoteHubSource) ensureDrainLocked(client *appwire.Client) {
 }
 
 // drainLoop consumes the shared client's single notification stream. It must
-// never stop while the client is alive: appwire tears the connection down on
-// buffer overflow (ErrNotificationOverflow), so a busy or stalled thread would
-// kill every subscription on the host. routeNotification's bounded wait is what
-// enforces that — a subscription whose consumer stops reading is retired rather
+// never stop reading while the client is alive: appwire tears the connection
+// down on buffer overflow (ErrNotificationOverflow), so a busy or stalled
+// thread would kill every subscription on the host. routeNotification therefore
+// never blocks — a subscription whose consumer stops reading is retired rather
 // than allowed to wedge this goroutine. Unrouted notifications are dropped — but
 // they are still read, which is what keeps the client healthy.
 //
@@ -267,7 +329,7 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 		if !ok {
 			return
 		}
-		s.routeNotification(notification)
+		s.routeNotification(client, notification)
 	}
 }
 
@@ -275,43 +337,40 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 // its (translated) thread. It observes the subscriber under the lock and sends
 // outside it; a stale reference is harmless because in is never closed.
 //
-// Waiting rather than dropping is deliberate: a dropped turn/completed is
-// exactly the failure this component exists to prevent, and the buffer is
-// sized so ordinary jitter is absorbed here. The wait is BOUNDED, though,
-// because this is the single drain goroutine shared by every thread on the
-// host: a consumer that stops reading its own out blocks its pump, fills the
-// 128-slot in buffer, and would otherwise block this goroutine for all threads
-// — and, because a blocked drain stops reading client.Notifications(), the
-// client's frame buffer eventually overflows and tears the whole connection
-// down, killing every subscription on the host. On expiry the stalled
-// subscription is retired: its pump exits, out closes, and the controller
-// relay treats that as subscription end and re-reads the thread, so the
-// notification is resynced rather than silently lost. A pump that has already
-// exited unblocks via pumpDone instead.
-func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
+// A notification is only ever delivered to a subscription bound to the client
+// it arrived on. A torn-down client can still have frames buffered in its
+// notification channel when it closes, and the drain reading them runs
+// concurrently with the relay re-subscribing against the replacement client:
+// without this check those stale-generation events would be interleaved into a
+// recovered feed, and a full buffer would even cancel the healthy replacement
+// subscription below.
+//
+// The hand-off never blocks. This is the single drain goroutine shared by every
+// thread on the host, and appwire tears the whole connection down once its own
+// notification buffer (NotificationBufferCap) fills — so no consumer may stop
+// this goroutine from reading client.Notifications(). A subscription whose in
+// buffer is full has a consumer at least 2*remoteHubSubBuffer notifications
+// behind, far past the scheduling jitter those buffers exist to absorb, so it
+// is retired instead of waited for: its pump exits, out closes, and the
+// controller relay treats that as subscription end and re-reads the thread, so
+// the notification is resynced rather than silently lost.
+func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
 		return
 	}
 	s.subMu.Lock()
 	sub := s.subs[threadID]
+	if sub != nil && sub.client != client {
+		sub = nil
+	}
 	s.subMu.Unlock()
 	if sub == nil {
 		return
 	}
-	// Fast path: the buffer has room, which is the overwhelmingly common case,
-	// so no timer is created for a healthy hand-off.
 	select {
 	case sub.in <- translated:
-		return
 	default:
-	}
-	stall := time.NewTimer(remoteHubRouteStallTimeout)
-	defer stall.Stop()
-	select {
-	case sub.in <- translated:
-	case <-sub.pumpDone:
-	case <-stall.C:
 		sub.cancel()
 	}
 }
