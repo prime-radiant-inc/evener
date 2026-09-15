@@ -14,11 +14,8 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
-import {
-  loadConnectDialog,
-  resetConnectDialogLoaderForTests,
-  setConnectDialogImporterForTests,
-} from "../../spawn/connectDialogChunk";
+import { resetConnectDialogLoaderForTests, setConnectDialogImporterForTests } from "../../spawn/connectDialogChunk";
+import { openConnectDialog } from "./connectDialogTestUtils";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
@@ -141,22 +138,6 @@ function trigger(): HTMLButtonElement {
   return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
 }
 
-// "Connect another provider" mounts ConnectProviderDialog from its own lazy
-// chunk (panes/spawn/connectDialogChunk). The FIRST dynamic import of that
-// chunk pays Vite's transform of the dialog and its transitive graph
-// (instanceDialogs, oauthDialogs, oauthFlow, CredentialsSection), and on a
-// loaded machine that one-time transform can outlast testing-library's default
-// 1s async-query budget. Letting the next findByText absorb it is what made
-// this flow flake under parallel load (issue #1369): the failure named the
-// query, but what had not happened yet was the import. Wait for the import
-// itself - the boundary's own Suspense transition - rather than a fixed tick,
-// so the query below starts against an already-loaded chunk.
-async function openConnectDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
-  const chunkLoaded = loadConnectDialog();
-  await user.click(screen.getByRole("button", { name: "Connect another provider" }));
-  await chunkLoaded;
-}
-
 test("keyless connection refreshes the warmed real session catalog without switching until a pick", async () => {
   resetCredentialsStoreForTests();
   const fake = connectFakeClient();
@@ -223,13 +204,20 @@ test("keyless connection refreshes the warmed real session catalog without switc
 // loaded machine.
 test("a connect-dialog chunk slower than the async-query default still opens the dialog", async () => {
   resetCredentialsStoreForTests();
+  // The transform cost is one-time, so only the FIRST import is slow - the
+  // later one the boundary issues resolves from the evaluated module.
+  let first = true;
   setConnectDialogImporterForTests(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    if (first) {
+      first = false;
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+    }
     return import("../../settings/sections/credentials/ConnectProviderDialog");
   });
-  // A fresh lazy() so the import above is the one the boundary actually awaits:
-  // an already-resolved lazy() caches its module for the life of the module,
-  // and would otherwise render from cache and never exercise a slow import.
+  // A fresh lazy() so the boundary's lazily-mounted render is not served from a
+  // module an earlier test already resolved: an already-resolved lazy() caches
+  // its module for the life of the module, and would otherwise render from
+  // cache and never issue the (one-time-slow) import this test exercises.
   resetConnectDialogChunkForTests();
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
