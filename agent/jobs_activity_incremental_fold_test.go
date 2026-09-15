@@ -78,7 +78,7 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	// ceiling degrades or truncates it: historicalJobFoldCache has no size
 	// ceiling, only a MaxLineBytes per-line pathology tripwire (see
 	// writeJobLogFast, which writes ordinary-sized lines).
-	records, _, err := loadCachedJobRecords(context.Background(), jobsPath)
+	records, _, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("loadCachedJobRecords: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 	}
 	defer func() { scanJobJournal = original }()
 
-	first, _, err := loadCachedJobRecords(context.Background(), jobsPath)
+	first, _, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("first loadCachedJobRecords: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started.Add(time.Second), JobID: "job_c", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &started},
 	)
 
-	second, _, err := loadCachedJobRecords(context.Background(), jobsPath)
+	second, _, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("second loadCachedJobRecords: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 	)
 	jobsPath := filepath.Join(jobsDir(stateDir, sessID), "jobs.jsonl")
 
-	first, firstEpoch, err := loadCachedJobRecords(context.Background(), jobsPath)
+	first, firstEpoch, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("first loadCachedJobRecords: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: newStarted, JobID: "job_new_x", Type: jobstore.JobShell, OwnerSessionID: sessID, VisibleToSession: sessID, StartedAt: &newStarted},
 	)
 
-	second, secondEpoch, err := loadCachedJobRecords(context.Background(), jobsPath)
+	second, secondEpoch, _, err := loadCachedJobRecords(context.Background(), jobsPath)
 	if err != nil {
 		t.Fatalf("second loadCachedJobRecords: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestLoadCachedJobRecords_ConcurrentRequestsShareOneFullScan(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], _, errs[i] = loadCachedJobRecords(context.Background(), jobsPath)
+			results[i], _, _, errs[i] = loadCachedJobRecords(context.Background(), jobsPath)
 		}(i)
 	}
 	wg.Wait()

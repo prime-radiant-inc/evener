@@ -1,7 +1,11 @@
 package sshconn
 
 import (
+	"context"
+	"errors"
+	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +64,7 @@ func TestChannelArgv(t *testing.T) {
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
+		"--",
 		"bob@alpha.example",
 		"/opt/evener/bin/evener",
 		"hub", "attach", "--stdio",
@@ -77,6 +82,7 @@ func TestChannelArgvDefaultsAndEmptyPath(t *testing.T) {
 		"-o", "ConnectTimeout=10",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
+		"--",
 		"alpha.example",
 		"evener",
 		"hub", "attach", "--stdio",
@@ -93,12 +99,126 @@ func TestRawAndEvenerCommandArgv(t *testing.T) {
 	if raw[0] != "ssh" || raw[len(raw)-2] != "alpha.example" || raw[len(raw)-1] != "uname -s" {
 		t.Fatalf("rawCommandArgv = %v", raw)
 	}
+	if raw[len(raw)-3] != "--" {
+		t.Fatalf("rawCommandArgv missing option terminator before the dest: %v", raw)
+	}
 	lc := evenerCommandArgv(opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json")
 	if lc[len(lc)-5] != "evener" || lc[len(lc)-4] != "launch-check" {
 		t.Fatalf("evenerCommandArgv = %v", lc)
 	}
 	if lc[len(lc)-3] != "--protocol" || lc[len(lc)-2] != appwire.ProtocolVersion {
 		t.Fatalf("protocol argv tail = %v", lc)
+	}
+	if lc[len(lc)-7] != "--" {
+		t.Fatalf("evenerCommandArgv missing option terminator before the dest: %v", lc)
+	}
+}
+
+// A host with its own hub.toml or listen address must attach with them: without
+// the flags the bridge resolves defaults and addresses the wrong process.
+func TestChannelArgvCarriesConfigAndAddr(t *testing.T) {
+	host := hostreg.Host{
+		Name:       "alpha",
+		SSH:        "alpha.example",
+		EvenerPath: "/opt/evener/bin/evener",
+		ConfigPath: "/etc/evener/hub.toml",
+		Addr:       "127.0.0.1:9180",
+	}
+	got := channelArgv(Options{}, host)
+	want := []string{
+		"ssh",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"--",
+		"alpha.example",
+		"/opt/evener/bin/evener",
+		"hub", "attach", "--stdio",
+		"--config", "/etc/evener/hub.toml",
+		"--addr", "127.0.0.1:9180",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("channelArgv:\n got %v\nwant %v", got, want)
+	}
+
+	for _, tc := range []struct {
+		name string
+		host hostreg.Host
+		want []string
+	}{
+		{"addr only", hostreg.Host{Name: "a", SSH: "a.example", Addr: "10.0.0.1:1"}, []string{"--addr", "10.0.0.1:1"}},
+		{"config only", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "/x/hub.toml"}, []string{"--config", "/x/hub.toml"}},
+		{"blank omitted", hostreg.Host{Name: "a", SSH: "a.example", ConfigPath: "  ", Addr: "\t"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv := channelArgv(Options{}, tc.host)
+			idx := slices.Index(argv, "--stdio")
+			if idx < 0 {
+				t.Fatalf("no --stdio in %v", argv)
+			}
+			tailArgs := argv[idx+1:]
+			if !slices.Equal(tailArgs, tc.want) {
+				t.Fatalf("flags after --stdio = %v, want %v", tailArgs, tc.want)
+			}
+		})
+	}
+}
+
+// A caller that already gave up must not leave us a child to reap.
+func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	stdio, err := (execRunner{}).Start(ctx, []string{"sh", "-c", "true"}, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start with a canceled ctx = %v, want context.Canceled", err)
+	}
+	if stdio != nil {
+		t.Fatal("Start returned a Stdio for a canceled ctx")
+	}
+}
+
+// A registry entry is host-owned config, but it must never be able to smuggle an
+// ssh option: "-oProxyCommand=..." would run a command on the controller.
+func TestSSHDestGuardsOptionInjection(t *testing.T) {
+	const hostile = "-oProxyCommand=touch /tmp/pwned"
+	host := hostreg.Host{Name: "evil", SSH: hostile}
+	argvs := map[string][]string{
+		"raw":     rawCommandArgv(Options{}, host, "uname -s"),
+		"evener":  evenerCommandArgv(Options{}, host, "launch-check", "--json"),
+		"channel": channelArgv(Options{}, host),
+	}
+	for name, argv := range argvs {
+		dash := slices.Index(argv, "--")
+		dest := slices.Index(argv, hostile)
+		if dash < 0 {
+			t.Fatalf("%s: argv has no option terminator: %v", name, argv)
+		}
+		if dest != dash+1 {
+			t.Fatalf("%s: dest index %d is not the argument after -- at %d: %v", name, dest, dash, argv)
+		}
+	}
+}
+
+// execRunner.Run must keep the streams apart: ssh writes benign notices to
+// stderr, and merging them into a preflight response corrupts every parse
+// downstream.
+func TestExecRunnerRunSeparatesStreams(t *testing.T) {
+	r := execRunner{}
+	out, err := r.Run(context.Background(), []string{"sh", "-c", "printf stdout-only; printf 'ssh: warning' >&2"}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if string(out) != "stdout-only" {
+		t.Fatalf("success output = %q, want %q", out, "stdout-only")
+	}
+
+	out, err = r.Run(context.Background(), []string{"sh", "-c", "printf partial; printf boom >&2; exit 3"}, nil)
+	if err == nil {
+		t.Fatal("Run on a failing command reported no error")
+	}
+	if !strings.Contains(string(out), "partial") || !strings.Contains(string(out), "boom") {
+		t.Fatalf("failure output = %q, want both streams for the diagnostic", out)
 	}
 }
 

@@ -43,3 +43,37 @@ func FuzzParseLaunchCheck(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseEnvProbe drives the decode of the host environment probe, the other
+// untrusted remote-host surface in preflight.go. One invariant holds for every
+// input: a rejection is always the named ErrPreflightDecode class, and an
+// accepted map always answers HOME, which is what resolveRoots depends on.
+func FuzzParseEnvProbe(f *testing.F) {
+	for _, seed := range []string{
+		"HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=/xdg/config\n",
+		"HOME=\n",
+		"HOME=/home/dev",
+		"HOME /home/dev\n",
+		"=value\n",
+		"HOME=a\x00b\n",
+		"\n\n\n",
+		"",
+		"\xff\xfe",
+		"HOME=/home/dev\nHOME=/other\n",
+	} {
+		f.Add([]byte(seed))
+	}
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		env, err := parseEnvProbe(raw)
+		if err != nil {
+			if !errors.Is(err, ErrPreflightDecode) {
+				t.Fatalf("parseEnvProbe(%q) error %v is not ErrPreflightDecode", raw, err)
+			}
+			return
+		}
+		if _, ok := env["HOME"]; !ok {
+			t.Fatalf("parseEnvProbe(%q) accepted a probe without HOME: %v", raw, env)
+		}
+	})
+}

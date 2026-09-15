@@ -1,0 +1,12 @@
+The forge brand marks rendered beside a session's git branch - GitHub, GitLab,
+and Bitbucket - are the icon paths from Simple Icons
+(https://simpleicons.org, https://github.com/simple-icons/simple-icons),
+embedded in cmd/evener-hub/frontend/src/panes/session/composer/ForgeMark.tsx.
+
+Simple Icons is released under the CC0 1.0 Universal public domain dedication
+(https://creativecommons.org/publicdomain/zero/1.0/), which places no
+attribution or other conditions on use.
+
+Each mark remains the trademark of its owner; it is used here only to identify
+the forge a repository's origin remote points at, as a link to that forge's own
+repository page.

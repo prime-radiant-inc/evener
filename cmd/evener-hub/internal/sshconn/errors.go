@@ -47,4 +47,9 @@ var (
 	// ErrRestart marks a failed hub restart. The manager stays disconnected and
 	// the next Ensure retries; a hub that fails to start leaves hub.lock free.
 	ErrRestart = errors.New("sshconn: hub restart failed")
+
+	// ErrManagerClosed marks an Ensure on a Manager whose Close has already run.
+	// Close is terminal for the Manager: the base context is canceled for good,
+	// so no channel created after it would ever be supervised.
+	ErrManagerClosed = errors.New("sshconn: manager closed")
 )

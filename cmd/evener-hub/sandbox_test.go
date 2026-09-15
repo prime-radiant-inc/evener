@@ -30,6 +30,11 @@ const sandboxOutOfRootSecret = "FUZZ-OUT-OF-ROOT-SECRET-do-not-serve-9c1f2a"
 // in an AppWire response proves the seam ran instead of a real `git`.
 const sandboxGitHead = "sandbox-branch"
 
+// sandboxGitOrigin is the fixed origin URL the git-head seam reports. Like
+// sandboxGitHead, its presence proves the origin half of the seam ran instead
+// of a real `git`.
+const sandboxGitOrigin = "https://example.invalid/sandbox/repo.git"
+
 // sandbox is a fully contained hub for fuzzing/testing the MUTATING handlers.
 // The backend it wires cannot spawn a real agent, shell out, hit the network,
 // or touch the real filesystem outside Root. The escapes a read-only harness
@@ -37,7 +42,8 @@ const sandboxGitHead = "sandbox-branch"
 //
 //   - thread/start → Spawner records the request and returns a synthetic
 //     rendezvous entry with no address; no subprocess, no dial.
-//   - evener/git/head → ResolveGitHead seam returns sandboxGitHead; no `git`.
+//   - evener/git/head → ResolveGitHead/ResolveGitOrigin seams return
+//     sandboxGitHead/sandboxGitOrigin; no `git`.
 //   - model/list → LiveModels seam returns a fixed list; no provider network.
 //   - the action verbs (send/steer/queue/clear/...) → an empty Roster and an
 //     empty live-source set, so every verb resolves "thread not found" before it
@@ -148,6 +154,9 @@ api_key = "sk-sandbox"
 		Spawner:             spawner,
 		ResolveGitHead: func(context.Context, string) (string, error) {
 			return sandboxGitHead, nil
+		},
+		ResolveGitOrigin: func(context.Context, string) (string, error) {
+			return sandboxGitOrigin, nil
 		},
 		LiveModels: func(context.Context) []appwire.ModelDescriptor {
 			return []appwire.ModelDescriptor{{Provider: "sandbox", Model: "fake-model"}}

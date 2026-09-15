@@ -446,6 +446,7 @@ native:.:./cmd/evener-hub/internal/httpsec:FuzzCSPMiddleware
 native:.:./cmd/evener-hub/internal/hubedge:FuzzAuthGuard
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHandleAuth
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHubEdgeBehaviorProgram
+native:.:./cmd/evener-hub/internal/sshconn:FuzzParseEnvProbe
 native:.:./cmd/evener-hub/internal/sshconn:FuzzParseLaunchCheck
 native:.:./cmd/evener-fuzzcov:FuzzGapInputs
 native:.:./cmd/evener-internalcheck:FuzzWalkType
