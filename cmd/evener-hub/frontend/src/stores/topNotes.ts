@@ -80,6 +80,20 @@ export const topNotesStore = createStore<TopNotesStoreState>((set, get) => ({
 
 registerPanelStoreEvictor({
   refs: () => new Set([...topNotesStore.getState().expanded.keys(), ...topNotesStore.getState().pendingFocus.keys()]),
+  // Top-notes state exists only inside the SESSION pane: companion panes
+  // (details/tasks/activity) for the same ref cannot show the notes bar, so
+  // they must not keep its state alive either - an expanded flag that
+  // outlives the session pane is invisible, and the next /notes on the
+  // reopened session would toggle it CLOSED instead of opening.
+  keepAliveRefs: (panes) => {
+    const refs = new Set<string>();
+    for (const pane of panes) {
+      if (pane.type !== "session") continue;
+      const ref = (pane.params as { ref?: unknown } | null | undefined)?.ref;
+      if (typeof ref === "string" && ref !== "") refs.add(ref);
+    }
+    return refs;
+  },
   evict: (ref: string) => {
     const state = topNotesStore.getState();
     if (!state.expanded.has(ref) && !state.pendingFocus.has(ref)) return;

@@ -606,9 +606,13 @@ export function buildCommands(): Command[] {
         // The notes bar lives inside the session pane: with a details or
         // tasks pane focused, that pane may not even be mounted, and a
         // notes-state change alone would look like a no-op. Focus (or open)
-        // the session pane first; the focus request waits for the panel to
-        // mount and take it, so a freshly opened pane still lands focus.
-        workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        // the session pane first - but only when the notes are about to
+        // EXPAND: closing from a companion pane must not yank the user's
+        // focus away. The focus request waits for the panel to mount and
+        // take it, so a freshly opened pane still lands focus.
+        if (!topNotesStore.getState().isExpanded(ctx.sessionRef)) {
+          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        }
         topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
       },
     },

@@ -10,6 +10,7 @@ import styles from "./topnotespanel.module.css";
 
 const CLASS = {
   topNotesPanel: requireClass(styles.topNotesPanel, "topnotespanel.module.css", "topNotesPanel"),
+  bar: requireClass(styles.bar, "topnotespanel.module.css", "bar"),
   summary: requireClass(styles.summary, "topnotespanel.module.css", "summary"),
   summaryLeft: requireClass(styles.summaryLeft, "topnotespanel.module.css", "summaryLeft"),
   chevron: requireClass(styles.chevron, "topnotespanel.module.css", "chevron"),
@@ -117,36 +118,44 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
       {/* One disclosure trigger both states share (the collapsed summary and
           the expanded header row): same button role, same toggle, same
           chevron - only the resting style, label, and lead content differ. */}
-      <button
-        type="button"
-        className={expanded ? CLASS.expandedHeader : CLASS.summary}
-        onClick={toggle}
-        aria-expanded={expanded}
-        // Collapsed, the visible preview IS the accessible name (the note
-        // text, the link count, or the placeholder) - a generic label would
-        // hide that content from screen readers. The hint rides along as a
-        // description instead of aria-hidden text.
-        aria-label={expanded ? "Collapse session notes" : undefined}
-        aria-describedby={hintId}
-        data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
-      >
-        <span className={CLASS.summaryLeft}>
-          <span className={CLASS.chevron} data-open={expanded}>
-            <Chevron size={16} />
+      <div className={CLASS.bar}>
+        <button
+          type="button"
+          className={expanded ? CLASS.expandedHeader : CLASS.summary}
+          onClick={toggle}
+          aria-expanded={expanded}
+          // Collapsed, the visible preview IS the accessible name (the note
+          // text, the link count, or the placeholder) - a generic label would
+          // hide that content from screen readers.
+          aria-label={expanded ? "Collapse session notes" : undefined}
+          aria-describedby={hintId}
+          data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
+        >
+          <span className={CLASS.summaryLeft}>
+            <span className={CLASS.chevron} data-open={expanded}>
+              <Chevron size={16} />
+            </span>
+            {expanded ? (
+              <span className={CLASS.expandedTitle}>Session Notes</span>
+            ) : (
+              <>
+                {sourceIconKind && (
+                  <span
+                    className={CLASS.sourceIcon}
+                    data-testid={`top-notes-icon-${sourceIconKind}`}
+                    aria-hidden="true"
+                  >
+                    <ToolIcon kind={sourceIconKind} size={14} />
+                  </span>
+                )}
+                <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
+              </>
+            )}
           </span>
-          {expanded ? (
-            <span className={CLASS.expandedTitle}>Session Notes</span>
-          ) : (
-            <>
-              {sourceIconKind && (
-                <span className={CLASS.sourceIcon} data-testid={`top-notes-icon-${sourceIconKind}`} aria-hidden="true">
-                  <ToolIcon kind={sourceIconKind} size={14} />
-                </span>
-              )}
-              <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
-            </>
-          )}
-        </span>
+        </button>
+        {/* A SIBLING of the trigger, not a child: inside the button it would
+            join the accessible name via content AND ride the description -
+            announced twice (see transcript ToolRow's describedby pattern). */}
         <span className={CLASS.hint} id={hintId}>
           {expanded
             ? "Click to collapse"
@@ -156,7 +165,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
                 : "Click to view"
               : "Click to expand"}
         </span>
-      </button>
+      </div>
       {expanded && (
         <div className={CLASS.expandedBody} data-testid="top-notes-expanded-content">
           <NotesPanelBody sessionRef={sessionRef} model={model} editorRef={editorRef} />

@@ -3,6 +3,14 @@
   flex-direction: column;
 }
 
+/* The trigger and its hint share one row; the hint is a SIBLING of the
+   button so it can be the aria-describedby target without also joining the
+   button's accessible name. */
+.bar {
+  display: flex;
+  align-items: flex-start;
+}
+
 .summary {
   display: flex;
   align-items: flex-start;
