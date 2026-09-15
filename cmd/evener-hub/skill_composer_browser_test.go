@@ -746,6 +746,8 @@ type skillGuardChoreography struct {
 	err         error
 	failSeen    bool
 	caplossDone bool
+	// The driver's milestone file, which this side appends its own records to.
+	milestonePath string
 }
 
 func newSkillGuardChoreography(t *testing.T, fixture *skillGuardFixture, roster *hubcore.Roster, entries [2]rendezvous.Entry) *skillGuardChoreography {
@@ -767,10 +769,30 @@ func (c *skillGuardChoreography) stop() error {
 
 func (c *skillGuardChoreography) run(milestones string) error {
 	defer close(c.doneCh)
+	c.milestonePath = milestones
 	if err := c.tailMilestones(milestones); err != nil {
 		c.err = err
 	}
 	return c.err
+}
+
+func sinceMs(start time.Time) int64 { return time.Since(start).Milliseconds() }
+
+// milestone appends a Go-owned record to the same file the driver writes, in
+// the same shape, so one ordered timeline carries both sides of the handoff.
+// The tailer reads these back and ignores them: handleMilestone answers only
+// the names the driver emits. A write failure is reported rather than
+// swallowed -- a diagnostic that quietly stops being written is worse than
+// none, since the next reader trusts the gap.
+func (c *skillGuardChoreography) milestone(name string, detail any) {
+	record := map[string]any{
+		"milestone": name,
+		"at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"detail":    detail,
+	}
+	if err := appendFileLine(c.milestonePath, record); err != nil && c.err == nil {
+		c.err = fmt.Errorf("write %s milestone: %w", name, err)
+	}
 }
 
 // handleMilestone reacts to one driver milestone with the real-world fixture
@@ -784,20 +806,40 @@ func (c *skillGuardChoreography) handleMilestone(m skillGuardMilestone) {
 		c.caplossDone = true
 		// Shut the REAL daemon down through its fixture IPC and let the REAL
 		// roster observe the departure.
+		//
+		// Each step reports when it finished. The driver waits 30s after
+		// caploss-staged for the pane to render session B as ended, and when
+		// that wait expired in CI the artifacts could not say which of these
+		// three links had been slow -- none of them left a trace, so a
+		// failure there is unattributable between a daemon that took its time
+		// exiting, a roster refresh that did, and a pane that never
+		// re-rendered at all. These are diagnostics: no wait changes.
+		started := time.Now()
 		if err := appendFileLine(c.fixture.control[1], map[string]string{"command": "shutdown"}); err != nil {
 			c.err = fmt.Errorf("caploss shutdown command: %w", err)
 			return
 		}
+		c.milestone("caploss-shutdown-sent", map[string]any{"sinceStagedMs": sinceMs(started)})
+		exitStarted := time.Now()
 		if err := c.waitHelperExit(1, 30*time.Second); err != nil {
 			c.err = fmt.Errorf("helper beta did not exit: %w", err)
 			return
 		}
+		c.milestone("caploss-helper-exited", map[string]any{
+			"waitedMs":      sinceMs(exitStarted),
+			"sinceStagedMs": sinceMs(started),
+		})
+		refreshStarted := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := c.roster.RefreshAndWait(ctx); err != nil {
 			c.err = fmt.Errorf("roster refresh after helper beta exit: %w", err)
 			return
 		}
+		c.milestone("caploss-roster-refreshed", map[string]any{
+			"waitedMs":      sinceMs(refreshStarted),
+			"sinceStagedMs": sinceMs(started),
+		})
 	case "fail-queued":
 		if c.failSeen {
 			return
@@ -1064,7 +1106,9 @@ func skillGuardAssert(t *testing.T, fixture *skillGuardFixture, milestonesPath s
 		"hold-turn-started", "queued", "queue-returned", "requeued", "drain-committed", "drain-released",
 		"steer-turn-started", "steered", "steer-released",
 		"attachment-preserved", "attachment-submitted",
-		"caploss-staged", "caploss-ended", "caploss-refused",
+		"caploss-staged",
+		"caploss-shutdown-sent", "caploss-helper-exited", "caploss-roster-refreshed",
+		"caploss-ended", "caploss-refused",
 		"fail-turn-started", "fail-queued", "fail-observed", "fail-retried",
 		"delay-submitted", "delay-edited", "delay-commit-kept",
 		"net-failed-kept", "net-restored",

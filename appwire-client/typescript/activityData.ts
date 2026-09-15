@@ -72,6 +72,12 @@ export interface ActivitySessionNode {
   aggregate: string;
   counts: ActivityCounts;
   entries: ActivityEntry[];
+  // What the daemon could not render of this session and why: the
+  // continuation-path bound (agent/jobs_activity.go's
+  // activityUnreachableByPathDiagnostic) and the journal conditions a
+  // generation cannot express (an unreadable or torn delegates.jsonl). Kept
+  // apart from branch, which says only that the list stopped, not why.
+  diagnostics?: string[];
   branch: ActivityBranchState;
 }
 
@@ -537,6 +543,7 @@ function parseSession(raw: unknown, depth: number): ParseResult<ActivitySessionN
   const label = readString(raw, "label");
   const aggregate = readString(raw, "aggregate");
   const counts = parseCounts(raw.counts);
+  const diagnostics = parseStringArray(raw.diagnostics);
   const branch = parseBranchState(raw.branch);
   const entriesRaw = raw.entries;
   if (
@@ -545,6 +552,7 @@ function parseSession(raw: unknown, depth: number): ParseResult<ActivitySessionN
     label === null ||
     aggregate === null ||
     counts === null ||
+    diagnostics === null ||
     branch === null ||
     !Array.isArray(entriesRaw)
   ) {
@@ -557,19 +565,18 @@ function parseSession(raw: unknown, depth: number): ParseResult<ActivitySessionN
     if (parsed.value) entries.push(parsed.value);
     if (parsed.incomplete) incomplete = true;
   }
-  return {
-    value: {
-      kind: "session",
-      sessionId,
-      ref,
-      label,
-      aggregate,
-      counts,
-      entries,
-      branch: incomplete ? markIncomplete(branch) : branch,
-    },
-    incomplete,
+  const session: ActivitySessionNode = {
+    kind: "session",
+    sessionId,
+    ref,
+    label,
+    aggregate,
+    counts,
+    entries,
+    branch: incomplete ? markIncomplete(branch) : branch,
   };
+  if (diagnostics) session.diagnostics = diagnostics;
+  return { value: session, incomplete };
 }
 
 export function parseActivityTree(data: unknown): ActivityTree | null {
@@ -579,6 +586,51 @@ export function parseActivityTree(data: unknown): ActivityTree | null {
   const root = parseSession(data.root, 1);
   if (!root.value) return null;
   return { revision, root: root.value };
+}
+
+/** What a delegate row's branch says, once both of its branches are read. */
+export interface ActivityDelegateBranch extends ActivityBranchState {
+  // openSessionRef is set when the branch stopped with nothing to page: the
+  // depth or continuation-path bound was reached, so the daemon truncated it
+  // and deliberately minted no token, because a token there would name this
+  // child as a fresh root at position 0 -- the page a direct request already
+  // returns. The child is still addressable as its own session, and this is
+  // the ref that reaches it.
+  openSessionRef?: string;
+}
+
+// activityDelegateBranch reads the two branch states a delegate row has. Its
+// own is truncated by the depth bound, which stops before the child is
+// loaded at all; the child's is where a continuation-path truncation and any
+// size trim inside that child land. A reader that looks at one of them
+// answers correctly for half the cases and silently wrongly for the rest,
+// which is why this is one function rather than a rule each surface
+// remembers: the child's token wins where it has one, and either branch
+// being truncated truncates the row.
+export function activityDelegateBranch(delegate: ActivityDelegate): ActivityDelegateBranch {
+  const own = delegate.branch;
+  const child = delegate.child?.branch;
+  const continuation = child?.continuation ?? own.continuation;
+  const truncated = Boolean(child?.truncated || own.truncated);
+  const error = child?.error ?? own.error;
+  const childRef = delegate.childRef.trim();
+  const merged: ActivityDelegateBranch = {};
+  if (continuation !== undefined) merged.continuation = continuation;
+  if (truncated) merged.truncated = true;
+  if (error !== undefined) merged.error = error;
+  if (!continuation && truncated && childRef) merged.openSessionRef = childRef;
+  return merged;
+}
+
+// activityDelegateDiagnostics reads the two places a delegate row's
+// diagnostics land, for the same reason activityDelegateBranch reads two
+// branches: the depth bound is stamped on the delegate before its child is
+// loaded, while the continuation-path bound and the journal conditions are
+// stamped on the child session itself, and that session has no row of its
+// own to say so. The delegate's own sentences come first, then the child's,
+// each said once.
+export function activityDelegateDiagnostics(delegate: ActivityDelegate): string[] {
+  return [...new Set([...(delegate.diagnostics ?? []), ...(delegate.child?.diagnostics ?? [])])];
 }
 
 export function activityNodeID(node: ActivityNodeLike): string {

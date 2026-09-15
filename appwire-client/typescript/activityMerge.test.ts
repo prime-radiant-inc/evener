@@ -541,3 +541,98 @@ test("a nested page cannot replace or add coverage on an unrelated branch", () =
   expect(ids(child.delegate.child)).toEqual(["job:a", "job:b"]);
   expect(child.delegate.child.branch).toEqual({});
 });
+
+// A child page fetched through a delegate-keyed continuation arrives wrapped
+// in the ancestor chain that leads to it, so the page carries its own copy of
+// this delegate -- and that copy is whatever the daemon rendered for the
+// chain, which can be older than what the panel already holds. Grafting it
+// must not cost the row the newer parent-side metadata it is displaying.
+test("a grafted child page keeps the session diagnostics it reported, as the tree's own copy", () => {
+  const current = tree([delegate()]);
+  const reported = ['continuation path limit reached; request session "child" directly'];
+  const page = tree([delegate({ ...session("child", [shell("a")]), diagnostics: reported })]);
+  const result = graftContinuationTree(current, "delegate:delegate", page);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(entry.delegate.child.diagnostics).toEqual(reported);
+  reported.push("mutated after the graft");
+  expect(entry.delegate.child.diagnostics).toHaveLength(1);
+});
+
+// A page speaks for the session it targets, diagnostics included, and for no
+// other: the root's own sentence is not the child page's to restate or drop.
+test("a page for an already rendered child replaces that session's diagnostics and leaves the root's alone", () => {
+  const rootTorn = ["delegate_journal_torn_tail: ignored unterminated trailing batch"];
+  const current: ActivityTree = {
+    ...tree([delegate({ ...session("child", [shell("a")], "child-page"), diagnostics: ["stale sentence"] })]),
+  };
+  current.root.diagnostics = rootTorn;
+  const reported = ['continuation path limit reached; request session "child" directly'];
+  const page = tree([delegate({ ...session("child", [shell("b")]), diagnostics: reported })]);
+  const result = graftContinuationTree(current, "delegate:delegate", page);
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing child");
+  expect(entry.delegate.child.diagnostics).toEqual(reported);
+  expect(result.root.diagnostics).toEqual(rootTorn);
+  reported.push("mutated after the graft");
+  rootTorn.push("mutated after the graft");
+  expect(entry.delegate.child.diagnostics).toHaveLength(1);
+  expect(result.root.diagnostics).toHaveLength(1);
+});
+
+test("a root refresh takes the root's diagnostics from the page, as the tree's own copy", () => {
+  const current = tree([shell("a")]);
+  current.root.diagnostics = ["delegate_journal_torn_tail: ignored unterminated trailing batch"];
+  const reported = ["delegate_journal_line_too_long: delegates.jsonl:3"];
+  const incoming = tree([shell("a")]);
+  incoming.root.diagnostics = reported;
+  const fenced = fenceRootSession(current.root, incoming.root);
+  expect(fenced.diagnostics).toEqual(reported);
+  reported.push("mutated after the refresh");
+  expect(fenced.diagnostics).toHaveLength(1);
+  // A refresh that reports nothing is the whole statement: the old sentence goes.
+  expect(fenceRootSession(current.root, tree([shell("a")]).root).diagnostics).toBeUndefined();
+});
+
+test("a child page grafted under the delegate keeps the delegate's newer metadata", () => {
+  const displayed: ActivityDelegateEntry = {
+    kind: "delegate",
+    delegate: {
+      ...delegate(session("child", [shell("a")], "child-page")).delegate,
+      projectionRevision: 5,
+      terminal: false,
+      outcome: undefined,
+      status: "running",
+      mandate: "the parent-side mandate",
+      warnings: ["watch delivery delayed"],
+      latestActivityAt: "2026-09-07T00:05:00Z",
+    },
+  };
+  const stalePage: ActivityDelegateEntry = {
+    kind: "delegate",
+    delegate: {
+      ...delegate(session("child", [shell("b")])).delegate,
+      projectionRevision: 2,
+      status: "completed",
+      terminal: true,
+      outcome: "completed",
+    },
+  };
+  const current = tree([displayed]);
+  const patch = tree([stalePage]);
+
+  const result = graftContinuationTree(current, "delegate:delegate", patch);
+
+  const entry = result.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) throw new Error("missing delegate child");
+  expect(entry.delegate.projectionRevision).toBe(5);
+  expect(entry.delegate.status).toBe("running");
+  expect(entry.delegate.terminal).toBe(false);
+  expect(entry.delegate.mandate).toBe("the parent-side mandate");
+  expect(entry.delegate.warnings).toEqual(["watch delivery delayed"]);
+  expect(entry.delegate.latestActivityAt).toBe("2026-09-07T00:05:00Z");
+  // The page answered the child's continuation, so the child's own entries
+  // extend and the branch it consumed is spent.
+  expect(ids(entry.delegate.child)).toEqual(["job:a", "job:b"]);
+  expect(entry.delegate.child.branch).toEqual({});
+});
