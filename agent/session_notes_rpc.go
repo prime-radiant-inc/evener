@@ -935,6 +935,20 @@ func rebuiltSteeringText(origin steeringOrigin, text string) string {
 	return stripTextControls(text)
 }
 
+// steeringKind returns the kind a rebuilt entry carries. The recorded kind
+// decides when there is one; otherwise the same evidence isHumanNoteSteer reads
+// for the text decides it, so a kindless notes/human/set record rebuilds with the
+// note label instead of no label at all.
+func (o steeringOrigin) steeringKind() string {
+	if o.kind != "" {
+		return o.kind
+	}
+	if o.method == clientMutationMethodNotesHumanSet {
+		return events.SteeringKindHumanNote
+	}
+	return ""
+}
+
 // steeringOriginForTurn merges a history turn's own provenance with the
 // provenance its journal record persisted. They normally agree -- the turn's kind
 // is a copy of the record's -- and when they do not, note-origin evidence decides:

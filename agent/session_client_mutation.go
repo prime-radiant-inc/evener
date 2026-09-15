@@ -1283,8 +1283,8 @@ func (s *clientMutationStore) committedHumanNote() string {
 // restored steering turn, and the journal can outgrow the rest of the snapshot.
 // A record that kept neither field cannot decide anything and is left out, so
 // the caller falls back to the turn's own kind and then the write-path text
-// shape; a legacy inner note steer is decided by its outer note record instead
-// (see steeringOriginFromJournal).
+// shape. Only the record stored under the client mutation id decides, and the
+// id's spelling is not evidence of anything.
 func (s *clientMutationStore) steeringOrigins() map[string]steeringOrigin {
 	if s == nil {
 		return nil

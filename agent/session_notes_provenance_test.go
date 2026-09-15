@@ -92,6 +92,11 @@ func TestRebuiltKindlessNoteSteerWithMethodStillNormalizes(t *testing.T) {
 	if !strings.Contains(entries[0].Text, "note") {
 		t.Fatalf("kindless note-origin steer lost its content: %q", entries[0].Text)
 	}
+	// The kind follows the same evidence: the entry (and the steering/injected
+	// event derived from it) carries the note label, not an empty kind.
+	if entries[0].Kind != events.SteeringKindHumanNote {
+		t.Fatalf("kindless note-origin steer kind = %q, want %q", entries[0].Kind, events.SteeringKindHumanNote)
+	}
 }
 
 // A record older than both SteeringKind and a usable method has no provenance at
