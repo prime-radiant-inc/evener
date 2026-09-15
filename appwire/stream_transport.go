@@ -201,11 +201,8 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	// cancellation landed in the window since the check above, so the AfterFunc
 	// already closed the stream and the cancellation has to be latched even
 	// though this frame went out. The deferred stop is an idempotent safety net.
-	if !stop() {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			t.poison(ctxErr)
-			return ctxErr
-		}
+	if err := t.latchLateCancel(ctx, stop); err != nil {
+		return err
 	}
 	// Close may have latched while this frame was being written. Reporting
 	// success would tell the caller a closed transport still works.
@@ -246,11 +243,8 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		}
 		// A cancellation landing after those checks but before the deferred stop
 		// must not be reported as a clean end of stream.
-		if !stop() {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				t.poison(ctxErr)
-				return Message{}, ctxErr
-			}
+		if err := t.latchLateCancel(ctx, stop); err != nil {
+			return Message{}, err
 		}
 		// A read that consumed no bytes left the framing intact but the stream
 		// broken; a clean io.EOF is the stream simply ending. Latch the former
@@ -273,22 +267,16 @@ func (t *StreamTransport) Recv(ctx context.Context) (Message, error) {
 		// close the stream, so the same latch applies before reporting a decode
 		// failure — otherwise later calls see a raw close error for a teardown
 		// the caller asked for.
-		if !stop() {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				t.poison(ctxErr)
-				return Message{}, ctxErr
-			}
+		if err := t.latchLateCancel(ctx, stop); err != nil {
+			return Message{}, err
 		}
 		return Message{}, err
 	}
 	// Same window on the read side: a cancellation after the check above and
 	// before the deferred stop closed the stream, so the message is not
 	// delivered and the cancellation is latched.
-	if !stop() {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			t.poison(ctxErr)
-			return Message{}, ctxErr
-		}
+	if err := t.latchLateCancel(ctx, stop); err != nil {
+		return Message{}, err
 	}
 	// Same on the read side: a Close that landed while this frame was being read
 	// or decoded must not be answered with a message from a closed transport.
@@ -362,6 +350,13 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 // Every later call returns that failure. The close happens outside the lock:
 // closing can block, and every call that reads the recorded cause would wait
 // behind it.
+//
+// It deliberately does NOT take opMu. Taking the write lock here would wait for
+// a write already in flight — and this close is what unblocks that write — so
+// poisoning would deadlock against the very write it exists to interrupt. The
+// consequence is that a write already past its latch check can still reach the
+// stream; it is writing to a stream this call just closed, its own error path
+// reports the recorded cause, and nothing new can be admitted.
 func (t *StreamTransport) poison(err error) {
 	t.mu.Lock()
 	first := t.poisoned == nil
@@ -380,6 +375,24 @@ func (t *StreamTransport) poisonErr() error {
 	return t.poisoned
 }
 
+// latchLateCancel closes the window between a caller's last context check and
+// its deferred stop. stop reports whether it prevented the callback; when it did
+// not, the callback already latched the cancellation and closed the stream, and
+// the caller must report that rather than the success or unrelated error it was
+// about to return. It is one helper because every path that can return has to
+// apply the same rule, and four copies of it drifted apart once already.
+func (t *StreamTransport) latchLateCancel(ctx context.Context, stop func() bool) error {
+	if stop() {
+		return nil
+	}
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return nil
+	}
+	t.poison(ctxErr)
+	return ctxErr
+}
+
 // Close ends the transport. The closed state is latched, so Send and Recv keep
 // reporting ErrStreamClosed afterwards even when the reader still holds frames
 // it prefetched. Only the call that latches reaches the underlying closer:
@@ -393,6 +406,10 @@ func (t *StreamTransport) Close() error {
 	}
 	t.mu.Unlock()
 	if !first {
+		// Already terminal, but a write admitted before that is still in flight:
+		// drain it anyway. Returning early here would let Close report completion
+		// while a writer could still reach the stream.
+		t.drainWrites()
 		return nil
 	}
 	err := t.rw.Close()
