@@ -18,6 +18,7 @@
 // resolving it here could show an unrelated local repository that happens to
 // share the path; such a session still shows its working dir, just no branch.
 import { useEffect, useState } from "react";
+import type { AppwireClientLike } from "../../../protocol/clientLike";
 import { useClient } from "../../../shell/clientContext";
 import { resolveGitLocation } from "../../../shell/gitLocation";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -41,9 +42,12 @@ const CLASS = {
   link: requireClass(styles.link, "repoLocation.module.css", "link"),
 };
 
-// The last resolved lookup, tagged with the cwd it belongs to: a response for a
-// cwd the composer has since left must never be displayed against the new one.
+// The last resolved lookup, tagged with the cwd it belongs to AND the client
+// that answered: a response for a cwd the composer has since left, or one the
+// previous hub answered before this pane reconnected, must never be displayed
+// against the current cwd or hub.
 interface ResolvedLocation {
+  client: AppwireClientLike;
   cwd: string;
   branch: string;
   originUrl: string;
@@ -57,7 +61,7 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
     if (!local || cwd.trim() === "") return undefined;
     let active = true;
     void resolveGitLocation(client, cwd).then((location) => {
-      if (active) setResolved({ cwd, ...location });
+      if (active) setResolved({ client, cwd, ...location });
     });
     return () => {
       active = false;
@@ -66,7 +70,7 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
 
   if (cwd.trim() === "") return null;
 
-  const current = local && resolved !== null && resolved.cwd === cwd ? resolved : null;
+  const current = local && resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved : null;
   const branch = current?.branch ?? "";
   const remote = current !== null && current.originUrl !== "" ? parseRepoRemote(current.originUrl) : null;
 

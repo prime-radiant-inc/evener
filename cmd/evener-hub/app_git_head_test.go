@@ -173,6 +173,8 @@ func TestSanitizeGitRemote(t *testing.T) {
 		{name: "https clean", in: "https://github.com/owner/repo.git", want: "https://github.com/owner/repo.git"},
 		{name: "ssh userinfo", in: "ssh://git@github.com/owner/repo.git", want: "ssh://github.com/owner/repo.git"},
 		{name: "scp-like unchanged", in: "git@github.com:owner/repo.git", want: "git@github.com:owner/repo.git"},
+		{name: "scp-like query token", in: "git@github.com:owner/repo.git?token=supersecret", want: "git@github.com:owner/repo.git"},
+		{name: "scp-like fragment token", in: "git@github.com:owner/repo.git#token=supersecret", want: "git@github.com:owner/repo.git"},
 		{name: "local path unchanged", in: "/srv/git/repo.git", want: "/srv/git/repo.git"},
 		{name: "empty", in: "   ", want: ""},
 		{name: "unparseable scheme fails closed", in: "https://a b@github.com/o/r.git", want: ""},

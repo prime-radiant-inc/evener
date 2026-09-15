@@ -61,6 +61,25 @@ test("lowercases the host so a mixed-case remote still matches its forge", () =>
   });
 });
 
+// A remote can carry a secret in its query or fragment, not only in userinfo.
+// The hub strips these before sending, and the parser drops them too rather
+// than trusting its input: otherwise the token would land inside repoUrl and
+// therefore in the DOM.
+test("drops a query or fragment that could carry a token", () => {
+  expect(parseRepoRemote("https://github.com/owner/repo.git?token=supersecret")?.repoUrl).toBe(
+    "https://github.com/owner/repo",
+  );
+  expect(parseRepoRemote("git@github.com:owner/repo.git?token=supersecret")?.repoUrl).toBe(
+    "https://github.com/owner/repo",
+  );
+  expect(parseRepoRemote("git@gitlab.com:group/repo.git#access_token=supersecret")?.repoUrl).toBe(
+    "https://gitlab.com/group/repo",
+  );
+  expect(parseRepoRemote("https://github.com/owner/repo.git?token=supersecret")?.repo).toBe("repo");
+  // Nothing but a query is not a remote at all.
+  expect(parseRepoRemote("?token=supersecret")).toBeNull();
+});
+
 // Anything not a known forge's repo page yields null: the caller then shows the
 // branch unlinked rather than guessing a URL shape.
 test("returns null for unknown hosts, local paths and non-remotes", () => {

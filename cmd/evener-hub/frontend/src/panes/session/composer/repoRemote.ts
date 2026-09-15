@@ -76,7 +76,16 @@ export function parseRepoRemote(origin: string): RepoRemote | null {
   const trimmed = origin.trim();
   if (trimmed === "") return null;
 
-  const split = splitHostAndPath(trimmed);
+  // Defense in depth for a credential that arrives by a path the hub's own
+  // sanitizer cannot see (it strips userinfo, query and fragment before the
+  // remote crosses AppWire, but a parser should never trust that). A query or
+  // fragment is never part of the repo address, and `?token=...` would
+  // otherwise end up inside repoUrl and therefore in the DOM.
+  const cut = trimmed.search(/[?#]/);
+  const clean = cut >= 0 ? trimmed.slice(0, cut) : trimmed;
+  if (clean === "") return null;
+
+  const split = splitHostAndPath(clean);
   if (!split) return null;
 
   const host = split.host.toLowerCase();

@@ -69,6 +69,12 @@ func hubGitHead(ctx context.Context, cfg hubcore.WebConfig, params appwire.GitHe
 func sanitizeGitRemote(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if !strings.Contains(trimmed, "://") {
+		// A query or fragment is not part of a git remote address, and a
+		// `?token=...` there would otherwise cross AppWire untouched: the
+		// scheme-less branch cannot rely on url.Parse to drop it.
+		if cut := strings.IndexAny(trimmed, "?#"); cut >= 0 {
+			trimmed = trimmed[:cut]
+		}
 		return trimmed
 	}
 	parsed, err := url.Parse(trimmed)

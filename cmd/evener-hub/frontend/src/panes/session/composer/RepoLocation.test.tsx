@@ -139,3 +139,26 @@ test("ignores a late response for a cwd the composer has left", async () => {
   // The stale value must never replace the current one.
   await waitFor(() => expect(screen.getByTestId("composer-repo-branch").textContent).toBe("second-branch"));
 });
+
+// A hub switch replaces the client. The previous hub's branch must not stay on
+// screen while the new lookup is in flight (or if it never answers) - that
+// branch describes a different hub.
+test("drops the previous client's branch after the client is replaced", async () => {
+  const oldClient = clientReporting({ head: "old-branch", originUrl: "git@github.com/owner/repo.git" });
+  const newClient = new FakeClient();
+  // Never answers: the point is what is displayed while the new lookup is
+  // unresolved.
+  newClient.on("evener/git/head", () => new Promise<never>(() => {}));
+
+  const { rerender } = renderLocation("/repo", oldClient);
+  expect((await screen.findByTestId("composer-repo-branch")).textContent).toBe("old-branch");
+
+  rerender(
+    <ClientProvider client={newClient}>
+      <RepoLocation cwd="/repo" local />
+    </ClientProvider>,
+  );
+  expect(screen.queryByTestId("composer-repo-branch")).toBeNull();
+  expect(screen.queryByTestId("composer-repo-link")).toBeNull();
+  expect(screen.getByTestId("composer-repo-path").textContent).toBe("/repo");
+});
