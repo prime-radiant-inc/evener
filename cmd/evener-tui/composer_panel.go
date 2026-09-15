@@ -67,7 +67,8 @@ const (
 //
 //	stop   active && interrupt
 //	steer  active && steer   (the hub advertises steer as harness support)
-//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked)
+//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
+//	       and not while the queue revision is stale after a partial drain
 //	queue  queue             (the hub folds the active status in already)
 //	send   send              (likewise; and the composer's own contract admits a
 //	                          source that advertises send while a turn runs --
@@ -84,7 +85,7 @@ func (m hubModel) sessionControls() sessionControls {
 	return sessionControls{
 		stop:  active && caps.Interrupt,
 		steer: active && caps.Steer,
-		drain: caps.Steer && (active || parked),
+		drain: caps.Steer && (active || parked) && !m.queueRevisionStale,
 		queue: caps.Queue,
 		send:  caps.Send,
 	}

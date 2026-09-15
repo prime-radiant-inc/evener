@@ -201,6 +201,12 @@ type hubModel struct {
 	// navigating away resets it.
 	sessionQueue    []string
 	sessionQueueRef string
+	// queueRevisionStale: a force-steer the daemon queued but could not steer
+	// (a partial drain) moved the daemon's queue revision, and this model's
+	// copy is behind until the wire's queueChanged replaces it. No drain is
+	// offered in between: it would carry the stale revision and be refused as
+	// "queue revision changed".
+	queueRevisionStale bool
 
 	// modelRetry holds the in-flight model-call retry the daemon reported on
 	// evener/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral

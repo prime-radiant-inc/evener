@@ -532,6 +532,10 @@ func (m hubModel) restoreInstructionMessage() string {
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	if !m.sessionCanDrainQueue() {
+		if m.queueRevisionStale {
+			m.addSessionSystem("The queue is syncing after the last force-steer; retry in a moment.")
+			return m, nil
+		}
 		if m.sessionComposerMode() == hubComposerModeQueue {
 			m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
 			return m, nil

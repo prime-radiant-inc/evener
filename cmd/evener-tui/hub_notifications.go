@@ -424,6 +424,7 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 	// against the revision the client last saw, and a queue another client
 	// edited since hydrate would otherwise be refused as a conflict.
 	m.detail.Queue = queue
+	m.queueRevisionStale = false
 	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
 		return

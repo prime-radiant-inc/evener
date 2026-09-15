@@ -2253,6 +2253,15 @@ func TestHubModelOptimisticQueuedRowRaisesTheDepth(t *testing.T) {
 	if len(got.sessionQueue) != 1 || got.detail.Queue.Depth != 1 {
 		t.Fatalf("optimistic row: preview=%v depth=%d, want one row and depth 1", got.sessionQueue, got.detail.Queue.Depth)
 	}
+	// The wire's queueChanged reconciles the revision the daemon moved when it
+	// queued the payload (TestHubModelPartialDrainWaitsForTheQueueRevision pins
+	// the wait); the depth it carries is the one the next drain counts.
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 1, Revision: 1, Preview: []string{"later"}},
+	})
+	got.applyHubNotification(*queueChanged.Notification)
 
 	_, cmd := got.handleSessionForceSteer()
 	if cmd == nil {
@@ -2264,6 +2273,59 @@ func TestHubModelOptimisticQueuedRowRaisesTheDepth(t *testing.T) {
 	}
 	if msg.preQueueDepth != 1 {
 		t.Fatalf("drain preQueueDepth = %d, want 1 (the optimistic row counted)", msg.preQueueDepth)
+	}
+}
+
+// A force-steer the daemon queued but could not steer (a partial drain) moved
+// the daemon's queue revision; the TUI's copy is stale until the wire's
+// queueChanged arrives. Another drain must wait for that reconciliation and
+// then carry the current revision, never the stale one ("queue revision
+// changed").
+func TestHubModelPartialDrainWaitsForTheQueueRevision(t *testing.T) {
+	var drained []appwire.TurnDrainAsSteerParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			drained = append(drained, params)
+			if params.ExpectedQueueRevision != 9 {
+				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("queue revision changed")
+			}
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+	if got.detail.Queue.Depth != 1 {
+		t.Fatalf("depth after the partial drain = %d, want 1", got.detail.Queue.Depth)
+	}
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s right after a partial drain produced a command; the queue revision is stale until queueChanged reconciles it")
+	}
+
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 1, Revision: 9, Preview: []string{"later"}},
+	})
+	got.applyHubNotification(*queueChanged.Notification)
+	_, cmd := got.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s after the queue reconciled produced no command")
+	}
+	msg, ok := cmd().(hubDrainAsSteerMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("drain result = %#v, want an accepted drain", cmd())
+	}
+	if len(drained) != 1 || drained[0].ExpectedQueueRevision != 9 {
+		t.Fatalf("drain calls = %+v, want one carrying revision 9", drained)
 	}
 }
 
