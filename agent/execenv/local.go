@@ -2754,14 +2754,23 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 	return out
 }
 
-// ShellEscapeArgs joins args into a single shell command string, quoting each
-// token so it survives the shell word-splitting ExecCommand performs. It is the
-// argv-discipline helper used to assemble shell command strings (spec §2 "name
-// validation": "Do not hand-build shell command strings"), so a worktree name or
-// path can never inject shell metacharacters. The quoting itself lives in
-// internal/shellquote so the whole product shares one implementation; this name
-// is kept for its callers, and each argument is rendered with
-// shellquote.Literal. ExecCommand runs the rendered line through cmd.exe on
-// Windows, so the shared helper keeps high bytes (non-ASCII) bare rather than
-// POSIX-quoting them — a single quote is an ordinary character to cmd.exe.
+// ShellEscapeArgs joins args into a single POSIX-shell command string, quoting
+// each token so it survives the shell word-splitting ExecCommand performs for a
+// POSIX shell. It is the argv-discipline helper used to assemble shell command
+// strings (spec §2 "name validation": "Do not hand-build shell command
+// strings"), so on that path a worktree name or path cannot inject a shell
+// metacharacter. The quoting itself lives in internal/shellquote so the whole
+// product shares one implementation; this name is kept for its callers, and
+// each argument is rendered with shellquote.Literal.
+//
+// It is NOT cmd.exe quoting, and Windows callers must not build an ExecCommand
+// string with it. ExecCommand runs the rendered line through cmd.exe on Windows
+// (shellCommand), where a single quote is an ordinary character rather than a
+// delimiter: 'a & calc &' still runs calc, and the '%' shellquote leaves bare
+// still expands as %VAR%. The shared helper keeps high bytes (non-ASCII) and
+// the caret bare so the bytes cmd.exe receives match the pre-consolidation
+// rendering, but that is byte-compatibility on the existing fallback path, not
+// safety. A Windows caller gets shell-free safety only from an argument vector
+// (ExecArgv); RunGit already prefers ExecArgv and reaches this fallback only
+// for environments that are not argv-capable.
 func ShellEscapeArgs(args ...string) string { return shellquote.Args(args...) }

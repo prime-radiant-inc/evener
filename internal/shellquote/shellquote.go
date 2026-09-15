@@ -18,6 +18,18 @@
 // This is an allow-list rather than a deny-list on purpose: a byte nobody
 // thought to deny is quoted rather than trusted.
 //
+// # POSIX shells only
+//
+// The quoting above is POSIX quoting, and that is the whole contract: a
+// rendered word is safe to give a POSIX shell, or to exec directly as one argv
+// element, and nothing else. It is not cmd.exe quoting. ExecCommand runs a
+// command string through cmd.exe on Windows, where a single quote is an
+// ordinary character rather than a delimiter: Literal("a & calc &") returns
+// 'a & calc &', and cmd.exe still runs calc, while the '%' the allow-list
+// leaves bare still expands as %VAR%. No single rendering serves both shells,
+// so a Windows caller must exec from an argument vector (ExecArgv) rather than
+// assemble a command string from these words.
+//
 // # High bytes and a caret stay bare on purpose
 //
 // A byte in 0x80-0xFF is not a POSIX metacharacter, so quoting it buys sh no
@@ -27,7 +39,8 @@
 // Windows, where a single quote is an ordinary character rather than a
 // delimiter. Quoting "café" would hand cmd.exe the literal bytes 'café', quotes
 // included. Leaving high bytes bare keeps the pre-consolidation behavior on
-// every platform.
+// every platform; that byte-compatibility is not a claim that these words are
+// cmd.exe-safe (see # POSIX shells only).
 //
 // A caret (^, 0x5E) is left bare for the same reason. It is not a POSIX
 // metacharacter, and no shell denies it, so the deny-lists this package replaced
@@ -113,9 +126,10 @@ func quote(s string, allowTilde bool) string {
 }
 
 // Args space-joins args, rendering each with Literal, as the single command
-// line a shell-based ExecCommand performs word-splitting on. It is the
-// argv-discipline helper for callers that assemble a command string rather than
-// an argv.
+// line a POSIX shell performs word-splitting on. It is the argv-discipline
+// helper for callers that assemble a POSIX-shell command string rather than an
+// argv; it is not cmd.exe quoting, so a Windows consumer must use an argument
+// vector instead (see the package doc).
 func Args(args ...string) string {
 	var b strings.Builder
 	for i, a := range args {
