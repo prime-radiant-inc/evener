@@ -3337,9 +3337,33 @@ describe("observed queue guards", () => {
       client.calls.filter((c) => c.method === "turn/cancelQueued"),
     ).toHaveLength(0);
   });
-  it("can run a held queue from idle without an active-turn steer capability", async () => {
+  // The hub advertises steer as harness support (not "a turn is running"), so
+  // a steering harness carries steer:true at idle too, and a held queue can be
+  // promoted or drained from idle; the status half of that rule is the
+  // caller's (the SDK's sessionControls). A harness that advertises no steer
+  // cannot take a drain at all, whatever else it advertises.
+  it("refuses to run a held queue when the harness advertises no steer, even with send", async () => {
     const thread = makeThread();
     thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
+    const { service, client } = setup({ thread });
+    await service.open("ref-1");
+    await expect(
+      service.promoteQueuedAsSteer(0, "held-entry", "thread-1"),
+    ).rejects.toThrow(/unavailable for this session/);
+    await expect(service.drainAsSteer(3, "thread-1")).rejects.toThrow(
+      /unavailable for this session/,
+    );
+    expect(
+      client.calls.filter(
+        (c) =>
+          c.method === "turn/promoteQueuedAsSteer" ||
+          c.method === "turn/drainAsSteer",
+      ),
+    ).toHaveLength(0);
+  });
+  it("can run a held queue from idle on a harness that advertises steer", async () => {
+    const thread = makeThread();
+    thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: true, send: true };
     const { service, client } = setup({ thread });
     client.on("turn/promoteQueuedAsSteer", ({ clientMutationId }) => ({
       receipt: makeReceipt("steer", {
