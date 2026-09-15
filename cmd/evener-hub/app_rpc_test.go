@@ -3991,6 +3991,150 @@ func TestHubRPCThreadUnsubscribeDropsStableRefRelay(t *testing.T) {
 	}
 }
 
+// A federated (non-atomic) source is addressed by its ref, so a thread/read that
+// carries both the stable ref and the thread's current ID must register its relay
+// under the ref identity thread/unsubscribe resolves — otherwise the ref-only
+// unsubscribe names a key that was never subscribed and the downstream entry (and
+// the source-side subscription behind it) stays live forever.
+func TestHubRPCThreadUnsubscribeDropsStableRefRelayWhenReadAlsoNamedThreadID(t *testing.T) {
+	const stableRef = "host:stable"
+	source := &relayBroadcastSource{
+		id: "host",
+		thread: appwire.Thread{
+			ID:        "current",
+			SessionID: "current",
+			Source:    "host",
+			Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, ThreadID: "current", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount(stableRef); got != 1 {
+		t.Fatalf("subscriber count at the stable ref = %d, want 1 (relay keyed by the caller's current ID instead of the ref)", got)
+	}
+	if got := web.appRPC.SubscriberCount("host:current"); got != 0 {
+		t.Fatalf("subscriber count at the live thread id = %d, want 0 (the ref is the delivery identity)", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: stableRef}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount(stableRef); got != 0 {
+		t.Fatalf("subscriber count after ref-only unsubscribe = %d, want 0", got)
+	}
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "current",
+			Ref:      stableRef,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after ref-only unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A relay's recovery must re-address the thread by the authoritative ref the read
+// named, not by the caller's bare threadId. A federated source's daemon edge
+// resolves a bare threadId in preference to the ref, so once an identity
+// replacement moves the live thread ID the original ID names nothing while the
+// stable ref beside it still resolves; reusing the original request verbatim
+// makes every recovery attempt in the stale state fail forever.
+func TestHubRelayRecoveryUsesAuthoritativeRefNotStaleThreadID(t *testing.T) {
+	const (
+		stableRef = "host:stable"
+		liveID    = "current"
+	)
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &recordingSubscribeParamsSource{
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	source.thread = appwire.Thread{
+		ID:        liveID,
+		SessionID: liveID,
+		Source:    "host",
+		Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, ThreadID: liveID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The subscription ends, so the relay recovers. The current ID has moved on
+	// (an identity replacement), leaving the original bare threadId stale.
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	// The source claimed its subscription again, so the recovered relay delivers.
+	expectRelayResync(t, client.Notifications(), liveID, stableRef)
+	notificationsB <- relayDeltaNotification(t, liveID, "recovered event")
+	expectRelayDelta(t, client.Notifications(), "recovered event")
+
+	params := source.subscribeParams()
+	if len(params) < 2 {
+		t.Fatalf("subscribe calls = %d, want an initial and a recovery call", len(params))
+	}
+	recovery := params[1]
+	if recovery.Ref != stableRef {
+		t.Fatalf("recovery subscribe ref = %q, want the authoritative %q", recovery.Ref, stableRef)
+	}
+	if recovery.ThreadID != "" {
+		t.Fatalf("recovery subscribe resent the caller's bare threadId %q, which a stale identity no longer resolves", recovery.ThreadID)
+	}
+}
+
 func TestRelayRetryClockWaitStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -7267,6 +7411,37 @@ type scriptedRelaySource struct {
 	id             string
 	results        <-chan relaySubscribeResult
 	subscribeCalls chan<- struct{}
+}
+
+// recordingSubscribeParamsSource is a non-atomic relay source that records the
+// params of every SubscribeThread call, so a recovery re-subscribe can be
+// inspected. ID is "host", standing in for a federated source.
+type recordingSubscribeParamsSource struct {
+	relayLifecycleSource
+	results        <-chan relaySubscribeResult
+	subscribeCalls chan<- struct{}
+
+	mu     sync.Mutex
+	params []appwire.ThreadReadParams
+}
+
+func (s *recordingSubscribeParamsSource) ID() string { return "host" }
+
+func (s *recordingSubscribeParamsSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.params = append(s.params, params)
+	s.mu.Unlock()
+	if s.subscribeCalls != nil {
+		s.subscribeCalls <- struct{}{}
+	}
+	result := <-s.results
+	return result.notifications, result.err
+}
+
+func (s *recordingSubscribeParamsSource) subscribeParams() []appwire.ThreadReadParams {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]appwire.ThreadReadParams(nil), s.params...)
 }
 
 type blockingRecoveryRelaySource struct {

@@ -313,6 +313,35 @@ func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams)
 	return source.ID() + ":" + threadID, threadID, nil
 }
 
+// relayDeliveryTarget resolves the relay key a subscription is registered under,
+// identically for thread/read's relay and the thread/unsubscribe that drops it.
+//
+// A federated source (anything but the local daemon) is addressed by its ref:
+// the ref's suffix is the stable identity that survives an identity replacement,
+// while a caller's bare threadId is the volatile current ID that moves across
+// one. Keying such a read by the caller's threadId registered the relay under
+// "host:<currentID>" while a ref-only thread/unsubscribe resolves
+// "host:<stableRef>", so the downstream entry — and the source-side subscription
+// behind it — was never dropped. The ref therefore wins whenever the request
+// carries one, which is also what the local daemon path achieves through
+// ResolveSubscriptionAdmission. The local daemon keeps threadRelayTarget's
+// threadId preference: its admission already canonicalizes the identities, and
+// its SecondaryKey deliberately names the delivery identity threadRelayTarget
+// resolves.
+func relayDeliveryTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
+	if _, local := source.(*appsource.LocalDaemonSource); !local && strings.TrimSpace(params.Ref) != "" {
+		ref, err := appwire.ParseRef(strings.TrimSpace(params.Ref))
+		if err != nil {
+			return "", "", err
+		}
+		if ref.ThreadID == "" {
+			return "", "", appwire.InvalidParams("threadId or ref is required")
+		}
+		return source.ID() + ":" + ref.ThreadID, ref.ThreadID, nil
+	}
+	return threadRelayTarget(source, params)
+}
+
 type relayNotificationRouting int
 
 const (
@@ -1444,18 +1473,39 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 		}
 		// Key the downstream registry entry by the same identity thread/unsubscribe
-		// resolves (threadRelayTarget), not by thread.ID. A remote source's stable
-		// ref survives an identity replacement while its current Thread.ID moves,
-		// so keying by Thread.ID registers under "host:<currentID>" while a
+		// resolves (relayDeliveryTarget), not by thread.ID. A remote source's
+		// stable ref survives an identity replacement while its current Thread.ID
+		// moves, so keying by Thread.ID registers under "host:<currentID>" while a
 		// ref-only unsubscribe resolves "host:<stableRef>": the downstream entry
 		// (and, through it, the remote-side subscription) would never be dropped,
-		// and a replacement could leave a second relay behind. The atomic path
-		// already keys this way (acquireRelaySession), and the source's own
-		// SubscribeThread routing is keyed from the ref, so this makes read,
-		// recovery, and unsubscribe agree.
-		relayKey, _, keyErr := relayTarget(source, subscribeParams)
+		// and a replacement could leave a second relay behind. The request's own
+		// address decides the key, so this agrees with the subscription admission
+		// thread/read itself resolved and with the source's own SubscribeThread
+		// routing, which is keyed from the ref.
+		keyParams := params
+		if strings.TrimSpace(keyParams.Ref) == "" && strings.TrimSpace(keyParams.ThreadID) == "" {
+			// An internal caller (turn/start's relay, a recovery that named no
+			// address) has no request identity of its own, so key by the ref
+			// derived from the thread this relay read.
+			keyParams = appwire.ThreadReadParams{Ref: subscribeParams.Ref}
+		}
+		relayKey, _, keyErr := relayDeliveryTarget(source, keyParams)
 		if keyErr != nil {
 			return keyErr
+		}
+
+		// Recovery re-addresses the thread by the authoritative ref the read
+		// named, not by the caller's bare threadId. A source may resolve a bare
+		// threadId in preference to the ref beside it (the remote hub's daemon
+		// edge does), and that ID is the volatile current identity: once an
+		// identity replacement moves it, re-sending it names no thread while the
+		// stable ref still resolves, so every recovery attempt in the stale state
+		// fails. Only the initial request keeps the caller's own addressing; the
+		// first read already named the subscription's authoritative identity.
+		recoveryParams := subscribeParams
+		if thread.Evener.Ref != "" {
+			recoveryParams.Ref = thread.Evener.Ref
+			recoveryParams.ThreadID = ""
 		}
 
 		var relayCtx context.Context
@@ -1750,7 +1800,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						result <- hubRelaySubscriptionResult{err: err}
 						return
 					}
-					notifications, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
+					notifications, err := subscribeRelayRecovery(relayCtx, source, recoveryParams)
 					if fenceErr := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); fenceErr != nil {
 						err = fenceErr
 					}
