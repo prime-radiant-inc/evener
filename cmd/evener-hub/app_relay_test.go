@@ -362,6 +362,7 @@ func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
 	acknowledged := make(chan struct{})
 	deliveries <- appsource.RelayDelivery{
 		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
 		Acknowledge:  func() { close(acknowledged) },
 	}
 	<-acknowledged
@@ -615,6 +616,87 @@ func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
 			return
 		case <-deadline:
 			t.Fatal("the subscriber was never told to re-read: the reused PID kept the crashed daemon listed")
+		}
+	}
+}
+
+// A daemon resync whose ref cannot be read is malformed. It fans out exactly
+// as any malformed frame does (TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce
+// pins that), but the hub must not mistake it for its own daemon-gone
+// announcement: that one is marked as the relay's own, not recognised by an
+// absent target, so a frame like {"ref": null} reaches each route as the
+// daemon sent it, never rewritten into a valid per-route re-read (review
+// round 7 on #1325).
+func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
+	const (
+		rootRef  = "local:malformed-root"
+		childRef = "local:malformed-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+
+	const malformed = `{"ref":null}`
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage(malformed)},
+		Acknowledge:  func() { close(acknowledged) },
+	}
+	<-acknowledged
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"root", root}, {"child", child}} {
+		select {
+		case got := <-subscriber.client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync || string(got.Params) != malformed {
+				t.Fatalf("%s received the malformed daemon resync rewritten as %s %s, want it untouched", subscriber.name, got.Method, got.Params)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never received the malformed daemon resync", subscriber.name)
 		}
 	}
 }

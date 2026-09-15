@@ -645,9 +645,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			publishTarget := func(delivery appsource.RelayDelivery, target relayTargetState) {
 				notification := delivery.Notification
-				// An untargeted resync is one addressed to every route; the
-				// copy each route gets names that route.
-				if target.routingKey == "" {
+				// The relay's own daemon-gone resync is addressed to every
+				// route; the copy each route gets names that route. Keyed on
+				// the delivery's mark, never on an absent target, which a
+				// malformed daemon frame could share.
+				if delivery.DaemonGone {
 					notification = stampResyncTarget(notification, target.threadID, target.ref)
 				}
 				// The edits only this hub can make to a local daemon's

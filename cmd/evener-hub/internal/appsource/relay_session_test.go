@@ -1775,7 +1775,7 @@ func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
 
 	select {
 	case delivery := <-deliveries:
-		expectDaemonGoneResync(t, delivery.Notification)
+		expectDaemonGoneResync(t, delivery)
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("no resync reached the listener after the daemon exited for good")
@@ -1786,11 +1786,16 @@ func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
 }
 
 // expectDaemonGoneResync asserts the re-read instruction recovery publishes
-// for a daemon that is gone: a resync that names no ref, so the hub's relay
-// fans it out to every route this session serves (a read-only child alias
-// shares the root's relay session) and stamps each route's own identity in.
-func expectDaemonGoneResync(t *testing.T, notification appwire.Notification) {
+// for a daemon that is gone: a resync that names no ref, marked as the relay's
+// own so the hub fans it out to every route this session serves (a read-only
+// child alias shares the root's relay session) and stamps each route's own
+// identity in - a marking no daemon frame can carry, malformed or not.
+func expectDaemonGoneResync(t *testing.T, delivery RelayDelivery) {
 	t.Helper()
+	if !delivery.DaemonGone {
+		t.Fatalf("daemon-gone resync is not marked as the relay's own: %+v", delivery.Notification)
+	}
+	notification := delivery.Notification
 	if notification.Method != appwire.NotifyEvenerThreadResync {
 		t.Fatalf("delivery = %+v, want resync", notification)
 	}
@@ -1877,7 +1882,7 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 
 	select {
 	case delivery := <-deliveries:
-		expectDaemonGoneResync(t, delivery.Notification)
+		expectDaemonGoneResync(t, delivery)
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
@@ -1979,7 +1984,7 @@ func TestRelaySessionDaemonGoneIsAnnouncedOncePerDisconnect(t *testing.T) {
 
 	select {
 	case delivery := <-deliveries:
-		expectDaemonGoneResync(t, delivery.Notification)
+		expectDaemonGoneResync(t, delivery)
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("no resync reached the listener after the daemon exited for good")

@@ -100,6 +100,9 @@ type relayPublishJob struct {
 	fence         *relayPublicationFence
 	notifications []appwire.Notification
 	done          chan struct{}
+	// daemonGone marks the relay's own daemon-gone announcement; it reaches
+	// listeners as RelayDelivery.DaemonGone.
+	daemonGone bool
 }
 
 type relayPublicationFence struct {
@@ -549,7 +552,7 @@ func (s *relaySession) publishDaemonGoneResync() {
 		return
 	}
 	s.goneAnnounced = true
-	s.enqueuePublishJob(relayPublishJob{notifications: []appwire.Notification{DaemonGoneResync()}})
+	s.enqueuePublishJob(relayPublishJob{notifications: []appwire.Notification{DaemonGoneResync()}, daemonGone: true})
 	s.mu.Unlock()
 }
 
@@ -557,7 +560,9 @@ func (s *relaySession) publishDaemonGoneResync() {
 // daemon a session relayed has left the roster for good. It names no ref: a
 // read-only child alias shares the root's relay session, and nothing else will
 // ever tell that subscriber its daemon is gone, so the hub's relay fans this
-// out to every route it serves and stamps each route's own identity in.
+// out to every route it serves and stamps each route's own identity in. The
+// delivery is marked DaemonGone; the hub keys the fan-out on that mark, not
+// on the absent ref, which a malformed daemon frame could share.
 func DaemonGoneResync() appwire.Notification {
 	return appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage("{}")}
 }
@@ -776,7 +781,7 @@ func (s *relaySession) publishLoop() {
 				s.publishMu.Unlock()
 				pending = s.pruneDeliveryWaits(pending)
 				for _, notification := range job.notifications {
-					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification)...)
+					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification, job.daemonGone)...)
 				}
 				if job.done != nil {
 					waits := append([]relayDeliveryWait(nil), pending...)
@@ -791,7 +796,7 @@ func (s *relaySession) publishLoop() {
 	}
 }
 
-func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) []relayDeliveryWait {
+func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification, daemonGone bool) []relayDeliveryWait {
 	s.mu.Lock()
 	listeners := make([]*relayListener, 0, len(s.listeners))
 	for _, listener := range s.listeners {
@@ -801,7 +806,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 
 	waits := make([]relayDeliveryWait, 0, len(listeners))
 	for _, listener := range listeners {
-		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification)
+		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification, daemonGone)
 		if wait != nil {
 			waits = append(waits, *wait)
 		}
@@ -813,7 +818,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 }
 
 func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
-	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification)
+	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification, false)
 	if wait != nil {
 		return s.waitForDelivery(*wait)
 	}
@@ -825,6 +830,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	fence *relayPublicationFence,
 	listener *relayListener,
 	notification appwire.Notification,
+	daemonGone bool,
 ) (bool, *relayDeliveryWait) {
 	ack := make(chan struct{})
 	proceed := make(chan struct{})
@@ -832,6 +838,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	var proceedOnce sync.Once
 	delivery := RelayDelivery{
 		Notification: notification,
+		DaemonGone:   daemonGone,
 		Acknowledge: func() {
 			ackOnce.Do(func() { close(ack) })
 		},
