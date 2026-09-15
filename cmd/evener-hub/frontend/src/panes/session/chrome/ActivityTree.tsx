@@ -7,6 +7,7 @@ import {
   activityDelegateState,
   buildActivityRows,
   buildWatchRows,
+  type EntityView,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -60,8 +61,6 @@ export interface ActivityTreeProps {
   // would report only the retained rows, understating a session whose armed
   // watches exceed the hub's per-session cap.
   omittedArmedWatches?: number;
-  // The panel's ticking clock, used only by watch durations and the timeline.
-  now?: number;
   continuationFailures?: Record<string, string | undefined>;
   onContinue?: (targetID: string, continuation: string) => void;
   loadingContinuationID?: string;
@@ -70,6 +69,11 @@ export interface ActivityTreeProps {
   // already loading blocks the others the same way: the panel carries one
   // request at a time, so only the branch that asked first can be answered.
   rootRefreshing?: boolean;
+  /** The session's entity map (ActivityPanelBody's `useEntityView`): the
+   * detail strips open outside the transcript subtree, so the panel hands the
+   * map down the tree for the ids those strips name. Optional - rows render
+   * their ids as plain text without it. */
+  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface ActivityTreeHandle {
@@ -349,16 +353,28 @@ const StaticMetaSegments = memo(function StaticMetaSegments({
   return <RowSegments segments={segments} />;
 });
 
-function LiveRowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+function LiveRowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
   const now = useContext(TreeNowContext);
-  return <ActivityRowDetail row={row} now={now} />;
+  return <ActivityRowDetail row={row} now={now} entities={entities} />;
 }
 
 // Static detail strips carry no running age (metaText's terminal line has no
 // clock term), so they render once with a dummy instant and never subscribe.
-const RowDetail = memo(function RowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
-  if (!row.live) return <ActivityRowDetail row={row} now={0} />;
-  return <LiveRowDetail row={row} />;
+const RowDetail = memo(function RowDetail({
+  row,
+  entities,
+}: {
+  row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
+}): ReactNode {
+  if (!row.live) return <ActivityRowDetail row={row} now={0} entities={entities} />;
+  return <LiveRowDetail row={row} entities={entities} />;
 });
 
 interface FoldRowViewProps {
@@ -419,8 +435,71 @@ const FoldRowView = memo(function FoldRowView({
   );
 });
 
+interface RowShellProps {
+  row: DetailRow;
+  name: string;
+  detailOpen: boolean;
+  tabIndex: number;
+  onSetDetailOpen: (row: DetailRow, open: boolean) => void;
+  onFocusRow: (id: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
+  registerRowRef: (id: string, element: HTMLDivElement | null) => void;
+  children: ReactNode;
+}
+
+// RowShell is the chrome every expandable dense row shares: a shell job, a
+// delegate, and a watch row all draw the same treeitem wrapper with the same
+// aria wiring, focus/keydown/ref handlers, and chevron disclosure button. Only
+// the body after the chevron differs, so the row views cannot drift apart.
+function RowShell({
+  row,
+  name,
+  detailOpen,
+  tabIndex,
+  onSetDetailOpen,
+  onFocusRow,
+  onKeyDown,
+  registerRowRef,
+  children,
+}: RowShellProps): ReactNode {
+  return (
+    <div
+      ref={(element) => {
+        registerRowRef(row.id, element);
+      }}
+      role="treeitem"
+      aria-label={name}
+      aria-level={row.level}
+      aria-expanded={detailOpen}
+      tabIndex={tabIndex}
+      className={CLASS.denseRow}
+      onFocus={() => onFocusRow(row.id)}
+      onKeyDown={(event) => onKeyDown(event, row)}
+      // Clicking the title toggles the disclosure, same as the chevron; the
+      // transcript opens only from the row's own open button.
+      onClick={() => onSetDetailOpen(row, !detailOpen)}
+    >
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
+        aria-expanded={detailOpen}
+        className={CLASS.rowToggle}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSetDetailOpen(row, !detailOpen);
+        }}
+      >
+        <Chevron direction={detailOpen ? "down" : "right"} size={12} />
+      </button>
+      {children}
+    </div>
+  );
+}
+
 interface DenseRowViewProps {
   row: ActivityJobRow | ActivityDelegateRow;
+  entities?: ReadonlyMap<string, EntityView>;
   detailOpen: boolean;
   tabIndex: number;
   onSetDetailOpen: (row: DetailRow, open: boolean) => void;
@@ -435,6 +514,7 @@ interface DenseRowViewProps {
 // quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
+  entities,
   detailOpen,
   tabIndex,
   onSetDetailOpen,
@@ -454,35 +534,16 @@ const DenseRowView = memo(function DenseRowView({
   const kindClass = kindStateClass(kindState);
   return (
     <Fragment>
-      <div
-        ref={(element) => {
-          registerRowRef(row.id, element);
-        }}
-        role="treeitem"
-        aria-label={name}
-        aria-level={row.level}
-        aria-expanded={detailOpen}
+      <RowShell
+        row={row}
+        name={name}
+        detailOpen={detailOpen}
         tabIndex={tabIndex}
-        className={CLASS.denseRow}
-        onFocus={() => onFocusRow(row.id)}
-        onKeyDown={(event) => onKeyDown(event, row)}
-        // Clicking the title toggles the disclosure, same as the chevron;
-        // the transcript opens only from the row's open button.
-        onClick={() => onSetDetailOpen(row, !detailOpen)}
+        onSetDetailOpen={onSetDetailOpen}
+        onFocusRow={onFocusRow}
+        onKeyDown={onKeyDown}
+        registerRowRef={registerRowRef}
       >
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
-          aria-expanded={detailOpen}
-          className={CLASS.rowToggle}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetDetailOpen(row, !detailOpen);
-          }}
-        >
-          <Chevron direction={detailOpen ? "down" : "right"} size={12} />
-        </button>
         <span
           role="img"
           aria-label={KIND_STATE_LABEL[kindState] ?? kindState}
@@ -493,8 +554,8 @@ const DenseRowView = memo(function DenseRowView({
         <span className={row.live ? `${CLASS.denseName} ${CLASS.denseNameLive}` : CLASS.denseName}>{name}</span>
         {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
         {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}
-      </div>
-      {detailOpen && <RowDetail row={row} />}
+      </RowShell>
+      {detailOpen && <RowDetail row={row} entities={entities} />}
     </Fragment>
   );
 });
@@ -503,7 +564,6 @@ interface WatchRowViewProps {
   row: ActivityWatchRow;
   detailOpen: boolean;
   tabIndex: number;
-  now?: number;
   onSetDetailOpen: (row: DetailRow, open: boolean) => void;
   onFocusRow: (id: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, row: ActivityRow) => void;
@@ -511,102 +571,59 @@ interface WatchRowViewProps {
 }
 
 // A watch row shares the dense row grammar (toggle, name, right-hand meta) but
-// has no live clock cluster of its own. Every clock-derived part - the meta's
-// countdown and the detail's ages - exists only while the row is open, so the
-// memoized row compares `now` for an open row and ignores it for a collapsed
-// one. That keeps a collapsed watch row asleep through every tick of the pane
-// chrome's clock, while an open row keeps counting down.
+// has no live clock cluster of its own: its clock-derived parts - the meta's
+// countdown and the detail's ages - exist only while the row is open, and they
+// read the tree's own tick (OpenWatchMeta, ActivityWatchDetail) rather than a
+// prop. The row chrome is therefore all snapshot data, so the memoized view
+// re-renders only when its own row or disclosure changes - never on a tick.
 const WatchRowView = memo(function WatchRowView({
   row,
   detailOpen,
   tabIndex,
-  now,
   onSetDetailOpen,
   onFocusRow,
   onKeyDown,
   registerRowRef,
 }: WatchRowViewProps): ReactNode {
   const name = `Watch: ${watchName(row.watch)}`;
-  // A collapsed row is all snapshot data - cadence, delivery count, armed state
-  // - so it renders no countdown and takes no clock. An open row renders the
-  // countdown in its meta and the ticking detail below it; a caller with its
-  // own ticking clock (the pane chrome) passes `now`, and the standalone pane
-  // passes nothing so the detail falls back to the tree's live context. See
-  // ActivityWatchDetail.
   return (
     <Fragment>
-      <div
-        ref={(element) => {
-          registerRowRef(row.id, element);
-        }}
-        role="treeitem"
-        aria-label={name}
-        aria-level={row.level}
-        aria-expanded={detailOpen}
+      <RowShell
+        row={row}
+        name={name}
+        detailOpen={detailOpen}
         tabIndex={tabIndex}
-        className={CLASS.denseRow}
-        onFocus={() => onFocusRow(row.id)}
-        onKeyDown={(event) => onKeyDown(event, row)}
-        onClick={() => onSetDetailOpen(row, !detailOpen)}
+        onSetDetailOpen={onSetDetailOpen}
+        onFocusRow={onFocusRow}
+        onKeyDown={onKeyDown}
+        registerRowRef={registerRowRef}
       >
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label={`${detailOpen ? "Hide" : "Show"} details for ${name}`}
-          aria-expanded={detailOpen}
-          className={CLASS.rowToggle}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSetDetailOpen(row, !detailOpen);
-          }}
-        >
-          <Chevron direction={detailOpen ? "down" : "right"} size={12} />
-        </button>
         <WatchGlyph className={CLASS.watchGlyph} testId="watch-glyph" />
         <span className={CLASS.srOnly}>Watch:</span>
         <span className={CLASS.denseName}>{watchName(row.watch)}</span>
         {detailOpen ? (
-          <OpenWatchMeta watch={row.watch} now={now} />
+          <OpenWatchMeta watch={row.watch} />
         ) : (
           // A collapsed row is all snapshot data: no clock, no countdown. It
           // renders the static meta directly so it never subscribes to the tree
           // ticker (see OpenWatchMeta).
           <span className={CLASS.denseMeta}>{watchMeta(row.watch, undefined)}</span>
         )}
-      </div>
-      {detailOpen && <ActivityWatchDetail row={row} now={now} />}
+      </RowShell>
+      {detailOpen && <ActivityWatchDetail row={row} />}
     </Fragment>
   );
-}, watchRowViewPropsEqual);
+});
 
 // OpenWatchMeta is the open watch row's right-hand meta, and the only place the
 // row's own countdown renders. It is mounted only while the row is open, so a
 // collapsed row never subscribes to the tree clock and never re-renders per
-// tick. A caller with its own ticking clock (the pane chrome) passes `now`; the
-// standalone Activity pane passes nothing and falls back to the tree's live
-// context, which ActivityTree enables for any session carrying watch rows -
-// exactly as ActivityWatchDetail does for the detail strip.
-function OpenWatchMeta({ watch, now }: { watch: NavigationWatchSummary; now?: number }): ReactNode {
-  const contextNow = useTreeNow();
-  return <span className={CLASS.denseMeta}>{watchMeta(watch, now ?? contextNow)}</span>;
-}
-
-// memo's default shallow compare would wake every collapsed watch row whenever
-// the pane chrome's ticking `now` changes. A collapsed row's output does not
-// read the clock, so `now` only counts for an open row.
-function watchRowViewPropsEqual(prev: WatchRowViewProps, next: WatchRowViewProps): boolean {
-  if (
-    prev.row !== next.row ||
-    prev.detailOpen !== next.detailOpen ||
-    prev.tabIndex !== next.tabIndex ||
-    prev.onSetDetailOpen !== next.onSetDetailOpen ||
-    prev.onFocusRow !== next.onFocusRow ||
-    prev.onKeyDown !== next.onKeyDown ||
-    prev.registerRowRef !== next.registerRowRef
-  ) {
-    return false;
-  }
-  return !next.detailOpen || prev.now === next.now;
+// tick. It reads the tick straight from context, which ActivityTree enables for
+// any session carrying watch rows - exactly as ActivityWatchDetail does for the
+// detail strip.
+function OpenWatchMeta({ watch }: { watch: NavigationWatchSummary }): ReactNode {
+  const now = useTreeNow();
+  return <span className={CLASS.denseMeta}>{watchMeta(watch, now)}</span>;
 }
 
 // The Watches group title that leads the panel body, with the count of armed
@@ -682,10 +699,10 @@ const ContinuationStripView = memo(function ContinuationStripView({
 
 interface RowBlockProps {
   slice: ActivityRow[];
+  entities?: ReadonlyMap<string, EntityView>;
   stripsByAfterRowID: Map<string, ContinuationStrip[]>;
   expandedFolds: Set<string>;
   effectiveFocusedID: string | null;
-  now?: number;
   isDetailOpen: (row: DetailRow) => boolean;
   onToggleFold: (foldID: string) => void;
   onSetDetailOpen: (row: DetailRow, open: boolean) => void;
@@ -704,10 +721,10 @@ interface RowBlockProps {
 // re-renders it on real data/focus/detail changes - never on a tick.
 function RowBlock({
   slice,
+  entities,
   stripsByAfterRowID,
   expandedFolds,
   effectiveFocusedID,
-  now,
   isDetailOpen,
   onToggleFold,
   onSetDetailOpen,
@@ -745,7 +762,6 @@ function RowBlock({
           row={row}
           detailOpen={isDetailOpen(row)}
           tabIndex={tabIndex}
-          now={now}
           onSetDetailOpen={onSetDetailOpen}
           onFocusRow={onFocusRow}
           onKeyDown={onKeyDown}
@@ -757,6 +773,7 @@ function RowBlock({
         <DenseRowView
           key={row.id}
           row={row}
+          entities={entities}
           detailOpen={isDetailOpen(row)}
           tabIndex={tabIndex}
           onSetDetailOpen={onSetDetailOpen}
@@ -793,10 +810,10 @@ function RowBlock({
         <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
           <RowBlock
             slice={slice.slice(cursor + 1, end)}
+            entities={entities}
             stripsByAfterRowID={stripsByAfterRowID}
             expandedFolds={expandedFolds}
             effectiveFocusedID={effectiveFocusedID}
-            now={now}
             isDetailOpen={isDetailOpen}
             onToggleFold={onToggleFold}
             onSetDetailOpen={onSetDetailOpen}
@@ -819,12 +836,12 @@ function RowBlock({
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
   {
     tree,
+    entities,
     expandedFoldIDs,
     onToggleFold,
     watches,
     omittedWatches = 0,
     omittedArmedWatches = 0,
-    now,
     continuationFailures = {},
     onContinue,
     loadingContinuationID,
@@ -1001,8 +1018,9 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
 
   return (
     // A session whose only work is a watch still needs the clock: armed ages,
-    // the "now" label and the timeline's end marker are all derived from it, and
-    // the standalone Activity pane has no clock of its own to pass in.
+    // the "now" label and the timeline's end marker are all derived from it.
+    // The tree owns that clock outright - TreeNowContext is the only source, no
+    // caller passes one in - so a watch-only session must still enable it.
     <TreeTickProvider live={hasLive || watchRows.length > 0}>
       {(watchRows.length > 0 || omittedWatches > 0) && (
         <WatchGroupHeader armed={armedWatches} omitted={omittedWatches} />
@@ -1010,10 +1028,10 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}
+          entities={entities}
           stripsByAfterRowID={stripsByAfterRowID}
           expandedFolds={expandedFolds}
           effectiveFocusedID={effectiveFocusedID}
-          now={now}
           isDetailOpen={isDetailOpen}
           onToggleFold={onToggleFold}
           onSetDetailOpen={setDetailOpen}

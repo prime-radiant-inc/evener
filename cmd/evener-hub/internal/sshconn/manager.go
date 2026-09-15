@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"os"
 	"slices"
@@ -223,7 +224,35 @@ func (o Options) attemptLimit() time.Duration {
 	if o.attemptTimeout > 0 {
 		return o.attemptTimeout
 	}
-	return 4*o.connectTimeout() + o.initTimeout()
+	return saturatingAdd(saturatingMul(o.connectTimeout(), 4), o.initTimeout())
+}
+
+// maxDuration is the largest representable time.Duration. The exported duration
+// options can be set arbitrarily close to it, so the arithmetic that derives an
+// attempt limit or a reconnect delay saturates instead of wrapping: a wrapped
+// duration is negative, and a negative timeout or delay fires immediately —
+// a tight reconnect loop rather than the bounded wait the option asked for.
+const maxDuration = time.Duration(math.MaxInt64)
+
+// saturatingAdd returns a+b, clamped to maxDuration when the sum would
+// overflow. a is non-negative; b must be as well.
+func saturatingAdd(a, b time.Duration) time.Duration {
+	if b > 0 && a > maxDuration-b {
+		return maxDuration
+	}
+	return a + b
+}
+
+// saturatingMul returns a*factor, clamped to maxDuration when the product would
+// overflow. a and factor are non-negative.
+func saturatingMul(a time.Duration, factor int64) time.Duration {
+	if a <= 0 || factor <= 0 {
+		return 0
+	}
+	if a > maxDuration/time.Duration(factor) {
+		return maxDuration
+	}
+	return a * time.Duration(factor)
 }
 
 // deployLimit bounds the deploy and restart phases of one ensureOnce. They are
@@ -1508,8 +1537,17 @@ func (m *Manager) jitterFor(d time.Duration) time.Duration {
 	return defaultJitter(d)
 }
 
-// nextBackoff doubles delay, capped at limit.
+// nextBackoff doubles delay, capped at limit. The doubling saturates rather
+// than wrapping: a delay near the representable maximum (which a caller can
+// seed through BackoffBase/BackoffMax) would otherwise overflow negative, and a
+// negative delay fires the sleep timer immediately instead of backing off.
 func nextBackoff(delay, limit time.Duration) time.Duration {
+	if delay > maxDuration/2 {
+		if limit > 0 {
+			return limit
+		}
+		return maxDuration
+	}
 	delay *= 2
 	if limit > 0 && delay > limit {
 		return limit

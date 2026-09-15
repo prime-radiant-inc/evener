@@ -160,7 +160,6 @@ export function SessionChrome({
       ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      now={now}
       watches={fallbackSession?.watches}
       omittedWatches={fallbackSession?.omitted_watches}
       omittedArmedWatches={fallbackSession?.omitted_armed_watches}

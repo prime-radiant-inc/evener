@@ -186,7 +186,8 @@ func parseLaunchCheck(out []byte) (launchCheck, error) {
 }
 
 // preflight probes host non-interactively and returns its facts. Every failure
-// is a named, terminal error class: an unreachable host surfaces ErrSSHStart.
+// is a named error class: an unreachable host surfaces the retryable
+// ErrSSHStart, while a contract violation surfaces a terminal class.
 func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, error) {
 	pf := Preflight{Host: host.Name}
 
