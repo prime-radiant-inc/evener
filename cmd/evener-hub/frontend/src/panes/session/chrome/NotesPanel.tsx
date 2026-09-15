@@ -1,6 +1,6 @@
 import type { SessionURL, ThreadModel } from "@evener/appwire-client";
 import { canReadSharedNotes, sessionActionError, WireError } from "@evener/appwire-client";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
   canWriteHumanNote,
@@ -12,7 +12,7 @@ import {
 } from "../../../stores/humanNoteDrafts";
 import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Sheet, Textarea, useToasts } from "../../../widgets";
+import { Button, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
@@ -49,18 +49,6 @@ export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
   editorRef?: React.Ref<HTMLTextAreaElement>;
-}
-
-export interface NotesPanelProps extends NotesPanelBodyProps {
-  // True when SessionChrome's row has collapsed this panel's trigger into the
-  // "..." menu instead (the same hideTrigger contract Tasks/Details carry).
-  hideTrigger?: boolean;
-}
-
-/** Lets SessionChrome open this panel's Sheet from the menu, without lifting
- * `open` out of this component (the same rationale as DetailsPanelHandle). */
-export interface NotesPanelHandle {
-  open: () => void;
 }
 
 const CLASS = {
@@ -308,37 +296,3 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
     </div>
   );
 }
-
-/** Shared stateless notes body used by the mobile Sheet and desktop pane. */
-export const NotesPanel = forwardRef<NotesPanelHandle, NotesPanelProps>(function NotesPanel(
-  { sessionRef, model, hideTrigger = false },
-  ref,
-) {
-  const [open, setOpen] = useState(false);
-  const canReadNotes = canReadSharedNotes(model);
-  useImperativeHandle(
-    ref,
-    () => ({
-      open: () => {
-        if (canReadNotes) setOpen(true);
-      },
-    }),
-    [canReadNotes],
-  );
-
-  return (
-    <>
-      {/* Omitted while hideTrigger is set (SessionChrome collapses this into
-          the "..." menu instead). The palette's /notes toggles the top notes
-          panel (shell/palette/commands.ts -> topNotesStore.toggleAndFocus). */}
-      {!hideTrigger && canReadNotes && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          Notes
-        </Button>
-      )}
-      <Sheet open={open} onClose={() => setOpen(false)} title="Session notes">
-        {open ? <NotesPanelBody sessionRef={sessionRef} model={model} /> : null}
-      </Sheet>
-    </>
-  );
-});
