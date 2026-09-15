@@ -1040,11 +1040,21 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
-			_ = s.returnClaimedSteering(msg.ClientMutationID)
+			if returnErr := s.returnClaimedSteering(msg.ClientMutationID); returnErr != nil {
+				// The store refused the return too: the steer sits claimed,
+				// which no reflect materializes. It is not lost -- the
+				// carrier retry recovers a claimed steer the transcript does
+				// not hold (recoverClaimedClientSteering) -- but it must be
+				// said, since nothing else about this session shows it.
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("returning claimed steering failed: %v; the steering retry recovers it", returnErr)})
+			}
 			s.reflectDurableClientSteering()
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			return false
 		}
+		// Recorded: whatever carried it, the steer is in the transcript, so a
+		// carrier retry episode that may have been running for it is over.
+		s.clearSteeringCarrierRetry()
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
 			return true

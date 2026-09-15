@@ -364,10 +364,12 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 // steeringCarrierUndelivered reports whether the steer that reserved turnID is
 // back to accepted -- the carrier turn named turnID took it and could not
 // record it, so consumeSteeringMessage returned the claim (returnClaimedSteering).
-// Accepted is the one state that means undelivered: a delivered steer is gone
-// from the store (finalizeIncorporatedSteering), and one still claimed was
-// appended to the transcript but its incorporation write failed -- it is
-// delivered, the model reads it, and restore reconciles the record later.
+// A delivered steer is gone from the store (finalizeIncorporatedSteering); a
+// claimed one is decided by the transcript, which is the session-level
+// question the method below asks. This snapshot-level form serves the
+// interrupt's finalization, where the only steer it can meet under the
+// cancelled turn's id is an accepted one (a claimed one is either mid-append
+// or handled by the carrier that took it).
 func steeringCarrierUndelivered(snapshot *clientMutationSnapshot, turnID string) bool {
 	if turnID == "" {
 		return false
@@ -380,12 +382,73 @@ func steeringCarrierUndelivered(snapshot *clientMutationSnapshot, turnID string)
 	return false
 }
 
+// steeringCarrierUndelivered is the carrier's own question after it drained
+// its steer: accepted means the append failed and the claim came back;
+// claimed means either the append landed and only the incorporation write
+// failed (delivered: the transcript holds it, the model reads it, restore
+// reconciles the record) or the append failed and the claim's return failed
+// too (undelivered, and invisible to every reflect). The transcript is what
+// tells those apart.
 func (s *Session) steeringCarrierUndelivered(turnID string) bool {
 	if turnID == "" || s.clientMutations == nil {
 		return false
 	}
 	snapshot := s.clientMutations.snapshot()
-	return steeringCarrierUndelivered(&snapshot, turnID)
+	for _, id := range snapshot.SteeringOrder {
+		pending, ok := snapshot.PendingExecutions[id]
+		if !ok || pending.TurnID != turnID {
+			continue
+		}
+		switch pending.ExecutionState {
+		case "accepted":
+			return true
+		case "claimed":
+			return !s.steeringRecorded(id)
+		}
+	}
+	return false
+}
+
+// steeringRecorded reports whether the transcript (as history holds it) has
+// the steering turn for this client mutation.
+func (s *Session) steeringRecorded(clientMutationID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range slices.Backward(s.history) {
+		if turn.Kind == schema.TurnSteering && turn.ClientMutationID == clientMutationID {
+			return true
+		}
+	}
+	return false
+}
+
+// recoverClaimedClientSteering settles every client steer left claimed with
+// no carrier running: the ones the transcript holds are incorporated (their
+// incorporation write failed at delivery), and the ones it does not are
+// returned to accepted (their append failed and so did the claim's return),
+// which is what puts them back where a wake can see them. Runs from the
+// carrier retry, before it wakes.
+func (s *Session) recoverClaimedClientSteering() {
+	if s.clientMutations == nil {
+		return
+	}
+	snapshot := s.clientMutations.snapshot()
+	for _, id := range snapshot.SteeringOrder {
+		pending, ok := snapshot.PendingExecutions[id]
+		if !ok || pending.ExecutionState != "claimed" {
+			continue
+		}
+		var err error
+		if s.steeringRecorded(id) {
+			err = s.finalizeIncorporatedSteering(id)
+		} else {
+			err = s.returnClaimedSteering(id)
+		}
+		if err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("recovering claimed steering %s failed: %v", id, err)})
+		}
+	}
+	s.reflectDurableClientSteering()
 }
 
 // steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
@@ -694,6 +757,7 @@ func (s *Session) scheduleSteeringCarrierRetry() {
 		if superseded {
 			return
 		}
+		s.recoverClaimedClientSteering()
 		s.wakeForPendingSteering()
 	})
 }

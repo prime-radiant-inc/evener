@@ -2590,7 +2590,6 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		s.scheduleSteeringCarrierRetry()
 		return false
 	}
-	s.clearSteeringCarrierRetry()
 	return true
 }
 
