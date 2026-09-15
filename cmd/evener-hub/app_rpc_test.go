@@ -3723,6 +3723,143 @@ func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *test
 	expectRelayDelta(t, client.Notifications(), "replacement event")
 }
 
+// A source that hands its subscription a leading resync — the remote hub source
+// folds the subscribed read's atomic snapshot in this way — must not have that
+// frame duplicated by the relay's own recovery resync, or the client re-reads
+// twice for one recovery. The source's frame carries the subscription's own
+// authoritative identity, so it is the one the client must see.
+func TestHubRelayRecoveryDoesNotDuplicateSourceResync(t *testing.T) {
+	const threadID = "th_resync_once"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	// The replacement subscription's first frame is the source's own resync,
+	// already buffered when the relay peeks for a leading frame.
+	notificationsB := make(chan appwire.Notification, 1)
+	notificationsB <- *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+		ThreadID: threadID,
+		Ref:      "codex:canonical",
+	}).Notification
+	results <- relaySubscribeResult{notifications: notificationsB}
+
+	// Exactly one resync, and it is the source's authoritative one — not the
+	// relay's own ("codex:"+threadID).
+	expectRelayResync(t, client.Notifications(), threadID, "codex:canonical")
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("duplicate recovery resync delivered: method=%q params=%s", got.Method, got.Params)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A non-atomic source whose thread's current ID differs from its stable ref
+// suffix (a remote hub after an identity replacement) must register its relay
+// under the identity a ref-only thread/unsubscribe resolves. Keying the
+// downstream entry by thread.ID left a ref-addressed subscription — and, with
+// it, the source-side subscription — live forever.
+func TestHubRPCThreadUnsubscribeDropsStableRefRelay(t *testing.T) {
+	const stableRef = "host:stable"
+	source := &relayBroadcastSource{
+		id: "host",
+		thread: appwire.Thread{
+			ID:        "current",
+			SessionID: "current",
+			Source:    "host",
+			Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount(stableRef); got != 1 {
+		t.Fatalf("subscriber count at the stable ref = %d, want 1 (relay keyed by thread.ID instead of the ref)", got)
+	}
+	if got := web.appRPC.SubscriberCount("host:current"); got != 0 {
+		t.Fatalf("subscriber count at the live thread id = %d, want 0", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: stableRef}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount(stableRef); got != 0 {
+		t.Fatalf("subscriber count after ref-only unsubscribe = %d, want 0", got)
+	}
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "current",
+			Ref:      stableRef,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after ref-only unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func TestRelayRetryClockWaitStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

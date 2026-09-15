@@ -1824,3 +1824,172 @@ func recvOrFatal(t *testing.T, out <-chan appwire.Notification) appwire.Notifica
 	}
 	return n
 }
+
+// waitForRemoteSubscribeCall blocks until the remote has recorded a subscribed
+// thread/read, so a test knows installSubscriber has already published the
+// probe subscription before it stages a concurrent replacement.
+func waitForRemoteSubscribeCall(t *testing.T, remote *pushableRemote) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, call := range remote.calls() {
+			if call.method != appwire.MethodThreadRead {
+				continue
+			}
+			var params appwire.ThreadReadParams
+			if err := json.Unmarshal(call.params, &params); err != nil {
+				t.Fatalf("decode forwarded thread/read params: %v", err)
+			}
+			if params.Subscribe {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no subscribed thread/read recorded; calls = %+v", remote.calls())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestRemoteHubSubscribeThreadRejectsDisplacedSettle pins the concurrent
+// replacement race: a replacement installs itself under the thread's
+// provisional routing key before the earlier subscribe's response arrives, and
+// installSubscriber does not cancel what it displaces. If the earlier subscribe
+// then starts its pump and returns its channel, the relay holds a subscription
+// nothing routes to — it looks live but is permanently silent. Settlement must
+// report the displacement and the caller must return an error, not a channel.
+func TestRemoteHubSubscribeThreadRejectsDisplacedSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ref        string
+		snapshotID string
+	}{
+		// The snapshot names the same thread the caller asked for, so no re-key
+		// is needed: settlement must still notice the displacement.
+		{"same_key", "host:S", "S"},
+		// The snapshot reveals the shipped thread identity, so settlement goes
+		// through the re-key path; a displaced subscription must not be published.
+		{"rekey", "host:root", "child"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			defer unblock()
+			remote := newPushableRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+				if method == appwire.MethodThreadRead {
+					var p appwire.ThreadReadParams
+					if err := json.Unmarshal(params, &p); err != nil {
+						t.Errorf("decode thread/read params: %v", err)
+					}
+					if p.Subscribe {
+						<-release
+					}
+					return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID:     tc.snapshotID,
+						Source: "local",
+						Evener: appwire.EvenerThread{Ref: "local:" + tc.snapshotID},
+					}}}
+				}
+				return scriptedReply{result: appwire.EmptyResponse{}}
+			})
+
+			type subscribeResult struct {
+				out <-chan appwire.Notification
+				err error
+			}
+			done := make(chan subscribeResult, 1)
+			go func() {
+				out, err := remote.source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: tc.ref})
+				done <- subscribeResult{out: out, err: err}
+			}()
+
+			// The subscribe is now installed under its provisional key and waiting
+			// on the remote's response.
+			waitForRemoteSubscribeCall(t, remote)
+
+			provisional := strings.TrimPrefix(tc.ref, "host:")
+			replacement := &remoteHubSubscription{
+				threadID: provisional,
+				in:       make(chan appwire.Notification, 1),
+				out:      make(chan appwire.Notification, 1),
+				pumpDone: make(chan struct{}),
+				cancel:   func() {},
+				client:   remote.client,
+			}
+			if previous := remote.source.installSubscriber(replacement); previous == nil {
+				t.Fatal("no probe subscription displaced; the race was not staged")
+			}
+
+			unblock()
+			got := <-done
+			if got.err == nil {
+				t.Fatalf("SubscribeThread returned a channel (%v) for a displaced subscription instead of an error", got.out)
+			}
+			if got.out != nil {
+				t.Fatalf("SubscribeThread returned a channel alongside error %v", got.err)
+			}
+			if remote.source.subs[provisional] != replacement {
+				t.Fatalf("routing slot %q = %v, want the replacement left installed", provisional, remote.source.subs[provisional])
+			}
+		})
+	}
+}
+
+// TestRemoteHubSubscribeThreadTranslatesPendingEscalationRefs pins the raw-path
+// half of nested session-ref translation for escalation cards: a thread snapshot
+// carried by a notification holds evener.pendingEscalations[], and each entry's
+// ref routes the card by session, so it must move into the controller namespace
+// with the rest of the thread while an opaque handle is left alone.
+func TestRemoteHubSubscribeThreadTranslatesPendingEscalationRefs(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+		}}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "S", "host:S")
+
+	if err := remote.push(appwire.NotifyThreadStarted, appwire.ThreadStartedParams{
+		ThreadID: "S",
+		Ref:      "local:S",
+		Thread: appwire.Thread{
+			ID:     "S",
+			Source: "local",
+			Evener: appwire.EvenerThread{
+				Ref: "local:S",
+				PendingEscalations: []appwire.SandboxEscalationRequested{
+					{ThreadID: "child", Ref: "local:child", EscalationID: "e1", DeniedPath: "/tmp/denied"},
+					{ThreadID: "S", Ref: "job:job_abc", EscalationID: "e2"},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("push started: %v", err)
+	}
+	n, ok := recvNotification(t, out)
+	if !ok {
+		t.Fatal("channel closed before the started notification")
+	}
+	started := decodeNotificationParams[appwire.ThreadStartedParams](t, n)
+	escalations := started.Thread.Evener.PendingEscalations
+	if len(escalations) != 2 {
+		t.Fatalf("pendingEscalations = %+v, want two entries", escalations)
+	}
+	if got := escalations[0].Ref; got != "host:child" {
+		t.Fatalf("escalation ref = %q, want host:child", got)
+	}
+	if got := escalations[0].ThreadID; got != "child" {
+		t.Fatalf("escalation threadId = %q, want child (never rewritten)", got)
+	}
+	if got := escalations[0].DeniedPath; got != "/tmp/denied" {
+		t.Fatalf("escalation deniedPath = %q, want the payload preserved", got)
+	}
+	if got := escalations[1].Ref; got != "job:job_abc" {
+		t.Fatalf("opaque escalation ref = %q, want job:job_abc untouched", got)
+	}
+}

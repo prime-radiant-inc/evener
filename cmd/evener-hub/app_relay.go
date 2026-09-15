@@ -1359,7 +1359,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if threadID == "" {
 			return nil
 		}
-		relayKey := source.ID() + ":" + threadID
 
 		subscribeParams := params
 		if subscribeParams.Ref == "" {
@@ -1367,6 +1366,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		if subscribeParams.Ref == "" {
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
+		}
+		// Key the downstream registry entry by the same identity thread/unsubscribe
+		// resolves (threadRelayTarget), not by thread.ID. A remote source's stable
+		// ref survives an identity replacement while its current Thread.ID moves,
+		// so keying by Thread.ID registers under "host:<currentID>" while a
+		// ref-only unsubscribe resolves "host:<stableRef>": the downstream entry
+		// (and, through it, the remote-side subscription) would never be dropped,
+		// and a replacement could leave a second relay behind. The atomic path
+		// already keys this way (acquireRelaySession), and the source's own
+		// SubscribeThread routing is keyed from the ref, so this makes read,
+		// recovery, and unsubscribe agree.
+		relayKey, _, keyErr := relayTarget(source, subscribeParams)
+		if keyErr != nil {
+			return keyErr
 		}
 
 		var relayCtx context.Context
@@ -1721,10 +1734,23 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						hasFirstNotification = true
 					default:
 					}
-					server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
-						ThreadID: threadID,
-						Ref:      subscribeParams.Ref,
-					})
+					// The relay owns the recovery resync, but a source may
+					// generate one itself as the first frame of a new
+					// subscription (the remote hub source hands the relay the
+					// subscribed read's atomic snapshot this way). Emitting the
+					// relay's own resync as well would deliver two resyncs to the
+					// client and force two redundant thread reads. Give the
+					// source's frame precedence: it carries the subscription's
+					// own authoritative identity, which survives a stable-ref
+					// identity replacement that the original subscribeParams may
+					// not name anymore.
+					sourceResynced := hasFirstNotification && firstNotification.Method == appwire.NotifyEvenerThreadResync
+					if !sourceResynced {
+						server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+							ThreadID: threadID,
+							Ref:      subscribeParams.Ref,
+						})
+					}
 					if hasFirstNotification {
 						broadcastNotification(firstNotification)
 					} else {
