@@ -96,6 +96,12 @@ func FuzzCoreAPIPass4(f *testing.F) {
 				}
 				return "main", nil
 			},
+			ResolveGitOrigin: func(context.Context, string) (string, error) {
+				if variant&1 != 0 {
+					return "", errors.New("git failed")
+				}
+				return "https://example.invalid/o/r.git", nil
+			},
 		})
 		web.sources.Add(source)
 
