@@ -695,6 +695,19 @@ func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID 
 		if pending.TurnID != fence.ExpectedTurnID {
 			continue
 		}
+		// A steer whose own reserved id is the cancelled turn and that is
+		// still accepted is a carrier claim the Stop landed on before the
+		// carrier took it (claimSteeringCarrierTurn publishes ActiveTurnID
+		// first; popSteeringHead's claim is what moves the steer past
+		// accepted). The turn it named never ran, so the steer is not
+		// something this Stop ended: it is a message the user still owes a
+		// run, parked behind the steering hold the Stop armed for it and
+		// carried by the user's next run, the way a queued message a Stop
+		// returns to the queue is (wms7). Retiring it here would leave its
+		// order entry, its in-memory copy and that hold naming nothing.
+		if pending.ExecutionState == "accepted" && steeringCarrierUndelivered(snapshot, pending.TurnID) {
+			continue
+		}
 		target, ok := snapshot.Journal[id]
 		if !ok {
 			return fmt.Errorf("interrupt target %q has no journal record", id)
@@ -799,8 +812,7 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 	// A steer parked by a Stop (SteeringHeld) is not work to resume: waking for
 	// it at attach would restart the session and deliver the steer the user
 	// just stopped (issue #174, #146 Option C — park in place).
-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
-	if wake != nil && (s.QueueDepth() > 0 || (!steeringHeld && s.hasPendingUserSteering())) {
+	if wake != nil && (s.QueueDepth() > 0 || s.hasRunnableUserSteering()) {
 		wake()
 	}
 }

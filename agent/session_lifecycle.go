@@ -1082,6 +1082,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// and checks cancellation before registering its own release. A no-op
 		// on the ordinary path, where that release already ran.
 		s.releaseRunningTurnID(ranSteeringCarrier)
+		// A carrier that returned its steer undelivered (a failed durable
+		// append, see acceptSteeringCarrierInput) must not be claimed again
+		// by this input: the retry belongs to the next wake, not to a loop
+		// here that would burn a model turn per attempt.
+		carrierUndelivered := s.steeringCarrierUndelivered(ranSteeringCarrier)
 		processCtx = withSteeringCarrierTurn(processCtx, "")
 		// True when the completion below finalized an interrupt fence naming
 		// this turn: a Stop is what ended it, and the drain branch further down
@@ -1288,8 +1293,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// The claim refuses a held rail (a Stop parked the steer) and an
 		// occupied slot, the same gate the wake's claim uses.
 		var carrierTurnID string
-		if noFollowUpOrQueued && s.hasPendingUserSteering() {
+		if noFollowUpOrQueued && !carrierUndelivered && s.hasPendingUserSteering() {
 			carrierTurnID, _ = s.claimSteeringCarrierTurn()
+			if carrierTurnID != "" && s.cfg.testOnly.steeringCarrierClaimed != nil {
+				s.cfg.testOnly.steeringCarrierClaimed(carrierTurnID)
+			}
 		}
 		notificationsPending := false
 		// After a terminal communicate, notification work is left to the one-shot
@@ -2563,6 +2571,18 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
 	s.injectDrainedSteering()
+	if s.steeringCarrierUndelivered(turnID) {
+		// The steer this turn exists to carry is still pending: its durable
+		// append failed and consumeSteeringMessage returned the claim (the
+		// writer is still usable, so the entry went back to accepted). A
+		// model request now would carry nothing, and a clean completion
+		// would let the drain ladder claim the same steer again, and again.
+		// Fail the turn already announced above and stand down; the steer
+		// stays queued for the next wake, which is the retry.
+		s.emitTurnFailure(errorDataFromError(fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)))
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return false
+	}
 	return true
 }
 

@@ -1193,6 +1193,18 @@ func (s *Session) hasPendingSteering() bool {
 	return len(s.steeringQueue) > 0
 }
 
+// hasRunnableUserSteering reports whether user steering is pending that the
+// daemon will run on its own: a wake carries it, or the next turn drains it.
+// A steer parked by a Stop (SteeringHeld) is not that -- it waits on the user
+// (issue #174) -- so it counts neither as work to wake for nor as autonomy
+// that keeps the session from resting awaiting.
+func (s *Session) hasRunnableUserSteering() bool {
+	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
+		return false
+	}
+	return s.hasPendingUserSteering()
+}
+
 // hasPendingUserSteering reports whether any queued steering came from the
 // human rather than the daemon. Only that kind justifies starting a turn to
 // carry it: daemon-authored steering -- the current-task reminder, hook

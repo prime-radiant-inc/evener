@@ -361,6 +361,31 @@ func claimableSteeringCarrierTurnID(snapshot *clientMutationSnapshot) string {
 	return ""
 }
 
+// steeringCarrierUndelivered reports whether the steer that reserved turnID is
+// still pending -- the carrier turn named turnID has not recorded it. It reads
+// the durable store, the same as the claim: an entry consumeSteeringMessage
+// returned after a failed append is back to accepted there, and a delivered
+// one is gone (finalizeIncorporatedSteering).
+func steeringCarrierUndelivered(snapshot *clientMutationSnapshot, turnID string) bool {
+	if turnID == "" {
+		return false
+	}
+	for _, id := range snapshot.SteeringOrder {
+		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) steeringCarrierUndelivered(turnID string) bool {
+	if turnID == "" || s.clientMutations == nil {
+		return false
+	}
+	snapshot := s.clientMutations.snapshot()
+	return steeringCarrierUndelivered(&snapshot, turnID)
+}
+
 // steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
 // carrier turn: the rail is open and a steer is ready to use it. Like
 // queueHeadClaimable it is the whole of that decision, so a caller asking
