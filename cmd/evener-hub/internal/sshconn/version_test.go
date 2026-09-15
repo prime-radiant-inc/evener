@@ -421,7 +421,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	wantRemote := "nohup /opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener >>/home/dev/evener-hub.log 2>&1 </dev/null &"
@@ -439,7 +439,7 @@ func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 		return []byte(noListenerMarker + "\n"), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	if err := m.restartBare(context.Background(), host); !errors.Is(err, ErrRestart) {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
 	if got := len(fr.recordedRuns()); got != 1 {
@@ -480,7 +480,7 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	var psArgv []string
@@ -531,7 +531,7 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	want := rawCommandArgv(m.opts, host, relaunchCommand([]string{"/opt/evener/bin/evener", "hub", "-addr", "0.0.0.0:9180"}, ""))
@@ -577,7 +577,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	// The remote command is one ssh argument; join it so the assertion reads the
@@ -665,7 +665,7 @@ func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous supervisor", err)
 	}
@@ -717,7 +717,7 @@ func TestRestartHubRejectsStaleVersion(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (stale version must fail the restart)", err)
 	}
@@ -740,7 +740,7 @@ func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (failed restart command must surface)", err)
 	}
@@ -766,7 +766,7 @@ func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if *probes < 2 {
@@ -813,10 +813,10 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
-	if err := m.waitHealthy(context.Background(), host, "newsha"); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	if !strings.Contains(healthRemote, "127.0.0.1:9999/api/health") {
@@ -840,7 +840,7 @@ func TestWaitHealthyQuotesPort(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.waitHealthy(context.Background(), host, "newsha"); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	remote := strings.Join(fr.recordedRuns()[0], " ")
@@ -871,7 +871,7 @@ func TestRestartBareRefusesForeignProcessOnHubPort(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host)
+	err := m.restartBare(context.Background(), host, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a foreign listener", err)
 	}
@@ -906,7 +906,7 @@ func TestRestartBareRefusesCompoundCommandLine(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host)
+	err := m.restartBare(context.Background(), host, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an untokenizable command line", err)
 	}
@@ -938,7 +938,7 @@ func TestRestartBareRefusesAddrMismatch(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host)
+	err := m.restartBare(context.Background(), host, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an --addr mismatch", err)
 	}
@@ -1090,7 +1090,7 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin"}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a failed kickstart status must not mask a successful restart)", err)
 	}
 	if probes == 0 {
@@ -1123,7 +1123,7 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin"})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
@@ -1155,7 +1155,7 @@ func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.waitHealthy(context.Background(), host, "newsha"); err != nil {
+	if err := m.waitHealthy(context.Background(), host, "newsha", hubIdentity{}); err != nil {
 		t.Fatalf("waitHealthy: %v", err)
 	}
 	if !strings.Contains(remote, "127.0.0.2:9180/api/health") {
@@ -1170,8 +1170,12 @@ func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
 // the configured address with the attach path's wildcard-to-loopback
 // normalization: a wildcard bind is reached over loopback, the IPv6 wildcard
 // maps to ::1 rather than forcing the IPv4 family, and every non-wildcard
-// address (including a valid loopback like 127.0.0.2) is probed verbatim.
+// address (including a valid loopback like 127.0.0.2) is probed verbatim. The
+// invocation is also pinned to carry -q/--noproxy (so a host-side .curlrc or
+// proxy cannot answer in place of the loopback hub) and the per-request
+// timeouts (so a listener that never answers cannot stall the health loop).
 func TestHubHealthRemoteNormalizesWildcardBinds(t *testing.T) {
+	const prefix = "curl -q --noproxy '*' -fsS --connect-timeout 5 --max-time 10 "
 	cases := map[string]string{
 		"127.0.0.2:9180": "127.0.0.2:9180/api/health",
 		"127.0.0.1:9999": "127.0.0.1:9999/api/health",
@@ -1181,8 +1185,8 @@ func TestHubHealthRemoteNormalizesWildcardBinds(t *testing.T) {
 		"[::1]:9180":     "'[::1]:9180/api/health'",
 	}
 	for addr, want := range cases {
-		if got := hubHealthRemote(addr); got != "curl -fsS "+want {
-			t.Errorf("hubHealthRemote(%q) = %q, want %q", addr, got, "curl -fsS "+want)
+		if got := hubHealthRemote(addr); got != prefix+want {
+			t.Errorf("hubHealthRemote(%q) = %q, want %q", addr, got, prefix+want)
 		}
 	}
 }
@@ -1272,18 +1276,19 @@ func TestEnsureNoRestartWhenNoHubAnswersTheProbe(t *testing.T) {
 	}
 }
 
-// TestParseHealthVersionRejectsBodyWithoutVersion pins the honest known/unknown
+// TestParseHubHealthRejectsBodyWithoutVersion pins the honest known/unknown
 // rule: JSON that decodes but carries no version is not a hub with an empty
 // version, and reading it as one would fire a restart against some unrelated
-// listener that merely speaks JSON.
-func TestParseHealthVersionRejectsBodyWithoutVersion(t *testing.T) {
+// listener that merely speaks JSON. It also pins that the process start time is
+// carried when present, since restart verification keys off it.
+func TestParseHubHealthRejectsBodyWithoutVersion(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
 		want string
 		ok   bool
 	}{
-		{"hub body", `{"status":"ok","version":"newsha"}`, "newsha", true},
+		{"hub body", `{"status":"ok","version":"newsha","started_at":"2026-01-02T03:04:05.5Z"}`, "newsha", true},
 		{"empty object", `{}`, "", false},
 		{"status only", `{"status":"ok"}`, "", false},
 		{"null", `null`, "", false},
@@ -1291,11 +1296,25 @@ func TestParseHealthVersionRejectsBodyWithoutVersion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := parseHealthVersion([]byte(tc.in))
-			if got != tc.want || ok != tc.ok {
-				t.Fatalf("parseHealthVersion(%q) = (%q,%v), want (%q,%v)", tc.in, got, ok, tc.want, tc.ok)
+			got, ok := parseHubHealth([]byte(tc.in))
+			if got.version != tc.want || ok != tc.ok {
+				t.Fatalf("parseHubHealth(%q) = (%q,%v), want (%q,%v)", tc.in, got.version, ok, tc.want, tc.ok)
 			}
 		})
+	}
+
+	got, ok := parseHubHealth([]byte(`{"version":"newsha","started_at":"2026-01-02T03:04:05.5Z"}`))
+	if !ok || got.startedAt.IsZero() {
+		t.Fatalf("parseHubHealth dropped the process start time: (%v,%v)", got, ok)
+	}
+	// A body without started_at yields a zero time, which sameProcessAs never
+	// reads as a match.
+	got, ok = parseHubHealth([]byte(`{"version":"newsha"}`))
+	if !ok || !got.startedAt.IsZero() {
+		t.Fatalf("parseHubHealth invented a start time: (%v,%v)", got, ok)
+	}
+	if got.sameProcessAs(hubIdentity{version: "newsha"}) {
+		t.Fatal("two zero start times were read as the same process")
 	}
 }
 
@@ -1468,7 +1487,7 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host); err != nil {
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
@@ -1514,7 +1533,7 @@ func TestRestartBareRefusesAmbiguousSplitValue(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host)
+	err := m.restartBare(context.Background(), host, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous command line", err)
 	}
@@ -1744,5 +1763,275 @@ func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
 	}
 	if facts.Protocol != appwire.ProtocolVersion || !facts.LaunchCheckKnown {
 		t.Fatalf("refreshAfterRestart did not record the refreshed contract: %+v", facts)
+	}
+}
+
+// TestEnsureKeepsPendingRestartWhenOldProcessStillServes pins the High finding
+// that a failed restart was cleared solely because the old hub reported the
+// expected version. "dev" is not unique, so when `systemctl restart` refuses
+// (no polkit) and the old process keeps serving, the next Ensure must retry the
+// restart instead of clearing it and attaching to the process it was meant to
+// replace. The start time from /api/health is what distinguishes the two.
+func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	restarts := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		case strings.Contains(joined, "systemctl restart"):
+			restarts++
+			return []byte("Failed to restart evener-hub.service: Interactive authentication required.\n"), errors.New("exit status 1")
+		case strings.Contains(joined, "api/health"):
+			// The same old process keeps serving: same version, same start time.
+			return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		BuildBinary:               writeStageBinary,
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
+		t.Fatalf("Ensure 1 err = %v, want ErrRestart (the restart command failed)", err)
+	}
+	if restarts != 1 {
+		t.Fatalf("systemctl restarts after Ensure 1 = %d, want 1", restarts)
+	}
+
+	// Second Ensure: the old process still answers with the expected, non-unique
+	// "dev" version. That must not be read as a completed restart.
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
+		t.Fatalf("Ensure 2 err = %v, want ErrRestart (the pending restart must be retried)", err)
+	}
+	if restarts != 2 {
+		t.Fatalf("systemctl restarts after Ensure 2 = %d, want 2 (the pending restart must be retried)", restarts)
+	}
+	if got := len(fr.recordedStarts()); got != 0 {
+		t.Fatalf("bridge Start calls = %d, want 0 (never attach to the process the restart replaces)", got)
+	}
+}
+
+// TestWaitHealthyRejectsThePreRestartProcess pins restart verification's use of
+// the process start time: a hub answering with the expected version but the
+// start time of the process the restart meant to replace has not been replaced.
+func TestWaitHealthyRejectsThePreRestartProcess(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: func(_ context.Context, _ []string, _ io.Reader) ([]byte, error) {
+		return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`), nil
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+	replaced, ok := parseHubHealth([]byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`))
+	if !ok {
+		t.Fatal("parseHubHealth rejected a valid body")
+	}
+	err := m.waitHealthy(context.Background(), host, "dev", replaced)
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart (the pre-restart process must not satisfy verification)", err)
+	}
+	if !strings.Contains(err.Error(), "pre-restart process") {
+		t.Fatalf("error does not name the un-replaced process: %v", err)
+	}
+
+	// A genuinely new process (same version, later start time) is accepted.
+	replaced.startedAt = replaced.startedAt.Add(-time.Hour)
+	if err := m.waitHealthy(context.Background(), host, "dev", replaced); err != nil {
+		t.Fatalf("waitHealthy rejected a new process: %v", err)
+	}
+}
+
+// TestRestartBareRecordsRelaunchBeforePortClearFails pins the High finding that
+// restartBare recorded the relaunch only after waitPortClear succeeded. When the
+// kill lands but the port never clears (a slow drain, a dropped transport), the
+// old hub is dead with nothing recorded, and the next Ensure finds no listener
+// and no command to recover.
+func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	relaunches := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil // the port never clears
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
+		case strings.Contains(joined, "lsof -p 4242"):
+			return nil, errors.New("exit status 1")
+		case strings.Contains(joined, "kill 4242"):
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			relaunches++
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		sleep: func(context.Context, time.Duration) error { return nil },
+	})
+
+	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
+		t.Fatalf("restartBare err = %v, want ErrRestart (the port stayed held)", err)
+	}
+	if relaunches != 0 {
+		t.Fatalf("relaunches = %d, want 0 (the port never cleared)", relaunches)
+	}
+	if got := m.pendingRestart(host.Name).command; !strings.Contains(got, "nohup") {
+		t.Fatalf("pending restart = %q, want the recorded relaunch (the kill landed, the port never cleared)", got)
+	}
+}
+
+// TestRestartBareRefusesUnparsableRecoveredAddr pins the Medium finding that an
+// unparsable recovered --addr fell back to the default port in hubPort, matched
+// a default-port host, and passed the mismatch refusal that exists to prevent
+// killing the wrong listener.
+func TestRestartBareRefusesUnparsableRecoveredAddr(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	port := hubPort(defaultHubAddr)
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "lsof -ti :"+port):
+			return []byte("4242\n"), nil
+		case strings.Contains(joined, "-ww -o "):
+			return []byte("/opt/evener/bin/evener hub -addr garbage\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	err := m.restartBare(context.Background(), host, hubIdentity{})
+	if !errors.Is(err, ErrRestart) {
+		t.Fatalf("err = %v, want ErrRestart for an unparsable recovered --addr", err)
+	}
+	if !strings.Contains(err.Error(), "unparsable") {
+		t.Fatalf("error does not explain the unparsable address: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "kill ") {
+			t.Fatalf("an unparsable recovered --addr still killed a listener: %v", argv)
+		}
+	}
+}
+
+// TestDetectSupervisorSurfacesListingFailure pins the Medium finding that any
+// supervisor-listing error was read as "supervisor absent", which fell back to
+// killing and nohup-relaunching a hub the service manager still owns. Only a
+// genuinely unavailable listing tool may fall back.
+func TestDetectSupervisorSurfacesListingFailure(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	surfaced := []struct {
+		name string
+		out  []byte
+	}{
+		{"permission refused", []byte("Failed to restart: Interactive authentication required.\n")},
+		{"transport drop", []byte("ssh: connect to host alpha.example port 22: Connection refused\n")},
+		{"broken bus", []byte("Failed to connect to bus: Permission denied\n")},
+	}
+	for _, tc := range surfaced {
+		t.Run(tc.name, func(t *testing.T) {
+			out := tc.out
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				if strings.Contains(strings.Join(argv, " "), "systemctl") {
+					return out, errors.New("exit status 1")
+				}
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			if _, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"}); !errors.Is(err, ErrRestart) {
+				t.Fatalf("err = %v, want ErrRestart (a broken listing must not fall back to the bare path)", err)
+			}
+		})
+	}
+
+	t.Run("absent tool falls back", func(t *testing.T) {
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			if strings.Contains(strings.Join(argv, " "), "systemctl") {
+				return []byte("/bin/sh: 1: systemctl: not found\n"), errors.New("exit status 127")
+			}
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+		sup, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
+		if err != nil || sup.kind != supervisorNone {
+			t.Fatalf("detectSupervisor = (%+v,%v), want no supervisor and no error", sup, err)
+		}
+	})
+}
+
+// TestSplitNullArgvKeepsTrailingEmptyElement pins the Low finding that a
+// trailing empty argument survived TrimRight as the previous element's value
+// loss: `/proc/<pid>/cmdline` terminates every element with NUL, so trimming all
+// trailing NULs turned `evener hub -config ""` into the valid-looking
+// `evener hub -config` and relaunched with the value missing.
+func TestSplitNullArgvKeepsTrailingEmptyElement(t *testing.T) {
+	if argv, ok := splitNullArgv([]byte("/opt/evener/bin/evener\x00hub\x00-config\x00\x00")); ok || argv != nil {
+		t.Fatalf("splitNullArgv = (%v,%v), want (nil,false) for a trailing empty argument", argv, ok)
+	}
+	got, ok := splitNullArgv([]byte("/opt/evener/bin/evener\x00hub\x00-config\x00/x\x00"))
+	if !ok || len(got) != 4 || got[3] != "/x" {
+		t.Fatalf("splitNullArgv = (%v,%v), want the four-element argv", got, ok)
+	}
+	if got, ok := splitNullArgv([]byte("evener\x00")); !ok || len(got) != 1 || got[0] != "evener" {
+		t.Fatalf("splitNullArgv = (%v,%v), want [evener]", got, ok)
+	}
+	if _, ok := splitNullArgv(nil); ok {
+		t.Fatal("splitNullArgv accepted an empty input")
+	}
+}
+
+// TestEnsureCorruptLaunchCheckReachesTheDeployPath pins the Medium finding that a
+// launch-check decode failure was terminal before the decision ladder, so a
+// corrupt on-disk binary never got the deploy path even though ensureDecision
+// treats an unknown contract as a deploy trigger. With a deploy configured the
+// contract is recorded as unknown; with none it stays terminal (covered by
+// TestEnsurePreflightDecodeFailure).
+func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				return []byte("not json"), nil
+			}
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary:               writeStageBinary,
+	})
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v (a corrupt on-disk contract must reach the deploy path)", err)
+	}
+	if got := ch.Preflight().Version; got != "newsha" {
+		t.Fatalf("channel version = %q, want newsha", got)
 	}
 }

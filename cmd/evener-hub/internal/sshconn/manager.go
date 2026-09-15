@@ -253,9 +253,37 @@ type Manager struct {
 	// every reconnect.
 	devDeployed map[string]bool
 	// pendingRestarts records, per host, the restart command (a bare relaunch, or
-	// a supervisor's restart) recorded before it ran. A restart that left no
-	// listener leaves this set, and the next Ensure retries it.
-	pendingRestarts map[string]string
+	// a supervisor's restart) recorded before it ran, with the identity of the hub
+	// it was meant to replace. A restart that left no listener, or that left the
+	// old process serving, leaves this set, and the next Ensure retries it.
+	pendingRestarts map[string]pendingRestartState
+}
+
+// hubIdentity identifies a running hub from its /api/health body: the version it
+// reports and, when the body carries one, its process start time. Version alone
+// cannot tell two builds apart when both are "dev" — an unstamped controller and
+// an unstamped host — so the start time is what proves a restart produced a new
+// process rather than leaving the old one serving.
+type hubIdentity struct {
+	version   string
+	startedAt time.Time
+}
+
+// sameProcessAs reports whether other is the same hub process as h, judged by
+// start time. A zero start time on either side proves nothing and is never read
+// as a match, so a health body without started_at falls back to the version
+// comparison its caller already makes.
+func (h hubIdentity) sameProcessAs(other hubIdentity) bool {
+	return !h.startedAt.IsZero() && h.startedAt.Equal(other.startedAt)
+}
+
+// pendingRestartState is a restart command recorded before it ran, together with
+// the identity of the hub process it replaces, so a later Ensure can tell whether
+// the restart actually produced a new process instead of trusting a version that
+// may not be unique.
+type pendingRestartState struct {
+	command  string
+	replaced hubIdentity
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -271,7 +299,7 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		locks:           map[string]*sync.Mutex{},
 		chans:           map[string]*Channel{},
 		devDeployed:     map[string]bool{},
-		pendingRestarts: map[string]string{},
+		pendingRestarts: map[string]pendingRestartState{},
 	}
 }
 
@@ -430,11 +458,15 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 	// answered or the body was not a hub health response: an unknown fact, never
 	// a hub with an empty version.
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
-	running, runningKnown := m.probeHubVersion(probeCtx, host)
+	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	if runningKnown && running == expected {
-		// A hub already serving exactly the expected build resolves whatever an
+	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected && !running.sameProcessAs(pending.replaced) {
+		// A hub already serving exactly the expected build — and provably not the
+		// process the recorded restart meant to replace — resolves whatever an
 		// earlier restart left outstanding; do not launch a second hub over it.
+		// Version equality alone is not that proof: two unstamped builds both
+		// report "dev", so a restart that never took would otherwise be cleared on
+		// the old process's answer and the next Ensure would attach to it.
 		m.clearPendingRestart(host.Name)
 	}
 
@@ -455,12 +487,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		m.stateEvent(host.Name, StateRestarting)
 		restartCtx, cancelRestart := context.WithTimeout(ctx, m.opts.deployLimit())
 		var restartErr error
-		if pending := m.pendingRestart(host.Name); pending != "" && !runningKnown {
+		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
 			restartErr = m.recoverRestart(restartCtx, host, pending)
 		} else {
-			restartErr = m.restartHub(restartCtx, host, facts)
+			restartErr = m.restartHub(restartCtx, host, facts, running)
 		}
 		if restartErr != nil {
 			cancelRestart()
@@ -471,6 +503,14 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 		if err != nil {
 			return nil, err
 		}
+	}
+	// The terminal protocol refusal fires only now, after the deploy has had its
+	// chance and a restart has brought up the build that will actually serve. A
+	// host that still speaks another appwire protocol cannot be attached, and when
+	// no deploy was possible that is terminal — the outcome the old "always deploy"
+	// path deferred by failing as a retryable ErrDeploy instead.
+	if facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion {
+		return nil, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, facts.Protocol, appwire.ProtocolVersion)
 	}
 	// The terminal launch-contract refusal fires only now: the deploy path has
 	// had its chance, and this judges the build that will actually serve.
@@ -496,7 +536,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host) (*Channel, 
 //
 // No terminal refusal is decided here: the protocol and launch-contract gates
 // are judged by ensureOnce only after a deploy/restart has run.
-func (m *Manager) ensureDecision(name string, facts Preflight, expected, running string, runningKnown bool) (deploy, restart bool) {
+func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown bool) (deploy, restart bool) {
 	versionDiffers := facts.LaunchCheckKnown && facts.Version != expected
 	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
 	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
@@ -505,10 +545,26 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected, running
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	devUnverified := isDevVersion(expected) && m.canDeploy() && !m.isDevDeployed(name)
+	deployPossible := m.canDeploy()
+	devUnverified := isDevVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
-	deploy = versionDiffers || !protocolOK || !flagsOK || devUnverified
-	restart = deploy || (runningKnown && running != expected) || m.pendingRestart(name) != ""
+	// A deploy is only a decision when there is something to deploy. With no
+	// BuildSource/BuildBinary configured, attempting one fails at
+	// verifyBuildSource with ErrDeploy, which is non-terminal: the supervisor
+	// retried it forever and the cause was discarded. ensureOnce refuses the
+	// incompatible cases terminally instead.
+	deployNeeded := versionDiffers || !protocolOK || !flagsOK
+	deploy = (deployNeeded && deployPossible) || devUnverified
+
+	// Replace the RUNNING hub only when the binary a restart would launch (the
+	// on-disk one) already matches the controller. A restart cannot give the
+	// on-disk binary a version it does not carry, so an on-disk mismatch needs the
+	// deploy above and never a restart; requiring this is what stops a host with no
+	// build source from retrying a restart that can never succeed. Replacing a
+	// stale *process* whose on-disk binary already matches is exactly the case this
+	// covers.
+	runningStale := runningKnown && running.version != expected && !versionDiffers
+	restart = deploy || runningStale || m.pendingRestart(name).command != ""
 	return deploy, restart
 }
 
@@ -818,17 +874,18 @@ func (m *Manager) markDevDeployed(name string) {
 	m.devDeployed[name] = true
 }
 
-// pendingRestart returns the restart command a failed restart recorded, or "".
-func (m *Manager) pendingRestart(name string) string {
+// pendingRestart returns the restart a failed or unverified restart recorded, or
+// the zero value when there is none.
+func (m *Manager) pendingRestart(name string) pendingRestartState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pendingRestarts[name]
 }
 
-func (m *Manager) setPendingRestart(name, remote string) {
+func (m *Manager) setPendingRestart(name, remote string, replaced hubIdentity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRestarts[name] = remote
+	m.pendingRestarts[name] = pendingRestartState{command: remote, replaced: replaced}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

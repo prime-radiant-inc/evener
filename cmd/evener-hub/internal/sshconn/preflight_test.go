@@ -128,6 +128,14 @@ func TestParseLaunchCheck(t *testing.T) {
 	if _, err := parseLaunchCheck([]byte(`{"version":"dev"}`)); !errors.Is(err, ErrPreflightDecode) {
 		t.Fatalf("missing protocol err = %v, want ErrPreflightDecode", err)
 	}
+	// A contract with a protocol but no version leaves version auto-match
+	// unverifiable, so it must be refused rather than accepted.
+	if _, err := parseLaunchCheck([]byte(`{"protocol":"evener-appwire-v5","launch_flags":["api-log"]}`)); !errors.Is(err, ErrPreflightDecode) {
+		t.Fatalf("missing version err = %v, want ErrPreflightDecode", err)
+	}
+	if _, err := parseLaunchCheck([]byte(`{"protocol":"evener-appwire-v5","version":"  "}`)); !errors.Is(err, ErrPreflightDecode) {
+		t.Fatalf("blank version err = %v, want ErrPreflightDecode", err)
+	}
 }
 
 func TestIsProtocolMismatchOutput(t *testing.T) {

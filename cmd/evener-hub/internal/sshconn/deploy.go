@@ -163,6 +163,15 @@ func verifyBuildRevision(root string) error {
 	if want == "" {
 		return nil
 	}
+	// A dirty controller cannot be reproduced from a checkout. The builder stamps
+	// this process's GitDirty into the binary, so the deployed build would report
+	// exactly the controller's version ("<sha>-dirty") while the source tree it
+	// compiled may carry a different set of uncommitted changes. HEAD equality
+	// below cannot see that difference, so refuse rather than install code that
+	// version auto-match cannot verify.
+	if strings.TrimSpace(buildinfo.GitDirty) == "true" {
+		return fmt.Errorf("this controller was built from a dirty tree (version %q); the build source %q cannot be verified to match it, so refusing to deploy", buildinfo.Version(), root)
+	}
 	head, err := gitCommit(root, "HEAD")
 	if err != nil {
 		return fmt.Errorf("build source %q: cannot read HEAD to check it against this controller's build %q: %w", root, want, err)

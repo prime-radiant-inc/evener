@@ -30,6 +30,17 @@ const (
 	restartHealthInterval = 200 * time.Millisecond
 )
 
+// Bounds and hardening for the single-request health probe. --connect-timeout
+// and --max-time bound it: without them a listener that accepts the connection
+// but never answers would hold the whole health loop until the much longer
+// deploy budget expires. -q and --noproxy '*' stop a host-side .curlrc or proxy
+// environment from answering in place of the loopback hub, where a forged body
+// could report the expected version and pass restart verification.
+const (
+	healthCurlConnectTimeout = "5"
+	healthCurlMaxTime        = "10"
+)
+
 const (
 	systemctlListUnits     = "systemctl list-units --type=service --all --no-legend --plain"
 	systemctlListUnitsUser = "systemctl --user list-units --type=service --all --no-legend --plain"
@@ -110,15 +121,28 @@ func validateHubAddr(name, addr string) error {
 	return nil
 }
 
-// hubPort extracts the TCP port from a host:port hub address, defaulting to the
-// known hub port when addr is unparsable. Configured addresses reach it through
-// checkHostAddr, so the default only covers a recovered argv's --addr, where a
-// fallback makes a mismatch (and a refusal) rather than a wrong kill.
+// hubPort extracts the TCP port from a configured host:port hub address,
+// defaulting to the known hub port when addr is unparsable. The default is safe
+// only because every configured address is validated by checkHostAddr before it
+// reaches here; a recovered argv's --addr is not validated that way and must go
+// through argvHubPort, which refuses an unparsable address instead of defaulting
+// it onto the port a default-port host listens on.
 func hubPort(addr string) string {
 	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
 		return p
 	}
 	return "9180"
+}
+
+// argvHubPort extracts the port a hub's recovered --addr names, reporting false
+// when the address cannot be parsed. Unlike hubPort it has no default: mapping a
+// recovered "garbage" onto :9180 would agree with a default-port host and let
+// restartBare kill a listener the old hub was never launched with.
+func argvHubPort(addr string) (string, bool) {
+	if _, p, err := net.SplitHostPort(addr); err == nil && p != "" {
+		return p, true
+	}
+	return "", false
 }
 
 // loopbackAddr rewrites a wildcard hub bind address to loopback, mirroring the
@@ -279,21 +303,51 @@ func isEvenerHubName(name string) bool {
 	return strings.Contains(lower, "evener") && strings.Contains(lower, "hub")
 }
 
-// detectSupervisor runs the host's supervisor listings. A listing failure is
-// not fatal: it only means the listing tool is absent, so the hub falls through
-// to the bare-process path. An ambiguous listing is fatal, not a fallback.
+// supervisorListingAbsent reports whether a failed supervisor listing means the
+// listing tool is genuinely unavailable on the host — the executable is missing,
+// or systemd is not the running init system — so the hub really is unmanaged and
+// the bare-process path is the correct fallback. Every other failure (a
+// permission refusal, a broken bus, an ssh transport drop) is surfaced instead
+// of silently falling back, because falling back would nohup-replace a hub the
+// service manager still owns.
+func supervisorListingAbsent(out []byte) bool {
+	text := string(out)
+	for _, marker := range []string{
+		"not found",
+		"No such file",
+		"not been booted with systemd",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// detectSupervisor runs the host's supervisor listings. Only a listing that
+// proves the supervisor is absent falls through to the bare-process path; any
+// other failure is surfaced. An ambiguous listing is fatal, not a fallback.
 func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisor, error) {
 	switch facts.OS {
 	case "darwin":
-		out, _ := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "launchctl list"), nil)
+		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "launchctl list"), nil)
+		if err != nil && !supervisorListingAbsent(out) {
+			return supervisor{}, fmt.Errorf("%w: host %q launchctl list: %w: %s", ErrRestart, host.Name, err, tail(out))
+		}
 		return detectSupervisorFrom("darwin", out, nil, nil)
 	case "linux":
 		sysOut, sysErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnits), nil)
 		if sysErr != nil {
+			if !supervisorListingAbsent(sysOut) {
+				return supervisor{}, fmt.Errorf("%w: host %q systemctl list-units: %w: %s", ErrRestart, host.Name, sysErr, tail(sysOut))
+			}
 			sysOut = nil
 		}
 		userOut, userErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnitsUser), nil)
 		if userErr != nil {
+			if !supervisorListingAbsent(userOut) {
+				return supervisor{}, fmt.Errorf("%w: host %q systemctl --user list-units: %w: %s", ErrRestart, host.Name, userErr, tail(userOut))
+			}
 			userOut = nil
 		}
 		return detectSupervisorFrom("linux", nil, sysOut, userOut)
@@ -306,8 +360,10 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 // supervisor (launchd/systemd) and otherwise restarts the bare process by
 // recovering its pid, argv, and log. It never starts a second hub while the old
 // one holds hub.lock: the bare path waits for the port to clear before
-// relaunching.
-func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight) error {
+// relaunching. replaced is the identity of the hub process this restart expects
+// to replace, so a non-unique version cannot make the old process look like a
+// successful replacement.
+func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
 	expected := m.opts.controllerVersion()
 	sup, err := m.detectSupervisor(ctx, host, facts)
 	if err != nil {
@@ -320,7 +376,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		// Without this a supervisor restart that failed with the on-disk version
 		// already matching left nothing for the decision ladder to retry, so the
 		// next Ensure attached (or failed to attach) against a host with no hub.
-		m.setPendingRestart(host.Name, remote)
+		m.setPendingRestart(host.Name, remote, replaced)
 		out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 		if runErr != nil && !sup.restartStatusIsAdvisory() {
 			// Surface the restart command's own failure even when the hub would
@@ -330,7 +386,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 			// this cause is what let a failed restart look like success.
 			return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 		}
-		if err := m.waitHealthy(ctx, host, expected); err != nil {
+		if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
 			if runErr != nil {
 				// launchd: docs note an interrupted `kickstart` can report failure
 				// even when the restart succeeded
@@ -345,10 +401,10 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		return nil
 	}
 
-	if err := m.restartBare(ctx, host); err != nil {
+	if err := m.restartBare(ctx, host, replaced); err != nil {
 		return err
 	}
-	if err := m.waitHealthy(ctx, host, expected); err != nil {
+	if err := m.waitHealthy(ctx, host, expected, replaced); err != nil {
 		return err
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
@@ -363,12 +419,12 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 // completed by the next Ensure, which is what ErrRestart promises. There is no
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
-func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, remote string) error {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending pendingRestartState) error {
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pending.command), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
-	if err := m.waitHealthy(ctx, host, m.opts.controllerVersion()); err != nil {
+	if err := m.waitHealthy(ctx, host, m.opts.controllerVersion(), pending.replaced); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -378,7 +434,7 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, remote 
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
 // by listening port, recover the exact argv and log destination, stop it, and
 // relaunch detached with the recovered argv.
-func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
+func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
 	pid, err := m.findHubPID(ctx, host, port)
 	if err != nil {
@@ -393,9 +449,19 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	if err != nil {
 		return err
 	}
-	if a, ok := hubAddrFlag(argv); ok && hubPort(a) != port {
-		return fmt.Errorf("%w: host %q pid %s listens on :%s but was launched with --addr %q; refusing to restart it",
-			ErrRestart, host.Name, pid, port, a)
+	if a, ok := hubAddrFlag(argv); ok {
+		ap, ok := argvHubPort(a)
+		if !ok {
+			// An unparsable recovered address must not be defaulted onto :9180:
+			// that would agree with a default-port host and let this kill a
+			// listener the recovered invocation did not own.
+			return fmt.Errorf("%w: host %q pid %s was launched with unparsable --addr %q; refusing to restart it",
+				ErrRestart, host.Name, pid, a)
+		}
+		if ap != port {
+			return fmt.Errorf("%w: host %q pid %s listens on :%s but was launched with --addr %q; refusing to restart it",
+				ErrRestart, host.Name, pid, port, a)
+		}
 	}
 
 	logPath := ""
@@ -403,6 +469,7 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 		logPath, _ = parseLogPath(lout)
 	}
 
+	relaunch := relaunchCommand(argv, logPath)
 	// Stop the old hub and wait for its port to clear before starting a new
 	// one; relaunching into the gap races hub.lock (docs/evener-hub-remote-
 	// operations.md:363-377).
@@ -410,15 +477,16 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host) error {
 	if kerr != nil {
 		return fmt.Errorf("%w: host %q could not stop hub pid %s: %w: %s", ErrRestart, host.Name, pid, kerr, tail(kout))
 	}
+	// Record the relaunch before waiting for the port to clear: the kill has
+	// landed, and waitPortClear can still fail afterwards (a graceful drain past
+	// the wait window, a dropped transport, a context timeout). With the relaunch
+	// recorded only after it succeeded, that failure left the old hub dead, no
+	// listener on the port, and nothing for the next Ensure to recover.
+	m.setPendingRestart(host.Name, relaunch, replaced)
 	if err := m.waitPortClear(ctx, host, port); err != nil {
 		return err
 	}
 
-	relaunch := relaunchCommand(argv, logPath)
-	// Record the relaunch before running it: if it fails, or the hub never comes
-	// up, the next Ensure retries this exact command instead of giving up on a
-	// host that now has no hub. restartHub clears it once health is confirmed.
-	m.setPendingRestart(host.Name, relaunch)
 	rout, rerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if rerr != nil {
 		return fmt.Errorf("%w: host %q relaunch: %w: %s", ErrRestart, host.Name, rerr, tail(rout))
@@ -514,20 +582,25 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 // /api/health. The address is the configured host address, normalized for a
 // wildcard bind the way the attach path normalizes it, and the whole URL is
 // quoted as one word so a host-derived address cannot inject a shell command.
+// -q (which must lead the option list) and --noproxy '*' keep a host-side
+// .curlrc or proxy environment from answering in place of the loopback hub, and
+// the timeouts bound a listener that accepts but never answers.
 func hubHealthRemote(addr string) string {
-	return "curl -fsS " + shellQuote(loopbackAddr(addr)+"/api/health")
+	return "curl -q --noproxy '*' -fsS --connect-timeout " + healthCurlConnectTimeout +
+		" --max-time " + healthCurlMaxTime + " " + shellQuote(loopbackAddr(addr)+"/api/health")
 }
 
-// probeHubVersion asks the host hub's /api/health once and returns the version
-// it reports. ok is false when nothing answered or the body was not a health
-// response, which is "no running hub to judge" rather than an error: ensureOnce
-// must not invent a restart from an unanswerable probe.
-func (m *Manager) probeHubVersion(ctx context.Context, host hostreg.Host) (string, bool) {
+// probeRunningHub asks the host hub's /api/health once and returns the identity
+// it reports: the version, plus the process start time when the body carries one.
+// ok is false when nothing answered or the body was not a health response, which
+// is "no running hub to judge" rather than an error: ensureOnce must not invent a
+// restart from an unanswerable probe.
+func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubIdentity, bool) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubHealthRemote(m.hostAddr(host))), nil)
 	if err != nil {
-		return "", false
+		return hubIdentity{}, false
 	}
-	return parseHealthVersion(out)
+	return parseHubHealth(out)
 }
 
 // waitHealthy polls the host hub's /api/health until the response reports
@@ -536,42 +609,51 @@ func (m *Manager) probeHubVersion(ctx context.Context, host hostreg.Host) (strin
 // but only the expected version proves the *deployed* build is the one running.
 // Accepting a bare healthy response would mask a failed restart (the old hub
 // still answering) and could attach to the dying old process during its
-// shutdown drain, tearing down the fresh channel.
-func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
+// shutdown drain, tearing down the fresh channel. replaced is the pre-restart
+// hub identity: an answer that is provably that same process is never accepted,
+// because a non-unique version ("dev") would otherwise let a restart that never
+// took look like success.
+func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
 	remote := hubHealthRemote(m.hostAddr(host))
-	var lastVersion string
+	var last hubIdentity
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
-			if got, ok := parseHealthVersion(out); ok {
-				if got == expectedVersion {
+			if got, ok := parseHubHealth(out); ok {
+				if got.version == expectedVersion && !got.sameProcessAs(replaced) {
 					return nil
 				}
-				lastVersion = got
+				last = got
 			}
 		}
 		if err := m.opts.waitSleep(ctx, restartHealthInterval); err != nil {
 			return err
 		}
 	}
-	if lastVersion != "" {
-		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, lastVersion, expectedVersion)
+	if last.version != "" {
+		if last.sameProcessAs(replaced) {
+			return fmt.Errorf("%w: host %q hub on :%s is still the pre-restart process (started %s, version %q); the restart did not take",
+				ErrRestart, host.Name, port, last.startedAt.Format(time.RFC3339Nano), last.version)
+		}
+		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, last.version, expectedVersion)
 	}
 	return fmt.Errorf("%w: host %q hub not healthy on :%s after restart", ErrRestart, host.Name, port)
 }
 
-// parseHealthVersion reads the running version from a /api/health body. A body
-// that is not the hub's HealthResponse JSON is not usable evidence, so it is
-// reported as absent rather than as whatever the version field decoded to. That
-// includes JSON that decodes but carries no version: `{}` or `{"status":"ok"}`
-// from some unrelated listener is not a hub with an empty version, and reading
-// it as one would invent a restart against a non-hub process.
-func parseHealthVersion(out []byte) (string, bool) {
+// parseHubHealth reads the running hub's identity from a /api/health body. A
+// body that is not the hub's HealthResponse JSON is not usable evidence, so it
+// is reported as absent rather than as whatever the version field decoded to.
+// That includes JSON that decodes but carries no version: `{}` or
+// `{"status":"ok"}` from some unrelated listener is not a hub with an empty
+// version, and reading it as one would invent a restart against a non-hub
+// process. The start time is carried when the body provides one; it is what
+// distinguishes a genuinely new process from the one a restart replaced.
+func parseHubHealth(out []byte) (hubIdentity, bool) {
 	var resp hubapi.HealthResponse
 	if err := json.Unmarshal(out, &resp); err != nil || resp.Version == "" {
-		return "", false
+		return hubIdentity{}, false
 	}
-	return resp.Version, true
+	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, true
 }
 
 // recoverHubArgv recovers the argv of pid. It prefers the host's null-delimited
@@ -620,9 +702,13 @@ func hubArgvRemote(pid string) string {
 
 // splitNullArgv parses a NUL-delimited argv. It reports false for anything but a
 // non-empty argv with no empty words: an empty word makes the reconstructed
-// command line ambiguous, so the caller falls back rather than guessing.
+// command line ambiguous, so the caller falls back rather than guessing. Exactly
+// one trailing NUL is stripped (the terminator of the last element): trimming
+// every trailing NUL would fold an empty final argument into its predecessor,
+// turning `evener hub -config ""` into the valid-looking `evener hub -config`
+// and relaunching with the value missing.
 func splitNullArgv(out []byte) ([]string, bool) {
-	out = bytes.TrimRight(out, "\x00")
+	out = bytes.TrimSuffix(out, []byte{0})
 	if len(out) == 0 {
 		return nil, false
 	}

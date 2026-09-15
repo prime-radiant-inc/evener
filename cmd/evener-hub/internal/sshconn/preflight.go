@@ -133,7 +133,10 @@ type launchCheck struct {
 }
 
 // parseLaunchCheck decodes the host's launch-check contract. Any decode failure
-// is ErrPreflightDecode: the host cannot be trusted to launch.
+// is ErrPreflightDecode: the host cannot be trusted to launch. A contract that
+// names a protocol but no version is refused here too — version auto-match keys
+// off it, so accepting an empty version would let the manager attach while the
+// match stayed unverifiable.
 func parseLaunchCheck(out []byte) (launchCheck, error) {
 	var lc launchCheck
 	if err := json.Unmarshal(out, &lc); err != nil {
@@ -141,6 +144,9 @@ func parseLaunchCheck(out []byte) (launchCheck, error) {
 	}
 	if strings.TrimSpace(lc.Protocol) == "" {
 		return launchCheck{}, fmt.Errorf("%w: launch-check reported no protocol", ErrPreflightDecode)
+	}
+	if strings.TrimSpace(lc.Version) == "" {
+		return launchCheck{}, fmt.Errorf("%w: launch-check reported no version", ErrPreflightDecode)
 	}
 	return lc, nil
 }
@@ -189,13 +195,15 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 
 	lc, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
-		if errors.Is(err, ErrProtocolIncompatible) {
-			// The on-disk binary refused the controller's appwire protocol, so
-			// there is no contract to read. That is a fact about the binary, not
-			// a fatal preflight: ensureOnce must be able to deploy a matching
-			// build over ssh (which does not use appwire) before any protocol
-			// refusal is made terminal. Record the contract as unknown and let
-			// the decision ladder choose the deploy path.
+		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode)) {
+			// The on-disk binary either refused the controller's appwire protocol
+			// outright or returned a contract that cannot be read. Either is a fact
+			// about the binary, not a fatal preflight: ensureOnce must be able to
+			// deploy a matching build over ssh (which uses neither appwire nor the
+			// contract) before any refusal is made terminal. Record the contract as
+			// unknown and let the decision ladder choose the deploy path. With no
+			// deploy configured there is nothing to install, so the failure stays
+			// terminal rather than being deferred to a deploy that can never run.
 			return pf, nil
 		}
 		return pf, err

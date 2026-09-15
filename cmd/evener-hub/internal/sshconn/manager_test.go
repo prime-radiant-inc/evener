@@ -146,7 +146,7 @@ func TestEnsureStderrWiredToSink(t *testing.T) {
 // With no deploy configured the outcome is the deploy failure, not a protocol
 // refusal; with one configured the host is upgraded and attaches.
 func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
-	t.Run("no deploy configured does not refuse on protocol", func(t *testing.T) {
+	t.Run("no deploy configured refuses the protocol terminally", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		override := map[string][]byte{
 			"launch-check": []byte(`{"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
@@ -155,11 +155,11 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
 		_, err := m.Ensure(context.Background(), "alpha")
-		if errors.Is(err, ErrProtocolIncompatible) {
-			t.Fatalf("protocol mismatch was refused before the deploy path had its chance: %v", err)
-		}
-		if !errors.Is(err, ErrDeploy) {
-			t.Fatalf("err = %v, want the deploy failure", err)
+		// With no BuildSource/BuildBinary there is no deploy to offer, so the
+		// incompatible protocol is refused terminally instead of retrying a deploy
+		// that can never run (the infinite ErrDeploy loop the review named).
+		if !errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("err = %v, want ErrProtocolIncompatible (no deploy can upgrade the host)", err)
 		}
 		if got := len(fr.recordedStarts()); got != 0 {
 			t.Fatalf("Start calls = %d, want 0 (no bridge before the upgrade)", got)
@@ -195,9 +195,10 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 // TestEnsureProtocolRefusedByRunReachesTheDeployPath covers the sibling case:
 // the on-disk binary refuses `launch-check --protocol` outright, so there is no
 // parsed contract at all. That is still a fact about a host reachable over ssh,
-// so the deploy path must run before any refusal.
+// so when a deploy is configured the deploy path runs before any refusal; with no
+// deploy configured there is nothing to install, so the refusal is terminal.
 func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
-	t.Run("refusal does not short-circuit before the deploy", func(t *testing.T) {
+	t.Run("no deploy configured refuses the refused protocol terminally", func(t *testing.T) {
 		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 		fr := &fakeRunner{
 			runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -211,11 +212,11 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
 		_, err := m.Ensure(context.Background(), "alpha")
-		if errors.Is(err, ErrProtocolIncompatible) {
-			t.Fatalf("protocol refusal short-circuited the deploy path: %v", err)
-		}
-		if !errors.Is(err, ErrDeploy) {
-			t.Fatalf("err = %v, want the deploy failure", err)
+		// The refusal is a fact about the binary, but with no deploy configured
+		// there is no build to install, so it is terminal here rather than a
+		// retryable deploy failure.
+		if !errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("err = %v, want ErrProtocolIncompatible (no deploy can upgrade the host)", err)
 		}
 		if got := len(fr.recordedStarts()); got != 0 {
 			t.Fatalf("Start calls = %d, want 0", got)

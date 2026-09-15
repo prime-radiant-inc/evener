@@ -695,6 +695,45 @@ func TestVerifyBuildSourceRevisionMustMatchController(t *testing.T) {
 	}
 }
 
+// TestVerifyBuildRevisionRefusesDirtyController pins the finding that
+// verifyBuildRevision matched only GitSHA and ignored GitDirty. The builder
+// stamps this process's own GitDirty into the deployed binary, so a dirty
+// controller's build reports "<sha>-dirty" while the source tree it compiled may
+// carry a different set of uncommitted changes; HEAD equality cannot see that, so
+// the deploy must be refused rather than accepted by version auto-match.
+func TestVerifyBuildRevisionRefusesDirtyController(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "init", "-q")
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "first")
+	short := gitIn(t, root, "rev-parse", "HEAD")[:7]
+
+	origSHA, origDirty := buildinfo.GitSHA, buildinfo.GitDirty
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty = origSHA, origDirty })
+	buildinfo.GitSHA, buildinfo.GitDirty = short, "true"
+
+	_, err := verifyBuildSource(root)
+	if err == nil {
+		t.Fatal("verifyBuildSource accepted a dirty controller's build source")
+	}
+	if !strings.Contains(err.Error(), "dirty") || !strings.Contains(err.Error(), "refusing to deploy") {
+		t.Fatalf("error does not explain the dirty controller: %v", err)
+	}
+
+	// The same checkout with a clean controller stamp is accepted, so the refusal
+	// is keyed off GitDirty and not the checkout.
+	buildinfo.GitDirty = ""
+	if _, err := verifyBuildSource(root); err != nil {
+		t.Fatalf("verifyBuildSource(clean controller): %v", err)
+	}
+}
+
 // TestDeployTargetUsesFirstLineOfCommandV pins the finding that deployTarget ran
 // the whole `command -v evener` output through TrimSpace: trailing noise would be
 // folded into the path handed to the resolver, unlike resolveDeployTarget's own
