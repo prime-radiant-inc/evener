@@ -50,22 +50,6 @@ func (e *RunError) Error() string { return fmt.Sprintf("run failed: %v", e.Err) 
 
 func (e *RunError) Unwrap() error { return e.Err }
 
-// sshOwnFailureStatus is the exit status ssh(1) uses for its own failures: a
-// refused connection or an authentication refusal. It otherwise reports the
-// remote command's status, so this is the one signal on a failed Run that the
-// remote command's output cannot forge.
-const sshOwnFailureStatus = 255
-
-// sshOwnFailure reports whether err is ssh's own failure rather than the remote
-// command's. A failed Run keeps ssh's diagnostics and the remote command's
-// stderr on the same stream (ssh forwards remote stderr to local stderr), so the
-// exit status is what separates "ssh refused to authenticate" — terminal — from
-// "the remote program failed" — retryable.
-func sshOwnFailure(err error) bool {
-	var ee *exec.ExitError
-	return errors.As(err, &ee) && ee.ExitCode() == sshOwnFailureStatus
-}
-
 // Stdio is the byte-stream surface of a started child.
 type Stdio interface {
 	Stdin() io.WriteCloser

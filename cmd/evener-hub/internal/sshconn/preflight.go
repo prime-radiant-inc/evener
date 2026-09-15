@@ -276,20 +276,30 @@ func sshRunFailure(hostName, what string, err error, diag string) error {
 	return fmt.Errorf("%w: host %q %s: %w: %s", ErrSSHStart, hostName, what, err, diag)
 }
 
-// isSSHAuthFailure decides an authentication refusal. A one-shot Run keeps its
-// streams apart only at the process level: ssh forwards the remote command's own
-// stderr onto the same stream as its diagnostics, so a remote program printing a
-// marker would otherwise read as ssh refusing the key and end the reconnect loop
-// for good. ssh marks its own failure with exit status 255, and a failed remote
-// command carries its own status, so a Run needs that status as well as the
-// marker. A failed Start never spawned a process and has no status to read, so
-// there the marker alone decides.
+// isSSHAuthFailure decides an authentication refusal. It is the ONE rule the
+// attach path shares (manager.attach): an authentication marker is terminal only
+// when no remote command could have produced it.
+//
+// A failed one-shot Run cannot prove that. ssh forwards the remote command's own
+// stderr onto the same stream as its diagnostics, and it forwards the remote
+// command's exit status unchanged — including 255, the single status ssh(1) uses
+// for its own failures. With both the text and the status reachable by the remote
+// command, reading status 255 as an ssh refusal would let a remote program that
+// exits 255 with an ssh-shaped error stop the reconnect loop for good. The safe
+// side of that trade is to keep the ambiguous failure retryable.
+//
+// A failed Start is different: ssh never spawned, so no remote command ran and
+// the marker on the diagnostic stream is necessarily ssh's own. The caller
+// classifies that case from the marker alone.
 func isSSHAuthFailure(err error, diag string) bool {
 	if !isAuthFailure(sshDiagnostic(err, diag)) {
 		return false
 	}
-	if _, ok := errors.AsType[*RunError](err); ok {
-		return sshOwnFailure(err)
+	// A completed Run carries a status the remote command can forge along with the
+	// text, so it stays retryable; only a failure that never ran a remote command
+	// (no *RunError) is unambiguous.
+	if _, completed := errors.AsType[*RunError](err); completed {
+		return false
 	}
 	return true
 }

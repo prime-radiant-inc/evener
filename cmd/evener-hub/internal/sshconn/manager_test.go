@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -579,25 +582,26 @@ func TestReconnectSleepDoesNotHoldHostLock(t *testing.T) {
 }
 
 // Close during an in-flight attach must not leave a channel behind that nothing
-// will supervise.
+// will supervise. The blocked Start models a spawn in flight and honours ctx the
+// way execRunner.Start's spawn decision does, so Close's cancellation ends the
+// attach and the barrier Close now enforces can complete.
 func TestEnsureInFlightCloseIsRejected(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	reg := testRegistry(t, host)
 
 	started := make(chan struct{})
-	release := make(chan struct{})
-	var startOnce, releaseOnce sync.Once
+	var startOnce sync.Once
 	fr := &fakeRunner{
 		runFn: cannedRun(nil),
-		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+		startFn: func(ctx context.Context, _ []string, _ io.Writer) (Stdio, error) {
 			startOnce.Do(func() { close(started) })
-			<-release
-			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+			<-ctx.Done()
+			return nil, ctx.Err()
 		},
 	}
-	defer releaseOnce.Do(func() { close(release) })
 
-	m := newTestManager(t, reg, fr, Options{})
+	// A long attempt bound on purpose: only Close can end this attach.
+	m := newTestManager(t, reg, fr, Options{attemptTimeout: 30 * time.Second})
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := m.Ensure(context.Background(), "alpha")
@@ -611,7 +615,6 @@ func TestEnsureInFlightCloseIsRejected(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	releaseOnce.Do(func() { close(release) })
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, ErrManagerClosed) {
@@ -625,42 +628,52 @@ func TestEnsureInFlightCloseIsRejected(t *testing.T) {
 	}
 }
 
-// A preflight that cannot authenticate is terminal: the reconnect loop must not
-// hammer a host that cannot let us in.
-func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
+// A preflight whose completed ssh run exits 255 with an auth marker is
+// ambiguous: ssh forwards the remote command's own status unchanged, so 255 does
+// not prove the refusal is ssh's. It must stay retryable and keep the reconnect
+// loop alive rather than stop it for good on a remote command's own exit.
+func TestReconnectPreflightAuthMarkerIsRetryable(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	reg := testRegistry(t, host)
 
 	var mu sync.Mutex
 	authFail := false
-	starts := 0
 	canned := cannedRun(nil)
 	sshExit := exitStatus(t, 255)
+	auth := "bob@alpha.example: Permission denied (publickey).\n"
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			mu.Lock()
 			fail := authFail
 			mu.Unlock()
 			if fail {
-				auth := "bob@alpha.example: Permission denied (publickey).\n"
 				return []byte(auth), &RunError{Stderr: []byte(auth), Err: sshExit}
 			}
 			return canned(ctx, argv, stdin)
 		},
-		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
-			mu.Lock()
-			starts++
-			mu.Unlock()
-			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
-		},
+		startFn: goodStartFn(t),
 	}
 	events := make(chan Event, 128)
+	// The loop sleeps before each reconnect attempt, so the *second* sleep is the
+	// proof that the first attempt failed and the loop took another turn: a
+	// terminal classification would have returned after that attempt instead.
+	// Park that second sleep until Close cancels, so the test does not spin.
+	var sleeps atomic.Int32
+	retried := make(chan struct{})
+	var retriedOnce sync.Once
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent:     func(ev Event) { events <- ev },
 		BackoffBase: time.Millisecond,
 		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
+		sleep: func(ctx context.Context, _ time.Duration) error {
+			if sleeps.Add(1) >= 2 {
+				retriedOnce.Do(func() { close(retried) })
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
 	})
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -672,15 +685,14 @@ func TestReconnectPreflightAuthFailureIsTerminal(t *testing.T) {
 	mu.Unlock()
 	ch.markLost()
 
-	ev := waitForEvent(t, events, EventFailed)
-	if !errors.Is(ev.Err, ErrSSHAuth) {
-		t.Fatalf("failed event err = %v, want ErrSSHAuth", ev.Err)
+	select {
+	case <-retried:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ambiguous auth marker stopped the reconnect loop instead of retrying")
 	}
-	mu.Lock()
-	got := starts
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("Start calls = %d, want 1 (an auth refusal must not re-attach)", got)
+	assertNoFailedEvent(t, events)
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
@@ -908,6 +920,7 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 	attaches := 0
 	var kinds []EventKind
 	var m *Manager
+	closed := make(chan error, 1)
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
 	m = newTestManager(t, reg, fr, Options{
 		OnEvent: func(ev Event) {
@@ -927,7 +940,7 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 				// validates the channel it just published. Waiting for the flag
 				// keeps that interleaving deterministic; Close itself blocks on the
 				// lock Ensure is holding until Ensure releases it.
-				go func() { _ = m.Close() }()
+				go func() { closed <- m.Close() }()
 				deadline := time.Now().Add(2 * time.Second)
 				for !m.isClosed() && time.Now().Before(deadline) {
 					time.Sleep(time.Millisecond)
@@ -945,6 +958,19 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 		t.Fatalf("Ensure racing Close = %v, want ErrManagerClosed", err)
 	}
 	waitClosed(t, ch1)
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close never returned")
+	}
+	// The replacement Close discarded must not keep the map slot: Close is
+	// terminal, so no channel may remain mapped once it returns.
+	if ch := m.currentChannel("alpha"); ch != nil {
+		t.Fatalf("a closed manager left a channel mapped: %v", ch)
+	}
 
 	// Consumers installed a source on the Attached; the Detached that follows is
 	// what lets them drop it, so the pair has to be announced even on this path.
@@ -957,11 +983,16 @@ func TestEnsureRetiresReplacedChannelWhenCloseRaces(t *testing.T) {
 }
 
 // Manager.Close must end an in-flight initial attach: otherwise its ssh child
-// outlives the manager until the caller's deadline or the attempt bound.
+// outlives the manager until the caller's deadline or the attempt bound. It must
+// also be an event-quiescence barrier for that caller goroutine: the canceled
+// attach emits no Disconnected and no Failed, and nothing lands after Close
+// returns.
 func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	entered := make(chan struct{})
 	var once sync.Once
+	var mu sync.Mutex
+	var kinds []EventKind
 	fr := &fakeRunner{
 		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
 			once.Do(func() { close(entered) })
@@ -972,8 +1003,78 @@ func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 	}
 	// A long attempt bound on purpose: only Close can end this attempt, so the
 	// assertion below is about Close rather than about attemptLimit.
-	m := newTestManager(t, testRegistry(t, host), fr, Options{attemptTimeout: 30 * time.Second})
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		attemptTimeout: 30 * time.Second,
+		OnEvent: func(ev Event) {
+			mu.Lock()
+			kinds = append(kinds, ev.Kind)
+			mu.Unlock()
+		},
+	})
 
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attach never reached the runner")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	mu.Lock()
+	atClose := len(kinds)
+	mu.Unlock()
+	select {
+	case err := <-done:
+		// Close canceling the preflight is the manager being finished, not a
+		// retryable transport failure: Ensure must report it as such.
+		if !errors.Is(err, ErrManagerClosed) {
+			t.Fatalf("Ensure after Close = %v, want ErrManagerClosed", err)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("Close did not cancel the in-flight initial attach")
+	}
+	// Close already accounted for the in-flight Ensure, so the return above cannot
+	// be followed by one of its terminal/error events.
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(kinds) != atClose {
+		t.Fatalf("events after Close returned: at Close %d, grew to %d (%v)", atClose, len(kinds), kinds)
+	}
+	for _, k := range kinds {
+		if k == EventFailed {
+			t.Fatalf("shutdown surfaced an EventFailed for a cancelled attach: %v", kinds)
+		}
+	}
+}
+
+// A terminal failure that a canceled in-flight Ensure finds must not be
+// announced either: consumers shutting the manager down must see neither a Failed
+// nor a Disconnected for a host that was never attached.
+func TestCloseSuppressesInFlightEnsureTerminalEmissions(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	entered := make(chan struct{})
+	var once sync.Once
+	fr := &fakeRunner{
+		runFn: func(ctx context.Context, _ []string, _ io.Reader) ([]byte, error) {
+			once.Do(func() { close(entered) })
+			<-ctx.Done()
+			// A terminal cause found concurrently with shutdown: Ensure keeps it
+			// (it names what went wrong) but must not announce it.
+			return nil, fmt.Errorf("%w: refused", ErrProtocolIncompatible)
+		},
+		startFn: goodStartFn(t),
+	}
+	events := make(chan Event, 64)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		attemptTimeout: 30 * time.Second,
+		OnEvent:        func(ev Event) { events <- ev },
+	})
 	done := make(chan error, 1)
 	go func() {
 		_, err := m.Ensure(context.Background(), "alpha")
@@ -989,13 +1090,104 @@ func TestCloseCancelsInFlightInitialEnsure(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		// Close canceling the preflight is the manager being finished, not a
-		// retryable transport failure: Ensure must report it as such.
-		if !errors.Is(err, ErrManagerClosed) {
-			t.Fatalf("Ensure after Close = %v, want ErrManagerClosed", err)
+		if !errors.Is(err, ErrProtocolIncompatible) {
+			t.Fatalf("Ensure after Close = %v, want the terminal ErrProtocolIncompatible", err)
 		}
 	case <-time.After(6 * time.Second):
 		t.Fatal("Close did not cancel the in-flight initial attach")
+	}
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == EventFailed {
+				t.Fatalf("shutdown surfaced an EventFailed for a cancelled attach: %+v", ev)
+			}
+			if ev.Kind == EventState && ev.State == StateDisconnected {
+				t.Fatalf("shutdown surfaced a Disconnected for an attach that never completed: %+v", ev)
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+// A replacement that dies after it is published must not orphan the host. The
+// channel it displaced (stale) still has a supervisor blocked on the host lock,
+// and clearing the map would leave that supervisor owning nothing and stand down.
+// The lost replacement has to give the slot back so supervision survives.
+func TestLostPublishedReplacementPreservesSupervision(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	var drop atomic.Bool
+	var mu sync.Mutex
+	starts := 0
+	fr := &fakeRunner{
+		runFn: cannedRun(nil),
+		startFn: func(context.Context, []string, io.Writer) (Stdio, error) {
+			mu.Lock()
+			starts++
+			mu.Unlock()
+			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
+		},
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		// Drop exactly the second Ensure's just-published channel, between the
+		// publish and the post-publish validation.
+		afterPublish: func(_ string, ch *Channel) {
+			if drop.CompareAndSwap(true, false) {
+				ch.markLost()
+			}
+		},
+		BackoffBase: time.Millisecond,
+		BackoffMax:  time.Millisecond,
+		sleep:       func(context.Context, time.Duration) error { return nil },
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+	ch1, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	// Queue the second Ensure ahead of ch1's supervisor, then drop ch1, so Ensure
+	// is the goroutine that retires the stale channel (the ordering pattern the
+	// other race tests use).
+	lock := m.hostLock("alpha")
+	lock.Lock()
+	drop.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Ensure(context.Background(), "alpha")
+		done <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	ch1.markLost()
+	time.Sleep(10 * time.Millisecond)
+	lock.Unlock()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrSSHStart) {
+			t.Fatalf("Ensure = %v, want the retryable drop", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ensure never returned")
+	}
+
+	// The discarded replacement was Ensure's own attach (Start #2). ch1's
+	// supervisor can only produce Start #3 if the slot was restored to it: the
+	// pre-fix clearChannel left it nothing to own.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got := starts
+		mu.Unlock()
+		if got >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Start calls = %d, want 3: the lost replacement orphaned the host", got)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -1516,7 +1708,11 @@ func TestReconnectBackoffAndFreshStartWithoutHubStart(t *testing.T) {
 	assertNoHubStart(t, fr.recordedRuns(), fr.recordedStarts())
 }
 
-func TestReconnectAuthFailureDoesNotRetry(t *testing.T) {
+// An attach handshake whose ssh child exits 255 with an auth marker is ambiguous
+// for the same reason as the one-shot path: ssh forwards a remote command's own
+// 255 unchanged, so the failure stays retryable and the loop takes another turn
+// instead of standing down for good.
+func TestReconnectAttachAuthMarkerIsRetryable(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	reg := testRegistry(t, host)
 
@@ -1531,9 +1727,8 @@ func TestReconnectAuthFailureDoesNotRetry(t *testing.T) {
 			if startCalls == 1 {
 				return newFakeBridge(appwire.ProtocolVersion).stdio, nil
 			}
-			// Reconnect: ssh exits before the handshake with a BatchMode auth
-			// failure on stderr and ssh's own exit status, which the attach path
-			// classifies as terminal ErrSSHAuth.
+			// Reconnect: ssh exits before the handshake with a BatchMode auth marker
+			// on stderr and a 255 status the remote command could also have produced.
 			_, _ = stderr.Write([]byte("bob@alpha.example: Permission denied (publickey).\n"))
 			b := newFakeBridge(appwire.ProtocolVersion)
 			b.stdio.waitErr = exitStatus(t, 255)
@@ -1542,12 +1737,22 @@ func TestReconnectAuthFailureDoesNotRetry(t *testing.T) {
 		},
 	}
 	events := make(chan Event, 128)
+	var sleeps atomic.Int32
+	retried := make(chan struct{})
+	var retriedOnce sync.Once
 	m := newTestManager(t, reg, fr, Options{
 		OnEvent:     func(ev Event) { events <- ev },
 		BackoffBase: time.Millisecond,
 		BackoffMax:  time.Millisecond,
-		sleep:       func(context.Context, time.Duration) error { return nil },
-		jitter:      func(d time.Duration) time.Duration { return d },
+		sleep: func(ctx context.Context, _ time.Duration) error {
+			if sleeps.Add(1) >= 2 {
+				retriedOnce.Do(func() { close(retried) })
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			return nil
+		},
+		jitter: func(d time.Duration) time.Duration { return d },
 	})
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -1555,17 +1760,41 @@ func TestReconnectAuthFailureDoesNotRetry(t *testing.T) {
 	}
 	// Force the channel's link down.
 	ch.markLost()
-	waitForEvent(t, events, EventFailed)
 
-	mu.Lock()
-	got := startCalls
-	mu.Unlock()
-	// Initial attach + exactly one reconnect attempt; the terminal error stops
-	// the loop instead of spamming ssh.
-	if got != 2 {
-		t.Fatalf("Start calls = %d, want 2 (one terminal retry then stop)", got)
+	select {
+	case <-retried:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ambiguous auth marker stopped the reconnect loop instead of retrying")
+	}
+	assertNoFailedEvent(t, events)
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
+
+// stdioReadWriter's pipes are closed from two directions — Channel.Close and the
+// child exiting on its own — so an already-closed pipe must not surface as a
+// Manager.Close error. os.File reports a repeat close as os.ErrClosed; a pipe
+// reports io.ErrClosedPipe. A real teardown failure must still surface.
+func TestStdioReadWriterCloseIgnoresAlreadyClosedPipes(t *testing.T) {
+	for _, err := range []error{os.ErrClosed, io.ErrClosedPipe} {
+		s := &stdioReadWriter{in: closedPipeRW{err}, out: closedPipeRW{err}}
+		if got := s.Close(); got != nil {
+			t.Fatalf("Close with an already-closed pipe (%v) = %v, want nil", err, got)
+		}
+	}
+	boom := errors.New("boom")
+	s := &stdioReadWriter{in: closedPipeRW{boom}, out: closedPipeRW{boom}}
+	if got := s.Close(); !errors.Is(got, boom) {
+		t.Fatalf("Close with a real teardown failure = %v, want boom", got)
+	}
+}
+
+type closedPipeRW struct{ err error }
+
+func (c closedPipeRW) Read([]byte) (int, error)  { return 0, c.err }
+func (c closedPipeRW) Write([]byte) (int, error) { return 0, c.err }
+func (c closedPipeRW) Close() error              { return c.err }
 
 func waitForEvent(t *testing.T, ch <-chan Event, kind EventKind) Event {
 	t.Helper()
@@ -1614,29 +1843,39 @@ func containsToken(argv []string, token string) bool {
 }
 
 // The attach handshake gets ssh's diagnostics and the remote command's stderr on
-// the same sink, so the text alone cannot separate them. Like the one-shot
-// preflight path, an authentication refusal is only terminal when ssh itself
-// exited with its own status; a remote program's exit carrying the marker stays
-// retryable, so the reconnect loop is not stopped for good over it.
+// the same sink, so the text alone cannot separate them, and ssh forwards the
+// remote command's exit status unchanged — including 255. A started bridge is
+// therefore ambiguous and stays retryable, matching the one-shot preflight rule
+// (isSSHAuthFailure); only a failure to spawn ssh is terminal, because no remote
+// command could then have produced the marker.
 func TestAttachAuthClassificationRequiresSSHExitStatus(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	const marker = "bob@alpha.example: Permission denied (publickey).\n"
 	cases := []struct {
-		name    string
-		waitErr error
-		wantErr error
+		name     string
+		waitErr  error
+		startErr error
+		wantErr  error
 	}{
-		{"ssh's own exit 255 with the marker is terminal", exitStatus(t, 255), ErrSSHAuth},
-		{"a remote program's exit with the marker stays retryable", exitStatus(t, 1), ErrSSHStart},
+		{"a started ssh exiting 255 with the marker stays retryable", exitStatus(t, 255), nil, ErrSSHStart},
+		{"a remote program's exit with the marker stays retryable", exitStatus(t, 1), nil, ErrSSHStart},
+		{
+			"an ssh that never started ran no remote command, so the marker is terminal",
+			nil, errors.New("fork/exec ssh: no such file or directory"), ErrSSHAuth,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fr := &fakeRunner{
 				runFn: cannedRun(nil),
 				startFn: func(_ context.Context, _ []string, stderr io.Writer) (Stdio, error) {
+					_, _ = stderr.Write([]byte(marker))
+					if tc.startErr != nil {
+						// ssh itself never spawned: no remote command ran.
+						return nil, tc.startErr
+					}
 					// ssh spawns, forwards the marker, then exits before the handshake
 					// can complete, so the bridge's stdout closes under Initialize.
-					_, _ = stderr.Write([]byte(marker))
 					b := newFakeBridge(appwire.ProtocolVersion)
 					b.stdio.waitErr = tc.waitErr
 					b.stdio.drop()

@@ -174,8 +174,11 @@ func TestIsAuthFailure(t *testing.T) {
 }
 
 // A failed Run keeps ssh's diagnostics and the remote command's stderr on the
-// same stream, so the text alone cannot separate them. ssh marks its own failure
-// with exit status 255; a failed remote command carries its own status.
+// same stream, and ssh forwards the remote command's exit status unchanged —
+// including 255, the status ssh(1) uses for its own failures. Neither signal can
+// separate the two, so a completed Run that carries an auth marker stays
+// retryable; only a failure to start ssh, which never ran a remote command, is
+// unambiguous.
 func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 	const marker = "bob@alpha.example: Permission denied (publickey).\n"
 	sshExit := exitStatus(t, 255)
@@ -187,10 +190,12 @@ func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 		want error
 	}{
 		{
-			name: "ssh exit 255 with the marker is an auth refusal",
+			// ssh itself exits 255, but the remote command's own status is forwarded
+			// unchanged, so 255 alone cannot prove the refusal is ssh's.
+			name: "a completed ssh run exiting 255 with the marker stays retryable",
 			err:  &RunError{Stderr: []byte(marker), Err: sshExit},
 			diag: marker,
-			want: ErrSSHAuth,
+			want: ErrSSHStart,
 		},
 		{
 			name: "the remote command's own exit with the marker stays retryable",
@@ -205,7 +210,9 @@ func TestSSHRunFailureRequiresSSHExitStatus(t *testing.T) {
 			want: ErrSSHStart,
 		},
 		{
-			name: "a failed Start has no exit status, so the marker decides",
+			// A failed Start never spawned ssh, so no remote command ran and the
+			// marker is necessarily ssh's own: the one unambiguous case.
+			name: "a failed Start never ran a remote command, so the marker decides",
 			err:  errors.New("fork/exec ssh: no such file or directory"),
 			diag: marker,
 			want: ErrSSHAuth,
