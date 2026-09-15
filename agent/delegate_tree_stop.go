@@ -657,7 +657,10 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 			return nil
 		default:
 		}
-		requirements := c.ReconcileRequirements()
+		requirements, current := c.stopReconcileRequirements(stop)
+		if !current {
+			continue
+		}
 		evidence, err := collectDelegateReconcileEvidence(c.stateDir, requirements)
 		if err != nil {
 			return err
