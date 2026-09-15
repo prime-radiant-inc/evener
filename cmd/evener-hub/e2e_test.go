@@ -240,6 +240,7 @@ func startHandStartedDaemon(t *testing.T, stack hubStack, daemonDir string) <-ch
 // (issue #1318).
 func TestE2E_DaemonExitTellsSubscriberToReread(t *testing.T) {
 	e2ecap.RequireLoopbackBind(t)
+	e2ecap.RequireProcessInspect(t)
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}

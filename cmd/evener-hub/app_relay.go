@@ -226,8 +226,6 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	return notification
 }
 
-// stampForkCapability adds the hub-owned action to an existing capability
-// update. Other permissions and fields remain the daemon's current values.
 // stampResyncTarget names the route a fanned-out resync is being delivered to.
 // The daemon-gone resync (appsource.DaemonGoneResync) carries no target so it
 // reaches every route the relay serves - a read-only child alias shares the
@@ -245,6 +243,8 @@ func stampResyncTarget(notification appwire.Notification, threadID, ref string) 
 	return notification
 }
 
+// stampForkCapability adds the hub-owned action to an existing capability
+// update. Other permissions and fields remain the daemon's current values.
 func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
 	if notification.Method != appwire.NotifyThreadStatusChanged {
 		return notification
