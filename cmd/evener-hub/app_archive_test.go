@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -135,4 +136,89 @@ func dispatchArchiveSet(t *testing.T, web *WebServer, params appwire.ArchivePara
 		t.Fatalf("response type = %T, want appwire.ArchiveResponse", result)
 	}
 	return response, nil
+}
+
+// A remote project's working directory does not exist on the controller, so the
+// archive must not resolve it against the controller's filesystem. Each host's
+// decision is keyed by its own source, distinct from the controller key.
+func TestHubArchiveSetAppWireKeysNonLocalProjectBySource(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:      store,
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	})
+	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
+
+	for _, host := range []string{"host-a", "host-b"} {
+		if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+			Kind:     appwire.ArchiveTargetProject,
+			ID:       projectID,
+			Source:   host,
+			Archived: true,
+		}); err != nil {
+			t.Fatalf("archive remote project on %s: %v", host, err)
+		}
+	}
+
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"host-a", "host-b"} {
+		if !decisions[hubcore.ArchiveKey{Kind: "project", ID: projectID, Source: host}] {
+			t.Fatalf("decision for %s not persisted under its own source: %v", host, decisions)
+		}
+	}
+	if decisions[hubcore.ArchiveKey{Kind: "project", ID: projectID}] {
+		t.Fatalf("remote decision leaked onto the controller key: %v", decisions)
+	}
+}
+
+// The optional non-local WorkingDir is cross-checked against the identity the
+// host already reported, never resolved locally: a mismatched path is rejected
+// with the same message the local path uses.
+func TestHubArchiveSetAppWireCrossChecksRemoteWorkingDir(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Threads: []appwire.Thread{{
+			ID:          "t1",
+			SessionID:   "t1",
+			Source:      "host-a",
+			ProjectID:   projectID,
+			ProjectPath: "/srv/remote/project",
+		}},
+	})
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:           hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db")),
+		RemoteThreadCache: cache,
+		HubStateRoot:      t.TempDir(),
+		Past:              hubcore.NewPastIndex(""),
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:       appwire.ArchiveTargetProject,
+		ID:         projectID,
+		Source:     "host-a",
+		WorkingDir: "/srv/remote/project",
+		Archived:   true,
+	}); err != nil {
+		t.Fatalf("archive remote project with the reported path: %v", err)
+	}
+
+	_, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:       appwire.ArchiveTargetProject,
+		ID:         projectID,
+		Source:     "host-a",
+		WorkingDir: "/srv/elsewhere",
+		Archived:   true,
+	})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error = %v, want InvalidParams for a mismatched remote workingDir", err)
+	}
+	if !strings.Contains(err.Error(), "project ID does not match workingDir") {
+		t.Fatalf("error = %q, want the project/workingDir mismatch message", err)
+	}
 }

@@ -25,6 +25,11 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 	if params.ID == "" {
 		return appwire.ArchiveResponse{}, appwire.InvalidParams("id is required")
 	}
+	// The owning source qualifies a project decision: two hosts' projects share
+	// a project ID (and often a path), so keying by (source, id) keeps their
+	// archive decisions distinct. A session's ID is already its host-qualified
+	// ref, so it stays unqualified.
+	projectSource := ""
 	if params.Kind == appwire.ArchiveTargetProject {
 		if params.ID == "no-project" {
 			return appwire.ArchiveResponse{}, appwire.InvalidParams("no-project is not a local project")
@@ -32,21 +37,26 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 		if err := identifier.ValidateProjectID(params.ID); err != nil {
 			return appwire.ArchiveResponse{}, appwire.InvalidParams("invalid project ID: " + err.Error())
 		}
-		if params.WorkingDir == "" {
-			return appwire.ArchiveResponse{}, appwire.InvalidParams("workingDir is required for project archive")
-		}
-		project, err := identifier.ResolveProject(params.WorkingDir)
-		if err != nil {
-			return appwire.ArchiveResponse{}, appwire.InvalidParams("resolve project: " + err.Error())
-		}
-		if project.ID != params.ID {
-			return appwire.ArchiveResponse{}, appwire.InvalidParams("project ID does not match workingDir")
+		projectSource = hubcore.NormalizeDecisionSource(params.Source)
+		if projectSource == "" {
+			if params.WorkingDir == "" {
+				return appwire.ArchiveResponse{}, appwire.InvalidParams("workingDir is required for project archive")
+			}
+			project, err := identifier.ResolveProject(params.WorkingDir)
+			if err != nil {
+				return appwire.ArchiveResponse{}, appwire.InvalidParams("resolve project: " + err.Error())
+			}
+			if project.ID != params.ID {
+				return appwire.ArchiveResponse{}, appwire.InvalidParams("project ID does not match workingDir")
+			}
+		} else if err := validateHostProjectArchive(cfg, projectSource, params.ID, params.WorkingDir); err != nil {
+			return appwire.ArchiveResponse{}, err
 		}
 	}
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
-	if err := cfg.Archive.Set(string(params.Kind), params.ID, params.Archived, time.Now()); err != nil {
+	if err := cfg.Archive.Set(projectSource, string(params.Kind), params.ID, params.Archived, time.Now()); err != nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
 	}
 
@@ -55,7 +65,7 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 	// behind the sidebar until the next tick, and push the sidebar to refetch.
 	hint := navigationChangeHint{AllLoadedProjects: params.Kind == appwire.ArchiveTargetSession}
 	if params.Kind == appwire.ArchiveTargetProject {
-		hint.Projects = []string{params.ID}
+		hint.Projects = []string{projectsChangeKey(projectSource, params.ID)}
 	}
 	if navigation == nil {
 		return appwire.ArchiveResponse{}, appwire.Unavailable("navigation unavailable")
@@ -68,4 +78,43 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 		cfg.PokeAttention()
 	}
 	return appwire.ArchiveResponse{OK: true, Navigation: navigationMutation}, nil
+}
+
+// validateHostProjectArchive cross-checks a non-local project archive against
+// the identity the remote hub already reported for its row. The controller
+// never resolves the host path against its own filesystem: params.WorkingDir is
+// optional and, when present, must agree with the path the host reported for
+// that project ID. A cold or absent remote cache has no reported rows to
+// compare, so the ID's syntax is the only check — the (source, id) store key,
+// not a controller-side resolution, is what makes the action unambiguous.
+func validateHostProjectArchive(cfg hubcore.WebConfig, source, id, workingDir string) error {
+	if cfg.RemoteThreadCache == nil {
+		return nil
+	}
+	for _, thread := range cfg.RemoteThreadCache.Get() {
+		if thread.Source != source {
+			continue
+		}
+		if thread.ProjectID == id {
+			if workingDir != "" && thread.ProjectPath != "" && thread.ProjectPath != workingDir {
+				return appwire.InvalidParams("project ID does not match workingDir")
+			}
+			return nil
+		}
+		if workingDir != "" && thread.ProjectPath == workingDir {
+			return appwire.InvalidParams("project ID does not match workingDir")
+		}
+	}
+	return nil
+}
+
+// projectsChangeKey qualifies a project navigation change hint by its owning
+// source, so a poke for one host's project cannot refresh another host's
+// project that happens to share an ID. The controller's own projects keep their
+// bare ID.
+func projectsChangeKey(source, id string) string {
+	if source == "" {
+		return id
+	}
+	return source + ":" + id
 }

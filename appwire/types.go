@@ -334,6 +334,11 @@ type FavoriteSetParams struct {
 	Kind      string `json:"kind"`
 	ID        string `json:"id"`
 	Favorited bool   `json:"favorited"`
+	// Source names the registered source (host) that owns the project. Empty
+	// and "local" both address the controller's own projects; a configured host
+	// name addresses that host's project, so two hosts' projects with the same
+	// ID keep separate favorites.
+	Source string `json:"source,omitempty"`
 }
 
 // FavoriteSetResponse acknowledges the committed favorite decision and gives
@@ -377,12 +382,19 @@ const (
 
 // ArchiveParams sets or clears an explicit archive decision. Project targets
 // must include the working directory used to resolve and verify their
-// canonical project ID; session targets omit it.
+// canonical project ID; session targets omit it. For a non-local Source,
+// WorkingDir is optional and is only cross-checked against the identity the
+// host already reported, never resolved against the controller's filesystem.
 type ArchiveParams struct {
 	Kind       ArchiveTargetKind `json:"kind"`
 	ID         string            `json:"id"`
 	WorkingDir string            `json:"workingDir,omitempty"`
 	Archived   bool              `json:"archived"`
+	// Source names the registered source (host) that owns the project. Empty
+	// and "local" both address the controller's own projects; a configured host
+	// name addresses that host's project, so two hosts' projects with the same
+	// ID (or path) keep separate archive decisions.
+	Source string `json:"source,omitempty"`
 }
 
 // ArchiveResponse confirms the durable decision and returns the navigation

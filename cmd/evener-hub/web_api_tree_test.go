@@ -40,7 +40,7 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 	// Manually archive the canonical project even though it has a fresh session.
-	if err := store.Set("project", project.ID, true, now); err != nil {
+	if err := store.Set("", "project", project.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
 	decisions, err := store.Decisions()
@@ -143,7 +143,7 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	if err := store.Set("project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := store.Set("", "project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
 	s := &WebServer{cfg: hubcore.WebConfig{Archive: store}}

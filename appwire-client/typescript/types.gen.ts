@@ -30,6 +30,7 @@ export interface ArchiveParams {
   id: string;
   workingDir?: string;
   archived: boolean;
+  source?: string;
 }
 
 export interface ArchiveResponse {
@@ -479,6 +480,7 @@ export interface FavoriteSetParams {
   kind: string;
   id: string;
   favorited: boolean;
+  source?: string;
 }
 
 export interface FavoriteSetResponse {

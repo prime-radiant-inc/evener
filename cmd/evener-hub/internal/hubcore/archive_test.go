@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,19 +11,89 @@ import (
 	"time"
 )
 
+func TestArchiveStoreKeysDecisionsBySource(t *testing.T) {
+	s := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	now := time.Unix(1_700_000_000, 0)
+	for _, source := range []string{"", "host-a", "host-b"} {
+		if err := s.Set(source, "project", "proj-a", true, now); err != nil {
+			t.Fatalf("set %q: %v", source, err)
+		}
+	}
+	got, err := s.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"", "host-a", "host-b"} {
+		if !got[ArchiveKey{Kind: "project", ID: "proj-a", Source: source}] {
+			t.Fatalf("missing decision for source %q: %v", source, got)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("decisions = %v, want three source-scoped entries", got)
+	}
+}
+
+func TestArchiveStoreNormalizesLocalSource(t *testing.T) {
+	for _, source := range []string{"", "local"} {
+		if got := NormalizeDecisionSource(source); got != "" {
+			t.Fatalf("NormalizeDecisionSource(%q) = %q, want the controller key", source, got)
+		}
+	}
+	if got := NormalizeDecisionSource("host-a"); got != "host-a" {
+		t.Fatalf("NormalizeDecisionSource(host-a) = %q, want host-a", got)
+	}
+}
+
+// A pre-federation index.db keys decisions on (kind, id) alone; opening it must
+// migrate the table to the (source, kind, id) key with legacy rows landing on
+// the controller source, after which a remote sibling of the same ID fits.
+func TestArchiveStoreMigratesLegacyKeyToSourceColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	legacy, err := sql.Open("sqlite", sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`CREATE TABLE archive (
+		kind       TEXT    NOT NULL,
+		id         TEXT    NOT NULL,
+		archived   INTEGER NOT NULL,
+		decided_at INTEGER NOT NULL,
+		PRIMARY KEY (kind, id))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`INSERT INTO archive (kind, id, archived, decided_at) VALUES ('project', 'proj-a', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewArchiveStore(dbPath)
+	got, err := s.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[ArchiveKey{Kind: "project", ID: "proj-a"}] {
+		t.Fatalf("legacy decision was not migrated to the controller key: %v", got)
+	}
+	if err := s.Set("host-a", "project", "proj-a", true, time.Now()); err != nil {
+		t.Fatalf("set remote sibling after migration: %v", err)
+	}
+}
+
 func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "index.db")
 	s := NewArchiveStore(db)
 	now := time.Unix(1_700_000_000, 0)
 
-	if err := s.Set("session", "sess-1", true, now); err != nil {
+	if err := s.Set("", "session", "sess-1", true, now); err != nil {
 		t.Fatalf("set archive: %v", err)
 	}
-	if err := s.Set("project", "proj-a", true, now); err != nil {
+	if err := s.Set("", "project", "proj-a", true, now); err != nil {
 		t.Fatalf("set project: %v", err)
 	}
 	// unarchive flips it back
-	if err := s.Set("session", "sess-1", false, now); err != nil {
+	if err := s.Set("", "session", "sess-1", false, now); err != nil {
 		t.Fatalf("unset: %v", err)
 	}
 
@@ -30,10 +101,10 @@ func fuzzScenarioArchiveStoreSetAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decisions: %v", err)
 	}
-	if v, ok := got[ArchiveKey{"session", "sess-1"}]; !ok || v != false {
+	if v, ok := got[ArchiveKey{Kind: "session", ID: "sess-1"}]; !ok || v != false {
 		t.Fatalf("session decision = %v,%v; want false,true", v, ok)
 	}
-	if v, ok := got[ArchiveKey{"project", "proj-a"}]; !ok || v != true {
+	if v, ok := got[ArchiveKey{Kind: "project", ID: "proj-a"}]; !ok || v != true {
 		t.Fatalf("project decision = %v,%v; want true,true", v, ok)
 	}
 }
@@ -60,7 +131,7 @@ func fuzzScenarioArchiveStoreOpenError(t *testing.T) {
 	}
 	s := NewArchiveStore(dbPath)
 	now := time.Now()
-	err := s.Set("session", "sess-1", true, now)
+	err := s.Set("", "session", "sess-1", true, now)
 	if err == nil {
 		t.Fatal("expected error when DB path is a directory")
 	}
@@ -80,7 +151,7 @@ func fuzzScenarioArchiveStoreMkdirAllError(t *testing.T) {
 	db := filepath.Join(blocker, "sub", "index.db")
 	s := NewArchiveStore(db)
 	now := time.Now()
-	err := s.Set("session", "sess-1", true, now)
+	err := s.Set("", "session", "sess-1", true, now)
 	if err == nil {
 		t.Fatal("expected error when MkdirAll parent is a file")
 	}
@@ -98,8 +169,8 @@ func fuzzScenarioArchiveStoreDelete(t *testing.T) {
 	dir := t.TempDir()
 	store := NewArchiveStore(filepath.Join(dir, "index.db"))
 	now := time.Unix(1_700_000_000, 0)
-	_ = store.Set("project", "/a/foo", true, now)
-	if err := store.Delete("project", "/a/foo"); err != nil {
+	_ = store.Set("", "project", "/a/foo", true, now)
+	if err := store.Delete("", "project", "/a/foo"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := store.Decisions()

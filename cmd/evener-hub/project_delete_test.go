@@ -117,17 +117,17 @@ func readFavoriteDecisionRows(t *testing.T, dbPath string) map[hubcore.ArchiveKe
 func seedProjectDeleteDecisions(t *testing.T, archive *hubcore.ArchiveStore, favorite *hubcore.FavoriteStore, projectID string, sessionIDs ...string) {
 	t.Helper()
 	for _, id := range sessionIDs {
-		if err := archive.Set("session", id, true, timeNowForTest()); err != nil {
+		if err := archive.Set("", "session", id, true, timeNowForTest()); err != nil {
 			t.Fatal(err)
 		}
-		if err := favorite.Set("session", id, true, timeNowForTest()); err != nil {
+		if err := favorite.Set("", "session", id, true, timeNowForTest()); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := archive.Set("project", projectID, true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "project", projectID, true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("project", projectID, true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "project", projectID, true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -289,16 +289,16 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, webTestSessionID)
-	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
@@ -1374,16 +1374,16 @@ func TestProjectDeleteRetainsSkippedDecisionsAndRemovesOnlyDeletedDecisions(t *t
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, deletedID, skippedID)
-	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries()})
@@ -1524,16 +1524,16 @@ func TestProjectDeleteDoesNotScrubProjectRowsAfterPastSnapshotRacesWithRebuild(t
 	archive := hubcore.NewArchiveStore(dbPath)
 	favorite := hubcore.NewFavoriteStore(dbPath)
 	seedProjectDeleteDecisions(t, archive, favorite, project.ID, sessionID)
-	if err := archive.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("session", "unrelated-session", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "session", "unrelated-session", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := archive.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := archive.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
-	if err := favorite.Set("project", "unrelated-project", true, timeNowForTest()); err != nil {
+	if err := favorite.Set("", "project", "unrelated-project", true, timeNowForTest()); err != nil {
 		t.Fatal(err)
 	}
 
