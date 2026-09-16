@@ -13,14 +13,15 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
 // modelEntry is one /models row: the core OpenAI shape plus OpenRouter's
-// extensions, which are absent (and therefore not advertised) elsewhere.
-// The unprefixed limit fields are what OpenAI-compatible gateways publish at
-// the row's top level (with no top_provider object and no
-// supported_parameters), so they are read as a fallback.
+// extensions, which are absent (and therefore not advertised) elsewhere. A
+// gateway in the OpenAI-compatible shape publishes context_window,
+// max_input_tokens, max_completion_tokens and max_output_tokens at the row's
+// top level instead of under top_provider, so those are read too.
 type modelEntry struct {
 	ID                  string   `json:"id"`
 	ContextLength       int      `json:"context_length"`
@@ -64,20 +65,15 @@ func advertises(params []string, names ...string) bool {
 // row keeps only advertised facts (registry.ApplyLive keeps only those).
 func (m modelEntry) row() registry.Model {
 	caps := registry.Caps{}
-	if m.ContextLength > 0 {
-		caps.ContextWindow = new(m.ContextLength)
-	} else if m.ContextWindow > 0 {
-		caps.ContextWindow = new(m.ContextWindow)
+	if w := requestutil.FirstPositiveInt(m.ContextLength, m.ContextWindow); w > 0 {
+		caps.ContextWindow = new(w)
 	}
 	if m.MaxInputTokens > 0 {
 		caps.MaxInputTokens = new(m.MaxInputTokens)
 	}
-	if m.TopProvider.MaxCompletionTokens != nil && *m.TopProvider.MaxCompletionTokens > 0 {
-		caps.MaxOutputTokens = new(*m.TopProvider.MaxCompletionTokens)
-	} else if m.MaxCompletionTokens > 0 {
-		caps.MaxOutputTokens = new(m.MaxCompletionTokens)
-	} else if m.MaxOutputTokens > 0 {
-		caps.MaxOutputTokens = new(m.MaxOutputTokens)
+	topProviderCap := requestutil.PositivePointerInt(m.TopProvider.MaxCompletionTokens)
+	if o := requestutil.FirstPositiveInt(topProviderCap, m.MaxCompletionTokens, m.MaxOutputTokens); o > 0 {
+		caps.MaxOutputTokens = new(o)
 	}
 	if len(m.SupportedParameters) > 0 {
 		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
