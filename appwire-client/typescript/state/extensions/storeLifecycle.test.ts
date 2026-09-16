@@ -58,7 +58,10 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
   listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/marketplace/list").length,
   gateList: (fake) => {
     const releases: (() => void)[] = [];
-    fake.on("evener/marketplace/list", () => new Promise((resolve) => releases.push(() => resolve({ marketplaces: [] }))) as never);
+    fake.on(
+      "evener/marketplace/list",
+      () => new Promise((resolve) => releases.push(() => resolve({ marketplaces: [] }))) as never,
+    );
     return releases;
   },
   deferList: (fake) => {
@@ -87,7 +90,10 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/plugin/list").length,
   gateList: (fake) => {
     const releases: (() => void)[] = [];
-    fake.on("evener/plugin/list", () => new Promise((resolve) => releases.push(() => resolve({ plugins: [] }))) as never);
+    fake.on(
+      "evener/plugin/list",
+      () => new Promise((resolve) => releases.push(() => resolve({ plugins: [] }))) as never,
+    );
     return releases;
   },
   deferList: (fake) => {
