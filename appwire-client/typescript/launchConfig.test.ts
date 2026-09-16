@@ -2,7 +2,12 @@
 
 import { describe, expect, test } from "vitest";
 import { createLaunchConfigStore, type LaunchConfigClient } from "./launchConfig";
-import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "./types.gen";
+import type {
+  LaunchConfigLayer,
+  LaunchConfigResolved,
+  LaunchOptionSchemaResponse,
+  PathsCompleteResponse,
+} from "./types.gen";
 
 const SCHEMA: LaunchOptionSchemaResponse = {
   options: [
@@ -116,6 +121,35 @@ describe("createLaunchConfigStore", () => {
       { method: "evener/launch/trustRepo", params: { cwd: "/repo", hash: "abc123" } },
       { method: "evener/path/validate", params: { path: "/opt", kind: "dir" } },
     ]);
+  });
+
+  // The three filesystem RPCs behind the directory picker and PathField are
+  // named here with the launch-config reads they serve: every path a launch
+  // option holds is picked, validated and created through them.
+  test("the filesystem helpers pass prefix, includeFiles and path through to the wire", async () => {
+    const { client, calls } = fakeClient((method) => {
+      if (method === "evener/paths/complete") return { data: ["/opt/plugins/"] };
+      return {};
+    });
+    const { completePaths, createDirectory } = createLaunchConfigStore(client).getState();
+
+    expect(await completePaths("/opt/plug", false)).toEqual(["/opt/plugins/"]);
+    await createDirectory("/opt/new");
+
+    expect(calls).toEqual([
+      { method: "evener/paths/complete", params: { prefix: "/opt/plug", includeFiles: false } },
+      { method: "evener/dirs/create", params: { path: "/opt/new" } },
+    ]);
+  });
+
+  test("a completion list that comes back null resolves to an empty list", async () => {
+    // A Go handler returning a nil slice sends `null` here, which the generated
+    // type declares cannot happen; every PathField would then crash its whole
+    // form on the first .length. Coalesced at the seam so no caller has to.
+    // The cast is the point: the generated type forbids this payload, which is
+    // exactly why TypeScript could never catch the real crash.
+    const { client } = fakeClient(() => ({ data: null }) as unknown as PathsCompleteResponse);
+    await expect(createLaunchConfigStore(client).getState().completePaths("/etc/", true)).resolves.toEqual([]);
   });
 
   test("the store is the getState/getInitialState/setState/subscribe triple a view layer binds to", () => {

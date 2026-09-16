@@ -34,18 +34,15 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectionStore, onConnectionNotification } from "./connection";
 import { isLocalHost } from "./hostRouting";
+import { launchConfigStore } from "./launchConfig";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
 export interface ExtensionsStoreState extends MarketplacesState, PluginsState, LaunchLayerState {
+  // The filesystem three the sections' PathFields and directory pickers use;
+  // the launch-config gateway answers all of them (see below).
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
   createDirectory(path: string): Promise<void>;
-  // Backs PathField. The prefix passes through verbatim, because the widget
-  // picks which of the RPC's two duties it wants per keystroke: a trailing
-  // slash lists a directory's children, a bare prefix fuzzy-completes it
-  // (TestHubRPCPathsCompleteReturnsMatchingDirectories). includeFiles adds
-  // files to the dirs-only default, and then directory entries come back with
-  // a trailing slash.
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
@@ -113,23 +110,13 @@ export const extensionsStore = createStore<ExtensionsStoreState>(() => ({
   ...plugins.getState(),
   ...launchLayer.getState(),
 
-  async validatePath(path, kind) {
-    const client = requireClient();
-    return client.request("evener/path/validate", { path, kind });
-  },
-
-  async createDirectory(path) {
-    await requireClient().request("evener/dirs/create", { path });
-  },
-
-  async completePaths(prefix, includeFiles) {
-    const client = requireClient();
-    const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
-    // Defence in depth against a null `data`. The hub sends [] and the wire type
-    // says string[], but a null here would reach every PathField on the page and
-    // a form must not come down over an empty directory listing.
-    return resp.data ?? [];
-  },
+  // The three filesystem RPCs are the launch-config gateway's
+  // (stores/launchConfig.ts over the package's createLaunchConfigStore), named
+  // once there for every surface that picks a path. They stay on this store's
+  // state because the sections reach them through it.
+  validatePath: (path, kind) => launchConfigStore.getState().validatePath(path, kind),
+  createDirectory: (path) => launchConfigStore.getState().createDirectory(path),
+  completePaths: (prefix, includeFiles) => launchConfigStore.getState().completePaths(prefix, includeFiles),
 }));
 
 // Each core's publish lands here synchronously, as the fields it changed: a
