@@ -27,7 +27,9 @@ function requireClient(): AppwireClientLike {
 }
 
 const connectedClient: LaunchConfigClient = {
-  request: (method, params, opts) => requireClient().request(method, params, opts),
+  // async so a call before connect() rejects, as a real client's would, rather
+  // than throwing at the call site.
+  request: async (method, params, opts) => requireClient().request(method, params, opts),
   onNotification: (cb) => requireClient().onNotification(cb),
 };
 

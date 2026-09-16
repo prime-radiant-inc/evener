@@ -1,14 +1,13 @@
-// launchConfig.ts is the launch-config wire gateway every settings surface
-// built on the schema-driven launch-config engine (launchSchema rendered by
-// each app's form) and the in-repo trust flow calls through:
-// evener/launch/{schema,getLayer,setLayer,resolve,trustRepo} and
-// evener/path/validate. createLaunchConfigStore is a factory - each app builds
-// the one instance it wires up, and tests build their own - and the store is
-// the getState/setState/subscribe triple plus getInitialState, the shape
-// React's useSyncExternalStore (and zustand's useStore over it) binds to
-// without the package depending on either.
+// launchConfig.ts is the launch-config wire gateway both apps' launch settings
+// surfaces call through: evener/launch/{schema,getLayer,setLayer,resolve,
+// trustRepo} and evener/path/validate, each named once here as a typed method.
+// createLaunchConfigStore wraps them in a framework-free store (the
+// getState/setState/subscribe triple plus getInitialState, as in
+// keybindingRegistry.ts) and adds the one cache; LaunchSettings is the
+// per-layer draft editor the native settings screen drives over the same
+// methods, uncached.
 //
-// schema() is the one cached read here: the option schema is server-global,
+// schema() is the store's one cached read: the option schema is server-global,
 // identical for every cwd/layer, so a settings user who visits several launch
 // pages in one session pays for the RPC once per store. The cache is per
 // instance - two stores over two hubs never see each other's schema.
@@ -16,11 +15,6 @@
 // each is read-your-writes sensitive (a getLayer right after a setLayer must
 // see the just-saved value) and varies by cwd+layer, so there is no single
 // value to memoize the way schema's is.
-//
-// LaunchSettings is the per-hub/cwd/layer editor the native launch settings
-// screen drives over that gateway: a draft with dirty tracking, a preflight
-// baseline check before every whole-layer write, and the changed-elsewhere
-// gate an evener/launch/updated notification raises on a dirty draft.
 
 import type { AppwireClient } from "./client";
 import type { LaunchConfigLayerName } from "./launchSchema";
@@ -47,6 +41,20 @@ export interface LaunchConfigStoreState {
   invalidateSchema(): void;
 }
 
+/** The six wire methods as typed, uncached calls over `client`. */
+type LaunchConfigRequests = Omit<LaunchConfigStoreState, "invalidateSchema">;
+
+function launchConfigRequests(client: LaunchConfigClient): LaunchConfigRequests {
+  return {
+    schema: () => client.request("evener/launch/schema", {}),
+    getLayer: (cwd, layer) => client.request("evener/launch/getLayer", { cwd, layer }),
+    setLayer: (cwd, layer, config) => client.request("evener/launch/setLayer", { cwd, layer, config }),
+    resolve: (cwd, launchOverrides) => client.request("evener/launch/resolve", { cwd, launchOverrides }),
+    trustRepo: (cwd, hash) => client.request("evener/launch/trustRepo", { cwd, hash }),
+    validatePath: (path, kind) => client.request("evener/path/validate", { path, kind }),
+  };
+}
+
 /** Runs after every state change with the new state and the one it replaced
  * - the listener shape zustand's useStore subscribes with. */
 export type LaunchConfigListener = (state: LaunchConfigStoreState, previous: LaunchConfigStoreState) => void;
@@ -69,17 +77,21 @@ export interface LaunchConfigStore {
 /** Builds a gateway over `client`, with its own schema cache. */
 export function createLaunchConfigStore(client: LaunchConfigClient): LaunchConfigStore {
   const listeners = new Set<LaunchConfigListener>();
+  const requests = launchConfigRequests(client);
   // The schema cache and its in-flight tracking are closure-private, not part
   // of the store's reactive state: nothing renders off "is the schema cached
   // yet", so a fetch completing must not notify subscribers.
   let schemaCache: LaunchOptionSchemaResponse | null = null;
   let schemaInflight: Promise<LaunchOptionSchemaResponse> | null = null;
   let state: LaunchConfigStoreState = {
+    ...requests,
     async schema() {
       if (schemaCache) return schemaCache;
       if (!schemaInflight) {
-        const fetching = client
-          .request("evener/launch/schema", {})
+        // The identity checks keep a fetch that was invalidated while in
+        // flight from repopulating the cache when it finally lands.
+        const fetching = requests
+          .schema()
           .then((resp) => {
             if (schemaInflight === fetching) schemaCache = resp;
             return resp;
@@ -91,13 +103,6 @@ export function createLaunchConfigStore(client: LaunchConfigClient): LaunchConfi
       }
       return schemaInflight;
     },
-    // async so a client that throws (the web's, before connect()) rejects
-    // the returned promise instead of throwing at the call site.
-    getLayer: async (cwd, layer) => client.request("evener/launch/getLayer", { cwd, layer }),
-    setLayer: async (cwd, layer, config) => client.request("evener/launch/setLayer", { cwd, layer, config }),
-    resolve: async (cwd, launchOverrides) => client.request("evener/launch/resolve", { cwd, launchOverrides }),
-    trustRepo: async (cwd, hash) => client.request("evener/launch/trustRepo", { cwd, hash }),
-    validatePath: async (path, kind) => client.request("evener/path/validate", { path, kind }),
     invalidateSchema() {
       schemaCache = null;
       schemaInflight = null;
@@ -150,21 +155,15 @@ export class LaunchSettings {
     error: null,
     resolveError: null,
   };
-  private client: LaunchConfigClient | null;
-  // The gateway bound to the current client, rebuilt on setConnection.
-  private rpc: LaunchConfigStoreState | null;
   private version = 0;
   private disposed = false;
   private unsubscribe?: () => void;
   private listeners = new Set<() => void>();
   constructor(
-    client: LaunchConfigClient | null,
+    private client: LaunchConfigClient | null,
     readonly cwd: string,
     readonly layer: LaunchConfigLayerName,
-  ) {
-    this.client = client;
-    this.rpc = client && createLaunchConfigStore(client).getState();
-  }
+  ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -197,7 +196,6 @@ export class LaunchSettings {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.client = client;
-    this.rpc = client && createLaunchConfigStore(client).getState();
     this.publish({ loading: false, saving: false });
     if (client) {
       this.start();
@@ -206,23 +204,13 @@ export class LaunchSettings {
   }
   refresh = (discardDraft = false) => this.load(discardDraft, false);
   private load = async (discardDraft: boolean, reconcile: boolean) => {
-    if (
-      this.disposed ||
-      !this.client ||
-      !this.rpc ||
-      this.state.saving ||
-      (this.state.dirty && !discardDraft && !reconcile)
-    )
-      return;
-    const { client, rpc } = this;
+    if (this.disposed || !this.client || this.state.saving || (this.state.dirty && !discardDraft && !reconcile)) return;
+    const rpc = launchConfigRequests(this.client);
     const version = ++this.version;
     this.publish({ loading: true, error: null });
     try {
-      // The schema is fetched directly rather than through the gateway's cache:
-      // every load is a fresh, independent read, so a hung request from an
-      // obsolete refresh can never hold up the one that supersedes it.
       const [schema, current, resolved] = await Promise.all([
-        client.request("evener/launch/schema", {}),
+        rpc.schema(),
         rpc.getLayer(this.cwd, this.layer),
         rpc.resolve(this.cwd).catch(() => null),
       ]);
@@ -266,7 +254,7 @@ export class LaunchSettings {
   save = async (): Promise<boolean> => {
     if (
       this.disposed ||
-      !this.rpc ||
+      !this.client ||
       this.state.saving ||
       this.state.loading ||
       !this.state.dirty ||
@@ -280,7 +268,7 @@ export class LaunchSettings {
     }
     const draft = this.state.draft;
     const baseline = this.state.current;
-    const rpc = this.rpc;
+    const rpc = launchConfigRequests(this.client);
     const version = ++this.version;
     const active = () => !this.disposed && version === this.version;
     this.publish({ saving: true, error: null });
@@ -332,7 +320,7 @@ export class LaunchSettings {
     const repo = this.state.resolved?.repo;
     if (
       this.disposed ||
-      !this.rpc ||
+      !this.client ||
       this.layer !== "project" ||
       this.state.dirty ||
       this.state.loading ||
@@ -342,7 +330,7 @@ export class LaunchSettings {
       !["untrusted", "changed", "rejected"].includes(repo.trust)
     )
       return false;
-    const rpc = this.rpc;
+    const rpc = launchConfigRequests(this.client);
     const version = ++this.version;
     const active = () => !this.disposed && version === this.version;
     this.publish({ saving: true, error: null });

@@ -70,6 +70,28 @@ describe("createLaunchConfigStore", () => {
     expect(second.calls).toHaveLength(1);
   });
 
+  test("a schema fetch invalidated while in flight does not repopulate the cache", async () => {
+    let release: ((value: LaunchOptionSchemaResponse) => void) | undefined;
+    const { client, calls } = fakeClient(
+      () =>
+        new Promise<LaunchOptionSchemaResponse>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const store = createLaunchConfigStore(client);
+    const stale = store.getState().schema();
+    await Promise.resolve();
+    store.getState().invalidateSchema();
+    release?.(SCHEMA);
+    await expect(stale).resolves.toEqual(SCHEMA);
+
+    const fresh = store.getState().schema();
+    await Promise.resolve();
+    release?.(SCHEMA);
+    await expect(fresh).resolves.toEqual(SCHEMA);
+    expect(calls).toHaveLength(2);
+  });
+
   test("the uncached methods pass cwd, layer, config, hash and path through to the wire", async () => {
     const { client, calls } = fakeClient((method) => {
       if (method === "evener/launch/getLayer") return LAYER;
