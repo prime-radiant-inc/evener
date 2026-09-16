@@ -1,0 +1,894 @@
+// The transcript display hub-defaults store both apps' display settings run
+// on: one hub's per-layout transcript display defaults
+// (evener/settings/transcriptDisplay/{get,patch} and the `changed`
+// broadcast), with a direct write for a host that edits live and a
+// checkpointed draft editor for a host that edits offline.
+// createTranscriptDisplayStore is a factory - each app builds the one
+// instance it wires to its connection and its view layer, tests build their
+// own - returning the framework-free triple plus the connection-lifecycle
+// methods the host drives. Pure logic - no DOM, no React, no storage of its
+// own: the client and the draft storage are ports.
+//
+// This store holds the HUB layer only. A host that layers a local override
+// on top (the web's per-browser localStorage value and its viewport class)
+// keeps that beside the store and resolves the effective configuration
+// itself; this store never sees it.
+//
+// Two write paths share the PATCH: patchHubDefault is the live editor's
+// direct write (a preview draft per layout while the request is out,
+// dropped when it settles, the canonical response applied); saveDraft is the
+// offline editor's checkpointed write (the intent is persisted through the
+// draft port BEFORE the request leaves, and a lost reply leaves it
+// `writeUncertain` until an authoritative read). Which one a host uses is the
+// host's product decision; the hub state they confirm is one.
+//
+// Every post-await site fences through one predicate (readStillMine /
+// writeStillMine) and every reset site retires the payload through one helper
+// (retirePayload), so a reply that arrives after the generation ended, support
+// dropped or the hub was replaced lands nothing.
+
+import type { AppwireClient } from "./client";
+import { errorText, WireError } from "./errors";
+import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
+import {
+  configFingerprint,
+  fromWireConfig,
+  fromWireDefault,
+  fromWireDefaults,
+  type HubTranscriptDisplayDefault,
+  normalizeConfig,
+  shippedDefault,
+  type TranscriptDisplayConfigV1,
+  toWireConfig,
+  type ViewportClass,
+} from "./transcriptDisplayConfig";
+import type { AnyNotification, FeatureSet } from "./types.gen";
+
+/** The two members of the client this store calls; AppwireClientLike satisfies it. */
+export type TranscriptDisplayClient = Pick<AppwireClient, "request" | "onNotification">;
+
+export type TranscriptDisplaySupport = "unknown" | "supported" | "unsupported";
+
+/** Whether the connected hub advertises transcript display settings: unknown
+ * until the handshake's feature set is in hand. */
+export function transcriptDisplaySupport(
+  features: Pick<FeatureSet, "transcriptDisplaySettings"> | undefined,
+): TranscriptDisplaySupport {
+  if (features === undefined) return "unknown";
+  return features.transcriptDisplaySettings === true ? "supported" : "unsupported";
+}
+
+const LAYOUTS: readonly ViewportClass[] = ["desktop", "mobile"];
+
+export function isViewportClass(value: unknown): value is ViewportClass {
+  return value === "desktop" || value === "mobile";
+}
+
+/** The hub's confirmed default per layout; a layout the hub has not answered
+ * for yet is absent. */
+export type HubDefaultsByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
+
+/** A draft persisted through the draft port: the configuration the user
+ * proposed for one layout, the hub revision it was composed against, and
+ * whether a PATCH carrying it left without a confirmed outcome. */
+export interface TranscriptDraftCheckpoint {
+  id: string;
+  layout: ViewportClass;
+  baseRevision: number;
+  config: TranscriptDisplayConfigV1;
+  writeUncertain: boolean;
+}
+
+/** The storage port the checkpointed draft editor writes through. Every
+ * method may throw; the store maps a throw to `storageUnavailable`. */
+export interface TranscriptDraftStorage {
+  createId(): string;
+  load(): unknown;
+  save(checkpoint: TranscriptDraftCheckpoint): void;
+  /** Removes the stored checkpoint only if it is still this one. */
+  removeIf(checkpoint: TranscriptDraftCheckpoint): void;
+}
+
+/** The draft port a store without one runs on: the proposal lives in the
+ * store's state only and does not survive the instance. */
+function memoryDraftStorage(): TranscriptDraftStorage {
+  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
+}
+
+/** The offline editor's proposal: one layout's configuration and the
+ * confirmed revision it was composed against. */
+export interface TranscriptDraft {
+  layout: ViewportClass;
+  revision: number;
+  config: TranscriptDisplayConfigV1;
+}
+
+/** One `changed` broadcast, as the host may also feed it in by hand. */
+export interface TranscriptDisplayChange {
+  layout: ViewportClass;
+  revision: number;
+  config: TranscriptDisplayConfigV1;
+}
+
+export interface TranscriptDisplayStoreFields {
+  hubSupport: TranscriptDisplaySupport;
+  hubLoading: boolean;
+  /** The last hub-sourced failure (a failed read, a malformed reply); the
+   * per-layout copy of a write's failure rides `hubErrors`. */
+  hubError: string | null;
+  /** A write's failure on the layout it wrote; cleared by the layout's next
+   * write leaving. */
+  hubErrors: Partial<Record<ViewportClass, string>>;
+  /** The hub's confirmed defaults. They keep presenting across a transient
+   * disconnect (the effective configuration must not flap); `loaded` says
+   * whether they are confirmed for the CURRENT ready generation. */
+  hub: HubDefaultsByLayout;
+  /** True only while `hub` was confirmed by the hub for the current ready
+   * generation. Set on every applied payload; cleared when the generation
+   * ends, support drops, the hub is replaced or the store resets. Writes gate
+   * on it: a PATCH composed against a previous hub's revision would overwrite
+   * the new hub's default on a revision collision. */
+  loaded: boolean;
+  /** Bumps on every applied payload for the current generation. */
+  appliedSerial: number;
+  /** The direct write's preview per layout while its request is out. */
+  drafts: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
+  /** The offline editor's proposal. Restored from the draft port at creation. */
+  draft: TranscriptDraft | null;
+  /** A checkpointed write is in flight. */
+  saving: boolean;
+  /** A checkpointed write left without a confirmed outcome; edits stay
+   * blocked until an authoritative read lands. */
+  writeUncertain: boolean;
+  /** The draft port threw; edits stay blocked until refreshHubDefaults can
+   * restore the checkpoint again. */
+  storageUnavailable: boolean;
+  /** The draft's base revision is not the confirmed revision of its layout
+   * (the hub moved under it, or a write's outcome is unknown): saveDraft
+   * refuses until rebaseDraft reviews the current value. */
+  draftConflict: boolean;
+  /** The draft port's own failures (save, discard, restore, cleanup);
+   * hub-sourced failures ride hubError and an unconfirmed write is the
+   * `writeUncertain` fact itself. */
+  draftError: string | null;
+}
+
+export interface TranscriptDisplayStoreActions {
+  /** Refreshes both layouts from the hub under the current ready generation;
+   * a no-op without one, while unsupported, or while the draft port is
+   * unavailable. */
+  refreshHubDefaults(): Promise<void>;
+  /** The live editor's write: previews `config` on `layout` while the PATCH
+   * is out, applies the canonical response, clears the preview. A lost
+   * revision race adopts the canonical current the hub reports and rejects;
+   * a later write on the same layout supersedes an earlier one's reply. */
+  patchHubDefault(layout: ViewportClass, config: TranscriptDisplayConfigV1): Promise<HubTranscriptDisplayDefault>;
+  /** Applies one hub change by hand (a host relaying a broadcast it received
+   * on its own channel): a malformed or stale change is ignored. */
+  applyHubChange(change: TranscriptDisplayChange): void;
+  /** Replaces the draft with `config` for `layout`, checkpointed through the
+   * draft port. Throws while the store is not editable (see assertEditable). */
+  editDraft(layout: ViewportClass, config: TranscriptDisplayConfigV1): void;
+  /** PATCHes `config` (default: the draft, else the layout's confirmed value)
+   * with the draft's base revision as expectedRevision, checkpointing the
+   * intent before the request leaves. Rejects on a stale draft (rebaseDraft
+   * first), while a save is in flight, and on any failed or unconfirmed
+   * write. Without a draft, `layout` names the layer being saved. */
+  saveDraft(layout?: ViewportClass, config?: TranscriptDisplayConfigV1): Promise<HubTranscriptDisplayDefault>;
+  /** Drops the draft and its checkpoint. */
+  discardDraft(): void;
+  /** Moves the draft's base onto the confirmed revision the user reviewed;
+   * throws when the hub has moved again since. */
+  rebaseDraft(reviewedRevision: number): void;
+}
+
+export type TranscriptDisplayStoreState = TranscriptDisplayStoreFields & TranscriptDisplayStoreActions;
+
+export interface TranscriptDisplayStore extends FrameworkFreeStore<TranscriptDisplayStoreState> {
+  /** Publishes the connection's support for transcript display settings.
+   * Resolving to unsupported retires the payload; flapping back to supported
+   * while a ready generation is active begins a new one so no pre-flap
+   * in-flight work lands, and loads. */
+  setSupport(support: TranscriptDisplaySupport): void;
+  /** The client is ready: subscribe to its notifications and fence every
+   * later refresh and write to this generation. The host refreshes next. */
+  beginReadyGeneration(): void;
+  /** The ready generation ended (disconnect, client replacement): drop the
+   * subscription, fence in-flight work out, and mark the confirmed defaults
+   * as no longer current. They keep presenting - a transient disconnect must
+   * not flap the effective configuration. */
+  endReadyGeneration(): void;
+  /** The client was replaced by one for a possibly different hub: the
+   * confirmed defaults are the previous hub's, so they stop presenting and
+   * the payload state resets. */
+  detachHub(): void;
+  /** Ends the generation and returns the state to its initial values; the
+   * host re-publishes support afterwards. */
+  reset(): void;
+  /** Ends the generation for good: every later refresh and write is refused
+   * and nothing in flight lands. */
+  dispose(): void;
+}
+
+export interface TranscriptDisplayStoreDeps {
+  client: TranscriptDisplayClient;
+  /** The draft port. Without one the draft editor keeps its state in memory. */
+  drafts?: TranscriptDraftStorage;
+}
+
+function initialState(): TranscriptDisplayStoreFields {
+  return {
+    hubSupport: "unknown",
+    hubLoading: false,
+    hubError: null,
+    hubErrors: {},
+    hub: {},
+    loaded: false,
+    appliedSerial: 0,
+    drafts: {},
+    draft: null,
+    saving: false,
+    writeUncertain: false,
+    storageUnavailable: false,
+    draftConflict: false,
+    draftError: null,
+  };
+}
+
+const UNAVAILABLE_MESSAGE = "Hub transcript display settings are unavailable.";
+const MALFORMED_DEFAULTS_MESSAGE = "Hub returned malformed transcript display defaults";
+const MALFORMED_PATCH_MESSAGE = "Hub returned malformed transcript display PATCH response";
+/** The draft port's fixed failure copy: a raw storage error may carry a local
+ * path, so it never reaches state verbatim. */
+const DRAFT_SAVE_FAILED_MESSAGE = "Could not save the transcript draft locally.";
+const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the transcript draft locally.";
+const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved transcript draft. Check current settings to retry.";
+const DRAFT_CLEANUP_FAILED_MESSAGE =
+  "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.";
+
+/** A distinguishable class for the response-shape rejection: the direct write
+ * reports it on both error fields, where a transport failure reports on the
+ * layout alone. */
+export class InvalidPatchResponseError extends Error {}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isRevision(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** Structural check for one `changed` broadcast: the trust-boundary re-check
+ * so a malformed payload degrades to a re-read instead of a crash. Every
+ * field must be present and well-formed; an empty or partial record is not a
+ * change. */
+export function fromWireChange(value: unknown): TranscriptDisplayChange | undefined {
+  if (!isRecord(value) || !isViewportClass(value.layout) || !isRevision(value.revision)) return undefined;
+  const config = fromWireConfig(value.config);
+  return config === undefined ? undefined : { layout: value.layout, revision: value.revision, config };
+}
+
+/** The PATCH response shape: exactly {layout, revision, config} for the
+ * layout written, or undefined. Semantic checks against the request belong to
+ * the caller. */
+function fromWirePatchResponse(value: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length !== 3 || !("layout" in value) || !("revision" in value) || !("config" in value)) return undefined;
+  if (value.layout !== layout || !isRevision(value.revision)) return undefined;
+  const config = fromWireConfig(value.config);
+  return config === undefined ? undefined : { revision: value.revision, config };
+}
+
+/** The canonical current the hub reports with a lost revision race, or
+ * undefined for any other rejection. */
+function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || error.code !== -32013 || !isRecord(error.data)) return undefined;
+  if (error.data.evenerErrorInfo !== "conflict" || error.data.layout !== layout) return undefined;
+  return fromWireDefault(error.data.current);
+}
+
+function invalidDraft(): never {
+  throw new Error("Invalid transcript preference draft.");
+}
+
+/** The strict checkpoint check the draft editor runs on a restored
+ * checkpoint. A stored checkpoint from before layouts were recorded is the
+ * mobile layer's, the one host that checkpoints. Throws on anything else. */
+function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
+  if (!isRecord(value)) invalidDraft();
+  if (
+    typeof value.id !== "string" ||
+    !value.id.length ||
+    !isRevision(value.baseRevision) ||
+    typeof value.writeUncertain !== "boolean" ||
+    (value.layout !== undefined && !isViewportClass(value.layout))
+  )
+    invalidDraft();
+  let config: TranscriptDisplayConfigV1;
+  try {
+    config = normalizeConfig(value.config as TranscriptDisplayConfigV1);
+  } catch {
+    invalidDraft();
+  }
+  return {
+    id: value.id,
+    layout: isViewportClass(value.layout) ? value.layout : "mobile",
+    baseRevision: value.baseRevision,
+    config,
+    writeUncertain: value.writeUncertain,
+  };
+}
+
+/** The draft port with every checkpoint normalized through draftCheckpoint in
+ * BOTH directions, so a port that compares serialized bytes sees one key
+ * order on both sides. load() is the trust boundary: a malformed stored draft
+ * surfaces as a storage failure, never as state. */
+function draftRepository(storage: TranscriptDraftStorage) {
+  return {
+    createId: () => storage.createId(),
+    load(): TranscriptDraftCheckpoint | null {
+      const value = storage.load();
+      return value === null || value === undefined ? null : draftCheckpoint(value);
+    },
+    save(checkpoint: TranscriptDraftCheckpoint): void {
+      storage.save(draftCheckpoint(checkpoint));
+    },
+    removeIf(checkpoint: TranscriptDraftCheckpoint): void {
+      storage.removeIf(draftCheckpoint(checkpoint));
+    },
+  };
+}
+
+/** A draft composed against one confirmed revision is stale once its layout
+ * has confirmed a different one. */
+function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout): boolean {
+  if (draft === null) return false;
+  const confirmed = hub[draft.layout];
+  return confirmed !== undefined && confirmed.revision !== draft.revision;
+}
+
+export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): TranscriptDisplayStore {
+  const { client } = deps;
+  const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
+
+  // Ready-generation wiring. `activeEpoch` is -1 while no generation is
+  // active; every refresh and write captures the epoch it started under and
+  // fences its reply on it still being the active one.
+  let epoch = 0;
+  let activeEpoch = -1;
+  let unwireNotification: (() => void) | null = null;
+  let disposed = false;
+  let refreshSerial = 0;
+  /** Set when a changed-notification is dropped because the current
+   * generation has no confirmed state yet: the refresh that lands the state
+   * may carry a response PREDATING the dropped change, so a successful
+   * refresh with the flag set fires ONE follow-up fetch. Per generation. */
+  let missedChangeNotification = false;
+  /** The direct write's token per layout: a later write on the same layout
+   * supersedes an earlier one's reply. Bumped for every layout by retirement. */
+  const patchTokens = new Map<ViewportClass, number>();
+  let patchSerial = 0;
+  /** Bumps when any write leaves. A reply is a write's own only while no later
+   * write has left, and a GET that started BEFORE a write says nothing about
+   * that write's outcome, so only a read that started after it may settle
+   * `writeUncertain`. */
+  let writeSerial = 0;
+
+  const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
+    ...initialState(),
+    // The draft restore is part of the initial state so a host that builds
+    // the store synchronously (native, per connection) sees the persisted
+    // proposal on its first read, before any refresh.
+    ...restoreDraft({ loaded: false, hub: {} }),
+    refreshHubDefaults,
+    patchHubDefault,
+    applyHubChange,
+    editDraft,
+    saveDraft,
+    discardDraft,
+    rebaseDraft,
+  }));
+  const { getState, setState } = store;
+
+  function restoreDraft(confirmed: {
+    loaded: boolean;
+    hub: HubDefaultsByLayout;
+  }): Partial<TranscriptDisplayStoreFields> {
+    try {
+      const checkpoint = drafts.load();
+      const draft = checkpoint
+        ? { layout: checkpoint.layout, revision: checkpoint.baseRevision, config: checkpoint.config }
+        : null;
+      return {
+        draft,
+        writeUncertain: checkpoint?.writeUncertain ?? false,
+        storageUnavailable: false,
+        draftError: null,
+        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.hub),
+      };
+    } catch {
+      return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
+    }
+  }
+
+  function isCurrent(generation: number): boolean {
+    return !disposed && generation >= 0 && activeEpoch === generation;
+  }
+
+  function isSupported(): boolean {
+    return getState().hubSupport === "supported";
+  }
+
+  /** The hub a piece of work started against is still the one being acted
+   * on: its ready generation is current and support is still advertised. */
+  function liveHub(generation: number): boolean {
+    return isCurrent(generation) && isSupported();
+  }
+
+  /** A read's reply is its own to land: live hub, and no later read or
+   * payload retirement has superseded it. */
+  function readStillMine(generation: number, serial: number): boolean {
+    return liveHub(generation) && serial === refreshSerial;
+  }
+
+  /** A direct write's reply is its own to land: live hub, and no later write
+   * on its layout or payload retirement has superseded it. */
+  function patchStillMine(generation: number, layout: ViewportClass, token: number): boolean {
+    return liveHub(generation) && patchTokens.get(layout) === token;
+  }
+
+  /** A checkpointed write's reply is its own to land: live hub, and no later
+   * write or payload retirement has superseded it. */
+  function writeStillMine(generation: number, token: number): boolean {
+    return liveHub(generation) && token === writeSerial;
+  }
+
+  /** The confirmed payload can no longer be acted on (the generation ended,
+   * support dropped, the hub was replaced): it stops presenting as current,
+   * every reply still in flight is superseded so it lands nothing, and the
+   * in-flight flags end here. A checkpointed write caught mid-flight has an
+   * UNKNOWN outcome - exactly what writeUncertain means, and what its
+   * checkpoint already says on disk; the next authoritative read settles it.
+   * A direct write's preview stays up: its outcome is as unknown as the
+   * checkpointed write's, and the host shows it until a confirmed value
+   * replaces it. `extra` is the site's own addition in the same publish. */
+  function retirePayload(extra: Partial<TranscriptDisplayStoreFields> = {}): void {
+    refreshSerial += 1;
+    writeSerial += 1;
+    for (const layout of LAYOUTS) patchTokens.set(layout, ++patchSerial);
+    const state = getState();
+    setState({
+      loaded: false,
+      saving: false,
+      hubLoading: false,
+      writeUncertain: state.writeUncertain || state.saving,
+      ...extra,
+    });
+  }
+
+  /** Applies one layout's confirmed default (a GET's layer, a `changed`
+   * broadcast, a PATCH response, a conflict's canonical current). While the
+   * current generation has confirmed state, a revision at or below the held
+   * one is stale and ignored; a new generation's first payload is
+   * authoritative at ANY revision, because revision numbering is the hub's
+   * and a reconnect can be a hub restart. `extra` lands in the same publish.
+   * Returns false for an ignored payload. */
+  function applyHubDefault(
+    layout: ViewportClass,
+    value: HubTranscriptDisplayDefault,
+    extra: Partial<TranscriptDisplayStoreFields> = {},
+  ): boolean {
+    const state = getState();
+    const previous = state.hub[layout];
+    if (state.loaded && previous !== undefined && value.revision <= previous.revision) {
+      if (Object.keys(extra).length > 0) setState(extra);
+      return false;
+    }
+    const hub = { ...state.hub, [layout]: value };
+    setState({
+      hub,
+      loaded: true,
+      appliedSerial: state.appliedSerial + 1,
+      draftConflict: staleDraft(state.draft, hub),
+      ...extra,
+    });
+    return true;
+  }
+
+  function endReadyGeneration(): void {
+    activeEpoch = -1;
+    epoch += 1;
+    unwireNotification?.();
+    unwireNotification = null;
+    retirePayload();
+  }
+
+  function beginReadyGeneration(): void {
+    if (disposed) return;
+    activeEpoch = ++epoch;
+    missedChangeNotification = false;
+    const generation = activeEpoch;
+    unwireNotification?.();
+    unwireNotification = client.onNotification((notification) => {
+      if (!isCurrent(generation)) return;
+      onNotification(notification, generation);
+    });
+  }
+
+  function setSupport(support: TranscriptDisplaySupport): void {
+    const state = getState();
+    if (support === "supported") {
+      // A flap BACK from unsupported: the pre-flap generation's in-flight
+      // work must not survive into the refreshed state, so the transition
+      // begins a NEW ready generation (the epoch bump fences every token
+      // captured pre-flap). The refresh runs AFTER the bump, under the new
+      // epoch. Only the TRANSITION bumps: a same-value re-notification and
+      // the unknown window (a transient disconnect keeps its state and its
+      // in-flight work) leave the generation intact.
+      if (state.hubSupport === support) return;
+      if (state.hubSupport === "unsupported" && activeEpoch >= 0) beginReadyGeneration();
+      setState({ hubSupport: support });
+      // The transition INTO supported with a ready generation active is the
+      // load trigger - from unknown (the handshake's features resolving after
+      // the client was ready) as much as from unsupported.
+      if (activeEpoch >= 0) void refreshFor(activeEpoch);
+      return;
+    }
+    if (support === "unsupported") {
+      // The feature set is KNOWN and does not advertise transcript display
+      // settings: the shipped defaults are in effect. The payload state goes
+      // with it - a retained revision could be HIGHER than a returning hub's
+      // (a restored backup, a reset state file) and would eat its refresh.
+      retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {} });
+      return;
+    }
+    // The unknown window is the transient-disconnect case: the payload keeps
+    // presenting until endReadyGeneration retires it, so only the connection
+    // facts publish, and only when one changed.
+    if (state.hubSupport !== support || state.hubLoading || state.hubError !== null)
+      setState({ hubSupport: support, hubLoading: false, hubError: null });
+  }
+
+  function onNotification(notification: AnyNotification, generation: number): void {
+    if (notification.method !== "evener/settings/transcriptDisplay/changed") return;
+    // A late notification landing during an unsupported window carries a hub
+    // state the section says is not in effect.
+    if (!isSupported()) return;
+    // A notification arriving before the CURRENT generation's refresh has
+    // confirmed state carries pre-refresh cargo: its revision predates what
+    // the in-flight read will confirm, and applying it would let the stale
+    // guard eat the read's authoritative payload. Drop it; the read fetches
+    // the truth, and fires ONE follow-up so a change the read's response
+    // predates is not lost.
+    if (!getState().loaded) {
+      missedChangeNotification = true;
+      return;
+    }
+    const change = fromWireChange(notification.params);
+    if (change === undefined) {
+      // The hub said something changed and this store could not read what:
+      // the listing is uncertain, so the truth is read rather than the
+      // broadcast dropped.
+      void refreshFor(generation);
+      return;
+    }
+    applyHubDefault(change.layout, { revision: change.revision, config: change.config });
+  }
+
+  function applyHubChange(change: TranscriptDisplayChange): void {
+    if (!isViewportClass(change.layout) || !isRevision(change.revision)) return;
+    let config: TranscriptDisplayConfigV1;
+    try {
+      config = normalizeConfig(change.config);
+    } catch {
+      // A malformed change cannot be a confirmed hub record.
+      return;
+    }
+    applyHubDefault(change.layout, { revision: change.revision, config });
+  }
+
+  /** What an authoritative read settles for the draft editor: an uncertain
+   * write's outcome is now whatever the hub confirmed, so the checkpoint is
+   * re-marked and edits unblock. A read that started before the write left,
+   * or landed while one is in flight, says nothing about that write. */
+  function settledWrite(writeSerialAtStart: number): Partial<TranscriptDisplayStoreFields> {
+    const { draft, writeUncertain, saving } = getState();
+    if (writeSerialAtStart !== writeSerial || saving) return {};
+    if (draft !== null && writeUncertain) {
+      try {
+        persistDraft({
+          layout: draft.layout,
+          baseRevision: draft.revision,
+          config: draft.config,
+          writeUncertain: false,
+        });
+      } catch {
+        return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
+      }
+    }
+    return { writeUncertain: false };
+  }
+
+  async function refreshFor(generation: number): Promise<void> {
+    if (!liveHub(generation)) return;
+    const serial = ++refreshSerial;
+    const writeSerialAtStart = writeSerial;
+    const stillMine = () => readStillMine(generation, serial);
+    setState({ hubLoading: true, hubError: null });
+    try {
+      const result = await client.request("evener/settings/transcriptDisplay/get", {});
+      if (!stillMine()) return;
+      const defaults = fromWireDefaults(result);
+      if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
+      // One transition per layout, so a host announcing effective changes
+      // sees each layer move on its own.
+      applyHubDefault("desktop", defaults.desktop);
+      applyHubDefault("mobile", defaults.mobile, { hubLoading: false, ...settledWrite(writeSerialAtStart) });
+      if (missedChangeNotification) {
+        // A changed-notification was dropped while this generation had no
+        // confirmed state and THIS get's response may predate it. One
+        // follow-up fetch converges; the flag is cleared FIRST so it cannot
+        // loop.
+        missedChangeNotification = false;
+        void refreshFor(generation);
+      }
+    } catch (error) {
+      if (stillMine()) setState({ hubError: errorText(error), hubLoading: false });
+    }
+  }
+
+  async function refreshHubDefaults(): Promise<void> {
+    // A draft port that failed gets one more restore attempt per refresh; the
+    // hub read waits until the local proposal is in hand again, so an edit
+    // cannot compose against a confirmed payload with the draft unknown.
+    if (getState().storageUnavailable) {
+      setState(restoreDraft(getState()));
+      if (getState().storageUnavailable) return;
+    }
+    if (activeEpoch < 0) return;
+    await refreshFor(activeEpoch);
+  }
+
+  function detachHub(): void {
+    // The confirmed defaults belong to the PREVIOUS hub. Until this client's
+    // refresh lands they must not present as current or as a base for a
+    // write. hubSupport is connection-sourced, not hub state, so it is left
+    // to setSupport.
+    retirePayload({ hub: {}, hubError: null, hubErrors: {} });
+  }
+
+  function layoutError(layout: ViewportClass, message: string | undefined): Partial<TranscriptDisplayStoreFields> {
+    return { hubErrors: { ...getState().hubErrors, [layout]: message } };
+  }
+
+  async function patchHubDefault(
+    layout: ViewportClass,
+    input: TranscriptDisplayConfigV1,
+  ): Promise<HubTranscriptDisplayDefault> {
+    const state = getState();
+    const generation = activeEpoch;
+    if (!liveHub(generation) || !state.loaded || state.hubLoading) {
+      setState(layoutError(layout, UNAVAILABLE_MESSAGE));
+      throw new Error(UNAVAILABLE_MESSAGE);
+    }
+    const config = normalizeConfig(input);
+    const confirmed = state.hub[layout] ?? shippedDefault(layout);
+    const token = ++patchSerial;
+    patchTokens.set(layout, token);
+    writeSerial += 1;
+    const stillMine = () => patchStillMine(generation, layout, token);
+    setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
+    const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
+      const drafts = { ...getState().drafts };
+      delete drafts[layout];
+      return { drafts };
+    };
+    try {
+      const result = await client.request("evener/settings/transcriptDisplay/patch", {
+        layout,
+        expectedRevision: confirmed.revision,
+        config: toWireConfig(config),
+      });
+      if (!stillMine()) return getState().hub[layout] ?? confirmed;
+      const canonical = fromWirePatchResponse(result, layout);
+      const current = getState().hub[layout] ?? confirmed;
+      // The response must be the write's own outcome: the requested
+      // configuration at the confirmed revision (a no-op write) or one past
+      // it, never a jump the request cannot account for.
+      const requestedFingerprint = configFingerprint(config);
+      const revisionIsValid =
+        canonical !== undefined &&
+        canonical.revision >= current.revision &&
+        (canonical.revision === confirmed.revision || canonical.revision === confirmed.revision + 1);
+      const semanticsValid =
+        canonical !== undefined &&
+        configFingerprint(canonical.config) === requestedFingerprint &&
+        (canonical.revision === confirmed.revision
+          ? requestedFingerprint === configFingerprint(confirmed.config)
+          : canonical.revision === confirmed.revision + 1);
+      if (canonical === undefined || !revisionIsValid || !semanticsValid)
+        throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
+      applyHubDefault(layout, canonical, { ...clearPreview(), hubError: null, ...layoutError(layout, undefined) });
+      return canonical;
+    } catch (error) {
+      const canonical = conflictCurrent(error, layout);
+      if (!stillMine()) {
+        if (canonical !== undefined) applyHubDefault(layout, canonical);
+        return getState().hub[layout] ?? canonical ?? confirmed;
+      }
+      if (canonical !== undefined) applyHubDefault(layout, canonical);
+      // A malformed success keeps the preview: the hub may well have applied
+      // the write, and dropping the preview would show the pre-write value
+      // as if the write were refused. A refused or lost write drops it.
+      const message = errorText(error);
+      setState({
+        ...(error instanceof InvalidPatchResponseError ? {} : clearPreview()),
+        hubError: message,
+        ...layoutError(layout, message),
+      });
+      throw error;
+    }
+  }
+
+  /** The draft editor's gate: a confirmed, supported, idle hub state with a
+   * usable draft port. Returns the confirmed defaults the edit composes
+   * against. */
+  function assertEditable(): HubDefaultsByLayout {
+    const state = getState();
+    if (
+      disposed ||
+      state.saving ||
+      state.storageUnavailable ||
+      state.writeUncertain ||
+      state.hubSupport !== "supported" ||
+      !state.loaded
+    )
+      throw new Error(UNAVAILABLE_MESSAGE);
+    return state.hub;
+  }
+
+  function persistDraft(input: Omit<TranscriptDraftCheckpoint, "id">): TranscriptDraftCheckpoint {
+    try {
+      const checkpoint = { ...input, id: drafts.createId() };
+      drafts.save(checkpoint);
+      return checkpoint;
+    } catch {
+      // The port's own failure, in the port's fixed words: a raw storage error
+      // may carry a local path, so the host shows this and never the cause.
+      setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });
+      throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
+    }
+  }
+
+  function confirmedFor(hub: HubDefaultsByLayout, layout: ViewportClass): HubTranscriptDisplayDefault {
+    return hub[layout] ?? shippedDefault(layout);
+  }
+
+  function editDraft(layout: ViewportClass, input: TranscriptDisplayConfigV1): void {
+    const hub = assertEditable();
+    const config = normalizeConfig(input);
+    const existing = getState().draft;
+    const revision = existing?.layout === layout ? existing.revision : confirmedFor(hub, layout).revision;
+    persistDraft({ layout, baseRevision: revision, config, writeUncertain: false });
+    const draft = { layout, revision, config };
+    setState({ draft, draftConflict: staleDraft(draft, hub), draftError: null });
+  }
+
+  async function saveDraft(
+    layoutInput?: ViewportClass,
+    input?: TranscriptDisplayConfigV1,
+  ): Promise<HubTranscriptDisplayDefault> {
+    const hub = assertEditable();
+    const existing = getState().draft;
+    if (getState().draftConflict) throw new Error("Review the current transcript settings before saving your changes.");
+    const layout = layoutInput ?? existing?.layout ?? "mobile";
+    const confirmed = confirmedFor(hub, layout);
+    const config = normalizeConfig(input ?? (existing?.layout === layout ? existing.config : confirmed.config));
+    const revision = existing?.layout === layout ? existing.revision : confirmed.revision;
+    // The durable intent must exist before the request can leave the device.
+    const checkpoint = persistDraft({ layout, baseRevision: revision, config, writeUncertain: true });
+    const token = ++writeSerial;
+    const generation = activeEpoch;
+    const stillMine = () => writeStillMine(generation, token);
+    setState({ saving: true, draft: { layout, revision, config }, draftError: null });
+    let result: unknown;
+    try {
+      // The saving publish above may have disposed the store or retired the
+      // payload (a host tearing down on the transition): the checkpoint stays
+      // for the next instance to restore, and nothing leaves.
+      if (!stillMine()) throw new Error("Transcript preference save was cancelled.");
+      result = await client.request("evener/settings/transcriptDisplay/patch", {
+        layout,
+        expectedRevision: revision,
+        config: toWireConfig(config),
+      });
+    } catch (error) {
+      // No reply: the write's outcome is unknown, and that fact is the state
+      // (writeUncertain) rather than a message. The checkpoint already says so.
+      if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
+      throw error;
+    }
+    // The reply is back. One ordered sequence, nothing ahead of the fence:
+    // (1) FENCE - a reply that is no longer ours is discarded without
+    //     interpretation; retirePayload already published writeUncertain and
+    //     the checkpoint on the port is the durable record of it.
+    // (2) DECODE - a malformed reply is hub-sourced: hubError, the outcome
+    //     stays unknown, the checkpoint stays.
+    // (3) APPLY, settling the in-flight flags on every path. A newer external
+    //     revision that landed meanwhile keeps the proposal for review instead
+    //     of reporting it applied - `>`, not "differs": an equal revision is
+    //     this write's own broadcast arriving ahead of its reply.
+    // (4) STORAGE LAST - released on a confirmed write, re-marked settled when
+    //     the proposal stays for review; a cleanup failure keeps the draft in
+    //     view with the port marked unavailable, and never turns a confirmed
+    //     write back into an unknown outcome.
+    if (!stillMine()) return getState().hub[layout] ?? confirmed;
+    const value = fromWirePatchResponse(result, layout);
+    if (value === undefined || value.revision < revision) {
+      setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_PATCH_MESSAGE });
+      throw new Error(MALFORMED_PATCH_MESSAGE);
+    }
+    const newerExternal = (getState().hub[layout]?.revision ?? -1) > value.revision;
+    const settled: Partial<TranscriptDisplayStoreFields> = {
+      saving: false,
+      writeUncertain: false,
+      draftConflict: newerExternal,
+    };
+    if (newerExternal) setState(settled);
+    else applyHubDefault(layout, value, settled);
+    let storageError: string | null = null;
+    try {
+      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
+      else drafts.removeIf(checkpoint);
+    } catch {
+      storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
+    }
+    setState({
+      draft: newerExternal || storageError !== null ? getState().draft : null,
+      storageUnavailable: storageError !== null,
+      draftError: storageError,
+    });
+    return value;
+  }
+
+  function discardDraft(): void {
+    assertEditable();
+    try {
+      const checkpoint = drafts.load();
+      if (checkpoint) drafts.removeIf(checkpoint);
+    } catch {
+      setState({ storageUnavailable: true });
+      throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
+    }
+    setState({ draft: null, draftConflict: false, draftError: null });
+  }
+
+  function rebaseDraft(reviewedRevision: number): void {
+    const hub = assertEditable();
+    const { draft, hubLoading } = getState();
+    if (draft === null || hubLoading || confirmedFor(hub, draft.layout).revision !== reviewedRevision)
+      throw new Error("Transcript settings changed again. Review the current values.");
+    persistDraft({ layout: draft.layout, baseRevision: reviewedRevision, config: draft.config, writeUncertain: false });
+    setState({ draft: { ...draft, revision: reviewedRevision }, draftConflict: false, draftError: null });
+  }
+
+  return {
+    ...store,
+    setSupport,
+    beginReadyGeneration,
+    endReadyGeneration,
+    detachHub,
+    reset() {
+      endReadyGeneration();
+      missedChangeNotification = false;
+      setState({ ...initialState() });
+    },
+    dispose() {
+      if (disposed) return;
+      endReadyGeneration();
+      disposed = true;
+    },
+  };
+}

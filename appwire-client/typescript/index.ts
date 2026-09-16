@@ -459,6 +459,27 @@ export {
   wireToDefault,
   wireToDefaults,
 } from "./transcriptDisplayConfig";
+export type {
+  HubDefaultsByLayout,
+  TranscriptDisplayChange,
+  TranscriptDisplayClient,
+  TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
+  TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
+  TranscriptDisplayStoreState,
+  TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
+} from "./transcriptDisplayStore";
+export {
+  createTranscriptDisplayStore,
+  fromWireChange,
+  InvalidPatchResponseError,
+  isViewportClass,
+  transcriptDisplaySupport,
+} from "./transcriptDisplayStore";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

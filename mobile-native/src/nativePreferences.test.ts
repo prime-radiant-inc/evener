@@ -233,7 +233,7 @@ function setupDomain(domain: "keybindings" | "transcript") {
 	const old = isKeys ? keybindings : transcript;
 	const result = isKeys
 		? { ...keybindings, revision: 4, rules: [] }
-		: { revision: 5, config: toWireConfig(config) };
+		: { layout: "mobile", revision: 5, config: toWireConfig(config) };
 	const snapshot = () =>
 		isKeys
 			? model.getSnapshot().keybindings
@@ -336,7 +336,7 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 });
 
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
-import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
+import type { TranscriptDraftCheckpoint } from "@evener/appwire-client";
 
 function draftStorage() {
 	const values = new Map<string, unknown>();
@@ -421,7 +421,7 @@ it("checkpoints before dispatch and refuses edits, discard, or duplicate save du
 	await expect(f.model.editTranscript(config)).rejects.toThrow();
 	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
 	await expect(f.model.saveTranscript()).rejects.toThrow();
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.storage.load()).toBeNull();
 });
@@ -440,7 +440,7 @@ it("accepts its own notification before the acknowledgement", async () => {
 			config: toWireConfig(proposedConfig),
 		},
 	});
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: false,
@@ -461,7 +461,7 @@ it("retains a proposal if a genuinely newer external revision beats its acknowle
 		method: "evener/settings/transcriptDisplay/changed",
 		params: { layout: "mobile", revision: 6, config: toWireConfig(config) },
 	});
-	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: true,
@@ -485,10 +485,10 @@ it("late acknowledgement cannot erase a new same-config pending checkpoint", asy
 	next.client.handlers.set(transcriptPatch, () => nextAck.promise);
 	const nextSave = next.model.saveTranscript();
 	expect(f.storage.load()).not.toEqual(oldCheckpoint);
-	oldAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	oldAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await oldSave;
 	expect(f.storage.load()).not.toBeNull();
-	nextAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
+	nextAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
 	await nextSave;
 });
 
@@ -507,7 +507,7 @@ it("storage failure prevents dispatch and exposes a fixed safe error", async () 
 	expect(f.client.requests.some((r) => r.method === transcriptPatch)).toBe(
 		false,
 	);
-	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
 });
 
 it("an uncertain write cannot be discarded or replayed until an authoritative read", async () => {
@@ -519,10 +519,10 @@ it("an uncertain write cannot be discarded or replayed until an authoritative re
 	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
 	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
 	await expect(f.model.editTranscript(config)).rejects.toThrow();
-	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
 	await f.model.refresh();
 	expect(f.model.getSnapshot().transcriptMobile.writeUncertain).toBe(false);
-	expect(f.storage.load()?.writeUncertain).toBe(false);
+	expect((f.storage.load() as TranscriptDraftCheckpoint | null)?.writeUncertain).toBe(false);
 	await f.model.discardTranscriptDraft();
 	expect(f.storage.load()).toBeNull();
 });
@@ -558,6 +558,7 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 	});
 	await f.model.refresh();
 	f.client.handlers.set(transcriptPatch, () => ({
+		layout: "mobile",
 		revision: 5,
 		config: toWireConfig(proposedConfig),
 	}));
@@ -568,7 +569,7 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 		storageUnavailable: true,
 		saving: false,
 	});
-	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
+	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
 	await expect(f.model.saveTranscript()).rejects.toThrow();
 });
 

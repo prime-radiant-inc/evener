@@ -1,11 +1,9 @@
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
-} from "@evener/appwire-client";
-import type {
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
-} from "./preferenceDraftRepository";
+} from "@evener/appwire-client";
 
 export interface NativePreferenceDraftBackend {
 	createId(): string;
@@ -42,12 +40,8 @@ export function nativeTranscriptDrafts(
 	const key = `evener.native.transcript-draft.${hubId}`;
 	return {
 		createId: () => backend.createId(),
-		load: () => {
-			const value = backend.get(key);
-			return value === undefined ? null : (value as TranscriptDraftCheckpoint);
-		},
+		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
-		remove: () => backend.delete(key),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
 	};
 }

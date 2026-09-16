@@ -75,7 +75,15 @@ one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
 into the host's registry as a delta when it has one, with a checkpointed draft
 editor over an injected storage port for a host that edits offline; the host
 drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
-`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
+`endReadyGeneration` and `detachHub`); the transcript display hub-defaults
+store both apps' display settings run on
+(`createTranscriptDisplayStore({ client, drafts? })`: one hub's per-layout
+`evener/settings/transcriptDisplay` get/patch/changed posture with the same
+lifecycle methods, a direct write with a per-layout preview for a host that
+edits live and a checkpointed draft editor over the injected storage port for
+a host that edits offline; `writeUncertain` can only be set through a draft
+port, so a host without one, the web, ignores it, and a host's own local
+override layer stays with the host) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
