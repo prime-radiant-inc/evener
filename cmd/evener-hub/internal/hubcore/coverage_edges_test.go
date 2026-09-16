@@ -38,10 +38,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 		a := NewArchiveStore("").SetFs(afero.NewMemMapFs())
 		a.SetOnChange(func() { calls++ })
 		a.fireChange()
-		if err := a.Set("session", "s", true, time.Time{}); err != nil {
+		if err := a.Set("", "session", "s", true, time.Time{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := a.Delete("session", "s"); err != nil {
+		if err := a.Delete("", "session", "s"); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := a.Decisions(); err != nil || len(got) != 0 {
@@ -51,10 +51,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 		f := NewFavoriteStore("").SetFs(afero.NewMemMapFs())
 		f.SetOnChange(func() { calls++ })
 		f.fireChange()
-		if err := f.Set("session", "s", true, time.Time{}); err != nil {
+		if err := f.Set("", "session", "s", true, time.Time{}); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.Delete("session", "s"); err != nil {
+		if err := f.Delete("", "session", "s"); err != nil {
 			t.Fatal(err)
 		}
 		if got, err := f.Favorites(); err != nil || len(got) != 0 {
@@ -73,10 +73,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 	errBoom := errors.New("boom")
 	t.Run("filesystem errors", func(t *testing.T) {
 		a := NewArchiveStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")})
-		if err := a.Set("session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
+		if err := a.Set("", "session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
-		if err := a.Delete("session", "s"); !errors.Is(err, errBoom) {
+		if err := a.Delete("", "session", "s"); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
 		if _, err := a.Decisions(); !errors.Is(err, errBoom) {
@@ -84,10 +84,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 		}
 
 		f := NewFavoriteStore("x").SetFs(failingFs{Fs: afero.NewMemMapFs(), mkdirErr: errBoom, statErr: errors.New("stat")})
-		if err := f.Set("session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
+		if err := f.Set("", "session", "s", true, time.Time{}); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
-		if err := f.Delete("session", "s"); !errors.Is(err, errBoom) {
+		if err := f.Delete("", "session", "s"); !errors.Is(err, errBoom) {
 			t.Fatal(err)
 		}
 		if _, err := f.Favorites(); !errors.Is(err, errBoom) {
@@ -109,10 +109,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 			name string
 			run  func(string) error
 		}{
-			{"archive set", func(p string) error { return NewArchiveStore(p).Set("session", "s", true, time.Now()) }},
-			{"archive delete", func(p string) error { return NewArchiveStore(p).Delete("session", "s") }},
-			{"favorite set", func(p string) error { return NewFavoriteStore(p).Set("session", "s", true, time.Now()) }},
-			{"favorite delete", func(p string) error { return NewFavoriteStore(p).Delete("session", "s") }},
+			{"archive set", func(p string) error { return NewArchiveStore(p).Set("", "session", "s", true, time.Now()) }},
+			{"archive delete", func(p string) error { return NewArchiveStore(p).Delete("", "session", "s") }},
+			{"favorite set", func(p string) error { return NewFavoriteStore(p).Set("", "session", "s", true, time.Now()) }},
+			{"favorite delete", func(p string) error { return NewFavoriteStore(p).Delete("", "session", "s") }},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				if err := tc.run(dir); err == nil {
@@ -138,10 +138,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 				}
 				if table == "archive" {
 					s := NewArchiveStore(p)
-					if err := s.Set("session", "s", true, time.Now()); err == nil {
+					if err := s.Set("", "session", "s", true, time.Now()); err == nil {
 						t.Fatal("expected set error")
 					}
-					if err := s.Delete("session", "s"); err == nil {
+					if err := s.Delete("", "session", "s"); err == nil {
 						t.Fatal("expected delete error")
 					}
 					if _, err := s.Decisions(); err == nil {
@@ -149,10 +149,10 @@ func fuzzScenarioCoveragePersistenceEdges(t *testing.T) {
 					}
 				} else {
 					s := NewFavoriteStore(p)
-					if err := s.Set("session", "s", true, time.Now()); err == nil {
+					if err := s.Set("", "session", "s", true, time.Now()); err == nil {
 						t.Fatal("expected set error")
 					}
-					if err := s.Delete("session", "s"); err == nil {
+					if err := s.Delete("", "session", "s"); err == nil {
 						t.Fatal("expected delete error")
 					}
 					if _, err := s.Favorites(); err == nil {

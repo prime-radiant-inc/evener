@@ -264,6 +264,14 @@ class Driver {
     this.page = await connectPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
+    // SKILLGUARD_CPU_THROTTLE=N slows the page's main thread N-fold through
+    // Chrome's own emulation, the way a loaded CI runner does, so a
+    // load-dependent guard failure can be reproduced on an idle host.
+    const throttle = Number(process.env.SKILLGUARD_CPU_THROTTLE ?? "");
+    if (throttle > 1) {
+      await this.page.send("Emulation.setCPUThrottlingRate", { rate: throttle });
+      this.milestone("cpu-throttled", { rate: throttle });
+    }
     await this.page.send("Network.enable").catch(() => {});
   }
 
@@ -1524,17 +1532,33 @@ class Driver {
   // whichever session rendered a match -- which is how a failure in this
   // session gets diagnosed using another session's turns or queue).
   async dumpPageState(ref, error) {
-    const [blocks, queue, composer] = await Promise.all([
+    const [blocks, blockItems, queue, composer] = await Promise.all([
       evaluate(this.send, this.transcriptBlocksExpr(ref)).catch((e) => `turn-block read failed: ${e}`),
+      evaluate(this.send, this.transcriptBlockItemsExpr(ref)).catch((e) => `turn-block items read failed: ${e}`),
       evaluate(this.send, this.queueStripExpr(ref)).catch((e) => `queue read failed: ${e}`),
       this.composerState(ref).catch((e) => `composer read failed: ${e}`),
     ]);
     return new Error(
       `${error instanceof Error ? error.message : String(error)}\n` +
         `  transcript turn-blocks: ${JSON.stringify(blocks)}\n` +
+        `  turn-block items (id: testids): ${JSON.stringify(blockItems)}\n` +
         `  queue strip: ${JSON.stringify(queue)}\n` +
         `  composer: ${JSON.stringify(composer)}`,
     );
+  }
+
+  // transcriptBlockItemsExpr lists, per turn block in the pane, the turn id and
+  // the data-testid of every descendant that carries one -- which turn opened
+  // and which items landed in it, the question a continuation-leg failure asks.
+  transcriptBlockItemsExpr(ref) {
+    return `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].map((el) => ({
+        id: el.getAttribute("data-turn-id"),
+        items: [...el.querySelectorAll("[data-testid]")].map((n) => n.getAttribute("data-testid")),
+      }));
+    })()`;
   }
 
   // waitForTranscriptInput waits for `text` to appear in a rendered
@@ -1747,7 +1771,10 @@ async function runScenarios(driver) {
   // provably over before the next hold is armed — no fixed settling gap.
   await driver.waitForReply(driver.sessionA, PROSE.queueTurn);
   await driver.waitForContinuationReply(PROSE.queue2, drainTurns, { ref: driver.sessionA });
-  driver.milestone("drain-released", {});
+  driver.milestone("drain-released", {
+    turnsBefore: drainTurns,
+    blocks: await evaluate(driver.send, driver.transcriptBlockItemsExpr(driver.sessionA)),
+  });
 }
 
 async function runScenariosPart2(driver) {

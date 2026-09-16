@@ -1,4 +1,4 @@
-import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
+import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 

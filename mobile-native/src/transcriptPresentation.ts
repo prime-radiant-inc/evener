@@ -6,19 +6,26 @@ import type {
 	ActivityMember,
 	MobileConversation,
 	MobileTimelineItem,
-	MobileUsage,
-} from "../../mobile/src/conversation/model";
+} from "../../mobile/src/conversation/project";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
 	summary?: string;
 };
 
+// The session accounting the transcript footer shows: the conversation's
+// token aggregate and cost (the package ThreadModel's usage/cost fields), each
+// null when the display config hides it or the daemon reported none.
+export interface SessionAccounting {
+	usage: MobileConversation["usage"];
+	cost: string | null;
+}
+
 export interface NativeTranscriptPresentation {
 	items: MobileTimelineItem[];
 	activityPresentation: ReadonlyMap<string, ActivityPresentation>;
 	expandByDefault: boolean;
-	usage: MobileUsage | null;
+	usage: SessionAccounting | null;
 	showDuration: boolean;
 }
 
@@ -160,23 +167,14 @@ function eventVisible(
 	return config.advanced.systemEvents;
 }
 
-function usageFor(
-	usage: MobileUsage | null,
-	config: TranscriptDisplayConfigV1 | null,
-): MobileUsage | null {
-	if (!usage || !config) return usage;
-	const tokenCounts = config.advanced.tokenCounts;
+function accountingFor(
+	conversation: MobileConversation | null,
+	config: TranscriptDisplayConfigV1,
+): SessionAccounting | null {
+	if (!conversation) return null;
 	return {
-		...usage,
-		...(tokenCounts
-			? {}
-			: {
-					inputTokens: undefined,
-					outputTokens: undefined,
-					cacheReadTokens: undefined,
-					totalTokens: undefined,
-				}),
-		...(config.advanced.estimatedCost ? {} : { cost: undefined }),
+		usage: config.advanced.tokenCounts ? conversation.usage : null,
+		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};
 }
 
@@ -201,7 +199,7 @@ export function projectNativeTranscript(
 			? presetContent(config.content.level)
 			: config.content
 		).expandByDefault,
-		usage: usageFor(conversation?.usage ?? null, config),
+		usage: accountingFor(conversation, config),
 		showDuration: config.advanced.roundTimings,
 	};
 }

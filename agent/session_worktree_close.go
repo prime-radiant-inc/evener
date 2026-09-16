@@ -209,14 +209,41 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 		ctx = context.Background()
 	}
 	budget := LaneClosePassBudget / 2
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining < budget {
-			budget = remaining / 2
+	cascadeDeadline, bounded := ctx.Deadline()
+	if bounded {
+		budget = CloseStopJoinBudget(time.Until(cascadeDeadline))
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, budget)
+	if ObserveCloseStopJoin != nil && bounded {
+		if stopDeadline, ok := stopCtx.Deadline(); ok {
+			ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
 		}
 	}
-	return context.WithTimeout(ctx, budget)
+	return stopCtx, cancel
 }
+
+// CloseStopJoinBudget is the rule closeStopJoinContext bounds a stop join by,
+// given what the cascade has left: half of LaneClosePassBudget when at least
+// that much remains, else half of the remainder, so a nested stop cannot
+// consume the time its parent has left. EXPORTED so the cmd/evener
+// wedged-delegate run tests check the close tree against this rule rather
+// than a copy of it that can drift.
+func CloseStopJoinBudget(remaining time.Duration) time.Duration {
+	budget := LaneClosePassBudget / 2
+	if remaining < budget {
+		budget = remaining / 2
+	}
+	return budget
+}
+
+// ObserveCloseStopJoin sees every stop join closeStopJoinContext bounds under
+// a cascade deadline -- the stop's own deadline and the cascade's -- when set.
+// It is EXPORTED for cmd/evener's wedged-delegate run tests, which check the
+// close tree's wiring -- that the hopeless stop join is bounded to its half of
+// the budget rather than the whole cascade -- off these two deadlines instead
+// of off wall-clock time, which host load can stretch past any ceiling. Nil in
+// production; the same convention as LaneClosePassBudget.
+var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
 // not reach before the budget expired (spec §P0, rev-9.1 finding O2): touch the

@@ -10,7 +10,7 @@ import {
 	effortLabel,
 	sessionEffortLevels,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import { useColors } from "./ui";
 
 export type ComposerSetting = "model" | "reasoning" | "vision";

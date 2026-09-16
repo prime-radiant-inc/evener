@@ -9,6 +9,7 @@ import type {
   ModelDescriptor,
   ModelListParams,
   ModelListResponse,
+  NavigationManifest,
   PluginPreviewResponse,
   Thread,
   ThreadCapabilities,
@@ -16,6 +17,7 @@ import type {
   ThreadStartResponse,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import type { ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -25,6 +27,7 @@ import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
@@ -32,7 +35,8 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
-import { resetSpawnDraftsForTests, spawnDraftsStore } from "./spawnDrafts";
+import { loadDefaultsBlob } from "./spawnDefaults";
+import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -151,6 +155,36 @@ function renderSpawn(client: FakeClient, focused = true) {
       <Toast />
     </ClientProvider>,
   );
+}
+
+// Seeds the navigation manifest's launch sources, which the host picker reads
+// through selectSources. Rendered only when the list holds a non-local source.
+function seedSources(
+  sources: NavigationManifest["sources"],
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): void {
+  const data: NavigationManifest = {
+    generation_id: "generation_test",
+    revision: 1,
+    sources,
+    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  };
+  const resource: ResourceState<NavigationManifest> = {
+    key: { kind: "manifest" },
+    data,
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+    ...overrides,
+  };
+  navigationStore.setState({ manifest: resource });
 }
 
 // The working directory is changed through an explicit-confirmation picker.
@@ -1209,6 +1243,7 @@ beforeEach(() => {
   localStorage.clear();
   resetSpawnDraftsForTests();
   resetCredentialsStoreForTests();
+  resetNavigationStoreForTests();
   modelListOverride = null;
 });
 
@@ -1605,6 +1640,7 @@ afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  resetNavigationStoreForTests();
   resetThreadsStoreForTests();
   vi.unstubAllGlobals();
   // The shell mounts the Spawn pane only at /new (shell/routing.ts), so a test
@@ -5971,4 +6007,1243 @@ test("a remounted draft still shows the path-validation error stored with its in
   expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("review-agent");
   expect(completionDraft("/tmp/remount-validation-a").fields.getState().advancedOverrides).toEqual({});
   expect(await screen.findByText("remount-a-invalid")).toBeTruthy();
+});
+
+// --- host picker (Component 06b) -------------------------------------------
+
+test("host picker lists sources, preselects local, and disables offline hosts", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  expect(picker.value).toBe("local");
+  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
+  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  expect((options.find((option) => option.value === "buildbox") as HTMLOptionElement).disabled).toBe(false);
+  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  // The reason is in the option's own accessible text, not only a tooltip.
+  expect(offline.textContent).toContain("offline");
+});
+
+test("no host picker renders when the manifest has only local", async () => {
+  seedSources([{ id: "local", label: "Local", kind: "local", online: true }]);
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.queryByLabelText("Host")).toBeNull();
+});
+
+test("choosing a non-local host sends source and persists it in the draft", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/host-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "run on buildbox");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(completionDraft("/tmp/host-target").fields.getState().source).toBe("buildbox");
+});
+
+test("a local host choice omits source from the thread/start request", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/local-target");
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "stay local");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+// A draft can name a remote host while the manifest is not (yet) readable: a
+// reconnect reseeds the navigation store and the manifest is back in flight,
+// and the draft - which outlives the pane - still holds the chosen host. The
+// empty `sources` in that window is not evidence the host is gone, so the
+// submission must carry the draft's own source; reading the empty list as a
+// fallback would start the session locally with no indication (Component 06b).
+test("a draft naming a remote host submits it while the manifest is loading", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/loading-manifest");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  // The manifest drops back to in-flight (a reconnect reseeds the store): the
+  // draft keeps the host, only the manifest's sources are unavailable.
+  await act(async () => {
+    navigationStore.setState({
+      manifest: {
+        key: { kind: "manifest" },
+        data: null,
+        loadedRevision: null,
+        targetRevision: null,
+        forceToken: 0,
+        etag: null,
+        loading: true,
+        stale: false,
+        error: null,
+        generationID: "generation_test",
+      },
+    });
+  });
+
+  await user.type(promptField(), "keep the host");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+});
+
+// The hub keeps offline sources in the manifest (only the online flag flips),
+// so a host chosen while online stays present in the draft but must no longer
+// be submittable once it goes offline - otherwise thread/start is rejected
+// with "spawn source is not available".
+test("a host that goes offline while a draft names it falls back to local", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/offline-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+  });
+
+  // The option is still listed (disabled) but the effective choice is local.
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "no longer reachable");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
+// The offline fallback is a real choice, not a render-time convenience: if the
+// host returns while the form is still mounted it must not silently re-select
+// itself. Selecting "Local" to affirmatively settle on local fires no change
+// event when the select already reads local, so a draft left holding the stale
+// host id would be the only thing that flips both the picker and the submitted
+// source back to the remote host.
+test("a host that returns online after its offline fallback stays on local", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/reonline-target");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+  });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  // The fallback is recorded in the draft, so it is not merely a render value.
+  expect(completionDraft("/tmp/reonline-target").fields.getState().source).toBe("local");
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    ]);
+  });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "still local");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
+// The other fallback: a draft naming a host that has left the manifest
+// entirely (removed while the draft lived). The picker shows local and the
+// wire omits source rather than launching the unknown host.
+test("a draft naming a host removed from the manifest shows local and omits source", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/removed-target");
+  renderSpawn(fake);
+  await settled();
+
+  const draft = completionDraft("/tmp/removed-target");
+  await act(async () => {
+    setDraftField(draft, "source", "decommissioned");
+  });
+
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  await user.type(promptField(), "host is gone");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).not.toHaveProperty("source");
+});
+
+// --- remote target: discovery ownership (Component 06b, round four) --------
+
+// The working-directory preflight (evener/path/validate + evener/dirs/create) is
+// the CONTROLLER's own filesystem check. A remote launch's cwd belongs to the
+// selected source instead, so the local answer has no authority: a path that
+// exists only on the remote reads as missing here, and confirming "Create &
+// start" would create the directory on THIS host before the remote launch still
+// failed on its own cwd. The remote hub validates its own cwd via thread/start.
+test("a remote host submission skips the controller-local directory preflight", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // A cwd the local check calls a creatable missing directory: left ungated, the
+  // preflight opens the Create & start dialog and never reaches thread/start.
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/remote/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // No local "doesn't exist yet" offer, and nothing created on the controller.
+  expect(screen.queryByRole("button", { name: "Create & start" })).toBeNull();
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+});
+
+// The gate is the TARGET, not the mere presence of a picker: a local submission
+// keeps the controller-local preflight and its Create & start offer.
+test("a local submission keeps the controller-local directory preflight", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/local/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(await screen.findByRole("button", { name: "Create & start" })).toBeTruthy();
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// Provider readiness is read from THIS controller (evener/instance/list). A
+// remote launch runs on the selected source's own hub, which resolves its own
+// credentials, so a controller-local "missing provider" must not disable Start
+// for a remote target - the remote hub's own thread/start error is the
+// authority until source-aware discovery lands.
+test("a remote host submission is not blocked by missing controller-local providers", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => f.on("evener/instance/list", () => ({ instances: [], availableProviders: [] })));
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-providers");
+  renderSpawn(fake);
+
+  // Local: the controller's missing provider disables Start and explains why.
+  await screen.findByRole("button", { name: "Connect provider" });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  // Remote: that same controller-local state must not block the launch.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  // Switching back restores the local block.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await screen.findByRole("button", { name: "Connect provider" });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+});
+
+// The form's catalogs and readiness are still fetched from THIS controller
+// (source-aware discovery needs the evener/host/request proxy, absent from this
+// branch), so selecting a remote host must SAY so rather than present the
+// controller's environment as the target's.
+test("a remote host selection discloses that discovery is controller-local", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  const notice = screen.getByTestId("spawn-remote-host-notice");
+  expect(notice.textContent).toContain("buildbox");
+  expect(notice.getAttribute("role")).toBe("status");
+  // Naming BOTH owners is the whole point of the disclosure: the controller is
+  // where the readings below come from, and the selected host is what resolves
+  // its own environment at start. Asserted so the copy cannot drift into
+  // claiming the controller's readings are the host's (or drop the host).
+  expect(notice.textContent).toContain("come from this controller");
+  expect(notice.textContent).toContain("buildbox resolves its own environment when the session starts");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
+});
+
+// The remote-target fix must not trade a WRONG early judgment for no feedback at
+// all. With a remote host selected the launch really reaches thread/start, and
+// the selected host's own validation is what reports: its WireError surfaces
+// verbatim through friendlyLaunchErrorMessage, and nothing is created on the
+// controller (the remote hub runs its own hubThreadStart, which canonicalizes
+// and rejects a cwd it cannot see).
+test("a remote launch rejected by the selected host surfaces that host's own error", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    // The controller would call this cwd a creatable missing directory...
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+    // ...and the selected host rejects it as its own cwd failure.
+    f.on("thread/start", () => {
+      throw new WireError("cwd: no such file or directory on buildbox", -32602);
+    });
+  });
+  window.history.pushState({}, "", "/new?dir=/remote/only/path");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText("Start failed: cwd: no such file or directory on buildbox");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true);
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+  expect(screen.queryByRole("button", { name: "Create & start" })).toBeNull();
+});
+
+// Relaxing the controller-local provider gate must not mean a doomed remote
+// launch is SILENTLY accepted: when the selected host cannot serve it either,
+// that host's own credential failure is what the person sees - so "allowed to
+// submit" and "actually succeeded" stay distinguishable, and no session is
+// navigated to on the failure path.
+test("a remote launch the selected host cannot serve reports that host's own failure", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    f.on("thread/start", () => {
+      throw new WireError("provider credentials missing for anthropic", -32014, { evenerErrorInfo: "hubLaunch" });
+    });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-providers-fail");
+  renderSpawn(fake);
+
+  // Starts blocked by the CONTROLLER's missing provider check (local target).
+  await screen.findByRole("button", { name: "Connect provider" });
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await screen.findByText("Start failed: provider credentials missing for anthropic");
+  expect(window.location.pathname).not.toContain("/s/");
+});
+
+// The plugin preview is the CONTROLLER's own inspection (evener/plugin/preview
+// answers for this hub's host). A remote launch runs on the selected source's
+// own hub, which resolves its own plugins, so a controller-local "this plugin
+// is unavailable" must not disable Start or refuse the submit for a remote
+// target - the selection is forwarded and the selected hub validates it at
+// start, the same authority model the launch already follows for cwd,
+// providers and models.
+test("a remote host submission is not blocked by controller-local plugin issues", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/plugin/preview", ({ launchOverrides }) =>
+      launchOverrides?.enabledPlugins?.includes("alpha")
+        ? { ...SPAWN_PLUGIN_PREVIEW, selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }] }
+        : SPAWN_PLUGIN_PREVIEW,
+    ),
+  );
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-plugins");
+  renderSpawn(fake);
+  await settled();
+
+  // An explicit selection the CONTROLLER's preview reports as unavailable:
+  // local Start is disabled by that controller-local reading.
+  await act(async () => {
+    setDraftField(completionDraft("/tmp/remote-plugins"), "pluginSelection", {
+      mode: "explicit",
+      names: ["alpha"],
+    });
+  });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  // The same controller-local issue must not gate a remote launch.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // The selection is forwarded verbatim for the selected hub to validate.
+  expect(params.launchOverrides).toMatchObject({ enabledPlugins: ["alpha"] });
+});
+
+// The model and effort catalogs the form validates against (model/list, the
+// model ladder) belong to THIS controller. A value supported only by the
+// selected host must not be refused locally - the value rides thread/start and
+// the remote hub validates it.
+test("a remote host does not pre-validate /model against the controller catalog", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-model");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // A model absent from the controller's catalog: a local target would toast
+  // `unknown value` and never reach thread/start.
+  await user.type(promptField(), "/model buildbox-only/model-x");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.modelProvider).toBe("buildbox-only");
+  expect(params.model).toBe("model-x");
+  // The builtin is consumed, not forwarded as a literal first turn.
+  expect(params.input).toEqual([]);
+  expect(screen.queryByText(/unknown value/)).toBeNull();
+});
+
+test("a remote host does not pre-validate /reasoning-effort against the controller ladder", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-effort");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // A level outside the controller's ladder: a local target would toast
+  // `unknown value` and never reach thread/start.
+  await user.type(promptField(), "/reasoning-effort ultra");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.reasoningEffort).toBe("ultra");
+  expect(params.input).toEqual([]);
+  expect(screen.queryByText(/unknown value/)).toBeNull();
+});
+
+// --- remote target: model and cwd ownership (Component 06b, round seven) -----
+
+// The uncredentialed-default fallback reads THIS controller's model/list and
+// installs models[0] when launch/resolve names a default whose provider is not
+// launchable here. A remote target resolves its own default model from its own
+// host's credentials and catalog, so injecting the controller's pick would ride
+// thread/start and stop the selected host from resolving its own default.
+test("a remote host does not inherit the controller's uncredentialed-default fallback model", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" }, // openai is not launchable on THIS controller
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-fallback");
+  renderSpawn(fake);
+  // Select the remote host before the fallback's CATALOG_SETTLE_MS window can
+  // elapse, so this pins the remote-at-mount path.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  // Outlast the settle window: a still-armed fallback would fire in here.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  expect(modelTrigger().textContent).toContain("(default)");
+  expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  // No controller-derived model is forwarded; the host resolves its own default.
+  expect(params.model).toBeUndefined();
+  expect(params.modelProvider).toBeUndefined();
+});
+
+// The same defect from the other direction: a fallback installed while the
+// target was local must be retired when the person switches to a remote host.
+// Only a still-fallback-derived value is cleared - a person's own pick is not.
+test("a controller-catalog fallback model is retired when the target becomes remote", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-fallback-flip");
+  renderSpawn(fake);
+  await settled();
+
+  // Local target: the fallback installs the controller's first launchable model.
+  await waitFor(() => expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5"));
+
+  // Switching to a remote host retires it: it is the controller's model, not
+  // the selected host's.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
+  expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBeUndefined();
+});
+
+// /model takes RAW user text, unlike every other splitModelId caller (which
+// splits a provider/model catalog id that always contains a slash). "foo"
+// splits to provider "foo" with an empty model, which the selected host ignores
+// (its own model field stays empty) - the requested model was silently dropped.
+// It is refused pre-launch with the same unknown-value message the local path
+// uses.
+test("a remote /model value without a provider is refused before launch", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-bare-model");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "foo"/)).toBeTruthy());
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+// A remote launch's cwd and model belong to the SELECTED HOST, not this
+// controller, so they must not be written to the global scalar defaults a later
+// LOCAL spawn reads - the remote cwd would default the next local Spawn to a
+// path that usually does not exist here.
+test("a remote launch does not persist its cwd as the controller's global working directory", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/srv/app");
+  renderSpawn(fake);
+  await settled();
+
+  // A model plus a cwd: both are host-scoped on a remote submit.
+  await act(async () => {
+    setDraftField(completionDraft("/srv/app"), "model", "openai/gpt-5");
+  });
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((c) => c.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.cwd).toBe("/srv/app");
+  // The controller's global defaults a later LOCAL spawn consults are untouched.
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBeNull();
+});
+
+// --- remote target: host-scoped project defaults (Component 06b, round eight) ---
+
+// model/list's first entry: the model the uncredentialed-default fallback
+// installs, and (in the cross-draft test) a legitimately sticky value that must
+// not be confused with it.
+const MODEL_A_FALLBACK = "anthropic/claude-sonnet-4-5";
+
+// The per-project blob is keyed by the cwd ALONE, and that path is often also a
+// local checkout: a model chosen on the selected host must not become this
+// path's LOCAL default - one this hub may not serve. The remote project's
+// harness/access layer is still remembered (round seven's blob disposition,
+// minus the host-specific model).
+test("a remote launch's model does not become the cwd's local project default", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/srv/app");
+  const mounted = renderSpawn(fake);
+  await settled();
+
+  // A host-only model, as the remote hub's own catalog would offer it.
+  await act(async () => {
+    setDraftField(completionDraft("/srv/app"), "model", "buildbox-only/gpt-5");
+  });
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  // The launch still forwards the model the person configured - the selected
+  // host resolves it against its own catalog.
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBe("buildbox-only/gpt-5");
+  // ...but it is not remembered as this path's local default.
+  expect(loadDefaultsBlob("/srv/app").model).toBeUndefined();
+
+  // A later LOCAL spawn of the same path (a fresh page, so fresh drafts) reads
+  // exactly those persisted defaults: Model is untouched, not the host's.
+  mounted.unmount();
+  resetSpawnDraftsForTests();
+  renderSpawn(fake);
+  await settled();
+  expect(modelTrigger().textContent).toContain("(default)");
+  expect(modelTrigger().textContent).not.toContain("gpt-5");
+});
+
+// The fallback marker is per DRAFT (round eight). SpawnForm is a singleton
+// reused across drafts, so a form-local marker let draft A's provenance retire
+// an identical model string draft B legitimately owned: B's sticky per-project
+// default was cleared when B went remote even though the fallback never touched
+// B's model.
+test("a fallback installed for one draft does not retire another draft's identical sticky model", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  // Draft B's own sticky default - deliberately the exact string draft A's
+  // fallback installs.
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/fallback-owner", JSON.stringify({ model: MODEL_A_FALLBACK }));
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: MODEL_A_FALLBACK }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" }, // openai is not launchable on THIS controller
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/fallback-installer");
+  renderSpawn(fake);
+  await settled();
+
+  // Draft A: the controller-catalog fallback installs models[0].
+  await waitFor(() => expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK));
+
+  // Draft B, reached through the cwd picker: same string, different provenance.
+  await setWorkingDir(user, "/tmp/fallback-owner");
+  expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // B's model is B's own sticky default, so it survives the remote switch.
+  expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
+  expect(modelTrigger().textContent).not.toContain("(default)");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBe(MODEL_A_FALLBACK);
+});
+
+// The marker lives WITH the draft, so it survives the pane unmounting and
+// remounting (a single-pane/mobile host mounts only the active route, and the
+// draft map outlives the form). A form-local ref lost it there, which left the
+// controller's fallback model to ride a remote launch after all.
+test("a controller-catalog fallback model is still retired after a pane remount", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: MODEL_A_FALLBACK }],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "openai/gpt-5.5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/fallback-remount");
+  const mounted = renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK));
+
+  // A remount with no navigation keeps the same draft - and so its provenance.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
+  expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBeUndefined();
+  expect(params.modelProvider).toBeUndefined();
+});
+
+// The complement of the retire rule, and the invariant that keeps it honest: a
+// model the person picked themselves is their own choice (handleModelChange
+// drops the draft's fallback mark), so it is never retired on a remote switch -
+// not even in a draft where the fallback had installed a different model.
+test("a user's explicit model pick is preserved when the target becomes remote", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("model/list", () => ({
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: MODEL_A_FALLBACK },
+        { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
+      ],
+    }));
+    // mistral is not launchable on THIS controller, so the fallback fires even
+    // though openai (the person's own pick below) is launchable.
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "mistral/large" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/fallback-explicit");
+  renderSpawn(fake);
+  await settled();
+
+  // The fallback installs the controller's first launchable model...
+  await waitFor(() => expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK));
+  // ...and then the person picks a different one from the picker.
+  await pickModel(user, "gpt-5", "openai/gpt-5");
+  expect(modelTrigger().textContent).toContain("openai/gpt-5");
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  // The explicit pick is not the fallback's value, so it is not retired.
+  expect(modelTrigger().textContent).toContain("openai/gpt-5");
+  expect(modelTrigger().textContent).not.toContain("(default)");
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBe("openai/gpt-5");
+});
+
+// The submit snapshots the source (handleSpawn's closure carries the
+// submittedSource/remoteLaunch thread/start and saveDefaults receive) and then
+// awaits the local directory preflight, so a host change mid-submit would
+// launch on a different host than the picker shows. The picker is disabled
+// while busy instead.
+test("the host picker cannot change while a submit is in flight", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const started = deferred<ThreadStartResponse>();
+  const fake = readyClient((f) => f.on("thread/start", () => started.promise));
+  window.history.pushState({}, "", "/new?dir=/tmp/busy-host");
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "run locally");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).disabled).toBe(true);
+
+  await act(async () => started.resolve(startResponse("local:busy-host")));
+});
+
+// The dir-picker's seed (GLOBAL_LAST_WORKING_DIR_KEY) is the CONTROLLER's own
+// browse history: recording a cwd picked while a remote host is selected would
+// open the next LOCAL picker at a path that usually does not exist here.
+test("a cwd picked for a remote target is not recorded as the controller's picker seed", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  window.history.pushState({}, "", "/new?dir=/tmp/seed-local");
+  renderSpawn(readyClient());
+  await settled();
+
+  // A local pick still updates the controller's own browse history.
+  await setWorkingDir(user, "/tmp/seed-local-next");
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/seed-local-next");
+
+  // With a remote host selected, the path belongs to that host instead.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  localStorage.removeItem(LAST_WORKING_DIR_KEY);
+  await setWorkingDir(user, "/srv/remote-only");
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
+});
+
+// --- remote target: source-aware paths (Component 06b, round nine) -----------
+
+// evener/path/validate answers for THIS controller's filesystem, so a directory
+// that exists only on the selected host reads as invalid here - and the picker
+// refuses to select what its validator rejects. A remote target's cwd belongs to
+// that host, which validates it when the session starts (the authority the cwd
+// preflight already defers to), so the controller must not make the judgment at
+// all (round nine).
+test("a remote target can select a directory this controller cannot see", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/tmp/picker-base");
+  renderSpawn(fake);
+  await settled();
+
+  // A LOCAL target keeps the controller's gate unchanged: the same path is
+  // reported invalid and cannot be selected.
+  await user.click(workingDir());
+  const localInput = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(localInput);
+  await user.type(localInput, "/srv/remote-only{Enter}");
+  expect((await screen.findByRole("alert")).textContent).toBe("no such file or directory");
+  expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+  // The same path on a remote target is the host's business: it can be picked.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await setWorkingDir(user, "/srv/remote-only");
+  expectWorkingDir("/srv/remote-only");
+  expect(screen.queryByText("no such file or directory")).toBeNull();
+});
+
+// Creating a folder is a WRITE on this hub's own filesystem (evener/dirs/create
+// MkdirAll's it here). A remote target's path is the selected host's, so the
+// picker's New folder affordance - newly reachable for a remote-only path now
+// that validation is skipped - must refuse rather than materialize it locally
+// (the wrong-host action the cwd preflight already refuses to offer).
+test("the picker does not create folders locally for a remote target", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-create-base");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(workingDir());
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/srv/remote-create{Enter}");
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(screen.getByRole("button", { name: "New folder" }));
+  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "child{Enter}");
+
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+  expect(await screen.findByText(/Create the folder on buildbox/)).toBeTruthy();
+});
+
+// The advanced panel validates a path-kind value through the same controller
+// closure and marks the field invalid on failure - and
+// collectAdvancedOverrides DROPS an invalid field, so a valid remote path
+// silently vanished from launchOverrides. For a remote target the value is
+// forwarded for the selected host to judge (round nine).
+test("a remote target's advanced path value is not dropped for being invisible here", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-advanced-path");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  // Local: unchanged. The controller's verdict marks the field invalid, the
+  // reason is shown, and the value is excluded from the launch.
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-advanced-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+
+  // Remote: the same kind of value rides thread/start for the host to resolve.
+  // (A different string, not the one above: React suppresses a change event
+  // whose value is unchanged, so re-typing the identical text would never reach
+  // the field's own handler.)
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "remote-only-agent" } });
+  expect(completionDraft("/tmp/remote-advanced-path").fields.getState().advancedOverrides).toEqual({
+    agent: "remote-only-agent",
+  });
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.launchOverrides).toMatchObject({ agent: "remote-only-agent" });
+});
+
+// The host picker is a DISPLAY of what the manifest last said about the hosts.
+// The store retains that snapshot while the fresh manifest is in flight, and
+// reading the SETTLED-only list there hid the picker (or flipped the visible
+// choice to Local) for the length of every revalidation - while the launch
+// decision still has to come from the settled list, which is what the second
+// half of this test pins (round nine).
+test("the host picker keeps its host while the manifest revalidates", async () => {
+  const user = userEvent.setup();
+  const sources: NavigationManifest["sources"] = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ];
+  seedSources(sources);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/host-revalidate");
+  renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+
+  await act(async () => seedSources(sources, { loading: true, stale: true }));
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  expect(picker.value).toBe("buildbox");
+  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
+  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  // The retained snapshot keeps its own offline labelling: a withheld list
+  // reads as "unknown", which would flip this one to online.
+  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  expect(offline.textContent).toContain("offline");
+
+  // Unsettled, the draft's host is still the launch target (only a settled
+  // manifest may confirm a fallback), so what the picker shows is what submits.
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+});
+
+// --- remote target: target-mode changes (Component 06b, round ten) -----------
+
+// The stale-model sweep judges a draft's model against THIS controller's
+// model/list. A remote launch runs on the selected source's own hub, which
+// resolves its own model, so a model this catalog does not list can be
+// perfectly valid there - and the sweep must not erase it. The target mode is
+// re-read when the response lands, so a draft that switches hosts while the
+// request is in flight (the sequence below) is not judged by the run it
+// started as local. The local half is unchanged and stays pinned by the
+// existing sweep tests above.
+test("a remote target keeps the draft's model this controller's catalog calls stale", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-stale-model");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/remote-stale-model",
+    JSON.stringify({ model: "openai/retired" }),
+  );
+  const global = deferred<ModelListResponse>();
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? global.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    ),
+  );
+  renderSpawn(fake);
+  await settled();
+  // The sticky model is in the draft, and the controller's global catalog - the
+  // one whose verdict sweeps a local draft - has not answered yet.
+  expect(modelValue().textContent).toContain("openai/retired");
+
+  // The draft moves to the remote host while that request is in flight.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => global.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+
+  // The catalog's verdict is a fact about THIS controller, so it neither
+  // removes the model nor claims it was discarded for a host's launch.
+  expect(modelValue().textContent).toContain("openai/retired");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+
+  // A remote launch forwards the model for the selected host to resolve.
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBe("openai/retired");
+});
+
+// The same skip applies to a draft that is ALREADY on a remote host when a
+// fresh catalog lands (a remount, or a provider refresh under a remote draft):
+// nothing is registered to sweep it at all. The first mount parks its own
+// request so the model is still in the draft, and the remount's request - the
+// registration the fix has to refuse - answers immediately.
+test("a draft already on a remote host is never swept by the controller's catalog", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-remount-model");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/remote-remount-model",
+    JSON.stringify({ model: "openai/retired" }),
+  );
+  const parked = deferred<ModelListResponse>();
+  let globalRequests = 0;
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) => {
+      if (harness !== "evener" || cwd !== undefined) return { data: [{ provider: "openai", model: "gpt-5" }] };
+      globalRequests += 1;
+      return globalRequests === 1 ? parked.promise : { data: [{ provider: "openai", model: "gpt-5" }] };
+    }),
+  );
+  const mounted = renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => parked.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(modelValue().textContent).toContain("openai/retired");
+
+  // Remount: the draft (and its host) persist, so the fresh mount's own
+  // catalog request resolves under a remote target from its first render.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  await act(async () => {});
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(globalRequests).toBe(2);
+  expect(modelValue().textContent).toContain("openai/retired");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+// A path-kind field's `invalid` flag (and its message) records what THIS
+// controller could see at the moment the value changed, and
+// collectAdvancedOverrides drops a flagged field from launchOverrides. Moving
+// the Host picker to a remote source changes who judges the path - the host
+// does, at start - but nothing re-validated the stored value, so a remote-only
+// path typed while local stayed dropped and kept showing the controller's
+// stale error. The mode change re-validates the stored value (round ten).
+test("a path marked invalid while local reaches the launch after switching host without re-typing", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-switch-path");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  // Local: the controller's verdict marks the field invalid, shows the reason,
+  // and excludes the value from the launch.
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+
+  // The Host picker moves to the remote source WITHOUT re-typing the value.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByText("no such file or directory")).toBeNull());
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("host-only-agent");
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
+      agent: "host-only-agent",
+    }),
+  );
+
+  // Back to local, the controller is the judge again: the same stored value is
+  // re-marked and dropped rather than left silently flagged or silently kept.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
+      agent: "host-only-agent",
+    }),
+  );
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.launchOverrides).toMatchObject({ agent: "host-only-agent" });
 });

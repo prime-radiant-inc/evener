@@ -7,7 +7,7 @@ import type {
 } from "@evener/appwire-client";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { createProjectBrowserController, pageStatus } from "./projectBrowser";
+import { createProjectBrowserController } from "./projectBrowser";
 
 function boundary() {
 	const requests: Array<{
@@ -59,34 +59,6 @@ const session = (ref: string) => ({
 	children: [],
 });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-describe("page status", () => {
-	const page = (
-		overrides: Partial<Parameters<typeof pageStatus>[0]>,
-	): Parameters<typeof pageStatus>[0] => ({
-		loaded: true,
-		truncated: false,
-		rows: [],
-		remaining: 0,
-		loading: false,
-		error: null,
-		stale: false,
-		...overrides,
-	});
-	it("shows the error, with its retry, even while the page is stale", () => {
-		// Round 4 (#1462): a failed automatic re-read leaves stale and error
-		// set together; "Updating…" must never hide the retry.
-		expect(pageStatus(page({ stale: true, error: "offline" }))).toBe("error");
-	});
-	it.each([
-		["loading", page({ loading: true, stale: true, error: "offline" }), "loading"],
-		["stale", page({ stale: true }), "stale"],
-		["more", page({ remaining: 3 }), "more"],
-		["settled", page({}), null],
-	])("reports %s", (_case, state, expected) => {
-		expect(pageStatus(state)).toBe(expected);
-	});
-});
 
 describe("project browser", () => {
 	it("loads projects first and fetches sessions only for the initially expanded project", async () => {

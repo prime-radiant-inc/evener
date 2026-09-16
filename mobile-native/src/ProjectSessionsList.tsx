@@ -19,11 +19,10 @@ import type {
 	NavigationSessionSummary,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { type PageStatus, pageStatus } from "./navigationPages";
 import { navigationTree } from "./navigationTree";
 import {
 	createProjectBrowserController,
-	type PageStatus,
-	pageStatus,
 	type ProjectSessionTier,
 } from "./projectBrowser";
 import { Action, Copy, useColors } from "./ui";

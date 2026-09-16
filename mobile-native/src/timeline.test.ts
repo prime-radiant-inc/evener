@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { MobileTimelineItem } from "../../mobile/src/conversation/model";
+import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
 import {
 	groupTimeline,
 	isInterruptedNotice,

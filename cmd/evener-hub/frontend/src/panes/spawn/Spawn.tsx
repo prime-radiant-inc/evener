@@ -4,7 +4,9 @@
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
+  type AdvancedValues,
   basename,
+  collectAdvancedOverrides,
   effortLabel,
   filterSlashMenuItems,
   findBuiltinArgument,
@@ -13,6 +15,7 @@ import {
   harnessUsesEvenerModels,
   matchBuiltinInvocation,
   mergeSlashCommands,
+  type PathValidation,
   type PluginSelectionState,
   parseSlashToken,
   perLaunchEvenerOptions,
@@ -21,6 +24,7 @@ import {
   resolveScalars,
   type SlashMenuItem,
   type SlashToken,
+  schemaPathKind,
   selectedPluginNames,
   slashCommandInvocation,
   spliceSlashCommand,
@@ -35,6 +39,8 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
+import { selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import {
   Button,
   Chevron,
@@ -60,6 +66,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
+import selectStyles from "../../widgets/select/select.module.css";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -174,6 +181,11 @@ const CLASS = {
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
+  // The host picker's native <select> reuses the Select widget's own stylesheet
+  // class: the widget renders a native <select> too, but its SelectOption has no
+  // per-option disabled flag, and an offline host must be RENDERED yet not
+  // selectable (Component 06b). The class only borrows the visual treatment.
+  hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -258,6 +270,56 @@ function SpawnForm({
   const [harness, setHarness] = useDraftField(draft, "harness");
   const [model, setModel] = useDraftField(draft, "model"); // qualified "provider/model", or "" for the harness default
   const [reasoningEffort, setReasoningEffort] = useDraftField(draft, "reasoningEffort");
+  const [source, setSource] = useDraftField(draft, "source");
+  // The manifest carries every configured launch source (Component 06a). It is
+  // empty until it loads, and in the common single-host case holds only
+  // "local" - either way no picker renders, so the existing form is unchanged.
+  //
+  // Two views of it, deliberately (round nine). `sources` is the SETTLED list
+  // and owns every decision: the launchable host below, the submitted source,
+  // and the write-back. `displaySources` is last-known data for DISPLAY only,
+  // so a revalidation (loading/stale) cannot make the picker vanish or the
+  // visible host flip to Local while the fresh manifest is in flight.
+  const sources = useNavigationStore(selectSources);
+  const displaySources = useNavigationStore(selectDisplaySources);
+  // A draft may name a host that is no longer launchable: removed from the
+  // manifest while the draft lived, or still listed but offline (the hub keeps
+  // offline sources in the manifest - only the online flag flips). Both fall
+  // back to local rather than submitting a source the hub rejects with
+  // "spawn source is not available". The fallback is written back into the
+  // draft below so the picker's value and the submitted source never diverge: a
+  // stale draft value would otherwise survive the fallback and, when the host
+  // came back online, silently flip both the select and the launch target back
+  // to it. Affirmatively settling on local cannot rewrite the stale value -
+  // selecting "Local" fires no change event while the select already reads
+  // local - so the draft, not the remembered host, must carry the choice.
+  const chosenSource = sources.find((candidate) => candidate.id === source);
+  const hostChoice = chosenSource?.online ? chosenSource.id : "local";
+  // `sources` is empty both while the manifest loads (and if it never arrives)
+  // and when it genuinely lists no remote host, so its emptiness is not
+  // evidence the draft's host is gone. Until the manifest lists the sources,
+  // the submission carries the draft's own value; only a settled manifest - the
+  // same `sources.length > 0` gate the write-back below uses - can confirm the
+  // fallback. Reading the loading window as a fallback would start the session
+  // locally with no indication while the draft still names a remote host
+  // (Component 06b review).
+  const submittedSource = sources.length > 0 ? hostChoice : source;
+  useEffect(() => {
+    // Guarded on a loaded manifest: while the sources are still in flight
+    // hostChoice is a provisional "local", and rewriting the draft then would
+    // discard a persisted remote host that is merely still loading.
+    if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
+  }, [sources.length, source, hostChoice, setSource]);
+  // The select's own value, and its option list: last-known data, so the picker
+  // stays visible while the manifest revalidates and keeps showing the host the
+  // draft names (only `sources` above may decide the launch target). While the
+  // manifest is unsettled a submit carries `source` itself, so the visible
+  // choice follows the draft rather than reading the withheld list as "the host
+  // is gone" (round nine). Once settled this is exactly hostChoice, preserving
+  // the round-eight preselection and offline fallback unchanged.
+  const displaySource = displaySources.find((candidate) => candidate.id === source);
+  const displayHostChoice = sources.length > 0 ? hostChoice : (displaySource?.id ?? hostChoice);
+  const displayRemoteHosts = displaySources.filter((candidate) => candidate.id !== "local");
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
@@ -475,6 +537,21 @@ function SpawnForm({
   // resolution time rather than a dependency that reruns the effect.
   const modelRef = useRef(model);
   modelRef.current = model;
+  // The model value the uncredentialed-default fallback below installed, or
+  // null if the current model did not come from it. The fallback reads THIS
+  // controller's catalog (model/list), so a value it installed must not be
+  // forwarded to a remote target - the selected host resolves its own default
+  // - and is retired when the target becomes remote. Cleared on every
+  // user-driven model change, so a value the person chose is never treated as
+  // fallback-derived (Component 06b review, round seven).
+  //
+  // The marker lives in the DRAFT, not a form-local ref (round eight): this
+  // component is a singleton reused across drafts and unmounted/remounted with
+  // the pane, so a ref-local marker leaked draft A's provenance onto an
+  // identical model string draft B legitimately owns (clearing B's user-chosen
+  // or sticky-default model when B went remote) and vanished on a remount,
+  // letting the controller's fallback model ride a remote launch after all.
+  const [defaultModelFallback, setDefaultModelFallback] = useDraftField(draft, "defaultModelFallback");
 
   function isCurrentDraft(): boolean {
     return spawnDraftsStore.getState().current?.fields === draft.fields;
@@ -571,8 +648,29 @@ function SpawnForm({
     textareaRef.current?.focus();
   }
 
+  // Every catalog and readiness signal this form reads - provider instances,
+  // the resolved default model, the harness list, plugin previews, the slash
+  // catalog, path validate/browse/create - is fetched from THIS controller. A
+  // remote launch instead runs on the selected source's own hub: appsource's
+  // RemoteHubSource.StartThread forwards thread/start (clearing the controller's
+  // source id) and that hub spawns on ITS host, resolving the model, credentials
+  // and plugins from its own configuration. So a controller-local "missing" is
+  // not evidence a remote launch cannot succeed, and must not BLOCK it - the
+  // remote hub's own thread/start error is the authority. (Source-aware
+  // discovery needs the evener/host/request proxy, which is not in this branch.)
+  const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
+  // The live target mode, for async callbacks that outlive the render they were
+  // registered in: a request started while this draft was local must not act
+  // once the picker has moved it to a remote host (round ten), and vice versa.
+  const remoteLaunchRef = useRef(remoteLaunch);
+  remoteLaunchRef.current = remoteLaunch;
+  // The selected target's own label for the disclosure below; falls back to the
+  // raw source id only while no manifest has ever named the host (the display
+  // view keeps the label across a revalidation, when the settled list is empty).
+  const remoteSourceLabel =
+    displaySources.find((candidate) => candidate.id === submittedSource)?.label ?? submittedSource;
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
-  const providerRequired = usesEvenerModels && providerSetup.status === "missing";
+  const providerRequired = usesEvenerModels && providerSetup.status === "missing" && !remoteLaunch;
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set. The onboarding scope is a second
@@ -587,7 +685,10 @@ function SpawnForm({
   // connector its model chip opens neither supplies nor replaces what this
   // pane would submit - requiring a choice there would disable Start, and
   // label the chip "Choose a model", over a model nothing launches with.
+  // A remote launch is exempt: the controller's model state says nothing about
+  // the host's, whose own thread/start error is the authority.
   const modelRequired =
+    !remoteLaunch &&
     usesEvenerModels &&
     model === "" &&
     advancedModel === "" &&
@@ -675,16 +776,121 @@ function SpawnForm({
       client.request("evener/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
     [client],
   );
+  // Path unfolding here is source-aware (round nine). evener/path/validate and
+  // evener/dirs/create answer for THIS controller's filesystem, but a remote
+  // launch's paths belong to the SELECTED HOST: a directory that exists only
+  // there reads as invalid here, which made the picker refuse to select it and
+  // let the advanced panel's live validation mark a perfectly good remote path
+  // invalid - collectAdvancedOverrides then dropped it from launchOverrides with
+  // no reason the reader could act on. So a remote target is not judged by this
+  // controller at all: the check is skipped and the typed spelling is accepted,
+  // exactly as a validator that cannot answer already behaves (fail-open), and
+  // the selected host validates its own cwd and paths at start - the authority
+  // model the preflight, provider, plugin and model gates already follow on this
+  // pane. Local targets keep every check unchanged. (Source-aware browsing -
+  // completing a REMOTE path's children - needs the evener/host/request proxy,
+  // absent from this branch.)
   const validatePath = useCallback(
-    (path: string, kind: string) =>
+    (path: string, kind: string): Promise<PathValidation> => {
+      if (remoteLaunch) return Promise.resolve({ valid: true, path });
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
-      client
+      return client
         .request("evener/path/validate", { path, kind })
-        .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
-    [client],
+        .then((r) => ({ valid: r.valid, error: r.error, path: r.path }));
+    },
+    [client, remoteLaunch],
   );
-  const createDirectory = useCallback((path: string) => createDir(client, path), [client]);
+  // Creating a folder is a WRITE, and evener/dirs/create MkdirAll's it on this
+  // hub's own filesystem. A remote target's path is the selected host's, so the
+  // picker's "New folder" must not materialize it HERE - the same wrong-host
+  // action the cwd preflight above already refuses to offer for a remote
+  // target. Skipping validation (above) is what makes that affordance reachable
+  // for a remote-only path, so the refusal has to be explicit; the reason goes
+  // through a toast, since the picker's own slot shows a wire error's text and
+  // this rejection never crossed the wire.
+  const createDirectory = useCallback(
+    (path: string) => {
+      if (!remoteLaunch) return createDir(client, path);
+      toasts.push("error", `Create the folder on ${remoteSourceLabel}: this controller can't create it there.`);
+      return Promise.reject(new Error("a remote target's paths belong to the selected host"));
+    },
+    [client, remoteLaunch, remoteSourceLabel, toasts],
+  );
+  // A path-kind value's verdict belongs to the TARGET it was judged for, but
+  // the record the advanced panel keeps carries no target with it: `invalid`
+  // in advancedValues (and its message in advancedErrors) says "the controller
+  // cannot see this path", which is a fact about THIS host only. Because the
+  // verdict is made at the moment the field's value changes, a later switch of
+  // the Host picker leaves it asserting a fact about the wrong host: a path
+  // typed while local stays marked "no such file or directory" after a remote
+  // source is selected, so collectAdvancedOverrides (schema.ts:41) keeps
+  // dropping it from launchOverrides even though the disclosure below says the
+  // selected host resolves these paths (round ten). Re-validate the stored
+  // values whenever the target mode changes - the first run counts, so a
+  // remount under a remote target clears a flag a local era left behind - so
+  // the flag, the message and the collected overrides always describe the
+  // CURRENT target: to remote it is the host's business (validatePath's own
+  // short-circuit: valid, no reason to show), and a switch back to local asks
+  // this controller again, so a path this host really cannot see is dropped
+  // only while this host is the judge. The write is the same one the panel's
+  // own updateScalar makes (values + errors + the collected overrides), so a
+  // field the reader is looking at updates in place.
+  const pathValidationMode = useRef<boolean | null>(null);
+  useEffect(() => {
+    const previous = pathValidationMode.current;
+    pathValidationMode.current = remoteLaunch;
+    const modeChanged = previous !== remoteLaunch;
+    // A pass that is not a mode change still matters for a remote target: the
+    // verdict there is one this controller can state without asking anyone
+    // (validatePath short-circuits before the wire), so a flag the local era
+    // left on a draft the schema is only now revealing - or on a draft this
+    // pane switched to - is retired as soon as it becomes visible. A local
+    // pass must ask the controller, and only a mode change makes that
+    // necessary; it is skipped otherwise.
+    if (!modeChanged && !remoteLaunch) return;
+    const stored = readAdvancedValues();
+    const storedErrors = draft.fields.getState().advancedErrors;
+    for (const option of schemaOptions) {
+      if (!option.pathKind) continue;
+      const field = stored[option.wireField];
+      if (!field) continue;
+      const value = field.value;
+      if (typeof value !== "string" || value.trim() === "") continue;
+      // Nothing for a later pass to retire: the record already reads as the
+      // remote target's (no flag, no message), so it is left alone.
+      if (!modeChanged && field.invalid !== true && (storedErrors[option.wireField] ?? "") === "") continue;
+      validatePath(value, schemaPathKind(option.pathKind)).then(
+        (result) => {
+          // A later edit owns this field now, even if it returned to the same
+          // text - and a second mode change owns the verdict: its own run has
+          // already re-stamped the mode this one was registered under, so this
+          // response no longer describes the target in front of the reader.
+          if (pathValidationMode.current !== remoteLaunch) return;
+          const current = readAdvancedValues();
+          if (current[option.wireField] !== field) return;
+          const next: AdvancedValues = { ...current, [option.wireField]: { value, invalid: !result.valid } };
+          setAdvancedValues(next);
+          setAdvancedOverrides(collectAdvancedOverrides(schemaOptions, next));
+          setAdvancedErrors((prev) => ({
+            ...prev,
+            [option.wireField]: result.valid ? "" : (result.error ?? "invalid path"),
+          }));
+        },
+        // A failing validator never blocks (fail-open), matching the panel.
+        () => {},
+      );
+    }
+  }, [
+    draft,
+    remoteLaunch,
+    schemaOptions,
+    validatePath,
+    readAdvancedValues,
+    setAdvancedValues,
+    setAdvancedOverrides,
+    setAdvancedErrors,
+  ]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
       client.request("evener/launch/resolve", {
@@ -724,8 +930,17 @@ function SpawnForm({
     pluginPreview.state.status === "ready" ? pluginSelectionIssues(pluginSelection, pluginPreview.state.response) : [];
   const explicitSelectionLoading =
     pluginSelectionSupported && pluginSelection.mode === "explicit" && pluginPreview.state.status === "loading";
+  // The plugin preview is the CONTROLLER's own inspection (evener/plugin/preview
+  // answers for this hub's host). A remote launch runs on the selected source's
+  // own hub, which resolves its own plugins, so a controller-local "this plugin
+  // is missing/loading" is not evidence the remote launch cannot succeed and
+  // must not disable Start or refuse the submit - the selection is forwarded and
+  // the selected host validates it at start, the same authority model the cwd
+  // preflight and provider check already follow. (Source-aware discovery needs
+  // the evener/host/request proxy, absent from this branch.) The local path
+  // keeps every gate unchanged.
   const pluginSelectionBlocked =
-    explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
+    !remoteLaunch && (explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0);
 
   // Writing the prompt is what starting an agent IS, so the caret starts
   // there rather than on whichever field happens to be first in the DOM. A
@@ -782,12 +997,22 @@ function SpawnForm({
   // Validate each entered draft independently of storage: an earlier sweep may
   // already have deleted its saved model while the live draft still retains it.
   // Navigation does not cancel origin-owned validation; provider refresh does.
+  //
+  // A REMOTE target is not judged by this catalog at all (round ten, matching
+  // the round-seven default-model fallback above): the launch runs on the
+  // selected source's own hub, which resolves its own model, and a model that
+  // is valid there can be one this controller's model/list does not list. So
+  // the sweep is skipped for a remote target - and the target mode is
+  // re-checked when the response lands, because a draft that switches hosts
+  // while the request is in flight still has that request registered against
+  // it. Local targets keep every check unchanged.
   useEffect(() => {
-    if (!globalModelRequest || !usesEvenerModels) return;
+    if (!globalModelRequest || !usesEvenerModels || remoteLaunch) return;
     const initial = draft.fields.getState();
     if (!initial.model) return;
     globalModelRequest.promise.then(
       (r) => {
+        if (remoteLaunchRef.current) return;
         const current = draft.fields.getState();
         if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
           return;
@@ -798,7 +1023,7 @@ function SpawnForm({
       },
       () => {},
     );
-  }, [draft, globalModelRequest, usesEvenerModels]);
+  }, [draft, globalModelRequest, usesEvenerModels, remoteLaunch]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the
@@ -912,7 +1137,13 @@ function SpawnForm({
           if (!active) return;
           setDefaultPreview({ draft, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
-          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
+          // A remote target resolves its own default model from its own host's
+          // credentials and catalog, so this controller's launchable set is not
+          // evidence about it: injecting models[0] here would ride thread/start
+          // and stop the selected host from resolving its own default (round
+          // seven). The controller-local preview itself still lands above - the
+          // disclosure below the form already says those readings are ours.
+          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0 || remoteLaunch) return;
           const slash = defaultModel.indexOf("/");
           const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
           const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
@@ -936,7 +1167,9 @@ function SpawnForm({
             fallback &&
             !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
           ) {
-            setModel(`${fallback.provider}/${fallback.model}`);
+            const installed = `${fallback.provider}/${fallback.model}`;
+            setDefaultModelFallback(installed);
+            setModel(installed);
           }
         },
         () => {
@@ -950,7 +1183,34 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
+  }, [
+    cwd,
+    draft,
+    advancedOverrides,
+    advancedModel,
+    resolveConfig,
+    loadModels,
+    remoteLaunch,
+    setModel,
+    setDefaultModelFallback,
+    harness,
+    usesEvenerModels,
+  ]);
+
+  // Retire a model this fallback installed once the target becomes remote: the
+  // value describes the CONTROLLER's catalog, and forwarding it would prevent
+  // the selected host from resolving its own default (round seven). Only a
+  // value still equal to the one the fallback installed is cleared, so a
+  // person's own choice - or a sticky draft default - is never touched. The
+  // mark is this draft's own (round eight), so another draft's identical model
+  // string is untouched, and it survives a pane remount.
+  useEffect(() => {
+    if (!remoteLaunch) return;
+    if (defaultModelFallback !== null && modelRef.current === defaultModelFallback) {
+      setDefaultModelFallback(null);
+      setModel("");
+    }
+  }, [remoteLaunch, defaultModelFallback, setDefaultModelFallback, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, spawnSchema's
@@ -1052,6 +1312,10 @@ function SpawnForm({
   }
 
   function handleModelChange(next: string): void {
+    // Any value the person sets is their own choice, not the
+    // uncredentialed-default fallback's controller-derived pick, so it is no
+    // longer retired if the launch target becomes remote.
+    setDefaultModelFallback(null);
     setModel(next);
     clearAdvancedOverride("model");
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
@@ -1232,6 +1496,48 @@ function SpawnForm({
       const value = builtinMatch.argsText.trim();
       if (builtinMatch.command.id === "model" && value === "") {
         // Fall through to the ordinary start below with no model override.
+      } else if (remoteLaunch) {
+        // Remote target: the selected host's own hub validates the forwarded
+        // value. This controller's catalog describes ITS providers and models
+        // - not the host's - so matching against it here would refuse a model
+        // or effort level that only the selected host supports, contradicting
+        // the host-authority model the launch already follows for cwd,
+        // providers and plugins. (Source-aware discovery needs the
+        // evener/host/request proxy, absent from this branch.) The value is
+        // forwarded verbatim: a model as "provider/model" (the split every
+        // other /model path uses), an effort level as typed. Bare /model is the
+        // "(default)" branch above and forwards no override; bare
+        // /reasoning-effort still fails closed, since an empty enum value is
+        // not a controller-catalog judgment.
+        if (value === "") {
+          toasts.push("error", "/reasoning-effort needs a value");
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+        if (builtinMatch.command.id === "model") {
+          const { provider, model: modelId } = splitModelId(value);
+          // Unlike every other splitModelId caller, this input is RAW user text,
+          // not a provider/model catalog id that always contains a slash: "foo"
+          // splits to provider "foo" with an empty model, and the selected host
+          // ignores a provider with no model (its own model field stays empty),
+          // so the requested model would be silently dropped rather than
+          // refused. The host's own parser requires provider/model too, so
+          // refuse here with the same unknown-value message the local path
+          // uses - a clear pre-launch rejection instead of a silent no-op
+          // (round seven).
+          if (provider === "" || modelId === "") {
+            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
+            busyRef.current = false;
+            setBusy(false);
+            setBusyStartedAt(null);
+            return;
+          }
+          slashScalars = { modelProvider: provider, model: modelId };
+        } else {
+          slashScalars = { reasoningEffort: value };
+        }
       } else {
         // Effort validation reads the scope-stamped catalog, not the merged
         // display ladder: same staleness hole as /model (a value valid only
@@ -1324,6 +1630,11 @@ function SpawnForm({
       reasoningEffort: scalars.reasoningEffort,
       accessMode,
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+      // The draft's own host until a settled manifest can confirm a fallback,
+      // then the resolved choice. Omitted for local (startThread drops "local"
+      // from the wire), so the single-host request stays identical to before
+      // the host picker existed.
+      source: submittedSource,
     });
     if (builtinMatch && builtinMatch.command.id === "goal") {
       // Post-start application runs AFTER navigation below: awaiting goal/set
@@ -1343,6 +1654,10 @@ function SpawnForm({
       accessMode,
       reasoningEffort,
       harnessUsesEvenerModels: usesEvenerModels,
+      // A remote launch's cwd/model describe the selected host, not this
+      // controller, so they must not overwrite the global scalar defaults a
+      // later local spawn reads (round seven).
+      remoteLaunch,
     });
     // Reset transient form state on success, before navigating away (floor
     // §1.14 L186: the pending-attachment bag is cleared and the paste
@@ -1394,20 +1709,31 @@ function SpawnForm({
     const submittedPromptRevision = draft.fields.getState().promptRevision;
     const ownsLaunchView = captureLaunchView();
     try {
-      const outcome = await preflightDir(client, cwd);
-      if (outcome.kind === "abort") {
-        toasts.push("error", outcome.message);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
-        return;
-      }
-      if (outcome.kind === "offer-create") {
-        setCreateDialogPath(outcome.path);
-        busyRef.current = false;
-        setBusy(false);
-        setBusyStartedAt(null);
-        return;
+      // The working-directory preflight is the CONTROLLER's own filesystem
+      // check: evener/path/validate and evener/dirs/create answer for this hub's
+      // host. A remote launch's cwd belongs to the selected source instead, so
+      // the local answer is not authoritative - a path that exists only on the
+      // remote reads as missing here, and "Create & start" would create the
+      // directory LOCALLY before the remote launch still failed on its own cwd.
+      // Skip it for a remote target and let that hub validate its own cwd via
+      // thread/start; source-aware preflight arrives with the evener/host/request
+      // proxy (Component 07a), not this branch.
+      if (!remoteLaunch) {
+        const outcome = await preflightDir(client, cwd);
+        if (outcome.kind === "abort") {
+          toasts.push("error", outcome.message);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
+        if (outcome.kind === "offer-create") {
+          setCreateDialogPath(outcome.path);
+          busyRef.current = false;
+          setBusy(false);
+          setBusyStartedAt(null);
+          return;
+        }
       }
       await doSpawn(submittedPromptRevision, ownsLaunchView);
     } catch (err) {
@@ -1453,6 +1779,19 @@ function SpawnForm({
       setCreateDialogPath(null);
     }
   }
+
+  // The dir-picker's "last accepted directory" seed (GLOBAL_LAST_WORKING_DIR_KEY)
+  // is the CONTROLLER's own browse history: it seeds this hub's pickers, local
+  // ones included. A remote target's cwd belongs to the SELECTED HOST, so
+  // recording it would open the next local picker at a path that usually does
+  // not exist here (Component 06b review, round eight - the picker-seed half of
+  // round seven's controller-scoped-cwd rule).
+  const commitLastWorkingDir = useCallback(
+    (path: string) => {
+      if (!remoteLaunch) setGlobalLastWorkingDir(path);
+    },
+    [remoteLaunch],
+  );
 
   const harnessOptions =
     harnesses.length > 0
@@ -1509,10 +1848,73 @@ function SpawnForm({
             onClose={() => setDirectoryOpen(false)}
             onPick={(path) => {
               setCwd(path);
-              setGlobalLastWorkingDir(path);
+              commitLastWorkingDir(path);
               setDirectoryOpen(false);
             }}
           />
+        )}
+
+        {/* Host picker (Component 06b): rendered only when the manifest lists a
+            non-local source, so the common single-host form is byte-for-byte
+            unchanged. Local is preselected (the draft default). An offline host
+            still renders - the reader can see it exists - but its option is
+            disabled and carries the reason in its own label. */}
+        {displayRemoteHosts.length > 0 && (
+          <FormRow
+            label="Host"
+            htmlFor="spawn-host"
+            help={
+              displayRemoteHosts.some((candidate) => !candidate.online)
+                ? "Where the session runs. Offline hosts can't be selected."
+                : "Where the session runs."
+            }
+          >
+            <select
+              id="spawn-host"
+              className={CLASS.hostSelect}
+              value={displayHostChoice}
+              // A submit snapshots this choice (handleSpawn's closure carries
+              // the submittedSource/remoteLaunch that thread/start and
+              // saveDefaults receive) and then awaits the local directory
+              // preflight, so a change mid-submit would silently diverge from
+              // what actually launches and from which defaults are saved.
+              // Disabled while busy; the guard also covers the same-tick window
+              // before that attribute commits (kata 61v2's busyRef discipline).
+              disabled={busy}
+              onChange={(event) => {
+                if (busyRef.current) return;
+                setSource(event.target.value);
+              }}
+            >
+              {displaySources.map((candidate) => (
+                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
+                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
+                </option>
+              ))}
+            </select>
+          </FormRow>
+        )}
+
+        {/* A remote target's environment cannot yet be queried from here. Say
+            exactly which readings are the controller's - path BROWSING
+            (evener/paths/complete), models (model/list), providers
+            (evener/instance/list) and plugins (evener/plugin/preview) - rather
+            than present them as the target's: a remote-only model must not read
+            as a fact about the host the session will run on. Path CHECKS are not
+            among them: the controller cannot see the host's filesystem, so a
+            path-kind field is never judged invalid here and the selected host
+            validates its own cwd and paths when the session starts (round
+            nine). The launch itself goes to the selected source, whose own hub
+            resolves its environment. Removed when source-aware discovery (the
+            evener/host/request proxy) lands. */}
+        {remoteLaunch && (
+          <div className={CLASS.notice} role="status" data-testid="spawn-remote-host-notice">
+            <span>
+              Running on {remoteSourceLabel}. Path browsing, models, providers and plugins below come from this
+              controller; {remoteSourceLabel} resolves its own environment when the session starts, path checks
+              included.
+            </span>
+          </div>
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
@@ -1814,7 +2216,7 @@ function SpawnForm({
             createDirectory={createDirectory}
             listRecents={listRecents}
             fallbackDir={getGlobalLastWorkingDir()}
-            onCwdPanelClose={setGlobalLastWorkingDir}
+            onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
             accessMode={accessMode}
             accessOptions={accessOptions}

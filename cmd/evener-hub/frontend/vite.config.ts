@@ -55,6 +55,8 @@ export default defineConfig({
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
+      "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
+      "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
       "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
       // Resolution runs from the importer, and the package's test files sit

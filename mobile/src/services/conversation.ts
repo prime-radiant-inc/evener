@@ -5,11 +5,12 @@
 //
 // The service does NOT create or own the socket — it wraps an existing
 // AppwireClient (or any structurally compatible client, e.g. FakeClient in
-// tests). It projects the wire Thread to a MobileConversation via projectThread,
-// subscribes to notifications, and enforces ThreadCapabilities before every
-// mutation: a false capability blocks the request entirely, never reaching the
-// wire. A server-reported actionUnavailable triggers a non-subscribing
-// capability re-read so the store's cached capabilities stay fresh.
+// tests). It hydrates the wire Thread through the package (hydrateThread),
+// projects the display rows via projectConversation, subscribes to
+// notifications, and enforces ThreadCapabilities before every mutation: a
+// false capability blocks the request entirely, never reaching the wire. A
+// server-reported actionUnavailable triggers a non-subscribing capability
+// re-read so the store's cached capabilities stay fresh.
 //
 // The service guards its current identity and capabilities with open epochs;
 // the store owns profile/connection/conversation generations and view publication.
@@ -27,19 +28,22 @@ import type {
   ThreadCapabilities,
   ThreadClearResponse,
   ThreadForkResponse,
-  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
-import { isStaleCursorError } from "@evener/appwire-client";
+import {
+  hydrateThread,
+  isStaleCursorError,
+  mergeOlderItemPage,
+} from "@evener/appwire-client";
 import type {
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/model";
-import { projectThread } from "../conversation/project";
+} from "../conversation/project";
+import { projectConversation, projectTimeline } from "../conversation/project";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
@@ -66,8 +70,18 @@ export interface ConversationClientLike {
 // when available, falling back to a counter; tests inject a deterministic one.
 export type IdFactory = () => string;
 
+// The conversation's instanceId is the service's own fence value, not
+// hydrateThread's pass-through of the wire field: a daemon-backed read always
+// carries evener.instanceId (appsource/local_daemon.go stamps it with a
+// thread-id fallback), but the hub's past-session read (app_threadread.go)
+// stamps none, and the fork and queue affordances key on the field. One rule,
+// applied here where the fence is computed, so the displayed conversation and
+// the mutations it offers can never disagree about the instance.
+
 export interface ConversationServiceOptions {
   readonly idFactory?: IdFactory;
+  // The clock hydrateThread stamps the model with; tests inject a fixed one.
+  readonly now?: () => number;
 }
 
 export interface ConversationReadProjection {
@@ -122,7 +136,6 @@ export interface ConversationRecoveryActions {
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
-  refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
 }
 
 export interface ConversationModelCatalog {
@@ -459,6 +472,7 @@ export function createConversationService(
   ConversationClearActions &
   ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
+  const now = options.now ?? Date.now;
   const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open() / readProjection().
@@ -477,7 +491,6 @@ export function createConversationService(
   // must not redirect a draft to a replacement session.
   let instanceId: string | null = null;
   let threadId: string | null = null;
-  let capabilityRevision = 0;
   let opening: {
     ref: string;
     threadId: string | null;
@@ -560,48 +573,10 @@ export function createConversationService(
     }
   }
 
-  // Non-subscribing capability refresh: reads the thread metadata WITHOUT
-  // subscribing or replacing the subscription, and WITHOUT loading all turns.
-  // Returns the refreshed capabilities. This is the only path the store should
-  // use for actionUnavailable recovery — it never disturbs the active
-  // subscription. The cache is published only when, at request START, the
-  // committed ref equaled threadRef AND, after the await, both the lifecycle
-  // epoch and the committed ref remain unchanged (epoch === epochStart and
-  // ref === threadRef). A refresh started while pending or closed (ref=null)
-  // may never activate the pending/failed ref: startRef !== threadRef, so the
-  // cache is left untouched. The requested capabilities are always returned to
-  // the caller (generation-safe store), unless a newer push superseded the read.
-  async function refreshCapabilities(
-    threadRef: string,
-  ): Promise<ThreadCapabilities | null> {
-    const epoch = openEpoch;
-    const requestedRef = threadRef;
-    const startRef = ref;
-    const startCapabilityRevision = capabilityRevision;
-    const response: ThreadReadResponse = await client.request("thread/read", {
-      ref: threadRef,
-      includeTurns: false,
-      subscribe: false,
-    });
-    // Extract+validate capabilities into a plain copy; a malformed response
-    // rejects the refresh and cannot corrupt the current pair.
-    const refreshed = extractCapabilities(response.thread.evener.capabilities);
-    if (
-      startRef === requestedRef &&
-      openEpoch === epoch &&
-      ref === requestedRef &&
-      capabilityRevision === startCapabilityRevision
-    ) {
-      capabilities = refreshed;
-    }
-    return capabilityRevision === startCapabilityRevision ? refreshed : null;
-  }
-
   // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, the service just re-throws — it does NOT auto-refresh
-  // capabilities. Exactly one non-subscribing thread/read occurs, and it is
-  // driven by the store's handleMutationError (F2). The store is the sole
-  // caller of refreshCapabilities; the service never duplicates the read.
+  // actionUnavailable, the service just re-throws — it does NOT refresh
+  // capabilities. The store surfaces the typed error and requests its
+  // coalesced reread of the authoritative snapshot (handleMutationError).
   async function withCapabilityRefresh<T>(
     _action: string,
     fn: () => Promise<T>,
@@ -630,12 +605,15 @@ export function createConversationService(
       // commit the pair after projection succeeds and the epoch is still
       // current; a stale successful result returns without committing.
       const thread = readWithPushedCapabilities(response.thread, epoch);
-      const conversation = projectThread(thread);
-      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ ...response, thread }, threadRef, now()),
+        instanceId: readInstanceId,
+      });
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
         modelScope = readModelScope;
@@ -667,19 +645,23 @@ export function createConversationService(
       pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
       const response: ThreadReadResponse = await read;
       // Compute ALL response-derived projection work BEFORE committing the
-      // pair — a throw in projectThread or activity projection (or a malformed
-      // response) leaves ref+capabilities null/fail-closed. Only commit the
+      // pair — a throw in hydration, projectConversation or activity
+      // projection (or a malformed response) leaves ref+capabilities
+      // null/fail-closed. Only commit the
       // pair after all projection succeeds and the epoch is still current;
       // a stale successful result returns without committing.
       const thread = readWithPushedCapabilities(response.thread, epoch);
-      const conversation = projectThread(thread);
-      const activity = activityService.projectActivity(thread);
-      const olderCursor = response.olderCursor ?? null;
-      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ ...response, thread }, threadRef, now()),
+        instanceId: readInstanceId,
+      });
+      const activity = activityService.projectActivity(thread);
+      const olderCursor = response.olderCursor ?? null;
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
         modelScope = readModelScope;
@@ -739,11 +721,9 @@ export function createConversationService(
         // cursor and visible projection are published together.
         throw error;
       }
-      // Project the older turns into mobile items by projecting a minimal
-      // Thread containing just these turns. projectThread handles empty/missing
-      // turns gracefully; we only need the item projection, not the full
-      // conversation metadata.
-      const items = projectOlderTurns(response.data);
+      // Project the older turns into mobile items by hydrating a minimal
+      // Thread containing just these turns; only the display rows are kept.
+      const items = projectOlderTurns(response, threadId);
       return {
         items,
         nextCursor: response.nextCursor,
@@ -756,7 +736,6 @@ export function createConversationService(
       };
     },
 
-    refreshCapabilities,
 
     subscribeNotifications(handler) {
       if (notificationUnsub !== null) {
@@ -778,7 +757,6 @@ export function createConversationService(
               if (committed) capabilities = next;
               if (pending && opening)
                 opening.pushed = { threadId: params.threadId, caps: next };
-              capabilityRevision++;
             } catch {
               return;
             }
@@ -948,13 +926,16 @@ export function createConversationService(
         );
       const thread = response.thread;
       beginOpen(response.ref);
-      const conversation = projectThread(thread);
-      const activity = activityService.projectActivity(thread);
-      const caps = extractCapabilities(thread.evener.capabilities);
       const replacementInstance = nonemptyString(
         thread.evener.instanceId,
         "replacement instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ thread }, response.ref, now()),
+        instanceId: replacementInstance,
+      });
+      const activity = activityService.projectActivity(thread);
+      const caps = extractCapabilities(thread.evener.capabilities);
       modelScope = { harness: thread.source, cwd: thread.cwd };
       instanceId = replacementInstance;
       threadId = thread.id;
@@ -1185,17 +1166,25 @@ export function createConversationService(
   };
 }
 
-// Project older Turn[] into mobile timeline items. We build a minimal Thread
-// with just these turns and project it, extracting only the items. This reuses
-// the same projection logic (clustering, forward-compat) as open().
+// Project an older page into mobile timeline items: hydrate an empty Thread
+// under the real thread id (so a replayed image's sha route names this
+// session), merge the page into it with the package's mergeOlderItemPage —
+// the same across-turn merge and tool call/result folding the web applies to
+// a page — and keep only the display rows. The model's ref and clock are
+// placeholders the rows never read. The store still owns the prepend of
+// these rows onto the retained timeline (D23d moves that onto the model).
+// A page never repeats a transcript key: the hub's pager refuses to emit one
+// (internal/appitempaging/page.go validateCandidates), so there is no
+// within-page dedupe to do here.
 function projectOlderTurns(
-  turns: ThreadTurnsListResponse["data"],
+  page: ThreadTurnsListResponse,
+  threadId: string | null,
 ): MobileTimelineItem[] {
-  if (turns.length === 0) return [];
-  const mergedTurns = mergeFragmentTurns(turns);
+  if (page.data.length === 0) return [];
+  const id = threadId ?? "older";
   const thread: Thread = {
-    id: "older",
-    sessionId: "older",
+    id,
+    sessionId: id,
     preview: "",
     ephemeral: false,
     modelProvider: "",
@@ -1205,7 +1194,7 @@ function projectOlderTurns(
     cwd: "",
     cliVersion: "",
     source: "",
-    turns: mergedTurns,
+    turns: [],
     evener: {
       ref: "older",
       capabilities: {
@@ -1226,57 +1215,11 @@ function projectOlderTurns(
       queue: { revision: 0 },
     },
   };
+  const model = mergeOlderItemPage(hydrateThread({ thread }, "older", 0), page);
   // I3: Filter out actionable question rows from historical pages. A pending
   // ask cannot legitimately be older than newer continuation turns, and
   // page-local projection otherwise resurrects settled calls. All other
-  // projected page items/order/dedupe/cursor are preserved — only question
-  // rows are omitted.
-  return projectThread(thread).items.filter((item) => item.kind !== "question");
-}
-
-// A v4 page can overlap at turn boundaries and can carry fragments whose wire
-// ids differ while transcriptKey identifies the same item. Merge by that
-// stable identity before projecting, preserving the newer item's payload and
-// the transcript position used for deterministic ordering.
-function mergeFragmentTurns(
-  turns: ThreadTurnsListResponse["data"],
-): ThreadTurnsListResponse["data"] {
-  const byTurn = new Map<string, (typeof turns)[number]>();
-  for (const turn of turns) {
-    const existing = byTurn.get(turn.id);
-    if (!existing) {
-      byTurn.set(turn.id, {
-        ...turn,
-        items: turn.items ? [...turn.items] : [],
-      });
-      continue;
-    }
-    const items = [...(existing.items ?? []), ...(turn.items ?? [])];
-    byTurn.set(turn.id, {
-      ...existing,
-      ...turn,
-      items: mergeFragmentItems(items),
-    });
-  }
-  return [...byTurn.values()].map((turn) => ({
-    ...turn,
-    items: mergeFragmentItems(turn.items ?? []),
-  }));
-}
-
-function mergeFragmentItems(items: ThreadItem[]): ThreadItem[] {
-  const byIdentity = new Map<string, ThreadItem>();
-  for (const item of items) {
-    const identity = item.transcriptKey ?? item.id;
-    const prior = byIdentity.get(identity);
-    byIdentity.set(identity, prior ? { ...prior, ...item } : item);
-  }
-  return [...byIdentity.values()].sort((left, right) => {
-    const a = left.position;
-    const b = right.position;
-    if (a && b) return a.entry - b.entry || a.item - b.item;
-    if (a) return -1;
-    if (b) return 1;
-    return 0;
-  });
+  // projected page items/order/cursor are preserved — only question rows are
+  // omitted.
+  return projectTimeline(model).filter((item) => item.kind !== "question");
 }

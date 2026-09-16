@@ -1,29 +1,24 @@
 import {
   type AskAnswerItem,
+  type AskQuestionRef,
   composeAskAnswers,
 } from "@evener/appwire-client";
-import type {
-  MobileAskQuestion,
-  MobileConversation,
-} from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
 >;
-export function pendingQuestions(conversation: MobileConversation | null) {
+export function pendingQuestions(
+  conversation: MobileConversation | null,
+): AskQuestionRef[] {
   return conversation?.askPending
     ? conversation.items.flatMap((item) =>
-        item.kind === "question"
-          ? item.batch.questions.map((question) => ({
-              ...question,
-              callId: item.batch.callId,
-            }))
-          : [],
+        item.kind === "question" ? item.questions : [],
       )
     : [];
 }
 export function composeQuestionAnswers(
-  questions: MobileAskQuestion[],
+  questions: AskQuestionRef[],
   selections: QuestionSelections,
 ): string | null {
   if (!questions.length) return null;
@@ -84,7 +79,7 @@ export function decodeQuestionSelections(json: string): QuestionSelections {
 
 /** Match the web dock: seed only untouched answers, never a cleared choice. */
 export function seedQuestionAnswers(
-  questions: MobileAskQuestion[],
+  questions: AskQuestionRef[],
   saved: QuestionSelections,
 ): QuestionSelections {
   const answers = { ...saved };
@@ -104,7 +99,7 @@ export function seedQuestionAnswers(
 
 /** The web dock walks forward, then wraps to unanswered questions. */
 export function questionAdvanceTarget(
-  questions: MobileAskQuestion[],
+  questions: AskQuestionRef[],
   answers: QuestionSelections,
   activeIndex: number,
 ): number | undefined {
@@ -114,7 +109,7 @@ export function questionAdvanceTarget(
 }
 
 export function nextUnansweredQuestion(
-  questions: MobileAskQuestion[],
+  questions: AskQuestionRef[],
   answers: QuestionSelections,
   activeIndex: number,
 ): number | undefined {
