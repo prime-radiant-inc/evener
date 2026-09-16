@@ -50,6 +50,7 @@
     "displayFormat.ts",
     "toolCallText.ts",
     "catalogCommands.ts",
+    "commandCatalog.ts",
     "slashCompletion.ts",
     "sharedNotesAvailability.ts",
     "marketplaceSourceLabel.ts",

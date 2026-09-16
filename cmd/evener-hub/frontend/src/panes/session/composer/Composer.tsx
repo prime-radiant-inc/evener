@@ -34,6 +34,7 @@ import {
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
+  sessionPluginNames,
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
@@ -285,10 +286,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // resolved against THIS ref) merged with the plugin catalog
   // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
   // row's provenance is a built-in or a plugin.
-  const activePluginNames = useMemo<ReadonlySet<string> | null>(() => {
-    if (!model?.diagnostics?.plugins) return null;
-    return new Set(model.diagnostics.plugins.map((plugin) => plugin.name));
-  }, [model?.diagnostics]);
+  const activePluginNames = useMemo(() => sessionPluginNames(model?.diagnostics), [model?.diagnostics]);
   const visibleSlashCatalog = useMemo(
     () => visibleCatalogCommands(slashCatalog, activePluginNames),
     [activePluginNames, slashCatalog],
