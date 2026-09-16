@@ -5,17 +5,15 @@ import type {
 	NavigationReadParams,
 } from "@evener/appwire-client";
 import {
+	applyDelta,
 	type DecodedNavigationResponse,
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	type NormalizedResource,
 	normalizedGraphFromSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
-import {
-	applyDelta,
 	reconcileSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/merge";
-import type { ResourceKey } from "../../cmd/evener-hub/frontend/src/stores/navigation/types";
+	type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface PageState<T> {

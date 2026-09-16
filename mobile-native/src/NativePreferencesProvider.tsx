@@ -7,8 +7,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import type { AppwireClient } from "@evener/appwire-client";
-import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {

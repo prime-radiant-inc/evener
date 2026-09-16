@@ -1,11 +1,11 @@
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";

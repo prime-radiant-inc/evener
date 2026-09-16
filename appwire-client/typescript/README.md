@@ -31,23 +31,51 @@ the short lowercase session-state gloss a session row's second line leads
 with, the credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
 flat row builder with the path helpers both apps' path fields share, the
-model catalog view helpers both apps' model pickers are built from
-(searchable options, provider grouping, per-row metadata and the flat picker
-row list), the launch-config engine's pure half both apps' launch settings
-are built on (option grouping, layer filtering, the form state
-populate/collect pair, the inherited entries a collection control ghosts in,
-and the add-a-path decision every path list gates on), the built-in slash
-invocation matcher and argument lookup both composers run a draft through
-before sending it, and the doc-pane URL builders, which hang their hrefs off
-a base origin the host supplies (empty for a same-origin web page). The
-doc-pane data layer is published at the `./docContent` subpath as well, where
-`readDocFile` takes the host's `DocPort` - that base origin paired with a
-fetch: the package issues no request of its own and names neither an origin
-nor a credentials policy.
+model catalog view helpers both apps' model pickers are built from (searchable
+options, provider grouping, per-row metadata and the flat picker row list),
+the launch-config engine's pure half both apps' launch settings are built on
+(option grouping, layer filtering, the form state populate/collect pair, the
+inherited entries a collection control ghosts in, and the add-a-path decision
+every path list gates on), the built-in slash invocation matcher and argument
+lookup both composers run a draft through before sending it, the transcript
+display configuration both apps resolve (local over hub over shipped), encode
+for local storage and summarize a transcript's content level and advanced
+toggles with, and the doc-pane URL builders, which hang their hrefs off a base
+origin the host supplies (empty for a same-origin web page). The doc-pane data
+layer is published at the `./docContent` subpath as well, where `readDocFile`
+takes the host's `DocPort` - that base origin paired with a fetch: the package
+issues no request of its own and names neither an origin nor a
+credentials policy.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
+
+## Published subpaths
+
+Besides the root, `package.json` `exports` publishes two subpaths:
+
+- `@evener/appwire-client/docContent` - the doc-pane data layer, where
+  `readDocFile` takes the host's `DocPort`.
+- `@evener/appwire-client/state/navigation` - the navigation state layer both
+  apps' navigation stores are built on: the resource-key vocabulary and
+  classifiers (`types`), the snapshot and delta codec (`codec`), the graph
+  merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
+  subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
+  the four modules whole.
+
+A module is a root export when it is part of the client surface a consumer
+takes to talk to a hub: the client, the wire types, the errors, and the pure
+formatters and derivations a view renders wire data with. A module gets its own
+subpath when it is a layer a consumer adopts as a whole or not at all - a data
+layer that needs a host port (`docContent`), or a state layer the apps build a
+store on (`state/navigation`). Later state layers go under `state/<name>/` with
+an `index.ts` barrel, one `exports` entry, one qualification-manifest entry of
+hand-written type uses and smoke calls, and one alias in each resolver (`tsconfig` `paths` in both apps, the Vite and vitest
+configs, and Metro's `resolveRequest`, which probes `<subpath>/index.<ext>` for
+a directory subpath). The runner derives each specifier's surface from its
+entry, and `mobile-native/src/metroResolver.test.ts` reads the same `exports`
+map, so a published subpath Metro cannot resolve fails there.
 
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, and then,

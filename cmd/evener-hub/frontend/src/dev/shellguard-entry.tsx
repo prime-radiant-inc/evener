@@ -15,17 +15,17 @@
 // answer the fix has to be aimed at.
 
 import type { NavigationReadBase, NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
-import { createRoot } from "react-dom/client";
-import railStyles from "../shell/rail/Rail.module.css";
-import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
   type ResourceKey,
-} from "../stores/navigation/types";
+} from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
+import { createRoot } from "react-dom/client";
+import railStyles from "../shell/rail/Rail.module.css";
+import { RailRenderObserver } from "../shell/rail/railRenderObserver";
 import "../styles/tokens.css";
 import "../styles/global.css";
 

@@ -15,6 +15,7 @@
 // stores/threads.test.ts's own notes on the convention).
 
 import type { NavigationReadParams, NavigationReadResponse, NavigationSessionLocation } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,7 +24,6 @@ import { initNotifications, resetNotificationsForTests } from "../notifications"
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { connectionStore } from "../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { keyID } from "../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { FocusScope } from "../widgets/focusscope";

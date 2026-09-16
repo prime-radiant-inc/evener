@@ -3,22 +3,23 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NavigationWatchSummary } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
+import {
+  keyID,
+  type NormalizedResource,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import {
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-  type ResourceState,
-} from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";

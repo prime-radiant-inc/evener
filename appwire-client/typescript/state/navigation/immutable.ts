@@ -1,3 +1,5 @@
+// Deep-frozen copies and structural equality for JSON-shaped values, so a
+// navigation graph cannot be mutated behind the store that owns it.
 export function cloneAndDeepFreezeJSON<T>(value: T): T {
   if (Array.isArray(value)) {
     return Object.freeze(value.map((item) => cloneAndDeepFreezeJSON(item))) as T;
