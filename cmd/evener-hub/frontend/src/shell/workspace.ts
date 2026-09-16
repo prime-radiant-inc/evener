@@ -217,18 +217,18 @@ function isRegistered(type: unknown): type is PaneTypeId {
   }
 }
 
-// Reconstructs one dockview panel's params back into our own wire shape,
-// throwing on anything that doesn't match a currently-registered pane type.
-// restoreLayout's single catch block treats that the same as a fromJSON()
-// structural-validation failure: a saved-but-unloadable layout, not a
-// partial-recovery case (a layout saved by a later build, once a pane type
-// this one hasn't shipped yet exists, loaded by an older one - the realistic
-// way this happens given layouts persist to localStorage across deploys).
-function readPanelParams(panel: IDockviewPanel): PanePanelParams {
+// Reconstructs one dockview panel's params back into our own wire shape, or
+// null for a panel this build can't render: one whose params are missing or
+// whose paneType is no longer registered. Null is a SKIP, not a throw - a
+// pane type removed from the app (e.g. sessionNotes, retired with the notes
+// sidebar pane) or shipped by a newer build leaves its panel in the restored
+// dockview layout, and discarding the user's ENTIRE workspace over one
+// unloadable panel is a data-loss bug, not a validation stance. restoreLayout
+// drops the skipped panel from `panes` and removes it from the live api in
+// the same pass, so the rest of the layout recovers from the first render.
+function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const raw = panel.params;
-  if (!raw || !isRegistered(raw.paneType)) {
-    throw new Error(`workspace: restored panel "${panel.id}" has unrecognized params`);
-  }
+  if (!raw || !isRegistered(raw.paneType)) return null;
   return { paneType: raw.paneType, paneParams: raw.paneParams };
 }
 
@@ -382,30 +382,49 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // saved JSON: api.panels is in grid order, so the FIRST panel is the one
       // in the top-left group - the main pane. Read only `panels` (plus each
       // panel's own group), never api.groups: this function's whole
-      // dockview surface stays the four members it already used
-      // (fromJSON/panels/activePanel/clear), which is also what keeps the unit
-      // doubles in workspace.test.ts/paneRestore.test.ts honest doubles rather
-      // than a growing mirror of the real api.
+      // dockview surface stays the five members it uses
+      // (fromJSON/panels/activePanel/removePanel/clear), which is also what
+      // keeps the unit doubles in workspace.test.ts/paneRestore.test.ts
+      // honest doubles rather than a growing mirror of the real api.
       //
       // A layout that somehow restores a SECOND panel into that same first
       // group leaves only the first as "main" - impossible for a layout this
       // build saved (the one-pane rule holds on the way in), and it degrades to
-      // a stacked main group rather than a crash for anything else.
-      const panes = dockviewApi.panels.map((panel, index) => {
-        const { paneType, paneParams } = readPanelParams(panel);
-        const slot: PaneSlot = index === 0 ? "main" : "secondary";
-        return { id: panel.id, type: paneType, params: paneParams, slot };
-      });
+      // a stacked main group rather than a crash for anything else. Panels
+      // readPanelParams skips (an unregistered/removed pane type) drop out
+      // BEFORE the slot assignment, so the first SURVIVING panel is main.
+      const entries = dockviewApi.panels.map((panel) => ({ panel, params: readPanelParams(panel) }));
+      // A panel this build cannot render must leave the live api NOW, not in
+      // DockHost's later structural reconciliation: the commit between this
+      // restore and that reconciliation renders every api panel through
+      // paneFor(), which throws for an unregistered type and can take the
+      // whole workspace chunk down with it.
+      for (const entry of entries) {
+        if (entry.params === null) dockviewApi.removePanel(entry.panel);
+      }
+      const restored = entries.filter(
+        (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null,
+      );
+      const panes: OpenPaneRecord[] = restored.map((entry, index) => ({
+        id: entry.panel.id,
+        type: entry.params.paneType,
+        params: entry.params.paneParams,
+        slot: index === 0 ? "main" : "secondary",
+      }));
       bumpPastRestoredIds(panes);
-      set({ panes, focusedPaneId: dockviewApi.activePanel?.id ?? panes[0]?.id ?? null });
+      // The api's active panel may be one the skip dropped; focus only an id
+      // that actually survived, else the first survivor.
+      const activeId = dockviewApi.activePanel?.id;
+      set({
+        panes,
+        focusedPaneId: panes.find((p) => p.id === activeId)?.id ?? panes[0]?.id ?? null,
+      });
       return true;
     } catch {
       // fromJSON's own structural failures leave dockview already cleared
-      // (see dockview-core's source), but a failure raised by OUR OWN
-      // validation above (readPanelParams) happens after fromJSON already
-      // applied a layout dockview considers well-formed - clear it
-      // explicitly so a rejected restore never leaves the user staring at
-      // panels this app can't render (paneFor() would throw for real).
+      // (see dockview-core's source), and nothing else throws anymore:
+      // readPanelParams skips unloadable panels instead of raising, so this
+      // catch now covers only a layout dockview itself rejects.
       dockviewApi?.clear();
       set({ panes: [], focusedPaneId: null });
       return false;
