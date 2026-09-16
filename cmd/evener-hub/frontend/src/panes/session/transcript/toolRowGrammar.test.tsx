@@ -1913,3 +1913,74 @@ test("the inline trailing anchor still lands immediately after the entity id it 
   // Composed text is still exactly the summary (the control is icon-only).
   expect(summaryEl.textContent).toBe(summary);
 });
+
+// The TailUnit entity-last arm (roborev r4): when the final segment of a
+// glyph-bearing line is a whole entity id, the unit wraps the id and the
+// glyphs TOGETHER - an id is already the atom, so no word split - and the
+// pair can never strand apart across a wrap. No live descriptor produces an
+// entity-final summary WITH glyphs yet (job_watch's "Cleared <id>" rows are
+// summary-only and carry none), but the arm is the row grammar's contract:
+// the two tests below pin it for the surfaces that grow into it.
+
+test("an expanded two-level summary ending in an entity id glues the body chevron to the id in one tail unit", () => {
+  const summary = `Watching ${SUMMARY_ENTITY_JOB}`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Watching the build job"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const trigger = screen.getByTestId("entity-trigger");
+  const chevron = screen.getByTestId("tool-row-body-chevron");
+  // The line's last element child is the tail unit, and the unit carries BOTH
+  // the entity card trigger and the body chevron.
+  const unit = summaryEl.lastElementChild;
+  expect(unit?.contains(trigger)).toBe(true);
+  expect(unit?.contains(chevron)).toBe(true);
+  expect(unit?.lastElementChild).toBe(chevron);
+  // The id rides whole and alone in the unit: an id is the atom, and every
+  // character of the summary still renders exactly once on the line.
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(unit?.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(summaryEl.textContent).toBe(summary);
+});
+
+test("an expanded summary whose anchor ends at an entity id glues the trailing control to the id in one tail unit", () => {
+  // The anchor is the WHOLE summary (a binary-read-like shape): the control
+  // rides at the text's end, so it must strand together with the id exactly
+  // like the chevron does on the plain variant.
+  const summary = `Sent a message to delegate ${SUMMARY_ENTITY_JOB}`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Messaging the delegate"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button" aria-label="Open transcript" />}
+      trailingAfter={summary}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const trigger = screen.getByTestId("entity-trigger");
+  const trailing = screen.getByTestId("tool-row-trailing");
+  // The tail unit is the summary line's last element child and carries BOTH
+  // the id and the control, id first.
+  const unit = summaryEl.lastElementChild;
+  expect(unit?.contains(trigger)).toBe(true);
+  expect(unit?.contains(trailing)).toBe(true);
+  expect(unit?.lastElementChild).toBe(trailing);
+  expect(trigger.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The id rides whole, and every character of the summary renders exactly
+  // once (the control is icon-only).
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(summaryEl.textContent).toBe(summary);
+});
