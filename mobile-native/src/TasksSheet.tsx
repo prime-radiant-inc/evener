@@ -23,6 +23,7 @@ import {
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const statusLabel = {
@@ -63,9 +64,7 @@ export function TasksSheet({
   const store = useMemo(
     () =>
       createTasksPanelStore(
-        async (ref) =>
-          (await currentClient.current.request("evener/tasks/list", { ref }))
-            .data,
+        tasksReadThroughCurrentClient(() => currentClient.current),
       ),
     [],
   );
