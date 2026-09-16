@@ -1,17 +1,19 @@
-import type {
-  NavigationCapability,
-  NavigationManifest,
-  NavigationReadParams,
-  NavigationReadResponse,
-  NavigationSessionSummary,
-} from "@evener/appwire-client";
+// Navigation wire fixtures for both apps' tests and dev previews: builders for
+// the capability, manifest and session-summary shapes, and the wireV2 converter.
 import {
   type NavigationResponse,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
   type ResourceKey,
-} from "@evener/appwire-client/state/navigation";
+} from "../state/navigation";
+import type {
+  NavigationCapability,
+  NavigationManifest,
+  NavigationReadParams,
+  NavigationReadResponse,
+  NavigationSessionSummary,
+} from "../types.gen";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
   version,
   generationId,
@@ -83,8 +85,8 @@ export const completeBody = (data: unknown, revision: number, gen: string): Reco
   return body;
 };
 
-// Test mirrors of the store's page-limit defaults (store.ts PAGE_LIMIT and
-// CATALOG_LIMIT): fixtures must agree with the codec's effective limits.
+// The codec's page-limit maximums (effectiveLimit in ../state/navigation/codec.ts):
+// a fixture's metadata.limit must equal the effective limit for its key.
 const SECTION_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 
