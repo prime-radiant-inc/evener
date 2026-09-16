@@ -288,6 +288,7 @@ export {
   collectAuthoritativeMutationIds,
   hydrateThread,
   imageSessionRouteForSession,
+  joinedReasoningParagraphs,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,

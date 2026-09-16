@@ -28,6 +28,7 @@ import type {
 import {
   hasItemFailure,
   isInProgressStatus,
+  joinedReasoningParagraphs,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -46,17 +47,20 @@ export type MobileConversation = ThreadModel & {
 };
 
 export function projectConversation(model: ThreadModel): MobileConversation {
-  const items = projectTimeline(model);
+  // The asks the package says are answerable right now, derived once and
+  // handed to the projector that renders them as question rows.
+  const asks = askQuestionsByCall(model);
   return {
     ...model,
-    items,
-    // The hub stamps askPending on the thread it serves; a question row is
-    // the same fact derived from the model a frame just changed (both come
-    // from the package's liveAskQuestions rule). A question the phone shows
-    // is answerable at once — it does not wait for the next snapshot to say
-    // so — so a row on screen counts as a pending ask.
-    askPending:
-      model.askPending || items.some((item) => item.kind === "question"),
+    items: projectTimeline(model, asks),
+    // What the phone means by askPending is "there is a question on this
+    // screen to answer", and that is exactly the package's liveAskQuestions
+    // rule — the same rule that produced the question rows above. It is
+    // derived fresh from the model every time rather than OR'd with the
+    // hub's own thread-level flag: this projection's output is the model the
+    // next frame folds into, so an OR would latch the flag on forever, and
+    // the wire's value is never written back over the model's own field.
+    askPending: asks.size > 0,
   };
 }
 
@@ -320,18 +324,15 @@ function itemMarkdown(item: ItemModel): string {
     : item.text;
 }
 
-// A reasoning item's text as the reader sees it: the per-summaryIndex chunks
-// the model accumulated — seeded from the item's own text at hydrate and
-// extended by item/reasoning/summaryTextDelta — joined one paragraph per
-// summary, the same string[][] the web's think block renders
-// (reasoningFormat.ts's joinedReasoningParagraphs). The model keeps those
-// chunks across a settle (reducer.ts's mergeReasoning), so a completion that
-// carries no text of its own shows what streamed in. An item with no chunks
-// at all shows its text.
+// A reasoning item's text as the reader sees it: the package's own reading of
+// reasoningSummaries — one paragraph per summaryIndex, seeded from the item's
+// text at hydrate and extended by item/reasoning/summaryTextDelta — as one
+// string for the collapsed row. The model keeps those chunks across a settle
+// (reducer.ts's mergeReasoning), so a completion carrying no text of its own
+// shows what streamed in; an item with no chunks at all shows its text.
 function reasoningText(item: ItemModel): string {
-  const summaries = item.reasoningSummaries;
-  if (!summaries?.length) return item.text;
-  return summaries.map((chunks) => pendingTextJoined(chunks)).join("\n\n");
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  return paragraphs.length === 0 ? item.text : paragraphs.join("\n\n");
 }
 
 function projectItem(
@@ -476,17 +477,22 @@ function projectItem(
 
   // A warning the reducer folded into the active turn (reducer.ts's `case
   // "warning"`): its own item type, carrying the notice's title and hint
-  // beside the message text. The phone shows it as the same failure card a
-  // turn error produces.
+  // beside the message text. It is a notice with a warning tone, like every
+  // other "something to know, not a failed turn" row here — the phone reads
+  // that tone as critical (timeline.ts's isCriticalNotice) and the web renders
+  // the same item as its own warning message, never as a turn failure.
   if (item.type === "warning") {
+    const title = item.warning?.title;
     const hint = item.warning?.hint;
     return {
       kind: "final",
       item: {
-        kind: "failure",
+        kind: "notice",
         id: item.id,
-        title: item.warning?.title ?? "Warning",
-        detail: hint ? `${item.text}\n${hint}` : item.text,
+        origin: "system",
+        family: "warning",
+        tone: "warning",
+        text: [title, item.text, hint].filter((part) => part).join("\n"),
       },
     };
   }
@@ -598,8 +604,12 @@ function clusterActivities(
 
 // --- timeline projection -----------------------------------------------------
 
-export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
-  const asks = askQuestionsByCall(model);
+export function projectTimeline(
+  model: ThreadModel,
+  // The answerable asks, when the caller has already derived them
+  // (projectConversation does, for askPending).
+  asks: ReadonlyMap<string, AskQuestionRef[]> = askQuestionsByCall(model),
+): MobileTimelineItem[] {
 
   // Project every item in order, preserving whether it is a final item or a
   // clusterable activity pre-item. Attachments emitted alongside an item

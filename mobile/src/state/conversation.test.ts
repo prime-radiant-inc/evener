@@ -2198,13 +2198,17 @@ describe("ConversationStore", () => {
       });
     });
 
-    // Decision 2: a delta naming an item the model does not have changes
-    // nothing and asks for nothing — the frame is about an item this thread
-    // never received, and the next snapshot is what settles it.
-    it("ignores a delta targeting a missing item, without a reread", async () => {
-      const { store, service } = await openRunningTurn();
+    // A frame naming an item the model does not hold could not be applied:
+    // this client missed the item/started that would have made it placeable,
+    // so the rows have a gap in them. Nothing changes on screen from the
+    // frame itself, and the canonical read is asked for at once — the phone
+    // refreshes itself rather than waiting for the next resync.
+    it("asks for a reread when a delta targets an item the model does not hold", async () => {
+      const { store, service } = await openRunningTurn([
+        agentMessageItem("a1", "hello", "inProgress"),
+      ]);
       const initialReads = service.readProjectionCalls.length;
-      const before = store.getState().conversation;
+      const before = rows(store);
       store.getState().applyNotification({
         method: "item/agentMessage/delta",
         params: {
@@ -2215,10 +2219,36 @@ describe("ConversationStore", () => {
           delta: "text",
         },
       } as AnyNotification);
+      expect(rows(store)).toEqual(before);
       await Promise.resolve();
       await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBe(initialReads);
-      expect(rows(store)).toEqual(before?.items ?? []);
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+    });
+
+    it.each([
+      ["a tool-output delta", {
+        method: "item/toolOutput/delta",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "nonexistent", callId: "call-x", delta: "x" },
+      }],
+      ["a reasoning delta", {
+        method: "item/reasoning/summaryTextDelta",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "nonexistent", summaryIndex: 0, delta: "x" },
+      }],
+      ["a completion for a turn the model does not hold", {
+        method: "item/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t-unknown", item: { type: "userMessage", id: "u9", turnId: "t-unknown", text: "hi" } },
+      }],
+    ] as const)("asks for a reread when %s cannot be placed", async (_label, frame) => {
+      const { store, service } = await openRunningTurn([
+        agentMessageItem("a1", "hello", "inProgress"),
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      const before = rows(store);
+      store.getState().applyNotification(frame as AnyNotification);
+      expect(rows(store)).toEqual(before);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
   });
 
@@ -2823,10 +2853,6 @@ describe("ConversationStore", () => {
     });
 
     it.each([
-      ["a delta naming no item in the model", {
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "nonexistent", delta: "text" },
-      }],
       ["a reasoning delta naming an assistant item", {
         method: "item/reasoning/summaryTextDelta",
         params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "r-1", summaryIndex: 0, delta: "thinking" },
@@ -2876,7 +2902,11 @@ describe("ConversationStore", () => {
       const items = rows(store);
       expect(items.length).toBeLessThanOrEqual(500);
       // The newest rows are retained: the warning is the last one.
-      expect(items[items.length - 1]).toMatchObject({ kind: "failure", detail: "test warning" });
+      expect(items[items.length - 1]).toMatchObject({
+        kind: "notice",
+        tone: "warning",
+        text: "test warning",
+      });
     });
 
     it("keeps repeated warning identities stable through a later item update", async () => {
@@ -2888,7 +2918,7 @@ describe("ConversationStore", () => {
       store.getState().applyNotification(warning);
       store.getState().applyNotification(warning);
       const warningIdsBefore = rows(store)
-        .filter((item) => item.kind === "failure")
+        .filter((item) => item.kind === "notice" && item.tone === "warning")
         .map((item) => item.id);
 
       store.getState().applyNotification({
@@ -2907,7 +2937,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
 
       const warningIdsAfter = rows(store)
-        .filter((item) => item.kind === "failure")
+        .filter((item) => item.kind === "notice" && item.tone === "warning")
         .map((item) => item.id);
       expect(warningIdsBefore).toHaveLength(2);
       expect(new Set(warningIdsBefore).size).toBe(2);
@@ -2923,7 +2953,9 @@ describe("ConversationStore", () => {
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
       } as AnyNotification);
-      expect(rows(store).filter((row) => row.kind === "failure")).toEqual([]);
+      expect(
+        rows(store).filter((row) => row.kind === "notice" && row.tone === "warning"),
+      ).toEqual([]);
     });
 
     it("preserves a command description through live item projection", async () => {
@@ -5052,6 +5084,53 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
+    // The projection derives askPending from the model every time, so the
+    // flag follows the questions rather than latching on: a wire snapshot
+    // that said "pending" does not keep the phone pending once the ask is
+    // answered.
+    it("clears askPending when the question is answered", async () => {
+      const askThread = makeThread({
+        evener: evenerWith({ askPending: true, activeTurnId: "t2" }),
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            status: "completed",
+          }),
+          makeTurn({ id: "t2", items: [], status: "inProgress" }),
+        ],
+      });
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(askThread);
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.askPending).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("answer-1", "I choose A"),
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.askPending).toBe(false);
+
+      // And it stays false as later frames fold: the flag is re-derived, not
+      // carried forward from the model the projection wrote.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t2",
+          item: userMessageItem("answer-1", "I choose A"),
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.askPending).toBe(false);
+    });
+
     it("settles the question when the answering user message arrives, with no reread", async () => {
       const askThread = makeThread({
         evener: evenerWith({ askPending: true, activeTurnId: "t2" }),
@@ -5520,13 +5599,28 @@ describe("ConversationStore", () => {
     it("commits the reread's version when a live frame changed the wire id under the same transcript key", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                {
+                  ...userMessageItem("wire-live-old", "older-live"),
+                  transcriptKey: "stable-live",
+                },
+              ],
+            }),
+          ],
+        }),
+      );
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const ctrl = makeControlledRead(service);
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
             makeTurn({
+              id: "t0",
               items: [
                 {
                   ...userMessageItem("wire-reread", "canonical"),
@@ -6770,6 +6864,12 @@ describe("ConversationStore", () => {
       // Decision 2: the wire routes a tool-output delta by item id, and the
       // model folds it there. The callId the frame carries no longer gates
       // the append (the row keeps showing its own callId for diagnostics).
+      // The hub cannot cross the two: the projector stamps a delta's itemId
+      // by looking the callId up in the map that minted it
+      // (internal/appprojector/appwire_projection.go:743-749 with
+      // toolItemID at :2309-2316, both fed by the same ToolCallStart at
+      // :701-709), and appwire/types.go:2592-2594 calls CallID "the legacy
+      // alias kept for clients that still key on it".
       ["a tool delta whose callId differs", () => toolDelta("tool-1", "\nline2", "call-B"), "tool-1", "line1\nline2"],
       ["a tool delta carrying no callId", () => toolDelta("tool-1", "\nline2"), "tool-1", "line1\nline2"],
     ] as const)("appends to the row under %s", async (_label, frame, id, expected) => {
@@ -7050,17 +7150,16 @@ describe("ConversationStore", () => {
 
   // --- Task 2A-Truncation residual: exact reconciliation of truncation ownership
   // from FINAL retained/merged items on every authoritative install path
-  // (open/openProjected/rehydrate/page/lifecycle). Replaces add-only frozen
-  // tracking: an authoritative short version unfreezes; omitted/capped IDs are
-  // removed; newer superseded live/page versions are preserved based on final
-  // actual content. item/agentMessage/reset explicitly unfreezes the ID before
-  // the empty reset so a later delta applies.
+  // (open/openProjected/rehydrate/page/lifecycle): the byte bound is applied
+  // to whatever text a row carries at publish time, so an authoritative short
+  // version is short, a row the cap drops leaves nothing behind, and a row
+  // that keeps growing keeps showing the same bounded prefix.
   //
   // C3: authoritative oversized→short→delta applies (open + rehydrate + openProjected)
-  // C4: omitted/capped ID removed from truncatedItemIds
-  // protocol reset→delta: reset unfreezes before empty reset
-  // paged oversized item freezes and marker once
-  // lifecycle started/completed oversized then untruncate
+  // C4: the cap shows the newest rows; a fresh item is judged on its own
+  // protocol reset→start→delta: the reset removes the row, the restart streams anew
+  // paged oversized item bounded with the marker once
+  // lifecycle started/completed oversized then short
   // No vacuous `if` assertions — direct expects on the resolved item.
   describe("Task 2A-Truncation residual: exact reconciliation", () => {
     // Helper: open a conversation via openProjected with the given raw ThreadItem
@@ -7790,11 +7889,9 @@ describe("ConversationStore", () => {
       return { store, service };
     }
 
-    // I1: loadOlder — already-frozen current items stay frozen after page
-    // reconciliation. The current items are already truncated (text ≤ limit), so
-    // exceedsByteLimit is false for them. The fix must capture prior frozen IDs
-    // and preserve freeze for final-retained current items that were already
-    // frozen. A later delta to such an item must remain blocked.
+    // I1: loadOlder — a row already at the bound stays at it after a page
+    // load, and so does an oversized row the page itself brings: both are cut
+    // to MAX_ITEM_BYTES by the same pass over whatever text they carry.
     it("I1 loadOlder: frozen current item stays frozen after page load, delta blocked", async () => {
       // Open with an oversized assistant item (frozen), plus a page cursor.
       const { store, service } = await openProjectedWithItems([
@@ -8162,11 +8259,10 @@ describe("ConversationStore", () => {
       );
     });
 
-    // M1: observational cap via rehydrate+page (no lifecycle clearing). Open
-    // with an oversized item (frozen), rehydrate OMITTING it (reconciliation
-    // removes freeze), then load a page bringing it back with short content —
-    // it must not be frozen. This avoids openProjected/reset which clear
-    // truncatedItemIds via conversation transition.
+    // M1: observational cap via rehydrate+page. Open with an oversized item,
+    // rehydrate OMITTING it (the row goes with the snapshot), then load a page
+    // bringing it back with short content — the row is short, with nothing
+    // about the oversized version carried over.
     it("M1 loadOlder cap: capped frozen item re-introduced via page with short content not frozen", async () => {
       const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
       const { store, service } = await openProjectedWithItems([
@@ -8210,16 +8306,13 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Truncation residual fix round 2: I1/M1 exact prior-frozen
-  // carryover for loadOlder (truncatedItemIds ∩ currentConv.item IDs ∩ final
-  // retained IDs) + centralized incremental append+cap reconciliation.
+  // --- Task 2A-Truncation residual fix round 2: what a page and the 500-cap
+  // do to a row that was over the byte limit.
   //
-  // An incoming raw page item matching a stale frozen ID is independently
-  // judged from raw content (exceedsByteLimit), NOT carried over as frozen
-  // from the prior set. When an incremental append (item/started, item/completed,
-  // warning) evicts an already-frozen item via the 500-cap, the evicted ID is
-  // pruned from truncatedItemIds and the page/live ownership maps so a later
-  // re-introduction with short content accepts a delta.
+  // A page item is judged on the text it carries, never on what a row of the
+  // same identity used to hold. When an appended row (item/started,
+  // item/completed, a warning) pushes past the cap, the oldest row is trimmed
+  // and a later re-introduction of that identity shows its own content.
   describe("Task 2A-Truncation residual fix round 2", () => {
     async function openProjectedWithItems(
       items: ThreadItem[],
@@ -8337,7 +8430,7 @@ describe("ConversationStore", () => {
       ["a warning", {
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
-      } as AnyNotification, undefined, "failure"],
+      } as AnyNotification, undefined, "notice"],
     ] as const)("M1 cap: the oldest row is trimmed when %s appends at 501", async (_label, frame, newId, newKind) => {
       const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
       const items: ThreadItem[] = [agentMessageItem("X", oversized, "completed")];
@@ -9090,8 +9183,6 @@ describe("ConversationStore", () => {
       ).toBe(true);
     });
   });
-
-  // --- Plan3: getTruncatedItemIds accessor — snapshot immutability + freeze/unfreeze ---
 
   // The byte bound is a property of the text a row carries, re-applied on
   // every publish: no identity is remembered as "already truncated", so an
