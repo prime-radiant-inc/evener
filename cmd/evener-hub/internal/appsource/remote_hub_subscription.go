@@ -33,6 +33,15 @@ const remoteHubUnsubscribeTimeout = 2 * time.Second
 // its recovery path (app_relay.go), so the pump MUST close out on context
 // cancellation.
 type remoteHubSubscription struct {
+	// threadID is this hub's routing key for the subscription: the key
+	// routeNotification looks the subscription up by. It starts as the effective
+	// remote thread identity the attach request resolves to — a bare caller
+	// threadId when the caller sent one, otherwise the translated ref's suffix,
+	// the same precedence the remote hub's own delivery identity resolves with
+	// (threadRelayTarget) — so a notification the remote emits while the attach is
+	// still in flight is routed under the identity the remote keyed it by.
+	// settleSubscriber re-keys it to the canonical identity the successful
+	// snapshot named, which is what ownership and routing compare from then on.
 	threadID string
 	// remoteRef is the ref this subscription issued to the remote hub
 	// ("local:<thread>"). thread/unsubscribe names it to drop the remote side;
@@ -169,13 +178,21 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	}
 
 	subCtx, cancel := context.WithCancel(ctx)
-	// The caller-derived provisional identity doubles as the initial remoteRef:
-	// until the subscribe answers it is the best identity available, and it is
+	// The caller-derived provisional identity is the same target in two forms:
+	// the thread alone, which is the initial routing key, and that thread as a
+	// remote-namespace ref, which doubles as the initial remoteRef. Until the
+	// subscribe answers the target is the best identity available, and it is
 	// retained separately so a same-thread replacement can be recognized while
-	// this subscription is still attaching (see refClaimLocked).
+	// this subscription is still attaching (see refClaimLocked). The effective
+	// thread it resolves to — a bare caller threadId in preference to the ref's
+	// suffix — is what the remote keys this connection's subscription by, so it is
+	// also the key a notification emitted before settleSubscriber re-keys to the
+	// snapshot's canonical identity has to be routed under; see
+	// remoteSubscriptionTargetThread.
+	targetThread := remoteSubscriptionTargetThread(ref, params.ThreadID)
 	target := remoteSubscriptionTarget(ref, params.ThreadID)
 	sub := &remoteHubSubscription{
-		threadID:       ref.ThreadID,
+		threadID:       targetThread,
 		provisionalRef: target,
 		// The remote hub keys this connection's subscription by the thread it
 		// resolved, preferring a bare threadId over the ref (threadRelayTarget
@@ -204,9 +221,10 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// identity — which the remote rejects as an unknown bare ID the moment an
 	// identity replacement has moved the live thread ID (appRef survives, the
 	// thread ID does not). An empty ThreadID lets the remote resolve the ref,
-	// which is stable-aware. The ref's suffix is only this hub's provisional
-	// routing key: settleSubscriber re-keys it to the identity the subscription
-	// snapshot actually names.
+	// which is stable-aware. Which of the two the remote keys this connection's
+	// subscription by is the effective thread (remoteSubscriptionTargetThread),
+	// and that is this hub's provisional routing key until settleSubscriber
+	// re-keys it to the canonical identity the subscription snapshot names.
 	remote.ThreadID = params.ThreadID
 	remote.Subscribe = true
 	// The remote client is shared by every controller relay for this host, so
@@ -368,20 +386,29 @@ func (s *RemoteHubSource) retireCanceledSubscribe(sub, previous *remoteHubSubscr
 	s.discardSubscriber(sub, previous)
 }
 
-// remoteSubscriptionTarget is the caller-derived provisional identity this
-// subscription is unsubscribed by until the subscribe answers. Both thread/read's
-// relay and thread/unsubscribe resolve through threadRelayTarget, which prefers a
-// bare non-empty threadId over the ref, so a caller that sent both must be
-// unsubscribed by the threadId it sent — not by the translated ref's suffix,
-// which would name a subscription the remote never created. settleSubscriber
-// replaces it with the canonical ref the successful subscription snapshot named,
-// which is what ownership and teardown ultimately compare.
-func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
-	target := ref.ThreadID
+// remoteSubscriptionTargetThread is the remote thread identity an attach request
+// resolves to: a bare non-empty threadId in preference to the translated ref's
+// suffix. That is the precedence the remote hub's own delivery identity resolves
+// with (threadRelayTarget — both thread/read's relay and thread/unsubscribe go
+// through it), so it is both the identity this subscription is initially routed
+// under and the thread of the remote-namespace ref it is unsubscribed by until
+// the subscribe answers (remoteSubscriptionTarget).
+func remoteSubscriptionTargetThread(ref appwire.Ref, threadID string) string {
 	if trimmed := strings.TrimSpace(threadID); trimmed != "" {
-		target = trimmed
+		return trimmed
 	}
-	return appwire.Ref{SourceID: remoteHubNamespace, ThreadID: target}.String()
+	return ref.ThreadID
+}
+
+// remoteSubscriptionTarget is the caller-derived provisional identity this
+// subscription is unsubscribed by until the subscribe answers. A caller that sent
+// both a ref and a bare threadId must be unsubscribed by the threadId it sent —
+// not by the translated ref's suffix, which would name a subscription the remote
+// never created. settleSubscriber replaces it with the canonical ref the
+// successful subscription snapshot named, which is what ownership and teardown
+// ultimately compare.
+func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
+	return appwire.Ref{SourceID: remoteHubNamespace, ThreadID: remoteSubscriptionTargetThread(ref, threadID)}.String()
 }
 
 // settleSubscriber installs the authoritative routing identity a successful
@@ -462,13 +489,22 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 		// ends. Refuse this attach now that the collision is visible, with the
 		// incumbent left untouched.
 		if incumbent := s.subs[key]; s.foreignRelayLocked(sub, incumbent) {
-			if canonical != "" {
-				// The remote keyed this connection's subscription under the ref the
-				// snapshot named — the incumbent's identity. Recording it keeps the
-				// caller's cleanup from releasing a ref that is not this
-				// subscription's to release.
-				sub.remoteRef = canonical
-			}
+			// The refused attach's subscribe request has already reached the remote,
+			// which keys this connection's registration by the address that request
+			// carried (relayDeliveryTarget on its side) — the delivery identity, not
+			// the canonical ref the snapshot named. Recording the snapshot's ref here
+			// replaced that identity with the incumbent's, and cleanup releases only
+			// remoteRef and any deferred refs (remoteRefsLocked): because the
+			// incumbent holds the canonical ref, refClaimLocked called it owned and
+			// nothing was unsubscribed, so the rejected request's own registration
+			// stayed active and the remote kept forwarding the thread to this
+			// connection with no local owner — duplicate delivery for the life of the
+			// connection. remoteRef already holds exactly the identity this attach is
+			// responsible for (its caller-derived delivery target, per this field's
+			// contract), so it is deliberately left in place: discardSubscriber
+			// releases it, the incumbent's canonical ref is not in that release set,
+			// and refClaimLocked still protects any identity a live sibling holds or
+			// a still-attaching one may yet adopt.
 			refusal := s.foreignRelayErrorLocked(incumbent)
 			s.subMu.Unlock()
 			s.remoteMu.Unlock()

@@ -2692,9 +2692,12 @@ func TestRemoteHubDisplacedSettleUnsubscribesCanonicalRef(t *testing.T) {
 	waitForRemoteSubscribeCall(t, remote)
 
 	// A replacement installs itself at the provisional routing key while the
-	// subscribe is still in flight, so settlement finds itself displaced.
+	// subscribe is still in flight, so settlement finds itself displaced. That key
+	// is the effective thread the caller addressed — the bare threadId the remote
+	// resolves and keys this connection's subscription by — while the canonical
+	// identity the snapshot names is the different, stable one.
 	replacement := &remoteHubSubscription{
-		threadID: "stable",
+		threadID: "current",
 		in:       make(chan appwire.Notification, 1),
 		out:      make(chan appwire.Notification, 1),
 		pumpDone: make(chan struct{}),

@@ -701,13 +701,23 @@ func registerThreadHandlers(
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
-	// uses (threadRelayTarget), so the removal lands on the exact registry
-	// entry Subscribe created. Resolution deliberately uses the plain registry
-	// lookup without session activation because an unsubscribe must not
-	// start a session just to stop delivering to it. When no source resolves,
-	// the ref's own namespace (parsed from the ref itself) is the best key
-	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
-	// costs only a subscription the connection-close cleanup reaps anyway.
+	// uses (relayDeliveryTarget), so the removal lands on the exact registry
+	// entry Subscribe created. That helper is deliberately NOT
+	// threadRelayTarget: for a federated source (anything but the local
+	// daemon) the ref's suffix wins over the caller's bare threadId, because
+	// the ref is the stable identity that survives an identity replacement
+	// while the thread's current ID moves. Keying such a read by the threadId
+	// registered the relay under "host:<currentID>" while a ref-addressed
+	// unsubscribe resolved "host:<stableRef>", so the downstream entry — and
+	// the source-side subscription behind it — was never dropped. Both ends
+	// must keep resolving through relayDeliveryTarget; re-deriving either from
+	// threadRelayTarget reintroduces that mismatch. Resolution deliberately
+	// uses the plain registry lookup without session activation because an
+	// unsubscribe must not start a session just to stop delivering to it. When
+	// no source resolves, the ref's own namespace (parsed from the ref itself)
+	// is the best key available; Unsubscribe is conn-scoped and idempotent, so
+	// a missed key costs only a subscription the connection-close cleanup
+	// reaps anyway.
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 		if err != nil {
