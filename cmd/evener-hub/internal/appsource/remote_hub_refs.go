@@ -134,6 +134,41 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 	}
 }
 
+// capabilitiesField is the JSON field name of every capability set a remote
+// response or notification can carry. appwire has exactly two shapes, and
+// translateThreadRaw plus the status-frame branch of translateNotification cover
+// both:
+//
+//   - EvenerThread.Capabilities (appwire/types.go), nested as
+//     "capabilities" inside the "evener" object of every Thread — the snapshot's
+//     thread and the one a thread/started notification carries.
+//   - ThreadStatusChangedParams.Capabilities, the top-level "capabilities" of
+//     the one notification whose params carry a set of their own
+//     (thread/status/changed).
+//
+// Enumerating them like this is the point: a capability added to another payload
+// later has to be named here, and until then it is not masked.
+const capabilitiesField = "capabilities"
+
+// maskRemoteCapabilitiesRaw applies maskRemoteThreadCapabilities to a raw JSON
+// capabilities object in a payload this source is translating. A value it cannot
+// decode is returned byte-for-byte: the mask narrows the actions a client can
+// reach, and must never drop or re-mint a field a newer remote hub sent.
+func maskRemoteCapabilitiesRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var remote appwire.ThreadCapabilities
+	if err := json.Unmarshal(raw, &remote); err != nil {
+		return raw
+	}
+	masked, err := json.Marshal(maskRemoteThreadCapabilities(remote))
+	if err != nil {
+		return raw
+	}
+	return masked
+}
+
 // nestedSessionRefFields are the JSON field names whose values carry a session
 // handle nested inside a larger payload: thread diagnostics
 // (jobs[].transcriptRef, delegates[].transcriptRef), the job and delegate
@@ -379,10 +414,13 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 // level, preserving every field this hub does not understand. Round-tripping
 // through appwire.Thread would silently drop a field a newer remote hub sent —
 // the same reason the notification translator works in RawMessage throughout.
-// Only Source, Evener.Ref and Evener.ParentRef are rewritten; InstanceID and
-// everything else pass through byte-for-byte. Nested session handles under
-// Evener (diagnostics job/delegate transcriptRefs, and each pendingEscalations
-// entry's ref) are rewritten as well.
+// Source, Evener.Ref and Evener.ParentRef are rewritten; Evener.Capabilities is
+// masked to the actions this source can forward, exactly as fromRemoteThread
+// masks the snapshot's, so a subscribed client cannot re-enable a mutation from
+// a thread-bearing notification that the read path answered as unavailable.
+// InstanceID and everything else pass through byte-for-byte. Nested session
+// handles under Evener (diagnostics job/delegate transcriptRefs, and each
+// pendingEscalations entry's ref) are rewritten as well.
 func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -424,6 +462,9 @@ func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessa
 				return nil, err
 			}
 			evenerFields[key] = encoded
+		}
+		if rawCapabilities, ok := evenerFields[capabilitiesField]; ok {
+			evenerFields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
 		}
 		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
 			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)

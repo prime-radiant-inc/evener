@@ -92,18 +92,13 @@ func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *
 
 func (s *RemoteHubSource) ID() string { return s.id }
 
-// RelayOnThreadRead reports that a plain thread/read must not start a relay.
-// SubscribeThread is staged until 05b, and the hub's default relay policy is
-// true, so without this override every successful remote read would be
-// discarded by startRelay's notImplemented SubscribeThread call. It is deleted
-// when 05b wires a real subscription.
-func (s *RemoteHubSource) RelayOnThreadRead() bool { return false }
-
-// SupportsThreadRelay reports that this source has no relay fan-out at all, so
-// the web client's subscribe:true first-hydration read is not relayed either;
-// startRelay would call the notImplemented SubscribeThread and fail the read.
-// It is deleted when 05b wires a real subscription.
-func (s *RemoteHubSource) SupportsThreadRelay() bool { return false }
+// 05a staged two relay overrides here that 05b deletes: RelayOnThreadRead and
+// SupportsThreadRelay both reported false only because SubscribeThread was
+// notImplemented, and the hub's defaults (true for both) are the truth now. A
+// thread/read — plain or subscribe:true — starts a controller relay, which
+// attaches through SubscribeThread and retires that attach with its own
+// thread/unsubscribe. See stripRemoteSubscription for why a read's own Subscribe
+// flag still never reaches the wire on its own.
 
 // EnrichThreadFileBackedImages reports that this source's threads name files on
 // the remote host, not this one. The hub's file-backed output-image pass reads
@@ -342,11 +337,16 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 }
 
 // stripRemoteSubscription removes the controller's subscription intent from a
-// remote read. Subscription fan-out is staged until 05b (SubscribeThread is not
-// implemented), so forwarding Subscribe would make the remote hub register a
-// persistent subscription the controller can never manage or retire — an
-// orphan that outlives the read. The controller-side relay gate is
-// RelayOnThreadRead; this only keeps the intent off the wire.
+// plain remote read. A remote subscription is created by SubscribeThread and by
+// nothing else: it is the controller relay that owns the attach — it holds the
+// returned channel open, re-attaches it through its recovery path, and retires
+// it with thread/unsubscribe when the relay ends (remote_hub_subscription.go).
+// A read that forwarded Subscribe would make the remote hub register a second,
+// persistent subscription nothing on this side owns or can retire: an orphan
+// that outlives the read. ReplaceSubscription is stripped for a sharper reason —
+// it is connection-scoped on the shared per-host client, so forwarding it would
+// drop every other thread's remote subscription while their local routing
+// entries stayed live.
 func stripRemoteSubscription(params appwire.ThreadReadParams) appwire.ThreadReadParams {
 	params.Subscribe = false
 	params.ReplaceSubscription = false

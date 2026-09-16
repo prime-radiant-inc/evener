@@ -268,10 +268,12 @@ func TestRemoteHubSourceReadThread(t *testing.T) {
 	}
 }
 
-// Subscription fan-out is staged until 05b, so a controller read's subscribe
-// intent must not reach the remote hub: it would register a remote subscription
-// the controller can never retire. The controller-side relay gate is
-// RelayOnThreadRead, which reports false for this source.
+// A controller read's subscribe intent must not reach the remote hub as a read:
+// forwarding it would register a remote subscription nothing on this side owns
+// or can retire. The controller relay is what owns a remote subscription, and it
+// attaches through SubscribeThread instead, so this source must report the hub's
+// defaults for RelayOnThreadRead and SupportsThreadRelay — 05a overrode both to
+// false only because SubscribeThread was staged, and 05b implements it.
 func TestRemoteHubSourceReadThreadStripsSubscription(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
 		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -292,13 +294,17 @@ func TestRemoteHubSourceReadThreadStripsSubscription(t *testing.T) {
 		t.Fatalf("decode remote params: %v", err)
 	}
 	if remote.Subscribe || remote.ReplaceSubscription {
-		t.Fatalf("forwarded subscription intent = %+v, want both cleared", remote)
+		t.Fatalf("forwarded subscription intent = %+v, want both cleared: the relay's SubscribeThread owns the remote subscription", remote)
 	}
-	if source.RelayOnThreadRead() {
-		t.Fatal("RelayOnThreadRead = true; the hub would start a staged relay on a plain read")
+	// The hub reads both answers through its own optional interfaces
+	// (cmd/evener-hub/app_rpc.go), where a source that does not implement one gets
+	// the default true. 05a's overrides reported false and that is exactly what
+	// kept the relay unreachable, so either shape must now report a relay.
+	if policy, ok := any(source).(interface{ RelayOnThreadRead() bool }); ok && !policy.RelayOnThreadRead() {
+		t.Fatal("RelayOnThreadRead = false; a plain remote read would never start the relay 05b implemented")
 	}
-	if source.SupportsThreadRelay() {
-		t.Fatal("SupportsThreadRelay = true; the hub would start a staged relay on a subscribe read")
+	if capable, ok := any(source).(interface{ SupportsThreadRelay() bool }); ok && !capable.SupportsThreadRelay() {
+		t.Fatal("SupportsThreadRelay = false; a subscribed remote read would never reach SubscribeThread")
 	}
 }
 

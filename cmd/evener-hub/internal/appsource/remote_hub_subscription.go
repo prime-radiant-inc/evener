@@ -1165,6 +1165,14 @@ func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification
 // opaque handles ("job:<id>", "proj:<project>:<thread>") pass through untouched;
 // see translateNestedRefs. The routing "ref" stays strict so a frame that cannot
 // be addressed in the controller namespace is refused rather than mis-routed.
+//
+// The capability set a payload carries is masked to the actions this source can
+// forward, in both of the shapes appwire has (see capabilitiesField): the evener
+// object of a thread-bearing frame, by translateThreadRaw, and the top-level
+// "capabilities" of a thread/status/changed frame, here. A status transition is
+// exactly where a client refreshes the action set the snapshot gave it, so a set
+// that disagreed with the read path would re-enable a mutation that then fails
+// with an internal error.
 func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire.Notification, string, bool) {
 	if len(n.Params) == 0 {
 		return n, "", false
@@ -1212,6 +1220,11 @@ func (s *RemoteHubSource) translateNotification(n appwire.Notification) (appwire
 			return n, "", false
 		}
 		fields["thread"] = translated
+	}
+	if n.Method == appwire.NotifyThreadStatusChanged {
+		if rawCapabilities, ok := fields[capabilitiesField]; ok {
+			fields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
+		}
 	}
 
 	encoded, err := json.Marshal(fields)
