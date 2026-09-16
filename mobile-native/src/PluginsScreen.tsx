@@ -21,10 +21,13 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { PluginRefParams } from "@evener/appwire-client";
+import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
-import { InstalledPlugins } from "./installedPlugins";
-import { MarketplaceBrowser } from "./MarketplaceBrowser";
+import {
+  INSTALLED_PLUGINS_FAILED,
+  MarketplaceBrowser,
+} from "./MarketplaceBrowser";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -60,9 +63,10 @@ function Plugins({
   hubName: string;
 }) {
   const colors = useColors();
-  const model = useMemo(() => new InstalledPlugins(client), [client]);
-  const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  const model = useMemo(() => createPluginsStore(client), [client]);
+  const state = useSyncExternalStore(model.subscribe, model.getState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
+  const [busy, setBusy] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -82,11 +86,15 @@ function Plugins({
   );
   useEffect(() => {
     model.start();
+    void model.getState().fetchPlugins();
     return () => {
       editorVersion.current += 1;
       model.dispose();
     };
   }, [model]);
+  // The store keeps each failed request's own text; this screen shows the
+  // same copy for every failure, as the web's section translates its at render.
+  const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
   const close = useCallback(() => {
     editorVersion.current += 1;
     setSelected(null);
@@ -101,6 +109,7 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
+    setBusy(true);
     try {
       await action();
       if (version === editorVersion.current && success) setNotice(success);
@@ -109,10 +118,12 @@ function Plugins({
         setActionError(
           "Could not confirm the change. Check this plugin’s status before trying again.",
         );
+    } finally {
+      setBusy(false);
     }
   }
   function remove() {
-    if (!selected || state.busy) return;
+    if (!selected || busy) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -125,7 +136,9 @@ function Plugins({
           style: "destructive",
           onPress: () => {
             if (version === editorVersion.current)
-              void act(() => model.remove(target));
+              void act(() =>
+                state.removePlugin(target.plugin, target.marketplace),
+              );
           },
         },
       ],
@@ -168,9 +181,9 @@ function Plugins({
           }
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
-          refreshing={state.loading}
+          refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void model.refresh();
+            void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -188,11 +201,11 @@ function Plugins({
                   { color: colors.text, borderColor: colors.border },
                 ]}
               />
-              <ErrorMessage message={state.error} />
-              {state.error && (
+              <ErrorMessage message={listError} />
+              {listError && (
                 <Action
                   onPress={() => {
-                    void model.refresh();
+                    void state.fetchPlugins();
                   }}
                 >
                   Retry
@@ -201,7 +214,7 @@ function Plugins({
             </View>
           }
           ListEmptyComponent={
-            state.loading ? (
+            state.pluginsLoading ? (
               <ActivityIndicator accessibilityLabel="Loading installed plugins" />
             ) : state.plugins !== null ? (
               <Copy muted>
@@ -269,7 +282,7 @@ function Plugins({
               )}
               <ErrorMessage message={actionError} />
               {notice && <Copy>{notice}</Copy>}
-              {state.busy && (
+              {busy && (
                 <ActivityIndicator accessibilityLabel="Updating plugin" />
               )}
               <View style={[styles.row, { minHeight: 48, gap: 16 }]}>
@@ -279,11 +292,13 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={state.busy}
+                  disabled={busy}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
-                      enabled ? model.enable(target) : model.disable(target),
+                      enabled
+                        ? state.enablePlugin(target.plugin, target.marketplace)
+                        : state.disablePlugin(target.plugin, target.marketplace),
                     );
                   }}
                 />
@@ -295,19 +310,25 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={state.busy}
+                  disabled={busy}
                   onValueChange={(value) => {
                     const target = selected;
-                    void act(() => model.setAutoUpgrade(target, value));
+                    void act(() =>
+                      state.setPluginAutoUpgrade(
+                        target.plugin,
+                        target.marketplace,
+                        value,
+                      ),
+                    );
                   }}
                 />
               </View>
               <Action
-                disabled={state.busy}
+                disabled={busy}
                 onPress={() => {
                   const target = selected;
                   void act(
-                    () => model.upgrade(target),
+                    () => state.upgradePlugin(target.plugin, target.marketplace),
                     "Checked for upgrades.",
                   );
                 }}
@@ -329,7 +350,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={state.busy} onPress={remove}>
+              <Action disabled={busy} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

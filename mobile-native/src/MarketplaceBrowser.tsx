@@ -17,19 +17,22 @@ import type {
   MarketplaceAddParams,
   PluginRefParams,
 } from "@evener/appwire-client";
-import { createMarketplacesStore } from "@evener/appwire-client/state/extensions";
+import {
+  createMarketplacesStore,
+  type PluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
-import type { InstalledPlugins } from "./installedPlugins";
 import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-// The marketplaces store keeps each failed request's own text; this screen
-// shows the same copy for every failure, as the web's section translates its
-// at render.
+// The stores keep each failed request's own text; this screen shows the same
+// copy for every failure, as the web's section translates its at render.
 const MARKETPLACES_FAILED =
   "Could not load marketplaces. Try again when connected.";
 const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
+export const INSTALLED_PLUGINS_FAILED =
+  "Could not load installed plugins. Try again when connected.";
 
 export function MarketplaceBrowser({
   client,
@@ -39,16 +42,13 @@ export function MarketplaceBrowser({
 }: {
   client: ConversationClientLike;
   hubName: string;
-  installed: InstalledPlugins;
+  installed: PluginsStore;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
-  const plugins = useSyncExternalStore(
-    installed.subscribe,
-    installed.getSnapshot,
-  );
+  const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
   const [selected, setSelected] = useState<string | null>(null);
   const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -94,7 +94,6 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
-  const busy = mutating || plugins.busy;
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
@@ -114,7 +113,7 @@ export function MarketplaceBrowser({
     (item) => item.name === selected,
   );
   function remove() {
-    if (!marketplace || busy) return;
+    if (!marketplace || mutating) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -135,6 +134,8 @@ export function MarketplaceBrowser({
   );
   const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
   const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
+  const installedError =
+    plugins.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
   const browsing = catalog?.status === "loading";
   const header = (
     <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -157,14 +158,14 @@ export function MarketplaceBrowser({
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
             <Action
-              disabled={busy}
+              disabled={mutating}
               onPress={() => {
                 void act(() => state.refreshMarketplace(selected));
               }}
             >
               Refresh source
             </Action>
-            <Action disabled={busy} onPress={remove}>
+            <Action disabled={mutating} onPress={remove}>
               Remove marketplace
             </Action>
           </View>
@@ -181,7 +182,7 @@ export function MarketplaceBrowser({
               { color: colors.text, borderColor: colors.border },
             ]}
           />
-          <ErrorMessage message={catalogError || plugins.error} />
+          <ErrorMessage message={catalogError || installedError} />
           {catalogError && (
             <Action
               onPress={() => {
@@ -191,10 +192,10 @@ export function MarketplaceBrowser({
               Retry catalog
             </Action>
           )}
-          {plugins.error && (
+          {installedError && (
             <Action
               onPress={() => {
-                void installed.refresh();
+                void plugins.fetchPlugins();
               }}
             >
               Retry installed status
@@ -202,11 +203,11 @@ export function MarketplaceBrowser({
           )}
         </>
       ) : (
-        <Action disabled={busy} onPress={() => setAdding(true)}>
+        <Action disabled={mutating} onPress={() => setAdding(true)}>
           Add marketplace
         </Action>
       )}
-      {busy && (
+      {mutating && (
         <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />
       )}
     </View>
@@ -255,11 +256,14 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={busy || !plugins.plugins || !!plugins.error}
+                  disabled={mutating || !plugins.plugins || !!installedError}
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
-                    else void act(() => installed.install(target));
+                    else
+                      void act(() =>
+                        plugins.installPlugin(target.plugin, target.marketplace),
+                      );
                   }}
                 >
                   {existing ? "Installed · Open" : "Install"}
