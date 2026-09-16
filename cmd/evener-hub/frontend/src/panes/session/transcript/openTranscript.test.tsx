@@ -1,8 +1,8 @@
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
-import { keyID } from "../../../stores/navigation/types";
 import { OpenTranscriptButton, openTranscript } from "./openTranscript";
 
 beforeAll(async () => {

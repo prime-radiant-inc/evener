@@ -8,22 +8,23 @@ import type {
   NavigationSessionSummary,
   NavigationSnapshot,
 } from "@evener/appwire-client";
+import {
+  keyID,
+  type NormalizedResource,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import {
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-  type ResourceState,
-} from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";

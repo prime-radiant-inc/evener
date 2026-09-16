@@ -51,6 +51,32 @@ The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at
 `LICENSES/beautiful-ui.txt`, inside the tarball.
 
+## Published subpaths
+
+Besides the root, `package.json` `exports` publishes two subpaths:
+
+- `@evener/appwire-client/docContent` - the doc-pane data layer, where
+  `readDocFile` takes the host's `DocPort`.
+- `@evener/appwire-client/state/navigation` - the navigation state layer both
+  apps' navigation stores are built on: the resource-key vocabulary and
+  classifiers (`types`), the snapshot and delta codec (`codec`), the graph
+  merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
+  subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
+  the four modules whole.
+
+A module is a root export when it is part of the client surface a consumer
+takes to talk to a hub: the client, the wire types, the errors, and the pure
+formatters and derivations a view renders wire data with. A module gets its own
+subpath when it is a layer a consumer adopts as a whole or not at all - a data
+layer that needs a host port (`docContent`), or a state layer the apps build a
+store on (`state/navigation`). Later state layers go under `state/<name>/` with
+an `index.ts` barrel, one `exports` entry, one qualification-manifest entry of
+hand-written type uses and smoke calls, and one alias in each resolver (`tsconfig` `paths` in both apps, the Vite and vitest
+configs, and Metro's `resolveRequest`, which probes `<subpath>/index.<ext>` for
+a directory subpath). The runner derives each specifier's surface from its
+entry, and `mobile-native/src/metroResolver.test.ts` reads the same `exports`
+map, so a published subpath Metro cannot resolve fails there.
+
 Build and qualify from this directory with `npm run qualification`. The runner
 packs the package, installs that tarball into a temporary consumer, and then,
 for every specifier the `exports` map publishes, checks ESM and CommonJS

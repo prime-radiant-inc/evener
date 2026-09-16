@@ -7,7 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
-import { consumerPackageUsage, rootSurface } from "./consumer-value-imports.mjs";
+import { consumerPackageUsage, entrySurface } from "./consumer-value-imports.mjs";
+import { reachableModules } from "./declaration-reachability.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -41,11 +42,11 @@ async function qualify() {
     .map((file) => file.slice(0, -3));
   assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
   assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
-  // The root's runtime values and exported types, derived from index.ts so
-  // the qualification surface cannot drift from what the entry point exports;
-  // an export added there is qualified without editing this file. The smoke
-  // CALLS below stay hand-written -- they are behaviour probes, not a surface.
-  const { values: rootValues, types: rootTypes } = rootSurface(join(packageDir, "index.ts"));
+  // Each specifier's runtime values and exported types are derived below from
+  // its entry module, so the qualification surface cannot drift from what the
+  // entry point exports; an export added there is qualified without editing
+  // this file. The smoke CALLS stay hand-written -- they are behaviour probes,
+  // not a surface.
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
@@ -238,15 +239,14 @@ assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDef
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 `;
-  // The qualification manifest: every specifier package.json publishes, and the
-  // names the package promises at each one. A subpath with no entry here is not
-  // qualified, whatever the exports map claims, so the two must agree. An
-  // in-repo-only path alias is therefore unlistable: nothing in the tarball
-  // backs it, and the apps' own typecheck is what validates it.
+  // The qualification manifest: every specifier package.json publishes, with
+  // the hand-written probes run against it; the names it promises are read off
+  // its entry module below. A subpath with no entry here is not qualified,
+  // whatever the exports map claims, so the two must agree. An in-repo-only
+  // path alias is therefore unlistable: nothing in the tarball backs it, and
+  // the apps' own typecheck is what validates it.
   const packageExports = {
     ".": {
-      values: rootValues,
-      types: rootTypes,
       // A typed construction for the specifiers that offer one, so the
       // declaration checks prove more than that the names resolve.
       esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
@@ -259,8 +259,6 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // wants to substitute one (or spy on the module) needs a real subpath to
     // import, which a root re-export cannot give it.
     "./docContent": {
-      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
-      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocPort", "DocResponseLike"],
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
       cjsTypeUses: `const fetchDoc: client.DocFetch = async (url: string) => {
@@ -284,37 +282,66 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
+    // The navigation quartet, published as one subpath rather than through the
+    // root: it is a state layer both apps' navigation stores are built on, not
+    // part of the client surface every consumer takes, and a barrel is the seam
+    // later state relocations extend rather than multiply.
+    "./state/navigation": {
+      esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;`,
+      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
+      // One call per module: types (keyID, the offset rule), immutable (the
+      // freeze and the equality), codec (a snapshot normalized into a graph),
+      // merge (an empty delta onto a manifest that carries no metadata, which
+      // the merge refuses as an invalid base).
+      smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
+assert.equal(client.nextNavigationOffset(50, 25), 75);
+assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
+assert.equal(client.equalJSON({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }), true);
+assert(Object.isFrozen(client.cloneAndDeepFreezeJSON({ a: [1] }).a));
+const navigationGraph = client.normalizedGraphFromSnapshot({ metadata: { revision: 1 }, entities: [], containers: [] });
+assert.equal(navigationGraph.metadata.revision, 1);
+assert.equal(client.normalizeSnapshot({ metadata: {}, entities: [], containers: [] }).entities.size, 0);
+const navigationVersion = { generationId: "g", revision: 1, etag: "e" };
+const emptyDelta = { upsertedEntities: [], removedEntityKeys: [], upsertedContainers: [], removedContainerKeys: [] };
+assert.throws(
+  () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
+  client.NavigationBaseInvalidError,
+);
+`,
+    },
   };
   const publishedSpecifiers = Object.keys(packageManifest.exports);
   for (const specifier of publishedSpecifiers)
     assert(packageExports[specifier], `published specifier is not qualified: no manifest entry for ${specifier}`);
-  for (const [specifier, surface] of Object.entries(packageExports)) {
+  for (const specifier of Object.keys(packageExports))
     assert(
       publishedSpecifiers.includes(specifier),
       `qualification manifest names ${specifier}, which package.json does not export`,
     );
-    assert(
-      Array.isArray(surface.values) && Array.isArray(surface.types),
-      `qualification manifest entry ${specifier} needs both a value and a type name list`,
-    );
-  }
+  // Each specifier's entry module, from the declarations its exports entry
+  // names: the surface the specifier promises is read off that module's source
+  // (the root's index.ts and a subpath's barrel alike), and its installed
+  // declarations anchor the reachability walk below.
+  const installedDist = join(consumerDir, "node_modules", packageManifest.name, "dist");
+  const entryDeclarations = publishedSpecifiers.map((specifier) => {
+    const declarations = packageManifest.exports[specifier].types;
+    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
+    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
+    Object.assign(packageExports[specifier], entrySurface(join(packageDir, `${entryModule}.ts`)));
+    return join(installedDist, `${entryModule}.d.ts`);
+  });
   // A module can be built, packed and listed here and still be unreachable: the
   // files list only decides what tsc emits, and the export checks below name
   // identifiers, not modules. Each published specifier's own installed
   // declarations are the honest record of what it re-exports, so a shipped
   // module qualifies by being some specifier's entry or by being re-exported
-  // from one. A module no published specifier reaches fails right here.
-  const reachableModules = new Set();
-  for (const specifier of publishedSpecifiers) {
-    const declarations = packageManifest.exports[specifier].types;
-    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
-    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
-    reachableModules.add(entryModule);
-    const text = readFileSync(join(consumerDir, "node_modules", packageManifest.name, declarations), "utf8");
-    for (const module of shippedModules) if (text.includes(`from "./${module}"`)) reachableModules.add(module);
-  }
+  // from one, each re-export resolved relative to the declaration that carries
+  // it (declaration-reachability.mjs). A module no published specifier reaches
+  // fails right here.
+  const reachable = reachableModules(entryDeclarations, installedDist);
   for (const module of shippedModules)
-    assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
+    assert(reachable.has(module), `shipped module unreachable from every published specifier: ${module}`);
   // One ESM declaration consumer, one CommonJS declaration consumer and one
   // runtime presence check in each module form, per published specifier. Each
   // type is named only as an `import type` specifier, the one position that

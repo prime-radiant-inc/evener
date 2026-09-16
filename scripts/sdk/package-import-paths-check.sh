@@ -110,7 +110,7 @@ if found="$(grep "${sources[@]}" -rnE "[\"'\`][^\"'\`]*(${seam}|${package})" "${
 	fi
 	by_path="$(printf '%s\n' "$found" | grep -vF "$old_seam" || true)"
 	if [ -n "$by_path" ]; then
-		report "$by_path" "these imports name the AppWire package by path; import it as @evener/appwire-client, @evener/appwire-client/docContent, or @evener/appwire-client/testing/<module>:"
+		report "$by_path" "these imports name the AppWire package by path; import it as @evener/appwire-client, a subpath the package.json exports map publishes, or @evener/appwire-client/testing/<module>:"
 	fi
 elif [ "$?" -ne 1 ]; then
 	printf 'package-import-paths-check.sh: the sweep over %s failed\n' "${trees[*]}" >&2
