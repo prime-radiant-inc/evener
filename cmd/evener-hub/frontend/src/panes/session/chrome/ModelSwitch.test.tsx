@@ -152,21 +152,32 @@ test("keyless connection refreshes the warmed real session catalog without switc
         }
       : modelListResponse(),
   );
+  const teamLocal = {
+    name: "team-local",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-team-local",
+  };
   fake.on("evener/instance/list", () => ({
-    instances: [
+    instances: [teamLocal],
+    availableProviders: [
       {
-        name: "team-local",
-        providerId: "ollama",
+        id: "ollama",
+        name: "Local endpoint",
         protocol: "openai-chat",
         auth: "none",
         implicit: false,
-        isDefault: false,
-        activeSource: "none",
-        hasStoredOAuth: false,
-        credentialRequired: false,
+        authModes: [],
+        setup: teamLocal,
       },
     ],
-    availableProviders: [],
   }));
   fake.on("evener/auth/test", ({ provider }) => {
     connected = true;
@@ -179,9 +190,10 @@ test("keyless connection refreshes the warmed real session catalog without switc
   await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
   await openConnectDialog(user);
-  await user.click(await screen.findByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
+  await user.click(await screen.findByRole("button", { name: "Check connection" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   const option = await screen.findByRole("option", { name: /served-model/ });
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
   expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");

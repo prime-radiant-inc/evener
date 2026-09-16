@@ -14,7 +14,7 @@ import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
-import { resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
 
 /** The refusal these controls use instead of the native attribute: a click that
@@ -101,7 +101,7 @@ test("Settings Connect provider opens discovery and retains management on cancel
   render(<CredentialsSection sectionId="credentials" />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Connect provider" }));
-  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(await screen.findByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect(await screen.findByText("work")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
@@ -392,22 +392,13 @@ describe("the detail sheet", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
   });
 
-  // The listing a removal answers with is only the truth if the store kept it.
-  // The guided owner clears its retained draft on the removal report, so the
-  // report must not fire against a listing a concurrent read threw away.
+  // The listing a removal answers with is only the truth if the store kept it,
+  // so a removal must be confirmed against a listing the store actually
+  // applied - never against a response a concurrent read threw away.
   test("a superseded removal reconciles the listing before it is reported", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    let signalRemoved!: () => void;
-    const removedCalled = new Promise<void>((resolve) => {
-      signalRemoved = resolve;
-    });
-    const listingsAtRemoval: InstanceEntry[][] = [];
-    const onInstanceRemoved = vi.fn(() => {
-      listingsAtRemoval.push(credentialsStore.getState().instances);
-      signalRemoved();
-    });
-    render(<CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />);
+    render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
     const user = userEvent.setup();
     const inspector = await openSheet(user, "personal");
@@ -432,27 +423,29 @@ describe("the detail sheet", () => {
     fake.on("evener/instance/list", () => WITHOUT_PERSONAL);
     await act(async () => {
       resolveRemoval(WITHOUT_PERSONAL);
-      await removedCalled;
     });
-    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
-    expect(listingsAtRemoval[0]).toEqual([WORK]);
+    // The discarded response is not the confirmation: the removal is only
+    // reported as done once the store applied a listing without the authored
+    // row, which takes a read of its own (the mount read and the test's own
+    // superseding read are the first two).
+    await waitFor(() => expect(getToasts().some((toast) => toast.text === "Removed instance personal")).toBe(true));
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThanOrEqual(3);
+    expect(credentialsStore.getState().instances).toEqual([WORK]);
   });
 
   // fetch() swallows a failed read into the store's error field instead of
   // rejecting, so a resolved reconcile promise is no confirmation. The
   // superseded removal is still reported: its RPC resolved (only its response
   // was discarded), so the entry left providers.toml, and the row the listing
-  // still shows is one this client read before the removal landed. The owner
-  // needs that report - it is the only thing that clears what the guided flow
-  // retained for the name (see ConnectProviderDialog's removal cases) - and the
-  // toast still says the listing could not be confirmed.
+  // still shows is one this client read before the removal landed. That is
+  // reported as "could not be confirmed" rather than as a failure of the
+  // removal itself.
   test("a removal whose reconcile read fails reports the removal it could not confirm", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    const onInstanceRemoved = vi.fn();
     render(
       <>
-        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <CredentialsSection sectionId="credentials" />
         <Toast />
       </>,
     );
@@ -488,7 +481,7 @@ describe("the detail sheet", () => {
         }
       });
     });
-    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy();
   });
 
   // The applied path is not automatically a confirmation either: the store's
@@ -496,10 +489,9 @@ describe("the detail sheet", () => {
   test("a removal whose applied listing still holds the row is not reported as removed", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => LIST);
-    const onInstanceRemoved = vi.fn();
     render(
       <>
-        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <CredentialsSection sectionId="credentials" />
         <Toast />
       </>,
     );
@@ -512,7 +504,7 @@ describe("the detail sheet", () => {
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
 
     await waitFor(() => expect(screen.getByText(/could not be confirmed for personal/)).toBeTruthy());
-    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    expect(screen.queryByText("Removed instance personal")).toBeNull();
     // The row is gone on the host: re-issuing the remove could only fail, so
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
@@ -965,23 +957,6 @@ describe("actions refused while the held listing belongs to a replaced connectio
     // that is gone, so it closes: the retry captures the fresh row instead of
     // retrying with a stale assertion.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
-  });
-});
-
-describe("single-open-editor invariant", () => {
-  test("opening the Add form, then Replace key from a row's sheet, replaces it (only one editor open at a time)", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => LIST);
-    render(<CredentialsSection sectionId="credentials" fullEditor />);
-    await screen.findByText("work");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
-    expect(screen.getByRole("dialog", { name: "Add provider instance" })).toBeTruthy();
-    const inspector = await openSheet(user, "work");
-    await user.click(within(inspector).getByRole("button", { name: "Replace key" }));
-    expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
   });
 });
 
@@ -1836,10 +1811,9 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
         availableProviders: [],
       };
     });
-    const onInstanceRemoved = vi.fn();
     render(
       <>
-        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <CredentialsSection sectionId="credentials" />
         <Toast />
       </>,
     );
@@ -1850,7 +1824,6 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
     await screen.findByText(/Removed instance personal/);
-    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
     expect(screen.queryByText(/could not be confirmed/)).toBeNull();
   });
 
@@ -2014,7 +1987,7 @@ describe("diagnostics and writesRefused", () => {
     expect(screen.queryByText("Warnings")).toBeNull();
   });
 
-  test("writesRefused gates the raw add-instance action, not the guided connector or credential-only actions", async () => {
+  test("writesRefused leaves the guided connector and the credential-only actions usable", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/list", () => ({
       instances: [WORK, PERSONAL],
@@ -2046,15 +2019,6 @@ describe("diagnostics and writesRefused", () => {
     expect(
       (within(personalInspector).getByRole("button", { name: /make default/i }) as HTMLButtonElement).disabled,
     ).toBe(true);
-  });
-
-  test("writesRefused disables the raw add-instance action that authors providers.toml", async () => {
-    const fake = connectFakeClient();
-    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [], writesRefused: true }));
-    render(<CredentialsSection sectionId="credentials" fullEditor />);
-    await screen.findByText("work");
-
-    expect((screen.getByRole("button", { name: "+ Add provider instance" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

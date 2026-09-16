@@ -44,7 +44,7 @@ const catalogue = [
   provider("openai", "OpenAI"),
   provider("google", "Gemini"),
   provider("openrouter", "OpenRouter"),
-  provider("openai-codex", "ChatGPT / Codex", ["oauth"]),
+  provider("openai-codex", "OpenAI Codex", ["oauth"]),
   provider("ollama", "Local endpoint", ["apiKey"], { credentialRequired: false, baseUrl: "http://localhost:8080/v1" }),
   provider("google-vertex", "Google Vertex", ["credentialJson"]),
   {
@@ -71,9 +71,9 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   connectionStore.getState().connect(client);
   const connected = vi.fn();
   const close = vi.fn();
-  const manage = vi.fn();
-  const view = render(<ProviderConnection onClose={close} onConnected={connected} onManage={manage} />);
-  return { client, connected, close, manage, ...view, user: userEvent.setup() };
+  const openSettings = vi.fn();
+  const view = render(<ProviderConnection onClose={close} onConnected={connected} onOpenSettings={openSettings} />);
+  return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
@@ -88,27 +88,100 @@ test("popular Gemini uses the real google identity, independently of provider na
   expect(await screen.findByRole("button", { name: "Gemini" })).toBeTruthy();
 });
 
+// The front page is where a new account gets added, and Codex is what people
+// arrive with: it has to be offered without first switching to the full
+// catalogue. Its connection is the OAuth flow - the provider reads no API key
+// - so selecting the popular card must reach the Codex sign-in rather than a
+// key field.
+test("the popular list offers OpenAI Codex and starts its sign-in", async () => {
+  const { user, client } = setup();
+  await user.click(await screen.findByRole("button", { name: "OpenAI Codex" }));
+  expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  client.on("evener/auth/device/start", () => ({
+    provider: "openai-codex",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://auth.example",
+    intervalSeconds: 5,
+  }));
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const starts = client.calls.filter((call) => call.method === "evener/auth/device/start");
+  expect(starts).toHaveLength(1);
+  expect(starts[0]!.params).toMatchObject({ provider: "openai-codex" });
+});
+
+// The first screen is the popular set and nothing else. Everything the
+// catalogue holds beyond it - including the search that spans the catalogue -
+// is behind the reveal, so the choice is short until the user asks for more.
+test("the popular providers are what the picker shows first", async () => {
+  setup();
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  for (const name of ["OpenAI", "Gemini", "OpenRouter", "OpenAI Codex"]) {
+    expect(screen.getByRole("button", { name })).toBeTruthy();
+  }
+  expect(screen.queryByRole("button", { name: "Azure" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Local endpoint" })).toBeNull();
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+});
+
+// The reveal swaps the popular set for the whole catalogue (the popular rows
+// are in it too), and closing it puts the short list back - one control, both
+// directions, no second label to keep in sync.
+test("show all providers reveals the rest of the catalogue and closes back to the popular set", async () => {
+  const { user } = setup();
+  const reveal = await screen.findByText("Show all providers");
+  await user.click(reveal);
+  expect(screen.getByLabelText("Search providers")).toBeTruthy();
+  for (const name of ["Azure", "Google Vertex", "Local endpoint", "Custom endpoint", "Anthropic"]) {
+    expect(screen.getByRole("button", { name })).toBeTruthy();
+  }
+  await user.click(reveal);
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Azure" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
+
+// The reveal is the dialog's own focusable control. jsdom implements the
+// focusability rule for a details' first <summary> (helpers/focusing.js) even
+// though user-event's own focusable selector does not list <summary>, so DOM
+// focus is asserted directly; jsdom then runs no native Enter-to-click for it
+// either, which is why the keyboard path's follow-up click is dispatched here
+// (the same limitation widgets/disclosure/disclosure.test.tsx documents).
+test("the show all providers control is keyboard reachable", async () => {
+  const { user } = setup();
+  const reveal = await screen.findByText("Show all providers");
+  expect(reveal.tagName).toBe("SUMMARY");
+  // No tabindex override: the control is in the browser's tab order.
+  expect(reveal.getAttribute("tabindex")).toBeNull();
+  reveal.focus();
+  expect(document.activeElement).toBe(reveal);
+  await user.keyboard("{Enter}");
+  fireEvent.click(reveal);
+  expect(screen.getByLabelText("Search providers")).toBeTruthy();
+});
+
 test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
   const custom = provider("constructor", "Custom endpoint");
   const { user } = setup({ instances: [], availableProviders: [custom] });
-  await screen.findByRole("button", { name: "All providers" });
+  await screen.findByText("Show all providers");
   await act(async () => {
     await credentialsStore.getState().fetch();
   });
   // Popular membership must be an own-key check: "constructor" in HELP is
   // true through the prototype chain, which would promote this custom
-  // provider to the popular grid and then render
+  // provider to the popular list and then render
   // Object.prototype.constructor as its help entry - a "Get an API key"
   // anchor with no destination for a provider that has no help metadata.
   expect(screen.queryByRole("button", { name: "Custom endpoint" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "All providers" }));
+  await user.click(screen.getByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Custom endpoint" }));
   expect(screen.queryByText("Get an API key")).toBeNull();
 });
 
 test("device authorization survives its own delayed listing refresh and proceeds to a real check", async () => {
   const { user, client, connected } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   client.on("evener/auth/device/start", () => ({
     provider: "openai-codex",
     flowId: "device",
@@ -164,13 +237,41 @@ test("discovery load failure focuses recovery and retries the real listing", asy
     throw new Error("private-wire-body");
   });
   connectionStore.getState().connect(client);
-  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onManage={() => {}} />);
+  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onOpenSettings={() => {}} />);
   const alert = await screen.findByRole("alert");
   expect(document.activeElement).toBe(alert);
   expect(screen.queryByText(/private-wire-body/)).toBeNull();
   client.on("evener/instance/list", () => ({ instances: [], availableProviders: structuredClone(catalogue) }));
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
+
+// The dialog this flow is mounted in used to grow a second, narrower copy of
+// the settings pane's instance list ("Manage existing connections"). That
+// surface is gone: this affordance hands the user to the real provider
+// settings, and the hosting dialog closes itself on the way out - both halves
+// of that handoff are the dialog's (see ConnectProviderDialog, which pins the
+// route it lands on).
+test("the existing-connections affordance hands off to the full settings, not a second editor", async () => {
+  const { user, openSettings, close } = setup();
+  await screen.findByRole("button", { name: "Anthropic" });
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+
+  expect(openSettings).toHaveBeenCalledTimes(1);
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
+});
+
+// Same handoff from inside the guided flow: an affordance labelled "Open full
+// connection editor" must open exactly that, not a menu of its own.
+test("open full connection editor hands off to the full settings", async () => {
+  const { user, openSettings } = setup();
+  await choose(user, "Anthropic");
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
+
+  expect(openSettings).toHaveBeenCalledTimes(1);
 });
 
 test("resolved setup auth modes override public defaults rather than forcing a vendor key", async () => {
@@ -241,7 +342,7 @@ test("a retry with the client gone reports no unhandled rejection", async () => 
 
 test("configuration refresh invalidates a pending OAuth start before it opens a browser", async () => {
   const { user, client } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   const pending = deferred<{
     provider: string;
     flowId: string;
@@ -294,9 +395,9 @@ test("discovers a public provider without launch-ready instances and asks only f
   expect(screen.queryByLabelText("Name")).toBeNull();
   expect(screen.queryByLabelText("Base URL (optional)")).toBeNull();
 });
-test("all providers searches the complete catalogue including separate Codex and configured variants", async () => {
+test("show all providers searches the complete catalogue including separate Codex and configured variants", async () => {
   const { user } = setup();
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   const search = screen.getByLabelText("Search providers");
   for (const row of catalogue) {
     await user.clear(search);
@@ -304,9 +405,28 @@ test("all providers searches the complete catalogue including separate Codex and
     expect(screen.getByRole("button", { name: row.name })).toBeTruthy();
   }
 });
+
+// The search matches the three fields it has always matched - the registry id,
+// its display name, and the help label the row prints - not just whatever the
+// row happens to say. "Google Generative AI" is the case that separates them:
+// it is neither the id nor the label on screen.
+test("the catalogue search matches id, display name and help label", async () => {
+  const { user } = setup({ instances: [], availableProviders: [provider("google", "Google Generative AI")] });
+  await user.click(await screen.findByText("Show all providers"));
+  const search = screen.getByLabelText("Search providers");
+  for (const query of ["google", "generative", "gemini"]) {
+    await user.clear(search);
+    await user.type(search, query);
+    expect(screen.getByRole("button", { name: "Gemini" })).toBeTruthy();
+  }
+  await user.clear(search);
+  await user.type(search, "vertex");
+  expect(screen.queryByRole("button", { name: "Gemini" })).toBeNull();
+});
+
 test("a cloud choice opens the complete preselected configuration editor", async () => {
   const { user } = setup();
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Azure" }));
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
   expect(screen.getByLabelText("Base provider")).toHaveProperty("value", "azure");
@@ -322,7 +442,10 @@ function savedList(id = "anthropic", extra: Partial<InstanceEntry> = {}): Instan
 }
 const saved = { provider: "anthropic", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
 async function choose(user: ReturnType<typeof userEvent.setup>, name = "Anthropic") {
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  // Choosing from the revealed catalogue covers both kinds of provider this
+  // helper is used for (popular and not), and keeps one path through the
+  // picker for every caller.
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name }));
 }
 function scriptSave(client: FakeClient, next = savedList()) {
@@ -389,7 +512,7 @@ test("a sign-in refused because the held listing belongs to a replaced connectio
     fallback: false,
   }));
   client.on("evener/auth/login/start", () => ({ provider: "openai-codex", flowId: "flow", url: "https://auth" }));
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
 
   // The connection is replaced and its own listing has not been applied.
   act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
@@ -547,7 +670,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
 });
 test.each([false, true])("Codex preserves the existing OAuth route (redirect=%s)", async (fallback) => {
   const { user, client } = setup();
-  await choose(user, "ChatGPT / Codex");
+  await choose(user, "OpenAI Codex");
   expect(screen.queryByLabelText("API key")).toBeNull();
   client.on("evener/auth/device/start", () => ({
     provider: "openai-codex",
@@ -842,7 +965,7 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   client.on("evener/instance/list", () => initial.promise);
   connectionStore.getState().connect(client);
   const connected = vi.fn();
-  render(<ProviderConnection onClose={() => {}} onConnected={connected} onManage={() => {}} />);
+  render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
   const user = userEvent.setup();
   await act(async () => {
     client.emitStateChange("reconnecting");

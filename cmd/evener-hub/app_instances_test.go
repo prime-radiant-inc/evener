@@ -136,6 +136,54 @@ func newInstancesFixture(t *testing.T, env map[string]string) *instancesFixture 
 	}
 }
 
+// newFlakyReloadFixture is newInstancesFixture whose registry loader fails for
+// the loads its fail predicate names, counted from 1 for the fixture's own
+// first load. It is what lets a test park the holder exactly where a failed
+// reload leaves it: a config that cannot be read at the moment a mutation's
+// reload runs, without the file having to be broken beforehand (which
+// refuseWhenBroken would refuse the mutation over).
+func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int) bool) *instancesFixture {
+	t.Helper()
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if storedKeyFor != "" {
+		if err := store.Set(storedKeyFor, "gk"); err != nil {
+			t.Fatalf("Set(%s): %v", storedKeyFor, err)
+		}
+	}
+	auth := newHubAuthControllerWithStore(dir, store)
+	auth.stateDir = stateDir
+	auth.providersConfigPath = tomlPath
+	loads := 0
+	auth.reg = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		if fail(loads) {
+			return nil, nil, errors.New("providers config could not be read")
+		}
+		opts := append(
+			testProbeRegistryOptions(stateDir, store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(tomlPath),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	})
+	if err := auth.reg.Reload(); err != nil {
+		t.Fatalf("initial Reload: %v", err)
+	}
+	return &instancesFixture{
+		ctl:       &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth},
+		tomlPath:  tomlPath,
+		stateDir:  stateDir,
+		credsPath: filepath.Join(dir, "credentials.toml"),
+		store:     store,
+	}
+}
+
 // entry finds one instance in a list response.
 func entry(t *testing.T, resp appwire.InstanceListResponse, name string) appwire.InstanceEntry {
 	t.Helper()
@@ -603,8 +651,9 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 	}
 }
 
-// TestInstances_RemoveRefusesImplicitInstance: an instance that exists from
-// the environment has no entry to delete, so the refusal says what to unset.
+// TestInstances_RemoveRefusesImplicitInstance: an environment-backed instance
+// has no entry to delete and the variable that makes it exist would put it
+// straight back, so the refusal says what to unset.
 func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
@@ -613,6 +662,238 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
 		t.Fatalf("the refusal names the variable that creates the instance: %v", err)
+	}
+}
+
+// listedInstance reports whether a listing still carries a row under name.
+func listedInstance(resp appwire.InstanceListResponse, name string) bool {
+	for _, e := range resp.Instances {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// seedOAuthRecord gives an instance a signed-in Codex account - the credential
+// a user adds through the UI - and reloads so the registry derives the
+// instance from it.
+func seedOAuthRecord(t *testing.T, f *instancesFixture, name, email string) {
+	t.Helper()
+	if err := authopenai.SaveAuth(f.stateDir, name, makeOAuthRecord(name, email)); err != nil {
+		t.Fatalf("SaveAuth(%s): %v", name, err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+}
+
+// TestInstances_RemoveDeletesASignedInCodexAccount: the OAuth record is a file
+// under the instance name, so the instance the user signed in to is theirs to
+// remove - and removing it is what takes the account away.
+func TestInstances_RemoveDeletesASignedInCodexAccount(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+
+	before := entry(t, f.ctl.List(), "openai-codex")
+	if !before.Implicit || before.ActiveSource != "oauth" {
+		t.Fatalf("fixture: openai-codex = %+v, want an implicit instance resolving the OAuth record", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := authopenai.LoadAuth(f.stateDir, "openai-codex"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("the OAuth record survived the removal (LoadAuth = %v)", err)
+	}
+	if listedInstance(f.ctl.List(), "openai-codex") {
+		t.Fatal("openai-codex is still listed after its account was removed")
+	}
+}
+
+// TestInstances_RemoveDeletesAStoredKeyForACuratedProvider: the other half of
+// environmentBacked. A key the user pasted through the UI for a curated
+// provider is theirs, so a removal deletes it and the row goes with it - the
+// same no-authored-entry path the Codex account takes.
+func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	before := entry(t, f.ctl.List(), "groq")
+	if !before.Implicit || before.ActiveSource != "store" {
+		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the stored key survived the removal: %q", v)
+	}
+	if listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("groq is still listed after its stored key was removed")
+	}
+}
+
+// TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey: the keyless
+// schemes are re-derived with or without a credential, so a removal would
+// delete the key and leave the row standing - with the badge the affordance
+// just said it did not have. The client offers no Remove for one, and the hub
+// refuses it; clearing the credential is the action for that key.
+func TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("ollama", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	before := entry(t, f.ctl.List(), "ollama")
+	if !before.Implicit || before.ActiveSource != "store" || before.CredentialRequired {
+		t.Fatalf("fixture: ollama = %+v, want an implicit keyless instance resolving the stored key", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "ollama"}); err == nil {
+		t.Fatal("Remove accepted an instance the reload would re-derive anyway")
+	}
+	if v, _ := f.store.Get("ollama"); v != "gk" {
+		t.Fatalf("the refused removal deleted the stored key: %q", v)
+	}
+}
+
+// TestInstances_RemoveLeavesTheEnvironmentRowWhenAVariableAlsoSuppliesIt: the
+// stored key is what makes the instance the user's, so removing it takes that
+// key - but the environment then supplies the instance again, and the row that
+// comes back says so. The pane's own removal message reports the same thing.
+func TestInstances_RemoveLeavesTheEnvironmentRowWhenAVariableAlsoSuppliesIt(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "env-key"})
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if before := entry(t, f.ctl.List(), "groq"); before.ActiveSource != "store" {
+		t.Fatalf("fixture: groq = %+v, want the stored key to outrank the variable", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	after := entry(t, f.ctl.List(), "groq")
+	if after.ActiveSource != "env:GROQ_API_KEY" || !after.Implicit {
+		t.Fatalf("groq = %+v, want the row the environment supplies back", after)
+	}
+}
+
+// TestInstances_RemoveClearsADefaultNamingTheRemovedInstance: the default
+// pointer is a change to a file that already exists, so it is written even
+// when the instance itself had no authored entry to delete. Left behind, it
+// would name an instance the next load cannot find.
+func TestInstances_RemoveClearsADefaultNamingTheRemovedInstance(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte("default = \"groq\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if name, _, _ := f.ctl.reg.Get().DefaultInstance(); name != "groq" {
+		t.Fatalf("fixture default = %q, want groq", name)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	l, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if l.Default != "" {
+		t.Fatalf("the file still defaults to the removed instance: %q", l.Default)
+	}
+	if listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("groq is still listed after its stored key was removed")
+	}
+}
+
+// TestInstances_RemoveRetriesTheReloadWhenNothingWasWritten: a credential-only
+// removal writes no file, so a reload that fails leaves the registry parked on
+// the implicit-only view a failed load produces - writes refused, the row gone
+// from listings - while the state the file describes never changed. Putting the
+// credentials back makes a second attempt the recovery; one that fails too
+// leaves the registry as unusable as any other failed load, and says so instead
+// of reporting only a rolled-back removal.
+func TestInstances_RemoveRetriesTheReloadWhenNothingWasWritten(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		fail    func(load int) bool
+		wantErr string
+	}{
+		{name: "the retry brings the registry back", fail: func(load int) bool { return load == 2 }},
+		{name: "the retry fails too", fail: func(load int) bool { return load >= 2 }, wantErr: "instance writes stay refused"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFlakyReloadFixture(t, "groq", tt.fail)
+			if before := entry(t, f.ctl.List(), "groq"); before.ActiveSource != "store" {
+				t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
+			}
+
+			err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+			if err == nil || !strings.Contains(err.Error(), "was rolled back") {
+				t.Fatalf("Remove = %v, want the removal reported as rolled back", err)
+			}
+			if tt.wantErr != "" && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Remove = %v, want it to name the registry %q", err, tt.wantErr)
+			}
+			// Either way the credential this call deleted is back, because a
+			// rollback that dropped it would leave the instance unauthenticated.
+			if v, _ := f.store.Get("groq"); v != "gk" {
+				t.Fatalf("the stored key was not restored: %q", v)
+			}
+			if tt.wantErr == "" {
+				if f.ctl.reg.WritesRefused() {
+					t.Fatalf("the registry stayed refused after the retry: %v", f.ctl.reg.LoadError())
+				}
+				if before := entry(t, f.ctl.List(), "groq"); before.ActiveSource != "store" {
+					t.Fatalf("groq = %+v, want the instance back on its stored key", before)
+				}
+			}
+		})
+	}
+}
+
+// TestInstances_EditRenamesASignedInCodexAccount: the rename authors an entry
+// under the new name and moves the OAuth record with it, so the account keeps
+// working under the new name and the old row is gone.
+func TestInstances_EditRenamesASignedInCodexAccount(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "openai-codex", NewName: "codex-work"}); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	p := authoredEntry(t, f.tomlPath, "codex-work")
+	if p.Base != "openai-codex" {
+		t.Fatalf("authored base = %q, want the provider the account was signed in to", p.Base)
+	}
+	if _, err := authopenai.LoadAuth(f.stateDir, "codex-work"); err != nil {
+		t.Fatalf("the OAuth record must move with the rename: %v", err)
+	}
+	resp := f.ctl.List()
+	if listedInstance(resp, "openai-codex") {
+		t.Fatal("the old row must be gone once its record moved")
+	}
+	got := entry(t, resp, "codex-work")
+	if got.Implicit || got.ActiveSource != "oauth" {
+		t.Fatalf("codex-work = %+v, want an authored instance resolving the moved record", got)
 	}
 }
 
@@ -1364,16 +1645,25 @@ func TestInstances_SetDefaultWritesDefault(t *testing.T) {
 // deletes - the authored entry, the stored key and the OAuth record under the
 // name - is decided by the lookup, so a lookup made before c.mu hands the
 // deletion to whatever holds the name once the rename has landed.
+//
+// The observables moved with the rule that a UI credential makes an instance
+// removable: the refusal below is the environment-backed instance the name
+// holds now. The old half of this test - a stored key surviving the refusal -
+// is no longer expressible, because a stored key outranks the variable
+// (registry spec §10) and would make the instance the user's own, and so
+// correctly removable.
 func TestInstances_RemoveValidatesTheInstanceUnderTheControllerLock(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"OPENAI_API_KEY": "env-key"})
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "openai", Base: "anthropic"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if err := f.store.Set("openai", "sk-stored"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
 	if inst, ok := f.ctl.reg.Get().Instance("openai"); !ok || inst.Implicit {
 		t.Fatalf("the fixture's openai must be the authored entry Remove deletes (ok = %v, %+v)", ok, inst)
+	}
+	// A credential under the name the rewrite introduces: nothing this removal
+	// refuses may take it.
+	if err := f.store.Set("work", "sk-neighbour"); err != nil {
+		t.Fatalf("Set: %v", err)
 	}
 
 	f.ctl.mu.Lock()
@@ -1397,8 +1687,8 @@ base = "anthropic"
 	case <-time.After(10 * time.Second):
 		t.Fatal("Remove never returned after the rename released the lock")
 	}
-	if v, _ := f.store.Get("openai"); v != "sk-stored" {
-		t.Fatalf("the credential of the instance now under the name was deleted: openai = %q", v)
+	if v, _ := f.store.Get("work"); v != "sk-neighbour" {
+		t.Fatalf("a removal that refused deleted a credential anyway: work = %q", v)
 	}
 }
 
@@ -3524,20 +3814,33 @@ func TestInstances_EditRenameOntoACuratedProviderIdKeepsAnExplicitBase(t *testin
 	}
 }
 
-func TestInstances_EditRenameRefusesAnImplicitInstance(t *testing.T) {
+// TestInstances_EditRenamesAnImplicitInstanceUnderANewName: an instance with no
+// authored entry renames by authoring one under the new name. Nothing shadows
+// the old name: the rename moved the row it could move, and for an
+// environment-backed instance the old row was never the rename's to move, so
+// it simply stays as the environment supplies it.
+func TestInstances_EditRenamesAnImplicitInstanceUnderANewName(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
-	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", NewName: "g2"})
-	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-		t.Fatalf("Edit = %v, want an InvalidParams wire error", err)
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "groq", NewName: "g2"}); err != nil {
+		t.Fatalf("Edit = %v, want the rename to land", err)
 	}
-	if l, exists, _ := registry.ReadConfigFile(f.tomlPath); exists {
-		if _, authored := l.Providers["g2"]; authored {
-			t.Fatal("a refused rename authored [providers.g2]")
-		}
-		if _, authored := l.Providers["groq"]; authored {
-			t.Fatal("a refused rename authored a shadow for groq")
-		}
+	p := authoredEntry(t, f.tomlPath, "g2")
+	if p.Base != "groq" {
+		t.Fatalf("authored base = %q, want the curated id the unnamed entry inherited from", p.Base)
+	}
+	l, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if _, shadowed := l.Providers["groq"]; shadowed {
+		t.Fatal("the rename authored a shadow for the old name")
+	}
+	resp := f.ctl.List()
+	if got := entry(t, resp, "g2"); got.Implicit {
+		t.Fatalf("the renamed instance = %+v, want an authored instance", got)
+	}
+	if !listedInstance(resp, "groq") {
+		t.Fatal("the environment instance must stay listed")
 	}
 }
 
