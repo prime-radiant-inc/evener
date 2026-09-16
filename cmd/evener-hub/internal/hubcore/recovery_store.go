@@ -19,17 +19,6 @@ type recoveryAuthority struct {
 	ExitConfirmed bool   `json:"exit_confirmed"`
 	Group         string `json:"group"`
 	SessionID     string `json:"session_id"`
-	// LaunchPending records that a resume durably invalidated this alias's exit
-	// proof and was about to start a replacement child. It survives exactly the
-	// window BeforeLaunch opens so a restarted hub can tell "a launch never
-	// produced a child" from "this proof is simply unconfirmed".
-	LaunchPending bool `json:"launch_pending,omitempty"`
-	// SignalAttempted records that a force stop had committed its intent and was
-	// about to deliver a termination signal. A group so marked keeps its fence
-	// across a restart even when its rendezvous marker later disappears, because
-	// a failed termination must never be mistaken for the graceful exit that
-	// removes a marker.
-	SignalAttempted bool `json:"signal_attempted,omitempty"`
 }
 
 type recoveryRecord struct {
@@ -41,13 +30,6 @@ type recoverySnapshot struct {
 	Version int              `json:"version"`
 	Records []recoveryRecord `json:"records"`
 }
-
-// recoveryStateVersion is the format this hub writes. Versions 3 and 4 are
-// still read: they are every snapshot an older hub could have left behind, and
-// neither carries a launch intent or a signal attempt to recover. An older hub
-// reading this snapshot sees an unsupported version and refuses to start, the
-// same forward refusal version 3 readers already apply to a version-4 snapshot.
-const recoveryStateVersion = 5
 
 type recoveryStoreFaults struct {
 	BeforeRename func() error
@@ -91,7 +73,7 @@ func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("decode recovery state: trailing data")
 	}
-	if snapshot.Version != 3 && snapshot.Version != 4 && snapshot.Version != recoveryStateVersion {
+	if snapshot.Version != 3 {
 		return nil, fmt.Errorf("unsupported recovery state version %d", snapshot.Version)
 	}
 	targets := make(map[string]recoveryAuthority)
@@ -116,7 +98,7 @@ func validRecoveryAlias(alias string) bool {
 }
 
 func (s *recoveryStore) commit(next map[string]recoveryAuthority) (bool, error) {
-	snapshot := recoverySnapshot{Version: recoveryStateVersion, Records: []recoveryRecord{}}
+	snapshot := recoverySnapshot{Version: 3, Records: []recoveryRecord{}}
 	for _, alias := range slices.Sorted(maps.Keys(next)) {
 		snapshot.Records = append(snapshot.Records, recoveryRecord{Alias: alias, recoveryAuthority: next[alias]})
 	}

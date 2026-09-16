@@ -503,26 +503,19 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 //
 // The retirement path holds no explicit Resume to own: it launches with no
 // active resume lifetime and the configured startup budget, exactly as an
-// automatic resume does. aliases is that path's verified ownership group; the
-// launch still durably invalidates the prior owner's exit proof through a
-// LaunchGuard, so the invariant documented on BeforeLaunch holds for every
-// launch path.
-func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, aliases []string) (appwire.ThreadResumeResponse, error) {
-	return resumeThreadLockedLaunch(ctx, cfg, sources, params, &resumeLaunch{aliases: aliases})
+// automatic resume does.
+func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return resumeThreadLockedLaunch(ctx, cfg, sources, params, &resumeLaunch{})
 }
 
-// resumeLaunch is a launch's lifetime, threaded from the wrapper that owns it
-// to the locked half that launches the child. An explicit or automatic resume
-// registers an ActiveResume and carries it in active; a path with no registered
-// lifetime carries only its ownership aliases, and the launcher guards that
-// launch with a durable LaunchGuard instead. The launcher writes its cleanup
-// classification back through cleanupErr so a registering wrapper can report it
-// to ActiveResume.Complete, which must run only after every defer has released
-// ownership and the single child waiter has confirmed cleanup.
+// resumeLaunch is the explicit Resume's registered launch lifetime, threaded
+// from the wrapper that registered it to the locked half that launches the
+// child. The launcher writes its cleanup classification back through cleanupErr
+// so the registering wrapper can report it to ActiveResume.Complete, which must
+// run only after every defer has released ownership and the single child waiter
+// has confirmed cleanup.
 type resumeLaunch struct {
 	active          *hubcore.ActiveResume
-	guard           *hubcore.LaunchGuard
-	aliases         []string
 	completionOwned bool
 	cleanupErr      error
 }
@@ -624,37 +617,14 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
 		}
 	}
-	// A launch path that owns no ActiveResume lifetime still has to durably
-	// invalidate the prior owner's exit proof before the child starts, exactly
-	// as BeforeLaunch does for an explicit or automatic resume. Every check that
-	// can reuse or decline a launch has already returned by this point, so the
-	// guard covers only a child that is about to start.
-	if launch.active == nil && launch.guard == nil && cfg.ResumeLocks != nil && len(launch.aliases) != 0 {
-		guard, err := cfg.ResumeLocks.BeginLaunchGuard(ctx, sessionID, launch.aliases)
-		if err != nil {
-			return appwire.ThreadResumeResponse{}, appwire.Unavailable("prepare resume ownership: " + err.Error())
-		}
-		launch.guard = guard
-	}
 	resumeReq.CompletionOwned = launch.completionOwned
 	resumeReq.ActiveResume = launch.active
 	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	resumeDone(err)
 	if err != nil {
-		cleanup, cleanupUnconfirmed := errors.AsType[*resumeCleanupError](err)
-		if cleanupUnconfirmed {
+		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
 			launch.cleanupErr = cleanup
-		}
-		if launch.guard != nil && !cleanupUnconfirmed {
-			// The guarded launch produced no child: restore the exit proof it
-			// invalidated so the session is not left fenced behind it. A launch
-			// whose child cleanup is unconfirmed may still have a live child, so
-			// its fence stays: restoring the proof would let it describe that
-			// child, which is the invariant BeforeLaunch exists to hold.
-			if guardErr := launch.guard.Failed(); guardErr != nil {
-				err = errors.Join(err, guardErr)
-			}
 		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}

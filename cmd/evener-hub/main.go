@@ -382,13 +382,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("load recovery state: %w", err)
 	}
-	// A previous hub may have durably invalidated an exit proof for a launch
-	// that never produced a child. Settle those before this hub serves, or the
-	// session is rejected by both resume and force stop until it is repaired.
-	if err := recoverInterruptedLaunches(hubcore.WebConfig{RunDir: runDir, ResumeLocks: resumeLocks}); err != nil {
-		_ = hubListener.Close()
-		return fmt.Errorf("recover interrupted launches: %w", err)
-	}
 	deletionStore, err := hubcore.NewDeletionStore(hubStateRoot)
 	if err != nil {
 		_ = hubListener.Close()

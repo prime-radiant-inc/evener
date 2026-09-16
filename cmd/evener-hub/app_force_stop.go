@@ -193,12 +193,6 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		refreshAfterForceStop(ctx, cfg)
 		return nil
 	}
-	// Record that a signal may now reach the process before delivering it. A
-	// restart must keep this group fenced even if the marker later disappears;
-	// only an unsignaled interruption is safe to settle automatically.
-	if err := cfg.ResumeLocks.MarkForceStopSignaled(aliases, target.SessionID); err != nil {
-		return appwire.Unavailable(fmt.Sprintf("persist session recovery signal: %v", err))
-	}
 	if err := process.Kill(); err != nil && !errors.Is(err, daemonprocess.ErrExited) {
 		return appwire.Unavailable(fmt.Sprintf("cannot force stop daemon: %v", err))
 	}

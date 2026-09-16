@@ -247,6 +247,6 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// sessionID would drive discovery and spawn for a stale alias whenever
 	// resumeOwnership resolved a different current owner (thread/clear), the
 	// same convention resumeThread follows by assigning sessionID = target.
-	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target}, aliases)
+	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return resumeErr
 }
