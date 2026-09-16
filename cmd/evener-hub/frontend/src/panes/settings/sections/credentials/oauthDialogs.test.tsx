@@ -1,11 +1,11 @@
 import type { AuthDevicePollResponse, AuthLoginCompleteResponse, InstanceListResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
-import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts } from "../../../../widgets/toast/store";
@@ -66,6 +66,58 @@ describe("OAuthRedirectDialog", () => {
     );
     expect(onSuccess).not.toHaveBeenCalled();
     expect(list).not.toHaveBeenCalled();
+  });
+
+  // The store refuses a completion issued from the previous connection's
+  // listing (stores/credentials.ts's requireWritableClient). The pasted URL is
+  // not a secret, so it is kept for the retry; what must not happen is the
+  // store's own words on screen, or a "Sign-in failed" toast over a sign-in
+  // that was never sent.
+  test("a submit refused while the held listing is stale reports the change, not a failed sign-in", async () => {
+    const catalogue = [{ id: "work", protocol: "openai-chat", auth: "bearer", implicit: true }];
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => ({ instances: [], availableProviders: catalogue }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => ({ instances: [], availableProviders: catalogue }));
+    replacement.on("evener/auth/login/complete", () => ({
+      status: { provider: "work", supported: true, signedIn: true, activeSource: "oauth", hasStoredOAuth: true },
+    }));
+    connectionStore.getState().connect(replacement);
+    // The connection is replaced and this connection's own listing has not been
+    // applied: the flow this editor is completing was started on the one that
+    // is gone. (Wait out the read the connect itself starts, so setting the
+    // marker is what the submit sees.)
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await act(async () => credentialsStore.setState({ listingFromPreviousConnection: true }));
+
+    const onSuccess = vi.fn();
+    render(
+      <>
+        <OAuthRedirectDialog
+          name="work"
+          flowId="flow-1"
+          authUrl="https://auth"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await userEvent.setup().type(screen.getByLabelText("Redirect URL"), "https://redirect?code=1");
+    await act(async () => fireEvent.submit(screen.getByRole("button", { name: "Finish" }).closest("form")!));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/login/complete")).toHaveLength(0);
+    // The refusal is named for the change it is, never in the store's own words
+    // and never as a failed sign-in.
+    expect(screen.getByRole("alert").textContent).toContain("connection was replaced");
+    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
+    expect(screen.queryByText(/Sign-in failed/)).toBeNull();
+    expect(onSuccess).not.toHaveBeenCalled();
+    // The pasted URL survives for the retry.
+    expect((screen.getByLabelText("Redirect URL") as HTMLInputElement).value).toBe("https://redirect?code=1");
   });
 
   test("shows a re-open link to the authorize URL", () => {
@@ -476,6 +528,178 @@ describe("DeviceCodeDialog", () => {
     const callsAtError = calls;
     await advanceTime(2200);
     expect(calls).toBe(callsAtError);
+  });
+
+  // The store refuses a poll issued from the previous connection's listing
+  // (stores/credentials.ts's requireWritableClient): the flow belongs to the
+  // hub, not to this client, and the refusal is the store holding the client
+  // back until the replacement's listing lands. Treated as a poll failure it
+  // would end the flow permanently - "Start again" over a flow that may still
+  // be authorizable - for a connection that merely reconnected.
+  test("a poll refused while the held listing is stale keeps polling and completes once that listing lands", async () => {
+    vi.useFakeTimers();
+    const catalogue = [{ id: "work", protocol: "openai-chat", auth: "bearer", implicit: true }];
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => ({ instances: [], availableProviders: catalogue }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+
+    // The replacement's own listing is held open, so every poll is refused
+    // while it is in flight.
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const restore = new Promise<InstanceListResponse>((resolve) => {
+      finishRestore = resolve;
+    });
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => restore);
+    replacement.on("evener/auth/device/poll", () => ({ state: "authorized" }));
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    const onSuccess = vi.fn();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+        onRestart={() => {}}
+      />,
+    );
+
+    // The refused tick is not a poll outcome: nothing reached the connection,
+    // the flow is still waiting rather than offering "Start again", and the
+    // status line says what it is waiting for.
+    await advanceTime(1000);
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Start again" })).toBeNull();
+    expect(screen.getByText("Waiting for the connection to be restored…")).toBeTruthy();
+
+    // This connection's own listing lands; the next tick polls and the flow
+    // completes against the connection that is actually there.
+    await act(async () => finishRestore({ instances: [], availableProviders: catalogue }));
+    await advanceTime(1000);
+    await advanceTime(0);
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
+  // The refusal clears only when a listing this connection read is applied, and
+  // the usual one is the reconnect's own restore read. If THAT read failed (the
+  // connection dropped again while it was in flight), every later tick would be
+  // refused in silence: "Waiting for you to authorize…" for as long as the
+  // dialog stays open, with no error and no retry the user can reach. The poll
+  // asks for the listing once itself, so the flow recovers on its own.
+  test("a poll refused while the restore read failed asks for the listing and resumes once it lands", async () => {
+    vi.useFakeTimers();
+    const catalogue = [{ id: "work", protocol: "openai-chat", auth: "bearer", implicit: true }];
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => ({ instances: [], availableProviders: catalogue }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+
+    // The replacement's own restore read fails, so the marker stays set.
+    let reads = 0;
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => {
+      reads += 1;
+      if (reads === 1) throw new Error("transport down");
+      return { instances: [], availableProviders: catalogue };
+    });
+    replacement.on("evener/auth/device/poll", () => ({ state: "authorized" }));
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    const onSuccess = vi.fn();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-3"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+        onRestart={() => {}}
+      />,
+    );
+
+    // The refused tick asks for this connection's listing itself...
+    await advanceTime(1000);
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(1);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
+
+    // ...and the next tick polls the connection that is actually there.
+    await advanceTime(1000);
+    await advanceTime(0);
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
+    expect(onSuccess).toHaveBeenCalled();
+  });
+
+  // One ask is not enough: the read it starts can fail too (the connection
+  // dropped again while it was in flight). A latch that never re-asks would
+  // leave every later tick refused with nothing on screen to say so - "Waiting
+  // for you to authorize..." forever. The poll keeps asking, and the status
+  // line names the wait while it does.
+  test("a poll refused repeatedly keeps asking for the listing and says it is waiting for the connection", async () => {
+    vi.useFakeTimers();
+    const catalogue = [{ id: "work", protocol: "openai-chat", auth: "bearer", implicit: true }];
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => ({ instances: [], availableProviders: catalogue }));
+    await act(async () => {
+      await credentialsStore.getState().fetch();
+    });
+
+    // The replacement's restore read keeps failing; the marker stays set.
+    let reads = 0;
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => {
+      reads += 1;
+      if (reads <= 3) throw new Error("transport down");
+      return { instances: [], availableProviders: catalogue };
+    });
+    replacement.on("evener/auth/device/poll", () => ({ state: "authorized" }));
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    const onSuccess = vi.fn();
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-4"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={onSuccess}
+        onRestart={() => {}}
+      />,
+    );
+
+    // Each refused tick asks again (the first ask is the connect's own read,
+    // then one per refusal) and the dialog says what it is waiting for.
+    await advanceTime(1000);
+    expect(screen.getByText("Waiting for the connection to be restored…")).toBeTruthy();
+    const readsAfterFirstRefusal = replacement.calls.filter((call) => call.method === "evener/instance/list").length;
+    await advanceTime(1000);
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(
+      readsAfterFirstRefusal,
+    );
+
+    // The connection comes back (the fourth read succeeds), so the tick after
+    // that polls the connection that is actually there and the wait is over.
+    await advanceTime(1000);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false);
+    await advanceTime(1000);
+    await advanceTime(0);
+    expect(screen.queryByText("Waiting for the connection to be restored…")).toBeNull();
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/device/poll")).toHaveLength(1);
+    expect(onSuccess).toHaveBeenCalled();
   });
 
   test("clicking 'Start again' after expiry calls onRestart", async () => {
