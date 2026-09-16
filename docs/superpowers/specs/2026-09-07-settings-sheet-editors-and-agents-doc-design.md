@@ -133,9 +133,11 @@ passes the authored `registry.Provider` alongside each instance.
 `hubInstancesController.Edit` extends its existing field-by-field apply with
 the new pairs, then handles rename last, all under `c.mu`:
 
-1. Refuse when `params.NewName` is set on an implicit instance
-   (`InvalidParams`: "instance %q comes from the environment and cannot be
-   renamed").
+1. A rename is offered on every instance. One with no authored entry authors
+   the entry under the new name, pinning the base it was resolving against; for
+   an instance a UI credential created that moves the whole instance, and for
+   one the environment supplies the old row stays (amended 2026-09-16,
+   registry spec §5.1).
 2. Validate with `registry.ValidInstanceName`; refuse `Conflict` when
    `c.reg.Get().Instance(newName)` exists (authored or implicit) or
    `l.Providers[newName]` exists.
@@ -349,10 +351,12 @@ Go:
   leaves the previous file intact.
 - `cmd/evener-hub/app_instances_test.go`: rename re-keys providers.toml,
   repoints the default, moves the stored key and the OAuth record; rename
-  of an implicit instance is refused; rename onto a taken name is
-  `Conflict`; `apiKeyEnv`/`credentialHeader` set and clear; `clearProtocol`
-  and `clearSurface`; the entry carries the authored `apiKeyEnv` and
-  `credentialHeader`; a credential header without `$` is refused.
+  of an instance with no authored entry authors one under the new name and
+  leaves an environment-supplied row in place (amended 2026-09-16); rename
+  onto a taken name is `Conflict`; `apiKeyEnv`/`credentialHeader` set and
+  clear; `clearProtocol` and `clearSurface`; the entry carries the authored
+  `apiKeyEnv` and `credentialHeader`; a credential header without `$` is
+  refused.
 - `internal/plugins/marketplaces_test.go`: edit rename moves both
   directories and re-keys the registry and install paths; re-source swaps
   the staged clone and leaves installed plugins untouched; rename plus

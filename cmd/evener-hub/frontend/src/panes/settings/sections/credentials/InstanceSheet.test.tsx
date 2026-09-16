@@ -1576,6 +1576,42 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
+  // Renaming an instance that had no authored entry authors one under the new
+  // name, so the row the store's listing holds at that name is an authored one.
+  // Implicit becoming authored is therefore the rename's own outcome, not a
+  // different instance wearing the new name: reading the changed flag as a
+  // difference rejects the store's confirmation and leaves the sheet on a row
+  // that no longer exists.
+  test("a superseded rename of an instance with no authored entry is confirmed as authored", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "openai-codex", newName: "openai-codex-work" });
+
+    // What the hub authors: the entry under the new name, pinning the curated
+    // id it was inheriting from, so the listing's row is authored and carries
+    // that base.
+    const renamed = { ...codex, name: "openai-codex-work", base: "openai-codex", implicit: false };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("openai-codex-work");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-codex-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
   // The same rename answered by the store instead of superseded: the edit
   // response applies, so the sheet steers on its own request and the section
   // re-selects the new name. The pre-save entry is the wire shape again, with
