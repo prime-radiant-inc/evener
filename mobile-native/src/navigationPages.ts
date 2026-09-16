@@ -132,6 +132,9 @@ export class NavigationPages<T> {
 	 * the store is idle, or hand the re-read to the owner. */
 	private reread() {
 		this.publish({ stale: true });
+		this.scheduleReread();
+	}
+	private scheduleReread() {
 		if (this.owner) this.owner();
 		else this.rereads.request();
 	}
@@ -169,8 +172,11 @@ export class NavigationPages<T> {
 			return;
 		// A read in flight sees this notification through its revision checks
 		// and retries itself once, so only an idle store starts a re-read. That
-		// bounds a hub that notifies on every read to one retry per read.
-		if (!this.state.loading) this.reread();
+		// bounds a hub that notifies on every read to one retry per read. The
+		// rows are stale either way, so a cancelled read still leaves the owed
+		// re-read behind.
+		this.publish({ stale: true });
+		if (!this.state.loading) this.scheduleReread();
 	}
 	private matchesTarget(t: NavigationInvalidationTarget) {
 		const p = this.params;
@@ -205,13 +211,16 @@ export class NavigationPages<T> {
 		this.request++;
 		this.paused = true;
 		this.publish({ loading: false });
-		if (this.state.stale) this.rereads.request();
+		if (this.state.stale) this.scheduleReread();
 	}
 	resume() {
 		this.paused = false;
 		this.rereads.drain();
 	}
+	/** An explicit read means the owner is active again; its result stands
+	 * in for any re-read owed while paused. */
 	refresh() {
+		this.paused = false;
 		return this.load(true);
 	}
 	more() {
@@ -323,6 +332,7 @@ export class NavigationPages<T> {
 				this.offset = 0;
 				this.version = null;
 				this.mutationFloor = 0;
+				this.rereads.settle();
 				this.publish({
 					loaded: true,
 					rows: [],
@@ -339,6 +349,7 @@ export class NavigationPages<T> {
 				this.version = decoded.version;
 				if (decoded.version.revision >= this.mutationFloor)
 					this.mutationFloor = 0;
+				this.rereads.settle();
 				this.publish({
 					loaded: true,
 					loading: false,
@@ -401,6 +412,7 @@ export class NavigationPages<T> {
 			this.version = decoded.version;
 			if (decoded.version.revision >= this.mutationFloor)
 				this.mutationFloor = 0;
+			this.rereads.settle();
 			this.publish({
 				loaded: true,
 				truncated: data.truncated === true || (!reset && this.state.truncated),

@@ -1,6 +1,7 @@
 /** Run one async job at a time on request. Requests made while a run is in
  * flight, or while `idle()` says the owner is busy, coalesce into a single
- * trailing run; `drain()` lets the owner retry once its state settles. */
+ * trailing run; `drain()` lets the owner retry once its state settles, and
+ * `settle()` drops a pending request the owner has satisfied another way. */
 export function singleFlight(
 	run: () => Promise<unknown>,
 	idle: () => boolean = () => true,
@@ -21,6 +22,9 @@ export function singleFlight(
 		request() {
 			requested = true;
 			drain();
+		},
+		settle() {
+			requested = false;
 		},
 		get running() {
 			return running;

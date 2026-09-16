@@ -438,6 +438,64 @@ it("holds an owed re-read while cancelled and runs it on resume", async () => {
 	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
 });
+it("keeps an owed re-read when the read it interrupted is cancelled", async () => {
+	// Round 2 (#1462): the notification landed mid-read, so the store left it
+	// to that read's checks; cancel() then dropped the read and the owed
+	// re-read with it.
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	const next = pages.refresh();
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	pages.cancel();
+	requests[1].resolve(response(["a"], 0, 1));
+	await next;
+	await tick();
+	expect(requests).toHaveLength(2);
+	pages.resume();
+	expect(requests).toHaveLength(3);
+	expect(requests[2].params.offset).toBe(0);
+	requests[2].resolve(response(["b"], 0, 2));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+	expect(requests).toHaveLength(3);
+});
+it("an explicit refresh resumes a cancelled store and satisfies the owed re-read", async () => {
+	// A revealing list refreshes on focus instead of calling resume(); that
+	// read must both lift the pause and stand in for the re-read owed.
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	pages.cancel();
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	expect(requests).toHaveLength(1);
+	const refocus = pages.refresh();
+	requests[1].resolve(response(["b"], 0, 2));
+	await refocus;
+	await tick();
+	expect(requests).toHaveLength(2);
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+	});
+	expect(requests).toHaveLength(3);
+	requests[2].resolve(response(["c"], 0, 3));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
+});
 it("loads more on a stale idle page by reading from the first page", async () => {
 	const { requests, pages, invalidate } = boundary();
 	pages.watch();

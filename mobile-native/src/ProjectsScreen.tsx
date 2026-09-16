@@ -261,6 +261,7 @@ export function PageList<T>({
 	useFocusEffect(
 		useCallback(() => {
 			let active = true;
+			if (ready) pages.resume();
 			if (ready && revealRef) {
 				setRevealError(null);
 				setRevealed(null);
@@ -285,10 +286,7 @@ export function PageList<T>({
 									: "Could not locate this session.",
 							);
 					});
-			} else if (ready) {
-				pages.resume();
-				if (!pages.getSnapshot().loaded) void pages.refresh();
-			}
+			} else if (ready && !pages.getSnapshot().loaded) void pages.refresh();
 			return () => {
 				active = false;
 				if (scrollTimer.current) clearTimeout(scrollTimer.current);
