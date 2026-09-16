@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -94,7 +95,25 @@ function noteResponse(params: { clientMutationId: string; note?: string }, note 
   };
 }
 
+function holdSessionPane(...refs: string[]) {
+  // The mounted panel implies its session pane in production; holding the
+  // refs keeps acknowledged drafts from the pane-store eviction sweep a save
+  // acknowledgment schedules. Sibling sessions sit in secondary panes.
+  act(() => {
+    workspaceStore.setState({
+      panes: refs.map((ref, index) => ({
+        id: `p_notes_${index}`,
+        type: "session",
+        params: { ref },
+        slot: index === 0 ? "main" : "secondary",
+      })),
+      focusedPaneId: "p_notes_0",
+    });
+  });
+}
+
 function openPanel(model: ThreadModel) {
+  holdSessionPane(model.ref);
   render(<NotesPanelBody sessionRef={model.ref} model={model} />);
 }
 
@@ -305,6 +324,7 @@ test("a definite refusal stays visible and keeps its draft across close and reop
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetPendingUrlRemovals();
   resetToastStoreForTests();
 });
@@ -1297,6 +1317,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   });
   void threadsStore.getState().ensureThread(modelA.ref);
   void threadsStore.getState().ensureThread(modelB.ref);
+  holdSessionPane(modelA.ref, modelB.ref);
   const { rerender } = render(
     <>
       <NotesPanelBody sessionRef={modelA.ref} model={modelA} />
@@ -1419,6 +1440,7 @@ test("an earlier success still reports Saved when a sibling fails later in the d
     ]),
   });
   void threadsStore.getState().ensureThread(modelA.ref);
+  holdSessionPane(modelA.ref, modelB.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
   await user.click(editor());
   await user.clear(editor());
