@@ -307,6 +307,27 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
+  // An instance that exists without a credential is not the user's to remove,
+  // however its store layer looks: the reload re-derives it and the row comes
+  // back wearing the badge this affordance just said it did not have, with the
+  // key gone. Clear is the action for that key.
+  test("a keyless-capable instance with a stored key keeps the badge and no Remove", () => {
+    renderSheet(
+      instance({
+        name: "ollama",
+        providerId: "ollama",
+        auth: "optional-bearer",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        credentialRequired: false,
+      }),
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+  });
+
   // The danger zone is Clear + Remove under a divider; an implicit instance
   // with nothing stored offers neither, so the divider must go too rather
   // than trailing an empty section.
