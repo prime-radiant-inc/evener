@@ -6,7 +6,14 @@
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import { hasErrorText, parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
+import {
+  hasErrorText,
+  parseArgs,
+  parseJSONObject,
+  scopedDisclosureId,
+  stableDelegateDisplayStatus,
+  str,
+} from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -17,12 +24,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";

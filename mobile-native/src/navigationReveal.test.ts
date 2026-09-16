@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/testing";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 import { locateSession, revealNavigationRow } from "./navigationReveal";

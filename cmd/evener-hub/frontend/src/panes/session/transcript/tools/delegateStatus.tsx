@@ -10,11 +10,10 @@
 // or malformed JSON), it falls back to HeadClippedOutputBody — the previous
 // behavior — so the renderer never regresses for non-delegate targets.
 
-import { formatClockTime, formatElapsed, splitMandate } from "@evener/appwire-client";
+import { formatClockTime, formatElapsed, scopedDisclosureId, splitMandate } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { disclosureScopeForSession, useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chip, type ChipTone, CopyButton, Disclosure, Markdown } from "../../../../widgets";
-import { scopedDisclosureId } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
