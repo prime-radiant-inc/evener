@@ -195,9 +195,16 @@ export function Composer({ ref, focused }: ComposerProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const tasksPanelRef = useRef<TasksPanelHandle>(null);
-  // Set by textEditor.write() below; consumed (and cleared) by the
-  // cursor-restore layout effect once `text`'s new value has committed.
+  // Set by scheduleCursorRestore below; consumed (and cleared) by the
+  // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
+  const [cursorRestoreSeq, setCursorRestoreSeq] = useState(0);
+  // Parks the caret a programmatic edit wants and forces a commit, so the
+  // layout effect below applies it even when the edit left `text` unchanged.
+  const scheduleCursorRestore = useCallback((cursor: number): void => {
+    cursorToRestoreRef.current = cursor;
+    setCursorRestoreSeq((seq) => seq + 1);
+  }, []);
   // Set by getComposerText() below, the moment QueueStrip's own drain
   // affordance actually reads this composer's text/attachments; consumed by
   // handleDrainSuccess to decide whether a strip-triggered drain should
@@ -495,7 +502,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       if (source === "submission") updateText(nextText);
       else editText(nextText);
       if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
-      cursorToRestoreRef.current = cursor;
+      scheduleCursorRestore(cursor);
     },
   };
   const attachments = useAttachments(textEditor);
@@ -676,13 +683,14 @@ export function Composer({ ref, focused }: ComposerProps) {
     updateSkillNames(recovered.skillNames);
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
-    cursorToRestoreRef.current = recovered.text.length;
+    scheduleCursorRestore(recovered.text.length);
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
     freshRecoveryRef,
     recoveryEntries,
     ref,
+    scheduleCursorRestore,
     setActiveRecoveryId,
     updateText,
     updateSkillNames,
@@ -726,14 +734,14 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (wasPending && !askPending) setReadyAnnouncement("Message composer ready.");
   }, [askPending]);
 
-  // Runs after `text`'s new value has committed to the DOM (via React's own
-  // controlled-value reconciliation) - only then is it safe to move the
-  // native cursor without React clobbering it. Keyed on `text` so it fires
-  // once per actual text change, not on every unrelated re-render (e.g. a
-  // live model update); a no-op whenever textEditor.write() wasn't the
-  // cause of this particular change (ordinary typing has no ref to
-  // restore).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: text is a deliberate trigger-only dep - the effect body only reads cursorToRestoreRef, but must still re-run on every text change to pick up a write() that just landed, same idiom as widgets/textarea's own autoGrow effect
+  // Runs in the commit that carries a scheduled edit, after any text it
+  // changed has reached the DOM through React's own controlled-value
+  // reconciliation - only then is it safe to move the native cursor without
+  // React clobbering it. Keyed on the schedule, not on `text`: ordinary typing
+  // schedules nothing and never runs this, and an edit that left the text as
+  // it was (an empty recovered draft activated into an empty composer) still
+  // lands its caret in this commit instead of parking it for the next edit.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cursorRestoreSeq is a deliberate trigger-only dep - the effect body reads the ref the schedule filled
   useLayoutEffect(() => {
     const cursor = cursorToRestoreRef.current;
     if (cursor === null) return;
@@ -743,7 +751,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       el.selectionStart = cursor;
       el.selectionEnd = cursor;
     }
-  }, [text]);
+  }, [cursorRestoreSeq]);
 
   // SelectionQuote's "Quote in reply" seam (quoteInsert.ts): a sibling
   // component under the transcript mounts and writes here via
@@ -1097,7 +1105,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     editText(merged.text);
     editSkillNames(merged.skillNames);
     attachments.replaceWithSettled(merged.attachments);
-    cursorToRestoreRef.current = merged.text.length;
+    scheduleCursorRestore(merged.text.length);
     textareaRef.current?.focus();
 
     const ownerId = currentRecoveryId ?? record.clientMutationId;
