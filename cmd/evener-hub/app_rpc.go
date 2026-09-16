@@ -18,59 +18,92 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/rendezvous"
 )
 
+// newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
+// wires a roster (main.go). Without one there is no local source at all, so a
+// lookup of a local ref fails as "source not found" rather than finding a
+// source that lists nothing.
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
-	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		if cfg.Roster != nil {
-			live := cfg.Roster.List()
-			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
-			for _, item := range live {
-				if item.Crashed {
-					continue
-				}
-				entry := appsource.LocalDaemonEntry{
-					Entry:         item.Entry,
-					SessionID:     item.SessionID,
-					Status:        item.Status,
-					PendingAsk:    item.PendingAsk,
-					RunningJobs:   item.RunningJobs,
-					CompletedJobs: item.CompletedJobs,
-				}
-				entries = append(entries, entry)
-				// In-process descendants are addressed as their own AppWire
-				// threads, but are served by their owner's daemon endpoint.
-				for _, childID := range item.RunningSubagentIDs {
-					child := entry
-					child.OwnerSessionID = entry.SessionID
-					child.SessionID = childID
-					// The child's own projected status when the daemon carries
-					// it — inheriting the parent's status would render a
-					// settled delegate as working (or vice versa). "" (old
-					// daemon) keeps the inherited status, the pre-states
-					// behavior.
-					if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-						child.Status = childState
-					}
-					child.ReadOnlyAlias = true
-					entries = append(entries, child)
-				}
+	roster := cfg.Roster
+	if roster != nil {
+		local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+			return localDaemonEntriesFromRoster(roster.List())
+		}, http.DefaultClient)
+		// A daemon that leaves for good is announced by the roster, the one place
+		// that sees its process or its file go; the relay tells that daemon's
+		// subscribers to re-read.
+		// The roster's resolved session id is passed along: a legacy entry names
+		// no session of its own, and its relay session is keyed by the resolved one.
+		roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+		registry.Add(local)
+	}
+	if len(cfg.RemoteHosts) > 0 {
+		if cfg.RemoteHostClient == nil {
+			names := make([]string, 0, len(cfg.RemoteHosts))
+			for _, host := range cfg.RemoteHosts {
+				names = append(names, host.Name)
 			}
-			return entries
+			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
+		} else {
+			for _, host := range cfg.RemoteHosts {
+				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
+				source.SetHostFacts(cfg.RemoteHostFacts)
+				source.SetHostOnline(func() bool {
+					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
+				})
+				registry.Add(source)
+			}
 		}
-		if cfg.RunDir == "" {
-			return nil
-		}
-		raw, _ := rendezvous.List(cfg.RunDir)
-		entries := make([]appsource.LocalDaemonEntry, 0, len(raw))
-		for _, entry := range raw {
-			entries = append(entries, appsource.LocalDaemonEntry{Entry: entry})
-		}
-		return entries
-	}, http.DefaultClient))
+	}
 	return registry
+}
+
+// localDaemonEntriesFromRoster is the local source's view of a roster's live
+// entries: crashed ones skipped, in-process descendants addressed as their own
+// AppWire threads served by their owner's endpoint.
+func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDaemonEntry {
+	entries := make([]appsource.LocalDaemonEntry, 0, len(live))
+	for _, item := range live {
+		if item.Crashed {
+			continue
+		}
+		entry := appsource.LocalDaemonEntry{
+			Entry:         item.Entry,
+			SessionID:     item.SessionID,
+			Status:        item.Status,
+			PendingAsk:    item.PendingAsk,
+			RunningJobs:   item.RunningJobs,
+			CompletedJobs: item.CompletedJobs,
+			Watches:       item.Watches,
+		}
+		entries = append(entries, entry)
+		// In-process descendants are addressed as their own AppWire
+		// threads, but are served by their owner's daemon endpoint.
+		for _, childID := range item.RunningSubagentIDs {
+			child := entry
+			child.OwnerSessionID = entry.SessionID
+			child.SessionID = childID
+			// The alias carries the child's OWN watches, sampled by
+			// the prober into ChildWatches. Inheriting the root
+			// entry's Watches would put the root's rows on the
+			// child row (and, for a read-only alias, they were
+			// suppressed anyway), losing the child's own.
+			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
+			// The child's own projected status when the daemon carries
+			// it — inheriting the parent's status would render a
+			// settled delegate as working (or vice versa). "" (old
+			// daemon) keeps the inherited status, the pre-states
+			// behavior.
+			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
+				child.Status = childState
+			}
+			child.ReadOnlyAlias = true
+			entries = append(entries, child)
+		}
+	}
+	return entries
 }
 
 var (
@@ -88,7 +121,111 @@ var (
 )
 
 type threadReadRelayPolicy interface {
+	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
+	// starts a relay. A Subscribe read still overrides it.
 	RelayOnThreadRead() bool
+}
+
+// threadRelayCapableSource reports whether a source can serve thread relays at
+// all. A source that cannot is never relayed, even for a Subscribe read:
+// startRelay calls SubscribeThread, so relaying it would fail the read instead
+// of returning the snapshot. Sources that implement only RelayOnThreadRead keep
+// the Subscribe-overrides-plain-read policy.
+type threadRelayCapableSource interface {
+	SupportsThreadRelay() bool
+}
+
+func sourceSupportsThreadRelay(source appsource.Source) bool {
+	if capable, ok := source.(threadRelayCapableSource); ok {
+		return capable.SupportsThreadRelay()
+	}
+	return true
+}
+
+// threadReadLocalImagePolicy reports whether a source's threads describe files
+// on this hub's own filesystem. A remote hub source serves its transcript but
+// not its filesystem, so its CWDs and tool-argument paths name another machine.
+type threadReadLocalImagePolicy interface {
+	EnrichThreadFileBackedImages() bool
+}
+
+// enrichSourcedThreadImages stamps fetchable image URLs and, for a source whose
+// files live on this hub, adds file-backed output-image descriptors by reading
+// the session's working directory.
+//
+// A source whose images are not local is neither stamped nor enriched: the
+// thread is returned with its remote-supplied image routes neutralized. Running
+// the local file pass on a remote CWD would probe unrelated controller-local
+// paths and could attach descriptors for files the thread never wrote, and
+// stampThreadImageURLs mints this hub's sha-addressed /s/<session>/images/<sha>
+// route, which handleSessionImage resolves against this hub's own Past index. A
+// remote session is never in it, so a remote-supplied route would 404 (or, on a
+// session-id collision, serve another session's bytes) once the browser
+// requested it from this hub. Neutralizing it leaves the descriptor's SHA for
+// the controller-side proxy that will resolve it, which is not yet part of this
+// read path.
+func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) appwire.Thread {
+	if !threadImagesLocal(source) {
+		return stripRemoteImageRoutes(thread)
+	}
+	return enrichLocalSourcedThreadImages(thread)
+}
+
+// threadImagesLocal reports whether a source's threads describe files on this hub's
+// own filesystem. A source that does not implement the policy serves this hub's own
+// sessions, so its threads are local.
+func threadImagesLocal(source appsource.Source) bool {
+	if policy, ok := source.(threadReadLocalImagePolicy); ok {
+		return policy.EnrichThreadFileBackedImages()
+	}
+	return true
+}
+
+// enrichLocalSourcedThreadImages runs the two image passes that need this hub's own
+// view of the thread: the sha-addressed route stamp, which is minted from the
+// session id, and the file-backed pass, which reads the thread's CWD here.
+func enrichLocalSourcedThreadImages(thread appwire.Thread) appwire.Thread {
+	thread = stampThreadImageURLs(thread)
+	return enrichThreadFileBackedOutputImages(thread)
+}
+
+// stripRemoteImageRoutes removes hub-relative image routes from a thread whose
+// images live on another hub. A relative route is meaningful only against the
+// origin that minted it: left on a remote thread, it would make the browser
+// request this hub's own route for a session this hub does not have. The remote
+// hub mints both /s/<session>/images/<sha> (stamped by stampThreadImageURLs) and
+// /doc/image?session=<session>&path=<rel> (attached to file-backed output images
+// by outputImagesForToolCall/resolveOutputImageFile), so any root-relative path
+// must be neutralized, not just the /s/... one. External URLs and data: URLs are
+// untouched, because the browser resolves them against their own origin.
+func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
+	for turnIndex := range thread.Turns {
+		items := thread.Turns[turnIndex].Items
+		for itemIndex := range items {
+			for imageIndex := range items[itemIndex].Images {
+				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) {
+					items[itemIndex].Images[imageIndex].URL = ""
+				}
+			}
+			for imageIndex := range items[itemIndex].OutputImages {
+				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
+					items[itemIndex].OutputImages[imageIndex].URL = ""
+				}
+			}
+		}
+	}
+	return thread
+}
+
+// isHubRelativeImageRoute reports whether raw is an origin-relative image route
+// of the form a hub mints for itself, e.g. /s/<session>/images/<sha> or
+// /doc/image?session=<session>&path=<rel>. A leading slash makes a URL resolve
+// against the serving origin, so it is meaningful only on the hub that minted
+// it. A network-path reference (//host/...) and scheme URLs (http:, https:,
+// data:, ...) name their own origin and are left untouched.
+func isHubRelativeImageRoute(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "//")
 }
 
 func relayOnThreadRead(source appsource.Source) bool {
@@ -137,16 +274,25 @@ func listItemTurns(
 		logf("thread turns metadata enrichment unavailable: %v", metaErr)
 	}
 	packed, packErr := packThreadTurnsItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		thread := appwire.Thread{Turns: response.Data}
 		if metaErr == nil {
-			thread := appwire.Thread{
-				ID:        meta.Thread.ID,
-				SessionID: meta.Thread.SessionID,
-				CWD:       meta.Thread.CWD,
-				Turns:     response.Data,
-			}
-			thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(thread))
-			response.Data = thread.Turns
+			thread.ID = meta.Thread.ID
+			thread.SessionID = meta.Thread.SessionID
+			thread.CWD = meta.Thread.CWD
 		}
+		// Image handling is independent of the optional metadata read. A remote
+		// source's root-relative routes are neutralized whether or not that read
+		// succeeded — nothing about neutralizing them needs the session id or CWD it
+		// would have supplied, and a route left on the page resolves against this
+		// hub's origin for a session this hub does not have. The two local passes do
+		// need those, so they run only after a successful read.
+		switch {
+		case !threadImagesLocal(source):
+			thread = stripRemoteImageRoutes(thread)
+		case metaErr == nil:
+			thread = enrichLocalSourcedThreadImages(thread)
+		}
+		response.Data = thread.Turns
 		return response, nil
 	}, itemLimit)
 	if packErr != nil {
@@ -306,7 +452,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				}
 				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
 			}
-			key, _, err := threadRelayTarget(source, params)
+			// A federated source is keyed by the ref it was addressed with
+			// (relayDeliveryTarget), so a read carrying both the stable ref and
+			// the thread's current ID admits under the identity a ref-only
+			// thread/unsubscribe resolves.
+			key, _, err := relayDeliveryTarget(source, params)
 			if err != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
@@ -359,6 +509,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerMiscHandlers(server, cfg, sources)
@@ -366,6 +517,26 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
+	// Component 07a: the remote-admin proxy and its host-tagged config
+	// notification fan-out. Nothing here reads or writes a credential.
+	//
+	// The fan-out is a server-lifetime worker, not a per-connection one: it must
+	// stay subscribed while no browser is connected so that a host's config
+	// change is still relayed when one returns, and it re-subscribes itself
+	// across client reconnects. Its context is the RPC server's own lifetime
+	// handle (round eight), which Shutdown cancels when shutdown begins. Bound
+	// this way the fan-out stops with the server it belongs to: a hub server
+	// recreated in-process no longer leaves the previous server's fan-outs
+	// subscribed forever (one goroutine per remote host, each still holding the
+	// old server's sources and broadcaster, which would also duplicate every
+	// host notification once a replacement subscribed too). Pinned by
+	// TestHostAdminFanOutStopsWhenServerShutdown here and by
+	// TestHostAdminFanOutStopsWhenContextCanceled at the controller level.
+	// The binding only holds if something actually shuts the server down: the
+	// hub's top-level lifecycle drains it unconditionally on the way out
+	// (main.go), not only on the tracing path, and does so before the SSH
+	// manager closes the transports these fan-outs read from.
+	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
 	return server
 }
 
@@ -493,7 +664,7 @@ func registerThreadHandlers(
 				if ok {
 					resp.Thread.Turns = past.Thread.Turns
 					resp.OlderCursor = past.OlderCursor
-					resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+					resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 					annotateThreadProjects([]appwire.Thread{resp.Thread})
 					usedPastItemPage = true
 				}
@@ -513,7 +684,7 @@ func registerThreadHandlers(
 					// A live daemon's turns carry sha-addressed tool-result descriptors
 					// with no route on them (the daemon does not serve the bytes; this
 					// hub does), so route stamping stays inside the final packer.
-					response.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(response.Thread))
+					response.Thread = enrichSourcedThreadImages(source, response.Thread)
 					annotateThreadProjects([]appwire.Thread{response.Thread})
 					return response, nil
 				}, itemLimit)
@@ -528,7 +699,7 @@ func registerThreadHandlers(
 			// no route on them (the daemon does not serve the bytes; this hub does),
 			// so the route is stamped here before the file-backed pass adds any
 			// /doc/image descriptors of its own.
-			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
@@ -543,7 +714,10 @@ func registerThreadHandlers(
 			if !relays.captureThreadRead(ctx, params, read) {
 				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 			}
-		} else if params.Subscribe || relayOnThreadRead(source) {
+		} else if sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
+			// A source with no relay fan-out is never relayed, even for a
+			// Subscribe read: startRelay calls SubscribeThread, so relaying one
+			// would fail the read. Subscribing callers still get the snapshot.
 			if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
 			}
@@ -553,13 +727,23 @@ func registerThreadHandlers(
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
-	// uses (threadRelayTarget), so the removal lands on the exact registry
-	// entry Subscribe created. Resolution deliberately uses the plain registry
-	// lookup without session activation because an unsubscribe must not
-	// start a session just to stop delivering to it. When no source resolves,
-	// the ref's own namespace (parsed from the ref itself) is the best key
-	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
-	// costs only a subscription the connection-close cleanup reaps anyway.
+	// uses (relayDeliveryTarget), so the removal lands on the exact registry
+	// entry Subscribe created. That helper is deliberately NOT
+	// threadRelayTarget: for a federated source (anything but the local
+	// daemon) the ref's suffix wins over the caller's bare threadId, because
+	// the ref is the stable identity that survives an identity replacement
+	// while the thread's current ID moves. Keying such a read by the threadId
+	// registered the relay under "host:<currentID>" while a ref-addressed
+	// unsubscribe resolved "host:<stableRef>", so the downstream entry — and
+	// the source-side subscription behind it — was never dropped. Both ends
+	// must keep resolving through relayDeliveryTarget; re-deriving either from
+	// threadRelayTarget reintroduces that mismatch. Resolution deliberately
+	// uses the plain registry lookup without session activation because an
+	// unsubscribe must not start a session just to stop delivering to it. When
+	// no source resolves, the ref's own namespace (parsed from the ref itself)
+	// is the best key available; Unsubscribe is conn-scoped and idempotent, so
+	// a missed key costs only a subscription the connection-close cleanup
+	// reaps anyway.
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 		if err != nil {
@@ -573,7 +757,7 @@ func registerThreadHandlers(
 			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
-		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+		relayKey, _, keyErr := relayDeliveryTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
@@ -604,12 +788,12 @@ func registerThreadHandlers(
 					// File-backed output-image enrichment is intentionally page-local
 					// here: args can only be correlated from command-call items present
 					// in this returned page (or on the completed item itself).
-					thread := enrichThreadFileBackedOutputImages(stampThreadImageURLs(appwire.Thread{
+					thread := enrichSourcedThreadImages(source, appwire.Thread{
 						ID:        meta.Thread.ID,
 						SessionID: meta.Thread.SessionID,
 						CWD:       meta.Thread.CWD,
 						Turns:     live.Data,
-					}))
+					})
 					live.Data = thread.Turns
 				}
 				return live, nil
@@ -657,6 +841,10 @@ func registerThreadHandlers(
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
+		// A remote source returns the remote hub's origin-relative image routes,
+		// which only resolve against the remote origin; neutralization must run
+		// here exactly as it does on the thread/read path.
+		resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
@@ -719,6 +907,17 @@ func registerThreadHandlers(
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			}
+			resolved = false
+			return attemptStart()
+		}
+		if isLifecycleRetiringError(err) {
+			// The owning daemon refused the mutation because it is retiring and
+			// still owns the session. Resolve the race under existing recovery
+			// authority — admission fences, ownership alias locks, confirmed exit,
+			// one resume — then retry the original request verbatim.
+			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
+				return appwire.TurnStartResponse{}, resumeErr
 			}
 			resolved = false
 			return attemptStart()
@@ -914,14 +1113,14 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -931,21 +1130,21 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeySet(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeyClear(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.CredentialJsonSet(params)
 		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -955,7 +1154,7 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authDevicePoll(authController, ctx, params)
 		if err == nil && resp.State == "authorized" {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -1007,6 +1206,21 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.SetModelDisabled(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		resp, err := instancesController.RefreshModels(ctx, params)
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return resp, nil
 	})
 }
 
@@ -1254,16 +1468,27 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.Command
 }
 
 // notifyAuthUpdated broadcasts a evener/auth/updated notification to all connected clients.
-func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) {
+// originClientId is the originating client's own id, echoed back from the
+// mutation that produced this broadcast; empty when the caller sent none.
+func notifyAuthUpdated(server *appserver.Server, provider, activeSource, originClientId string) {
 	// Still map[string]string, not appwire.EvenerAuthUpdatedParams (kcb5):
 	// provider/activeSource (from AuthStatus) are legitimately empty when no
 	// provider is active, but this map always emits both keys anyway; both
 	// fields are tagged `omitempty` on the struct, so a typed literal would
 	// drop them whenever blank. Not provably byte-identical; left as a map.
-	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, map[string]string{
+	payload := map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
-	})
+	}
+	// The originator id rides along only when the caller sent one. An empty
+	// value (the TUI, an older web build) must leave the payload exactly as it
+	// was before the field existed: consumers with no id on the notification
+	// keep their provider-plus-timing fallback, and one that would see an
+	// empty-string id would attribute nothing.
+	if originClientId != "" {
+		payload["originClientId"] = originClientId
+	}
+	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, payload)
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all

@@ -201,6 +201,23 @@ type hubModel struct {
 	// navigating away resets it.
 	sessionQueue    []string
 	sessionQueueRef string
+	// queueRevisionStale: a force-steer the daemon queued but could not steer
+	// (a partial drain) moved the daemon's queue revision, and this model's
+	// copy is behind until the wire's queueChanged replaces it. No drain is
+	// offered in between: it would carry the stale revision and be refused as
+	// "queue revision changed".
+	queueRevisionStale bool
+	// queueRevisionAtDrain is the revision the model held when that optimistic
+	// row was appended; only a queue state carrying a newer revision (the
+	// daemon's move, arriving as queueChanged or a fresh thread/read) clears
+	// the stale flag. An older snapshot keeps the gate closed.
+	queueRevisionAtDrain uint64
+	// sessionQueueLatest is the newest queue state the wire has shown for
+	// sessionQueueRef, by revision. The revision only moves forward within a
+	// daemon generation, and a drain is refused as a conflict when it names
+	// an older one: a status-refresh read cut before a queueChanged the model
+	// already folded must not regress it (see applyQueueRefresh).
+	sessionQueueLatest appwire.QueueState
 
 	// modelRetry holds the in-flight model-call retry the daemon reported on
 	// evener/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral

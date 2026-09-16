@@ -4,7 +4,7 @@
 // the cheatsheet.toggle action's handler.
 //
 // The character-key trigger ("?", the default map's one CONDITIONAL entry -
-// keybindings/defaults.ts's CHARACTER_KEY_TRIGGER_BINDING_ID) is live only
+// keybindingDefaults.ts's CHARACTER_KEY_TRIGGER_BINDING_ID) is live only
 // while the characterKeyTriggers pref (stores/prefs.ts, the WCAG 2.1.4
 // turn-off, default ON) is on. reconcileCharacterKeyTrigger enforces that as
 // an invariant and is subscribed to BOTH sources that can break it:
@@ -23,13 +23,19 @@
 // registry mutation is complete, so the reconcile always sees the final
 // shape.
 
+import {
+  ACTIONS,
+  actionDisplayLabel,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  chordsOverlap,
+  DEFAULT_BINDINGS,
+  GLOBAL_SCOPE,
+  parseChord,
+  type ValidationWarning,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { ACTIONS } from "../../keybindings/actions";
-import { chordsOverlap, parseChord } from "../../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS } from "../../keybindings/defaults";
-import { GLOBAL_SCOPE, keybindingsRegistry } from "../../keybindings/registry";
-import { actionDisplayLabel, type ValidationWarning } from "../../keybindings/validation";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { keybindingsStore } from "../../stores/keybindings";
 import { prefsStore } from "../../stores/prefs";
 
@@ -107,7 +113,8 @@ export function reconcileCharacterKeyTrigger(): void {
   // optionals as allowed on both sides, so this one predicate covers both
   // the bare "?" and the Shift+"?" forms. Only bindings of OTHER actions
   // count - cheatsheet.toggle's own base chord never overlaps "?".
-  const sequence = typeof input.chord === "string" ? parseChord(input.chord) : input.chord;
+  const sequence =
+    typeof input.chord === "string" ? parseChord(keybindingsRegistry.parseKeybinding, input.chord) : input.chord;
   const scope = input.scope ?? GLOBAL_SCOPE;
   const overlapping = registry.bindings.find(
     (binding) =>

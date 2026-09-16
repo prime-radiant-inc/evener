@@ -79,6 +79,7 @@ type delegateTreeController struct {
 	stop                *delegateStopState
 	stopDriver          *delegateStopDriver
 	evidenceVersion     uint64
+	retirementClaim     *RetirementClaim
 	closing             bool
 	reconcileOrder      []delegateLease
 	runStarts           map[delegateLease]delegatestore.RunTrigger
@@ -215,6 +216,8 @@ type delegateUpdatePlan struct {
 }
 
 type delegateMutationPlans struct {
+	// Reconcile retains admission until its caller applies the returned effects.
+	retirementRelease     func()
 	updates               []delegateUpdatePlan
 	deliveries            []delegateDeliveryPlan
 	attention             []delegateAttentionCleanupPlan

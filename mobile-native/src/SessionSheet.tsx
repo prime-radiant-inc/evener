@@ -10,7 +10,7 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import type { SessionControls } from "./sessionControls";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -37,18 +37,18 @@ export function SessionSheet({
 }) {
 	const colors = useColors();
 	const state = useSyncExternalStore(controls.subscribe, controls.getSnapshot);
-	const [name, setName] = useState(conversation.name ?? "");
+	const [name, setName] = useState(conversation.name);
 	const [editingName, setEditingName] = useState(false);
 	useEffect(() => {
-		if (!editingName) setName(conversation.name ?? "");
+		if (!editingName) setName(conversation.name);
 		else if (name.trim() === conversation.name) setEditingName(false);
 	}, [conversation.name, editingName, name]);
 	const disabled = !ready || state.pending !== null;
 	const modelAction =
 		state.lastAction === "changeModel" ||
 		state.lastAction === "setReasoningEffort";
-	const runtimeStopped = conversation.status === "notLoaded";
-	const restartRequired = conversation.status === "restartRequired";
+	const runtimeStopped = conversation.status.type === "notLoaded";
+	const restartRequired = conversation.status.type === "restartRequired";
 	return (
 		<Modal
 			animationType="slide"
@@ -121,7 +121,7 @@ export function SessionSheet({
 							<Copy muted>
 								{runtimeStopped
 									? "Runtime stopped"
-									: `Status · ${conversation.status}`}
+									: `Status · ${conversation.status.type}`}
 							</Copy>
 						</View>
 						<ErrorMessage message={modelAction ? null : state.error} />

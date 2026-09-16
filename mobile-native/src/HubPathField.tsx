@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
-import {
-  basename,
-  childrenPrefix,
-  isDirEntry,
-  parentOf,
-} from "../../cmd/evener-hub/frontend/src/widgets/pathfield/pathRows";
+import { basename, childrenPrefix, isDirEntry, parentOf } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPaths } from "./hubPaths";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";

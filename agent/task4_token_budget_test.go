@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
@@ -50,7 +51,7 @@ func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 	if req.MaxTokens == nil || *req.MaxTokens <= 0 || *req.MaxTokens > 19_045 {
 		t.Fatalf("prepared MaxTokens = %v, want positive reduced allocation within total cap", req.MaxTokens)
 	}
-	if _, _, _, err := sess.callModelWithFallback(ctx, profile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(ctx, profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 
@@ -118,9 +119,9 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 		PreviousResponseID:             "resp-anchor",
 		FullHistoryInputTokensEstimate: 524_000,
 	}
-	req = sess.applyResponsesContinuationShadowEstimate(req)
+	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
 	t.Logf("continuation request full=%d input=%d max=%d", req.FullHistoryInputTokensEstimate, req.InputTokensEstimate, *req.MaxTokens)
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err == nil {
 		t.Fatal("unsafe continuation delta was accepted")
 	}
 	if requests := adapter.Requests(); len(requests) != 0 {
@@ -154,8 +155,8 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	defer sess.Close()
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
-	req = sess.applyResponsesContinuationShadowEstimate(req)
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
+	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	mu.Lock()
@@ -183,9 +184,40 @@ func TestSessionAnchorTokenBudgetRecoveryClearsPrimaryAllocation(t *testing.T) {
 		PreviousResponseID: "resp-anchor",
 	}
 	fullHistory := []llm.Message{llm.User(strings.Repeat("history ", 100))}
-	fallback := responsesContinuationFullHistoryFallbackRequest(req, fullHistory)
+	fallback := responsesContinuationFullHistoryFallbackRequest(registry.Resolved{Instance: "budget-gw", ModelID: "test"}, req, fullHistory)
 	if fallback.MaxTokens != nil {
 		t.Fatalf("anchor recovery MaxTokens = %d, want cleared before re-budgeting", *fallback.MaxTokens)
+	}
+}
+
+// A fallback rebuild is estimated against the fallback's own row: the request it
+// produces is the one the fallback model dispatches, so billing it by the names
+// it carries would undercount exactly the rows whose adapter replays unsigned
+// thinking while their names say nothing.
+func TestContinuationFallbackRebuildEstimatesAgainstItsResolvedRow(t *testing.T) {
+	res := registry.Resolved{
+		Instance: "thinking-gw", ModelID: "gateway-zz",
+		Protocol: registry.ProtocolOpenAIChat,
+		Caps:     registry.Caps{ThinkingAsText: new(true)},
+	}
+	req := llm.Request{
+		Provider: "thinking-gw", Model: "gateway-zz", HistoryMode: llm.HistoryModeFullHistory,
+		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "the visible answer"},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
+		}}},
+	}
+	got, ok := responsesContinuationModelFallbackRequest(res, req, nil)
+	if !ok {
+		t.Fatal("model fallback rebuild refused a full-history request")
+	}
+	want := llm.EstimateInputTokensForResolved(res, req).Tokens
+	if got.InputTokensEstimate != want || got.FullHistoryInputTokensEstimate != want {
+		t.Fatalf("fallback estimates = input:%d full:%d, want %d from the fallback row",
+			got.InputTokensEstimate, got.FullHistoryInputTokensEstimate, want)
+	}
+	if nameOnly := llm.EstimateInputTokens(req).Tokens; nameOnly >= want {
+		t.Fatalf("control: the name rule must undercount this row (%d vs %d)", nameOnly, want)
 	}
 }
 
@@ -228,7 +260,7 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 		Messages:  []llm.Message{llm.User("task")},
 		MaxTokens: new(131_072),
 	}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := fallbackAdapter.Requests()
@@ -269,7 +301,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
 	sess.contextMgr.RecordInputTokens(42, 0)
 
-	modelResp, usedReq, _, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
+	modelResp, usedReq, _, usedProfile, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
 		Provider: primary.ID(),
 		Model:    primary.Model(),
 		Messages: []llm.Message{llm.User("task")},
@@ -277,7 +309,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
-	sess.recordResponseUsage(modelResp.Response, usedReq)
+	sess.recordResponseUsage(modelResp.Response, usedReq, usedProfile)
 	if got := sess.contextMgr.LastInputTokens(); got != 77 {
 		t.Fatalf("fallback input tokens = %d, want 77", got)
 	}
@@ -321,7 +353,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 		HistoryMode:        llm.HistoryModeResponsesDelta,
 		PreviousResponseID: "resp-anchor",
 	}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err == nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, nil, "", 0); err == nil {
 		t.Fatal("callModelWithFallback succeeded by relabeling delta messages as full history")
 	}
 	if got := len(primaryAdapter.Requests()); got != 1 {
@@ -581,7 +613,7 @@ func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
 	sess.cfg.ModelFallbacks = []string{"budget-observe-fallback/fallback"}
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallbackProfile, nil }
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	mu.Lock()
@@ -626,7 +658,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallbackProfile, nil }
 	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG()}}}}}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: fullHistory, MaxTokens: new(131_072), FullHistoryInputTokensEstimate: 100_000}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, fullHistory, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, fullHistory, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := fallback.Requests()
@@ -638,6 +670,34 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	}
 	if requests[0].InputTokensEstimate != requests[0].FullHistoryInputTokensEstimate {
 		t.Fatalf("fallback input/full estimates = %d/%d, want consistent full-history values", requests[0].InputTokensEstimate, requests[0].FullHistoryInputTokensEstimate)
+	}
+}
+
+// The fallback request belongs to the fallback's row, so it carries that row's
+// identity before anything prices it: the estimator keys on the resolved row
+// together with the names the request carries, and the primary's names would
+// claim a media family (here Google's 1032-token tile rule) the fallback never
+// speaks and the generic fallback (258) does not.
+func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
+	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG(), MediaType: "image/png"}},
+	}}}
+	primary := llm.Request{
+		Provider: "google", Model: "gemini-3-pro", Messages: fullHistory,
+		HistoryMode: llm.HistoryModeResponsesDelta,
+	}
+	fallback := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz"}
+
+	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory)
+	if !ok {
+		t.Fatal("the round retained its full history, so the fallback request is constructible")
+	}
+	if got.Provider != fallback.Instance || got.Model != fallback.ModelID {
+		t.Fatalf("fallback request identity = %s/%s, want %s/%s", got.Provider, got.Model, fallback.Instance, fallback.ModelID)
+	}
+	if got.InputTokensEstimate != 258 || got.FullHistoryInputTokensEstimate != 258 {
+		t.Fatalf("fallback estimates = %d/%d, want 258/258: the fallback's own row carries no vendor facts, so the generic media fallback prices its image",
+			got.InputTokensEstimate, got.FullHistoryInputTokensEstimate)
 	}
 }
 
@@ -662,7 +722,7 @@ func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
 	defer sess.Close()
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("delta")}, MaxTokens: new(1_000), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor", FullHistoryInputTokensEstimate: 18_000}
 	fullHistory := []llm.Message{llm.User("small history")}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, fullHistory, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, fullHistory, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	requests := adapter.Requests()
@@ -713,7 +773,7 @@ func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
 		return laterProfile, nil
 	}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	if got := len(unsafe.Requests()); got != 0 {
@@ -841,7 +901,7 @@ func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
 		return fallbackBProfile, nil
 	}
 	req := llm.Request{Provider: primaryProfile.ID(), Model: primaryProfile.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(131_072)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primaryProfile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	if got := len(fallbackA.Requests()); got != 1 {
@@ -859,4 +919,64 @@ func task4LargePNG() []byte {
 		panic(err)
 	}
 	return out.Bytes()
+}
+
+// The continuation estimates ride the request into admission and pressure
+// accounting, so they must bill the target the request will actually dispatch
+// to. A gateway instance whose resolved row replays unsigned thinking text has no
+// name marker for the name rule to read, so the name-based estimator undercounts
+// every request the session plans; and the planning pass hands over the profile it
+// built the request with, so a model switch landing between planning and dispatch
+// cannot pair one model's request with another model's billing rules.
+func TestSessionContinuationShadowEstimateUsesTheHandedProfile(t *testing.T) {
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "thinking-gw"})
+	requestProfile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
+	resolved := requestProfile.Resolved()
+	resolved.Protocol = registry.ProtocolOpenAIChat
+	resolved.Caps.ThinkingAsText = new(true)
+	requestProfile = requestProfile.WithResolved(resolved)
+
+	// The session's live profile is the row that does NOT replay unsigned
+	// thinking: the estimate has to follow the handed profile, not this one.
+	sessionProfile := testOpenAICompatProfile("thinking-gw", "gateway-zz", 0)
+	liveRow := sessionProfile.Resolved()
+	liveRow.Caps.ThinkingAsText = nil
+	liveRow.Caps.Reasoning = new(false)
+	sessionProfile = sessionProfile.WithResolved(liveRow)
+	sess, err := NewSession(client, sessionProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{NoProjectPrompts: true})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	req := llm.Request{
+		Provider: requestProfile.ID(),
+		Model:    requestProfile.Model(),
+		Messages: []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "the visible answer"},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("unsigned reasoning text ", 40)}},
+		}}},
+	}
+	// Control: the three rules disagree here, so the assertion below can only pass
+	// when the handed row decided. The name rule sees no vendor marker and bills
+	// the thinking part at nothing, and the live row's adapter drops it.
+	resolvedTokens := llm.EstimateInputTokensForResolved(resolved, req).Tokens
+	nameTokens := llm.EstimateInputTokens(req).Tokens
+	liveTokens := llm.EstimateInputTokensForResolved(liveRow, req).Tokens
+	if resolvedTokens <= nameTokens || resolvedTokens == liveTokens {
+		t.Fatalf("control: handed row %d must exceed the name rule %d and the live row %d", resolvedTokens, nameTokens, liveTokens)
+	}
+
+	got := sess.applyResponsesContinuationShadowEstimate(requestProfile, req)
+	if got.InputTokensEstimate != resolvedTokens {
+		t.Fatalf("InputTokensEstimate = %d, want the handed profile's estimate %d (the name rule would bill %d, the live row %d)",
+			got.InputTokensEstimate, resolvedTokens, nameTokens, liveTokens)
+	}
+	// The shadow estimate feeds the full-history reading, so it has to follow the
+	// same handed profile: it is the reading admission compares against.
+	if got.FullHistoryInputTokensEstimate != resolvedTokens {
+		t.Fatalf("FullHistoryInputTokensEstimate = %d, want the handed profile's estimate %d",
+			got.FullHistoryInputTokensEstimate, resolvedTokens)
+	}
 }

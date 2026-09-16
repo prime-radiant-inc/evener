@@ -35,9 +35,8 @@ func authModeOffered(status authStatus, mode string) bool {
 }
 
 // authSourceLabel puts the hub's activeSource into words. It is the TUI's
-// half of the credentials pane's activeSourceLabel (cmd/evener-hub/frontend/
-// src/panes/settings/sections/credentials/credentialLabels.ts) and covers the
-// same seven values; env:<VAR> carries its variable name inside the string,
+// half of the AppWire package's activeSourceLabel (appwire-client/typescript/
+// credentialLabels.ts) and covers the same seven values; env:<VAR> carries its variable name inside the string,
 // so it is matched by prefix rather than by value.
 func authSourceLabel(status authStatus) string {
 	source := strings.TrimSpace(status.ActiveSource)

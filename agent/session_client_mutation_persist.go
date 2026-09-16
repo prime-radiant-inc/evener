@@ -97,21 +97,28 @@ func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]st
 	return ids, nil
 }
 
-// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending execution
-// names. A running turn does not survive the process that ran it: an id left
-// behind by an ungraceful exit has nothing that can ever settle it, and
-// AcceptClientMutationStart's "turn is already active" precondition would
-// then reject every later turn/start for the life of the session. An id a
-// pending execution still names is a different thing — that turn/start is
-// reclaimed and re-run by restore, and it needs its compare-and-commit
-// target intact. NextTurnSequence is deliberately untouched: ids stay
-// monotonic across restarts.
+// forgetRunningTurnNoOneOwns drops an ActiveTurnID that no pending turn/start
+// or turn/queue names. A running turn does not survive the process that ran
+// it: an id left behind by an ungraceful exit has nothing that can ever settle
+// it, and AcceptClientMutationStart's "turn is already active" precondition
+// would then reject every later turn/start for the life of the session. An id
+// a pending user turn still names is a different thing — that turn/start is
+// reclaimed and re-run by restore, and it needs its compare-and-commit target
+// intact. NextTurnSequence is deliberately untouched: ids stay monotonic
+// across restarts.
+//
+// An id a pending STEER names is a steering-carrier claim the process died
+// under (claimSteeringCarrierInput publishes the steer's reserved id before the
+// carrier opens). Nothing re-runs a carrier by its id -- the steer is still
+// pending and the next claim takes it afresh -- so the slot is released like
+// any other orphan (#1342).
 func forgetRunningTurnNoOneOwns(snapshot *clientMutationSnapshot) {
 	if snapshot.ActiveTurnID == "" {
 		return
 	}
 	for _, pending := range snapshot.PendingExecutions {
-		if pending.TurnID == snapshot.ActiveTurnID {
+		if pending.TurnID == snapshot.ActiveTurnID &&
+			(pending.Method == clientMutationMethodQueue || pending.Method == clientMutationMethodStart) {
 			return
 		}
 	}
@@ -401,4 +408,21 @@ func clientMutationSyncUnsupported(err error) bool {
 	return errors.Is(err, syscall.ENOSYS) ||
 		errors.Is(err, syscall.ENOTSUP) ||
 		errors.Is(err, syscall.EINVAL)
+}
+
+// checkRetirementReady rereads this store's committed snapshot from its primary
+// file with the production strict parser under the store serializer, so a
+// concurrent mutation cannot interleave and a corrupt primary is surfaced
+// rather than silently replaced by the in-memory generation. It never writes,
+// repairs or closes the store.
+func (s *clientMutationStore) checkRetirementReady() error {
+	if s == nil || s.stateDir == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := loadClientMutationSnapshotFS(s.fs, s.stateDir, s.sessionID); err != nil {
+		return err
+	}
+	return nil
 }

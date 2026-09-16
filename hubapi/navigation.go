@@ -97,7 +97,17 @@ type NavigationProjectSummary struct {
 	Worktrees       int    `json:"worktrees,omitempty"`
 	IsArchived      bool   `json:"is_archived,omitempty"`
 	Favorite        bool   `json:"favorite,omitempty"`
-	SessionCount    int    `json:"session_count"`
+	// Sources names every source that owns sessions in this project: the
+	// literal "local" for the controller's own sessions and a configured host
+	// name for a remote host's. The field is omitted when every session belongs
+	// to the controller, which is the same default the decision readers apply
+	// to an empty list. A project merged across hosts (the same canonical ID
+	// and path, e.g. a local checkout and a remote host's clone) carries
+	// "local" alongside every host name, so a caller that must name exactly one
+	// owner — a delete, or a per-source favorite/archive decision — can refuse
+	// or address each owner instead of guessing which host a mutation means.
+	Sources      NavigationArray[string] `json:"sources,omitempty"`
+	SessionCount int                     `json:"session_count"`
 }
 
 // NavigationProjectResource is the first bounded page for each project tier.
@@ -163,28 +173,91 @@ type NavigationJobSummary struct {
 	FullCommand string `json:"full_command,omitempty"`
 }
 
+// NavigationWatchCadence is one cadence component of a live watch. Kind is
+// the cadence family ("every", "after", "progress", "output", "events") and
+// Seconds carries the interval for the time-based kinds.
+type NavigationWatchCadence struct {
+	Kind    string  `json:"kind"`
+	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is
+	// expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
+	// Approximate and able to slide later; consumers word it with a "~". Absent
+	// for output and event cadences, which have no schedule.
+	DerivedNextFireAt string `json:"derived_next_fire_at,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; absent (zero) means fire on every matching event. Only the
+	// events kind carries it.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter in the model-facing
+	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+	// absent when the watch filters nothing. Only the events kind carries it.
+	Filter string `json:"filter,omitempty"`
+}
+
+// NavigationWatchSummary is the compact live-watch row shown beneath its
+// owning session. It is purely additive: an older daemon omits the source
+// diagnostics field entirely, so absence is an empty list, never an error.
+//
+// The rows are per session. A receiver watch is visible to two sessions in
+// the hub, but each summary carries only the rows from that session's own
+// diagnostics, so a subtree rollup can never count one watch twice.
+type NavigationWatchSummary struct {
+	ID             string                   `json:"id"`
+	Source         string                   `json:"source"`
+	Target         string                   `json:"target,omitempty"`
+	SendTo         string                   `json:"send_to,omitempty"`
+	Note           string                   `json:"note,omitempty"`
+	Cadence        []NavigationWatchCadence `json:"cadence,omitempty"`
+	OutputMatch    string                   `json:"output_match,omitempty"`
+	Events         []string                 `json:"events,omitempty"`
+	WildcardEvents bool                     `json:"wildcard_events,omitempty"`
+	Deliveries     int                      `json:"deliveries"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Absent (and so
+	// absent-able, like Watches) when the watch has not delivered.
+	DeliveryTimes []string `json:"delivery_times,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	Active        bool     `json:"active"`
+	EndReason     string   `json:"end_reason,omitempty"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref                string                                    `json:"ref"`
-	HostID             string                                    `json:"host_id"`
-	SessionID          string                                    `json:"session_id"`
-	Title              string                                    `json:"title"`
-	Project            string                                    `json:"project"`
-	State              string                                    `json:"state"`
-	Kind               string                                    `json:"kind"`
-	Branch             string                                    `json:"branch,omitempty"`
-	ClusterCount       int                                       `json:"cluster_count,omitempty"`
-	Favorite           bool                                      `json:"favorite,omitempty"`
-	Rename             bool                                      `json:"rename,omitempty"`
-	Live               bool                                      `json:"live"`
-	AskPending         bool                                      `json:"ask_pending,omitempty"`
-	Dormant            bool                                      `json:"dormant,omitempty"`
-	UpdatedAt          *time.Time                                `json:"updated_at,omitempty"`
-	MoreSubagents      int                                       `json:"more_subagents,omitempty"`
-	OmittedDescendants int                                       `json:"omitted_descendants,omitempty"`
-	RunningJobs        NavigationArray[NavigationJobSummary]     `json:"running_jobs,omitempty"`
-	CompletedJobs      NavigationArray[NavigationJobSummary]     `json:"completed_jobs,omitempty"`
-	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
+	Ref                string     `json:"ref"`
+	HostID             string     `json:"host_id"`
+	SessionID          string     `json:"session_id"`
+	Title              string     `json:"title"`
+	Project            string     `json:"project"`
+	State              string     `json:"state"`
+	Kind               string     `json:"kind"`
+	Branch             string     `json:"branch,omitempty"`
+	ClusterCount       int        `json:"cluster_count,omitempty"`
+	Favorite           bool       `json:"favorite,omitempty"`
+	Rename             bool       `json:"rename,omitempty"`
+	Live               bool       `json:"live"`
+	AskPending         bool       `json:"ask_pending,omitempty"`
+	Dormant            bool       `json:"dormant,omitempty"`
+	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
+	MoreSubagents      int        `json:"more_subagents,omitempty"`
+	OmittedDescendants int        `json:"omitted_descendants,omitempty"`
+	// OmittedWatches counts live-watch rows this session's summary does not
+	// carry: rows beyond the projector's per-session cap, rows it could not
+	// represent, and rows the byte-budget fitter shed. It mirrors
+	// OmittedDescendants so the rail and the activity panel can say "+N more"
+	// instead of silently undercounting a session's watches.
+	OmittedWatches int `json:"omitted_watches,omitempty"`
+	// OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
+	// this summary does not carry, how many were still armed. The retained rows
+	// alone cannot answer that once an armed watch falls past the per-session
+	// cap, so the rail and the activity panel read this to report the true
+	// armed total. It is never greater than OmittedWatches.
+	OmittedArmedWatches int                                   `json:"omitted_armed_watches,omitempty"`
+	RunningJobs         NavigationArray[NavigationJobSummary] `json:"running_jobs,omitempty"`
+	CompletedJobs       NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
+	// Watches carries this session's own live watches. Absent on an older
+	// daemon (or a past-index entry) and therefore absent-able for consumers.
+	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
+	Children NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 
 // NavigationMutation remains available to hubapi callers while the shared wire

@@ -1,5 +1,5 @@
-import { decideSteerRoute } from "../../appwire-client/typescript/submitRouting";
-import type { InputItem } from "../../appwire-client/typescript/types.gen";
+import { decideSteerRoute } from "@evener/appwire-client";
+import type { InputItem } from "@evener/appwire-client";
 import type { ConversationService } from "../../mobile/src/services/conversation";
 import type { createConversationStore } from "../../mobile/src/state/conversation";
 
@@ -13,7 +13,7 @@ export async function steerComposer(
   const route = decideSteerRoute({
     hasText: input.some((item) => item.type === "text" && !!item.text?.trim()),
     hasAttachments: input.some((item) => item.type === "image"),
-    queueDepth: conversation.queue.depth,
+    queueDepth: conversation.queue?.depth ?? 0,
   });
   if (route === "none") return;
   await store
@@ -21,6 +21,6 @@ export async function steerComposer(
     .steer(
       service,
       input,
-      route === "drain" ? conversation.queue.revision : undefined,
+      route === "drain" ? conversation.queue?.revision : undefined,
     );
 }

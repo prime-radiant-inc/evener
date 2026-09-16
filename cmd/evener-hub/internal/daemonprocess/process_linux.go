@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -20,7 +21,11 @@ import (
 type linuxProcess struct{ pid, fd int }
 
 // NewController creates the native daemon identity verifier.
-func NewController() Controller { return controller{bind: openLinuxProcess} }
+func NewController() Controller { return controller{bind: nativeBind} }
+
+// nativeBind opens this platform's generation-bound handle on a process.
+var nativeBind = openLinuxProcess
+
 func openLinuxProcess(pid int) (processHandle, error) {
 	fd, err := unix.PidfdOpen(pid, 0)
 	if errors.Is(err, unix.ESRCH) {
@@ -90,11 +95,7 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if err != nil {
 		return identity{}, err
 	}
-	auxv, err := os.ReadFile("/proc/self/auxv")
-	if err != nil {
-		return identity{}, err
-	}
-	hz, err := linuxClockTicks(auxv, int(unsafe.Sizeof(uintptr(0))))
+	hz, err := linuxClockHZ()
 	if err != nil {
 		return identity{}, err
 	}
@@ -107,11 +108,12 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	}
 	// The end of the kernel's reported clock tick is a conservative upper bound
 	// on process start. Do not accept a reused PID within that tick.
-	offset, err := linuxStartOffset(ticks, hz)
+	lower, upper, err := linuxStartOffsetBounds(ticks, hz)
 	if err != nil {
 		return identity{}, err
 	}
-	started := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano())).Add(offset)
+	base := time.Unix(wall.Sec, wall.Nsec).Add(-time.Duration(boot.Nano()))
+	started, startedLower := base.Add(upper), base.Add(lower)
 	argv, err := os.ReadFile(filepath.Join(root, "cmdline"))
 	if err != nil {
 		return identity{}, p.inspectionError(err)
@@ -127,7 +129,7 @@ func (p *linuxProcess) inspect(t Target) (identity, error) {
 	if gone {
 		return identity{}, ErrExited
 	}
-	return identity{generation: fields[19], uid: int(procStat.Uid), startedAt: started, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns}, nil
+	return identity{generation: fields[19], uid: int(procStat.Uid), startedAt: started, startedAtLower: startedLower, argv: strings.Split(strings.TrimSuffix(string(argv), "\x00"), "\x00"), ownsLog: owns}, nil
 }
 func (p *linuxProcess) inspectionError(err error) error {
 	if gone, e := p.exited(); e == nil && gone {
@@ -196,6 +198,16 @@ func linuxOwnsLock(data []byte, pid int, dev, ino uint64) bool {
 	return writable && locked
 }
 
+// linuxClockHZ is the kernel's clock tick rate, read once from this
+// process's auxiliary vector (AT_CLKTCK).
+var linuxClockHZ = sync.OnceValues(func() (uint64, error) {
+	auxv, err := os.ReadFile("/proc/self/auxv")
+	if err != nil {
+		return 0, err
+	}
+	return linuxClockTicks(auxv, int(unsafe.Sizeof(uintptr(0))))
+})
+
 func linuxClockTicks(data []byte, word int) (uint64, error) {
 	for len(data) >= word*2 {
 		var tag, value uint64
@@ -220,13 +232,27 @@ func linuxClockTicks(data []byte, word int) (uint64, error) {
 	return 0, errors.New("process clock frequency unavailable")
 }
 
-func linuxStartOffset(ticks, hz uint64) (time.Duration, error) {
+// linuxStartOffsetBounds is the tick's two bounds, ticks/hz and (ticks+1)/hz:
+// the process started no earlier than the first and no later than the second.
+func linuxStartOffsetBounds(ticks, hz uint64) (lower, upper time.Duration, err error) {
 	if hz == 0 || ticks == math.MaxUint64 {
-		return 0, errors.New("invalid process start ticks or clock frequency")
+		return 0, 0, errors.New("invalid process start ticks or clock frequency")
 	}
+	lower, err = linuxTicksDuration(ticks, hz)
+	if err != nil {
+		return 0, 0, err
+	}
+	upper, err = linuxTicksDuration(ticks+1, hz)
+	if err != nil {
+		return 0, 0, err
+	}
+	return lower, upper, nil
+}
+
+func linuxTicksDuration(ticks, hz uint64) (time.Duration, error) {
 	// Keep the full product until division: even valid durations exceed a
 	// uint64 nanosecond intermediate on long-running hosts at ordinary HZ.
-	high, low := bits.Mul64(ticks+1, uint64(time.Second))
+	high, low := bits.Mul64(ticks, uint64(time.Second))
 	if high >= hz {
 		return 0, errors.New("process start offset exceeds duration range")
 	}

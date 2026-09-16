@@ -16,7 +16,7 @@
 import type {
   Thread,
   ThreadListResponse,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation";
 
 // Attention classification for a roster entry.
@@ -109,6 +109,6 @@ export function createRosterService(
 export type {
   HarnessDescriptor,
   HarnessListResponse,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 // Re-export for convenience so tests and screens can import from one place.
 export type { ConversationClientLike } from "./conversation";

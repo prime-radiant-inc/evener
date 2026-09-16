@@ -1,6 +1,6 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { cwdRelative, FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";

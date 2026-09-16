@@ -16,8 +16,8 @@ import {
   effortLabel,
   effortOptionLevels,
   sessionEffortLevels,
-} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+} from "@evener/appwire-client";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import type { ComposerSetting } from "./ComposerSettings";
 import { ModelPicker } from "./ModelPicker";
 import type { SessionControls } from "./sessionControls";
@@ -130,7 +130,7 @@ export function ComposerSettingsSheet({
                 controls={controls}
                 currentModel={
                   setting === "vision"
-                    ? (conversation.visionModel ?? "")
+                    ? conversation.visionModel
                     : conversation.modelProvider
                 }
                 setting={setting === "vision" ? "vision" : "model"}

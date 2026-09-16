@@ -241,7 +241,7 @@ func TestForceStopRevalidationComparesTimestampInstants(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: 4242, SessionID: "current", WorkspaceRef: "local:stable", StartedAt: time.Date(2026, 9, 7, 12, 0, 0, 0, time.FixedZone("offset", 1200))}
 	writeRendezvous(t, runDir, entry)
-	previous, err := forceStopEntry(runDir, "stable", nil, nil, "")
+	previous, err := forceStopEntry(runDir, "stable", nil, nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestForceStopRejectsDiscoveryChangeDuringLockedRevalidation(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: 4242, SessionID: "current", WorkspaceRef: "local:stable"}
 	writeRendezvous(t, runDir, entry)
-	previous, err := forceStopEntry(runDir, "stable", nil, nil, "")
+	previous, err := forceStopEntry(runDir, "stable", nil, nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +436,7 @@ func TestForceStopSerializesResumeAndDeletionEntryPoints(t *testing.T) {
 					currentID, stableID = stableID, currentID
 				}
 				runDir := t.TempDir()
-				writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
 				process := &waitingForceStopProcess{entered: make(chan struct{}), release: make(chan struct{})}
 				spawned := make(chan struct{}, 1)
 				cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1026,7 +1026,7 @@ func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
 	var events []string
 	var resumes atomic.Int32
 	cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1644,4 +1644,274 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	if got := locks.RecoveryState("B").ResumeSessionID; got != "C" {
 		t.Fatalf("durable current target overwritten: %q", got)
 	}
+}
+
+// TestForceStopExpectedDaemonStaleClearAlias: a resident row rendered before
+// the daemon cleared to a new session must not act on the cleared daemon,
+// even though PID and start instant are unchanged.
+func TestForceStopExpectedDaemonStaleClearAlias(t *testing.T) {
+	runDir := t.TempDir()
+	preClear := rendezvous.Entry{PID: 4301, SessionID: "pre-clear", ThreadID: "pre-clear", WorkspaceRef: "local:pre-clear", StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, preClear)
+	expected := daemonIdentity(preClear)
+	postClear := preClear
+	postClear.SessionID, postClear.ThreadID, postClear.WorkspaceRef = "post-clear", "post-clear", "local:post-clear"
+	if err := rendezvous.Remove(runDir, preClear.PID); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, postClear)
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:post-clear", ExpectedDaemon: &expected}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("stale clear alias err=%v, want conflict", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("stale clear alias reached the process: %v", events)
+	}
+	if state := locks.RecoveryState("post-clear"); state.Stopping != 0 || state.ResumeRequired {
+		t.Fatalf("stale clear alias fenced recovery: %+v", state)
+	}
+}
+
+// TestForceStopExpectedDaemonRejectsPIDReuse: the same PID with a new start
+// instant is a different daemon; a pre-restart identity must not signal it.
+func TestForceStopExpectedDaemonRejectsPIDReuse(t *testing.T) {
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: 4302, SessionID: "reused", ThreadID: "reused", WorkspaceRef: "local:reused", StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, entry)
+	expected := daemonIdentity(entry)
+	restarted := entry
+	restarted.StartedAt = entry.StartedAt.Add(time.Second)
+	if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, restarted)
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:reused", ExpectedDaemon: &expected}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("PID reuse err=%v, want conflict", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("PID reuse identity signaled the restarted process: %v", events)
+	}
+}
+
+// TestForceStopExpectedDaemonRejectsProtocolChange: a ref-only force stop
+// against an older-protocol daemon is supported (see
+// TestHubForceStopConfirmsExitAndPreservesSavedData), but an identity rendered
+// for the current-protocol daemon must not act after the process restarted
+// onto a different protocol.
+func TestForceStopExpectedDaemonRejectsProtocolChange(t *testing.T) {
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: 4303, SessionID: "proto", ThreadID: "proto", WorkspaceRef: "local:proto", StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, entry)
+	expected := daemonIdentity(entry)
+	restarted := entry
+	restarted.Protocol = "evener-appwire-v3"
+	if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, restarted)
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:proto", ExpectedDaemon: &expected}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("protocol change err=%v, want conflict", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("protocol-change identity signaled the replacement: %v", events)
+	}
+}
+
+// TestForceStopExpectedDaemonRevalidationUnderLocks swaps ownership while the
+// stop waits for an alias lock. The refusal is the composite fence: the
+// existing ownership revalidation compares full rendezvous entries (strictly
+// stronger than the identity fingerprint), so any swap the expected-identity
+// recheck would catch is caught there first; what this pins is that no signal
+// is ever delivered across a mid-wait replacement.
+func TestForceStopExpectedDaemonRevalidationUnderLocks(t *testing.T) {
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{PID: 4304, SessionID: "current", ThreadID: "current", WorkspaceRef: "local:stable", StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, entry)
+	expected := daemonIdentity(entry)
+	locks := hubcore.NewResumeLocks()
+	locks.For("stable").Lock()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:current", ExpectedDaemon: &expected}, nil)
+	}()
+	// Wait until the attempt holds the recovery fence (BeginForceStop runs
+	// before the alias locks), so the swap lands while it waits.
+	deadline := time.Now().Add(10 * time.Second)
+	for locks.RecoveryState("current").Stopping == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("force stop did not reach the recovery fence")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	replacement := entry
+	replacement.StartedAt = entry.StartedAt.Add(time.Second)
+	if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, replacement)
+	locks.For("stable").Unlock()
+	if err := <-errCh; err == nil {
+		t.Fatal("force stop signaled across a mid-wait ownership change")
+	}
+	if slices.Contains(events, "kill") {
+		t.Fatalf("replacement was signaled: %v", events)
+	}
+	if state := locks.RecoveryState("current"); state.Stopping != 0 || state.ResumeRequired {
+		t.Fatalf("refused stop left a recovery fence: %+v", state)
+	}
+}
+
+// TestForceStopExpectedDaemonMaliciousArbitraryInput: an attacker-supplied
+// identity naming an unrelated PID/generation must never reach the victim's
+// process — the hub compares against verified discovery before opening any
+// handle.
+func TestForceStopExpectedDaemonMaliciousArbitraryInput(t *testing.T) {
+	runDir := t.TempDir()
+	victim := rendezvous.Entry{PID: 4305, SessionID: "victim", ThreadID: "victim", WorkspaceRef: "local:victim", StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	writeRendezvous(t, runDir, victim)
+	malicious := appwire.DaemonIdentity{Ref: "local:victim", PID: 1, StartedAt: "1970-01-01T00:00:00Z", Generation: "deadbeef"}
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		events = append(events, "open")
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:victim", ExpectedDaemon: &malicious}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("malicious identity err=%v, want conflict", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("malicious identity opened the victim process: %v", events)
+	}
+}
+
+// TestForceStopResolvesExactIdentityAmongSameRefResidents is the M5 regression:
+// two live residents share the requested ref but are different daemons, so the
+// ref alone cannot choose between them. A request carrying the addressed
+// daemon's full rendered identity must resolve and stop exactly that daemon
+// instead of failing the ref-ambiguity check before the identity is consulted.
+func TestForceStopResolvesExactIdentityAmongSameRefResidents(t *testing.T) {
+	runDir := t.TempDir()
+	const shared = "shared-ref"
+	addressed := rendezvous.Entry{PID: 4311, SessionID: shared, ThreadID: shared, WorkspaceRef: "local:" + shared, StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	other := addressed
+	other.PID = 4312
+	other.StartedAt = addressed.StartedAt.Add(time.Second)
+	other.StateDir = t.TempDir()
+	writeRendezvous(t, runDir, addressed)
+	writeRendezvous(t, runDir, other)
+
+	var opened []int
+	var events []string
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		opened = append(opened, target.PID)
+		if target.PID != addressed.PID {
+			t.Errorf("force stop opened PID %d, want the addressed %d", target.PID, addressed.PID)
+		}
+		return &forceStopProcess{events: &events}, nil
+	})
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), DaemonProcesses: controller}
+	expected := daemonIdentity(addressed)
+	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + shared, ExpectedDaemon: &expected}, nil); err != nil {
+		t.Fatalf("addressed daemon was not resolved: %v", err)
+	}
+	if !reflect.DeepEqual(opened, []int{addressed.PID}) {
+		t.Fatalf("opened daemons = %v, want only the addressed %d", opened, addressed.PID)
+	}
+	if !reflect.DeepEqual(events, []string{"kill", "wait", "close"}) {
+		t.Fatalf("stop events = %v", events)
+	}
+}
+
+// TestForceStopRefusesStaleIdentityAmongSameRefResidents pins M5's safety
+// constraint: when several live residents share a ref, a rendered identity that
+// matches none of them must never fall back to a same-ref replacement.
+func TestForceStopRefusesStaleIdentityAmongSameRefResidents(t *testing.T) {
+	runDir := t.TempDir()
+	const shared = "shared-ref"
+	rotated := rendezvous.Entry{PID: 4321, SessionID: shared, ThreadID: shared, WorkspaceRef: "local:" + shared, StateDir: t.TempDir(), Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now()}
+	stale := daemonIdentity(rotated)
+	current := rotated
+	current.PID = 4322
+	current.StartedAt = rotated.StartedAt.Add(time.Second)
+	current.StateDir = t.TempDir()
+	twin := current
+	twin.PID = 4323
+	twin.StartedAt = current.StartedAt.Add(time.Second)
+	twin.StateDir = t.TempDir()
+	writeRendezvous(t, runDir, current)
+	writeRendezvous(t, runDir, twin)
+
+	locks := hubcore.NewResumeLocks()
+	var events []string
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+		return &forceStopProcess{events: &events}, nil
+	})}
+	err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + shared, ExpectedDaemon: &stale}, nil)
+	if err == nil {
+		t.Fatal("stale identity was accepted against same-ref replacements")
+	}
+	if _, ok := errors.AsType[appwire.WireError](err); !ok {
+		t.Fatalf("stale refusal is not a typed wire error: %v", err)
+	}
+	if slices.Contains(events, "kill") || slices.Contains(events, "wait") {
+		t.Fatalf("stale identity signaled a same-ref replacement: %v", events)
+	}
+	if state := locks.RecoveryState(shared); state.Stopping != 0 || state.ResumeRequired {
+		t.Fatalf("stale identity fenced recovery: %+v", state)
+	}
+}
+
+// exitedPID is the PID of a fixture process that has already exited: a
+// rendezvous file naming it is a crashed daemon's on any host. A fixed number
+// is dead on one machine and somebody's live process on another - on a
+// GitHub runner it was - and the roster probes the file's PID against the
+// real process table.
+func exitedPID(t *testing.T) int {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "cat")
+	input, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	process := &fixtureExitProcess{input: input, command: command}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return command.Process.Pid
 }

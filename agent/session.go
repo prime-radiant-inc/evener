@@ -102,8 +102,20 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                       string
-	cfg                      SessionConfig
+	id  string
+	cfg SessionConfig
+	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
+	// reacquired by prepareRetainedScratch before root/child initialization
+	// launches work. It holds historical or not-yet-reconstructed handles until
+	// adoption or release. It is an atomic pointer (a single swapped reference,
+	// never held across work), so it is not a sampling-relevant mutex.
+	retainedScratch atomic.Pointer[retainedScratchPool]
+	// scratchRetentionErr records the first sticky scratch-retention
+	// publication failure this session observed after an environment swap: the
+	// durable manifest diverged from the live environment and no later swap
+	// repaired it, so preparation must fail closed rather than trust the
+	// manifest. Guarded by mu.
+	scratchRetentionErr      error
 	delegateController       *delegateTreeController
 	delegateRootSessionID    string
 	owningDelegateID         string
@@ -268,6 +280,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// retirementController is process-owned and published atomically so admission
+	// never nests the controller mutex with a Session lock. Nil leaves ordinary
+	// non-daemon sessions unchanged; descendants inherit it before starting work.
+	retirementController atomic.Pointer[RetirementController]
 	// metaSaveMu serializes each metadata snapshot with its write. It is acquired
 	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
 	// and then overwriting a newer save from another goroutine.
@@ -368,9 +384,10 @@ type Session struct {
 	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	disposeRetirement             []func()                             // anonymous same-session admissions; guarded by mu, including work begun before controller attachment
 	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
 	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
-	envWork                       map[envWorkID]string                 // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	envWork                       map[envWorkID]envWorkRecord          // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
 	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
 	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
 	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
@@ -413,7 +430,31 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue    []steeringMessage
+	steeringQueue []steeringMessage
+	// steeringInFlight holds the client steers popSteeringHead has taken out of
+	// steeringQueue whose incorporation the store has not yet recorded
+	// (consumeSteeringMessage finalizes it after the transcript append lands).
+	// The store keeps such a steer accepted until then, so
+	// reflectDurableClientSteering must not put it back in the queue. The value
+	// is "" while the append is in flight, and the steer's terminal state --
+	// "incorporated", or "failed" for a skill selection that could not be
+	// prepared -- once the transcript holds it and only the store's write
+	// failed: recorded, and marked by reconcileRecordedSteering at the input's
+	// settle, the next wake, a Stop or restore. Guarded by mu.
+	steeringInFlight map[string]string
+	// steeringParked is set when an attempt to run pending user steering failed
+	// short of the model -- the append refused, the failure record refused,
+	// the carrier claim's write refused -- and cleared by the next wake sender
+	// (wakePendingUserInput: an accepted client mutation, attach, a store write
+	// that landed). While set, a wake the daemon had already buffered before
+	// the failure stands down instead of spending a second attempt on the same
+	// steer, and no autonomous turn runs while the steer is queued -- the
+	// drain ladder's notification and goal rungs, a deferred continuation,
+	// the settle's goal kick and the entry gate for a daemon-started
+	// notification or continuation all stand down (steeringParkedNow) -- so
+	// nothing drains it under a turn id that is not its receipt's. Guarded by
+	// mu.
+	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 
@@ -598,6 +639,10 @@ type Session struct {
 	notifyWakeDeferred bool
 	notifyFunc         func()
 	jobNotifyRetry     notificationRetry
+	// jobNotifyCallbacks counts in-flight scheduled notification retry
+	// callbacks, including callbacks begun before retirement controller
+	// attachment. Guarded by pendingJobNotifsMu.
+	jobNotifyCallbacks int
 
 	jobManager *jobManager
 
@@ -800,6 +845,7 @@ type Session struct {
 	// attentionMu serializes transcript-backed attention resolution for this
 	// resident Session. The transcript remains the only stored attention state.
 	attentionMu               sync.Mutex
+	attentionCallbacks        int // guarded by attentionMu; includes pre-retirement-attachment callbacks
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
@@ -1104,8 +1150,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
-	if pending || (!steeringHeld && s.hasPendingUserSteering()) || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1117,6 +1162,27 @@ func (s *Session) notify() {
 	if f != nil {
 		f()
 	}
+}
+
+// beginJobNotifyCallback retains local ownership of one scheduled notification
+// retry callback even when the process controller is attached after that
+// callback starts. Source receipt consumption and retry-generation resets do
+// not settle an outstanding unlocked callback: the count registered here is
+// projected by the local collector until the callback returns.
+func (s *Session) beginJobNotifyCallback() (func(), error) {
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		return nil, err
+	}
+	s.pendingJobNotifsMu.Lock()
+	s.jobNotifyCallbacks++
+	s.pendingJobNotifsMu.Unlock()
+	return func() {
+		s.pendingJobNotifsMu.Lock()
+		s.jobNotifyCallbacks--
+		s.pendingJobNotifsMu.Unlock()
+		release()
+	}, nil
 }
 
 func (s *Session) scheduleJobNotificationRetryLocked() {
@@ -1131,6 +1197,25 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.jobNotifyRetry.generation++
 	generation := s.jobNotifyRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		release, err := s.beginJobNotifyCallback()
+		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// delivers the retained source. Only a still-current generation
+			// owns the armed flag: a superseded one was invalidated by
+			// resetJobNotificationRetry or a newer schedule, and re-arming it
+			// would resurrect a stale wake the owner already settled.
+			s.pendingJobNotifsMu.Lock()
+			if s.jobNotifyRetry.generation == generation {
+				s.jobNotifyRetry.active = false
+				s.scheduleJobNotificationRetryLocked()
+			}
+			s.pendingJobNotifsMu.Unlock()
+			return
+		}
+		defer release()
 		s.pendingJobNotifsMu.Lock()
 		if s.jobNotifyRetry.generation != generation {
 			s.pendingJobNotifsMu.Unlock()
@@ -1184,6 +1269,7 @@ type sessionName struct {
 	updated        time.Time // when value last changed
 	set            bool      // a name has been assigned
 	promptPending  bool      // a naming LLM call is in flight
+	pending        int       // registered naming attempts, including compaction refreshes
 	quotaExhausted bool      // current model's allowance is spent; stop naming until SetModel
 }
 
@@ -1268,11 +1354,16 @@ func (s *Session) CostFor(ref string) *registry.Cost {
 
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
-func (s *Session) SetReasoningEffort(effort string) {
+func (s *Session) SetReasoningEffort(effort string) error {
+	release, err := s.beginRetirementMutation("admission")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	// Normalize disable-aliases (off/false/...) to the canonical "none" so a
 	// runtime off stays an explicit off through buildModelRequest, matching
@@ -1284,7 +1375,7 @@ func (s *Session) SetReasoningEffort(effort string) {
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
-	s.maybeAutoSave()
+	return s.saveMeta()
 }
 
 // resolveProfileForRef resolves a model ref to a *provider.Profile. When the
@@ -1352,6 +1443,11 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
 // profile are dropped; see DroppedModelFallbacksFromLastSwitch.
 func (s *Session) SetModel(model string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1466,6 +1562,11 @@ func (s *Session) SetModel(model string) error {
 // the client. It takes effect on the next image read and persists with the
 // session config; it never alters the active model itself.
 func (s *Session) SetVisionModel(ref string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	ref = strings.TrimSpace(ref)
 	ref = canonicalVisionModelOff(ref)
 	s.mu.Lock()
@@ -1569,15 +1670,20 @@ func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
 // auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
 // NameLocked and shouldNameFromCompaction both reject any source that is not
 // "prompt"/"compaction". Persists meta so the name survives a daemon crash.
-func (s *Session) Rename(name string) {
+func (s *Session) Rename(name string) error {
+	release, err := s.beginRetirementMutation("admission")
+	if err != nil {
+		return err
+	}
+	defer release()
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	s.naming.value = name
 	s.naming.source = sessionNameSourceUser
@@ -1587,6 +1693,7 @@ func (s *Session) Rename(name string) {
 	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
 	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
+	return nil
 }
 
 func (s *Session) applyModelRequestMetadata(req *llm.Request) {
@@ -1752,43 +1859,34 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// its length cannot name a durable transcript turn.
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
+	// The environment tracker is a durability owner: it may only claim the
+	// model saw a turn once that turn is a record, or a restart renders every
+	// later block as a diff against a baseline the model never received. So the
+	// write goes through AppendSynced (records AND syncs, else reports) via the
+	// pair helper, which resolves to one of three things (see
+	// appendTurnAfterTranscriptWriteLocked):
+	//   - nil (durable): the pair committed history + pair log, and the tracker
+	//     advance below stands;
+	//   - a retained record (ErrRetainedUnsynced): the whole line is in the
+	//     file, so the pair ADOPTS it and returns nil — the tracker still
+	//     advances, and the next fsync settles the debt. The entry is recorded
+	//     once; the tracker is NOT rewound and the block is NOT re-emitted,
+	//     which is what keeps a restart from carrying the environment twice;
+	//   - any other error: nothing was recorded, so the tracker rewinds to the
+	//     last state the model saw and the next turn re-renders the observation.
+	// RenderDiff advanced the tracker before the write so it could render the
+	// diff; attentionMu holds the pair whole against a fold publication exactly
+	// as the clean path's is held.
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
-		func() error { return s.writeTranscriptDurableLocked(turn) },
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
 		func() { s.history = append(s.history, turn) },
 	)
 	committed := err == nil
-	if err != nil {
-		// RenderDiff advances the tracker before the transcript write so it can
-		// render the diff. What becomes of that advance depends on what the
-		// transcript can be shown to hold. attentionMu keeps compaction from
-		// replacing the tracker during this transaction, and holds a late
-		// commit's append whole against a fold publication exactly as the clean
-		// path's pair is held.
-		switch s.reconcileEnvironmentEntryAfterFailedWriteLocked(turn, err) {
-		case environmentEntryAbsent, environmentEntryUnknown:
-			// Neither outcome puts the turn in front of the model, so the
-			// tracker must not claim the model saw it: rewind to the last state
-			// it did see and let the next turn render the whole observation
-			// again. When an unknown entry turns out to have landed after all,
-			// that costs a redundant entry in the transcript — which a reader
-			// can see and reconcile, unlike a tracker advanced past unseen
-			// context, which renders every later block as a diff against a
-			// baseline the model never received.
-			s.mu.Lock()
-			s.envTracker = envctx.NewTracker(before)
-			s.mu.Unlock()
-		case environmentEntryDurable:
-			// The entry is in the transcript and now synced, so the write
-			// committed after all. Complete the half of the pair the failure
-			// skipped; everything below then runs as it does for a clean
-			// append, because the entry is late rather than different.
-			s.mu.Lock()
-			s.history = append(s.history, turn)
-			s.logPairPersistedLocked(turn)
-			s.mu.Unlock()
-			committed = true
-		}
+	if !committed {
+		s.mu.Lock()
+		s.envTracker = envctx.NewTracker(before)
+		s.mu.Unlock()
 	}
 	if committed {
 		// Persist tracker state so resume stays silent when nothing changed.
@@ -1825,61 +1923,18 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if committed {
 		s.maybeAutoSave()
 	}
+	// A NOT-RECORDED failure (a partial line, or a clean rollback) rejects the
+	// input: the turn is rolled back and its provisional count checkpointed
+	// (TestRejectedInputDoesNotPersistItsProvisionalTurn). A retained record —
+	// in the file but not yet durable — is adopted instead (committed above,
+	// err nil), never rejected, or the next turn would re-render and duplicate
+	// the entry a restart already holds. Either way the sync-failure diagnostic
+	// is on the writer's warning queue; surface it here, outside the door.
+	s.surfaceTranscriptWarnings()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	return err
-}
-
-// environmentEntryOutcome is what reconciliation could establish about the
-// entry a failed environment append left, or did not leave, in the transcript.
-type environmentEntryOutcome int
-
-const (
-	// environmentEntryUnknown: reconciliation could establish neither, so the
-	// entry cannot be treated as something the model was shown. It takes the
-	// zero value because the outcome nobody set must be the one that claims
-	// nothing about the transcript; environmentEntryDurable commits a turn on
-	// the strength of a confirmation, and a confirmation is exactly what an
-	// unset outcome does not carry.
-	environmentEntryUnknown environmentEntryOutcome = iota
-	// environmentEntryAbsent: the transcript does not hold the entry, so the
-	// next turn must render the observation again.
-	environmentEntryAbsent
-	// environmentEntryDurable: the transcript holds the entry and it is synced,
-	// so the append committed late and owes its in-memory side effects.
-	environmentEntryDurable
-)
-
-// reconcileEnvironmentEntryAfterFailedWriteLocked settles what a failed
-// environment append left behind. A rollback that succeeded took the entry
-// back out, and that is the whole answer. A rollback that failed leaves the
-// entry's line possibly still in the file, so the entry is looked up by its
-// stable ID behind a durability barrier that makes what a reader can see
-// authoritative.
-//
-// Absence is only ever reported when it is established. A barrier that cannot
-// be raised or a transcript that cannot be read leaves the outcome unknown,
-// which is its own answer: only a confirmed entry may be treated as one the
-// model was shown. The caller holds attentionMu, so no other writer can append
-// between the failure and this read.
-func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Turn, err error) environmentEntryOutcome {
-	if !errors.Is(err, transcript.ErrRollbackFailed) {
-		return environmentEntryAbsent
-	}
-	if durabilityErr := s.attachedTranscript().EstablishDurability(); durabilityErr != nil {
-		return environmentEntryUnknown
-	}
-	data, readErr := readTranscriptFull(s.TranscriptPath())
-	if readErr != nil {
-		return environmentEntryUnknown
-	}
-	for _, entry := range data.Entries {
-		if entry.Turn.StableTurnID == turn.StableTurnID {
-			return environmentEntryDurable
-		}
-	}
-	return environmentEntryAbsent
 }
 
 // resetEnvContextTrackerLocked clears the environment-context tracker when a
@@ -1935,13 +1990,31 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // deliberately retain the private evidence the persisted projection replaces
 // with a placeholder.
 func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+	}()
+	// A durable write whose whole line landed but did not sync returns nil —
+	// the entry is a record, appended above — and leaves its sync failure on
+	// the writer's warning queue. Surface it here, outside attentionMu: a
+	// warning fires the notification hook, which must not run while this
+	// session holds the transcript lock that hook's own records need.
+	s.surfaceTranscriptWarnings()
+	return err
 }
 
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
-	if err := write(); err != nil {
+	// A write reports one of three things (see transcript.AppendSynced, and the
+	// ordinary doors' recorded-or-nil): nil is recorded; ErrRetainedUnsynced is
+	// ALSO recorded — the whole line is in the file — but not yet durable, so
+	// the turn is adopted here (never re-appended, which would duplicate it on
+	// restart) and the next fsync settles the debt; any other error recorded
+	// nothing, so nothing is appended. Returning nil for the adopted case is
+	// what keeps an owner from discarding its state and re-appending; the
+	// retained diagnostic is on the writer's warning queue, surfaced outside the
+	// lock by the caller's surfaceTranscriptWarnings.
+	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()
@@ -1960,12 +2033,28 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
+}
+
+// appendTurnWithSyncedTranscriptMessage records a turn a durability owner
+// depends on being both recorded AND synced before it commits state recovery
+// trusts. Its sole production caller is the delegate seed input (preseedInput):
+// the child is adopted and runs on the strength of that seed, and reads it back
+// from a transcript where a retained (unsynced) line is already visible — so
+// the record must be synced, not merely landed (H1). AppendDurable's
+// recorded-or-nil is the wrong door here for the same reason recordTurn's is
+// the wrong door for a skill carrier.
+func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
+}
+
+func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
-		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() error { return write(persistedTurn) },
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
@@ -1993,6 +2082,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
+	s.surfaceTranscriptWarnings()
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
@@ -2044,9 +2134,13 @@ func (s *Session) writeTranscriptLocked(t schema.Turn) error {
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
 func (s *Session) writeTranscriptDurable(t schema.Turn) error {
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.writeTranscriptDurableLocked(t)
+	err := func() error {
+		s.attentionMu.Lock()
+		defer s.attentionMu.Unlock()
+		return s.writeTranscriptDurableLocked(t)
+	}()
+	s.surfaceTranscriptWarnings()
+	return err
 }
 
 // writeTranscriptDurableLocked is writeTranscriptDurable for a caller
@@ -2059,10 +2153,54 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	return s.attachedTranscript().AppendDurable(t)
 }
 
+// writeTranscriptSyncedLocked is the durability owner's write: it records AND
+// establishes durability, returning an error unless the entry is both a record
+// and synced. Durability owners (the environment producer, skill carriers,
+// delivery-commit records, client-mutation recovery, steering, the delegate
+// seed) use it through the pair helper; ordinary producers use
+// writeTranscriptDurableLocked and never inspect durability.
+//
+// Unlike the other doors it does NOT hold a turn before the transcript is
+// attached: a held turn is neither recorded nor synced, and the flush at attach
+// is a buffered append, so returning nil would tell an owner a turn is durable
+// that a crash before attach would lose. A pre-attach synced write is an error
+// the owner keeps its obligation pending on. (No production owner runs before
+// attach — the tracker guard and the delegate seed's read-back both preclude it
+// — so this is a fail-closed guard, not a live path.)
+func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
+	s.mu.Lock()
+	ready := s.transcriptReady
+	s.mu.Unlock()
+	if !ready {
+		return errors.New("transcript not ready: a synced write cannot be held before attach")
+	}
+	return s.attachedTranscript().AppendSynced(t)
+}
+
 func (s *Session) attachedTranscript() *transcript.Writer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transcript
+}
+
+// drainTranscriptWarnings formats every pending retained-entry diagnostic and
+// hands it to sink. A retained entry (whole line in the file, no fsync) is a
+// record the durable append committed and returned nil for, so its sync failure
+// reaches a client only here. The one formatter serves all three sinks (the two
+// write-site emits and the pre-SESSION_START buffer). Emitting MUST run outside
+// attentionMu and s.mu: an EventWarning fires the notification hook, which takes
+// locks a transcript write is holding — the emit sinks call this after the
+// locks release.
+func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
+	for _, err := range s.attachedTranscript().DrainWarnings() {
+		sink(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+}
+
+// surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
+// callers have already released the transcript locks.
+func (s *Session) surfaceTranscriptWarnings() {
+	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
 }
 
 func (s *Session) closeAttachedTranscript() error {
@@ -2106,6 +2244,12 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 	}
+	// A replayed append whose whole line landed but did not sync returned nil
+	// and queued its diagnostic on the writer; buffer it the same way, since
+	// SESSION_START has not fired yet.
+	s.drainTranscriptWarnings(func(warning events.WarningData) {
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, warning)
+	})
 }
 
 // sclock returns the session's injected clock. Production always sets s.clock

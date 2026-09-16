@@ -386,15 +386,13 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 }
 
 // TestHubModelTurnCompletedReconcilesProcessingForFailedTurn is the s8x8
-// regression: after turn/completed clears ActiveTurnID for the active turn,
-// session.processing and detail.State must not go on claiming a turn is
-// running. A genuine (non-cancelled) turn failure never gets a follow-up
-// thread/status/changed from the daemon (session_lifecycle.go's
-// processInputKindWithProvenance returns on error without reaching the
-// EventSessionEnd emit that only the clean-completion tail and the
-// interrupt branch reach), so sessionTurnRunning() would otherwise keep
-// offering queue/steer — mutations that require an expectedTurnId this
-// client no longer has — indefinitely, not just for a bounded race window.
+// regression, on the wire as it is: after turn/completed clears ActiveTurnID
+// for the active turn, the daemon's failure exit (agent/session_lifecycle.go
+// endInputAtTurnFailure) emits EventSessionEnd with Reason "turn_failed",
+// announced as thread/status/changed(idle). That frame is what takes the
+// session out of queue mode: session.processing and detail.State follow it,
+// not the turn/completed ahead of it, so the frame reads as the transition it
+// is and the capability refresh keyed on transitions fires.
 func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.mode = hubModeSession
@@ -424,20 +422,32 @@ func TestHubModelTurnCompletedReconcilesProcessingForFailedTurn(t *testing.T) {
 			},
 		}).Notification,
 	})
-
 	got := updated.(hubModel)
 	if got.detail.ActiveTurnID != "" {
 		t.Fatalf("active turn=%q, want cleared", got.detail.ActiveTurnID)
 	}
+	if got.detail.State != appwire.ThreadStatusActive || !got.session.processing {
+		t.Fatalf("state=%q processing=%v after the failed turn/completed, want the status frame behind it to own the transition", got.detail.State, got.session.processing)
+	}
+
+	updated, _ = got.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+			ThreadID: "th_1",
+			Ref:      "local:th_1",
+			Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		}).Notification,
+	})
+	got = updated.(hubModel)
 	if got.session.processing {
-		t.Fatal("session.processing=true after the active turn failed, want false")
+		t.Fatal("session.processing=true after the failed turn's status frame, want false")
 	}
 	if mode := got.sessionComposerMode(); mode == hubComposerModeQueue {
-		t.Fatal("composer mode=queue after the active turn failed; it offers a mutation with no turn id to name")
+		t.Fatal("composer mode=queue after the failed turn's status frame; it offers a mutation with no turn running")
 	}
 	view := got.sessionComposerPanel().View()
 	if strings.Contains(view, "queue") {
-		t.Fatalf("composer view still advertises queue mode after the active turn failed:\n%s", view)
+		t.Fatalf("composer view still advertises queue mode after the failed turn's status frame:\n%s", view)
 	}
 }
 

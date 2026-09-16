@@ -3,9 +3,10 @@
 // then getLayer("/","global")) into a 2-state contract - unlike project.tsx's
 // 3-state contract, a load failure has no distinct recoverable state, just a
 // permanent failure message (parity-m7-settings.md §9).
+
+import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./launchServer.module.css";

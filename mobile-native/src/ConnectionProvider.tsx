@@ -10,11 +10,7 @@ import {
 	useState,
 } from "react";
 import { AppState } from "react-native";
-import type {
-	AppwireClient,
-	ConnectionState,
-} from "../../appwire-client/typescript/client";
-import type { WebSocketLike } from "../../appwire-client/typescript/transport";
+import type { AppwireClient, ConnectionState, WebSocketLike } from "@evener/appwire-client";
 import {
 	createHubClient,
 	type HubInput,

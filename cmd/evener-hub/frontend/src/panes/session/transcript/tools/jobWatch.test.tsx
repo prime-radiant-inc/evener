@@ -9,11 +9,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ItemModel } from "../../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { toolRendererFor } from "../toolRenderers";
@@ -175,16 +175,18 @@ test("list body renders one row per watch with a status chip and the watch id", 
   const rows = screen.getAllByTestId("job-watch-row");
   expect(rows).toHaveLength(3);
   const text = screen.getByTestId("job-watch-body").textContent ?? "";
-  // Long ids clip in the row (mockup §C truncates them) with the full id on
-  // the hover title; the short id renders whole.
-  expect(text).toContain("watch_034KEfj…foUaPeHJcLXY");
+  // Ids no longer clip: the row prints the full id (a clipped id is not even
+  // detectable as an entity, so the card could never attach), and the hover
+  // title still carries it verbatim.
+  expect(text).toContain("watch_034KEfjYFbfoUaPeHJcLXY");
+  expect(text).not.toContain("…");
   expect(screen.getByTitle("watch_034KEfjYFbfoUaPeHJcLXY")).toBeTruthy();
   expect(text).toContain("watch_09QmWzRtNvxK");
   expect(text).toContain("watching");
   expect(text).toContain("ended");
 });
 
-test("list watch IDs are clipped entity triggers with no open control or navigation", () => {
+test("list watch IDs are full-id entity triggers with no open control or navigation", () => {
   const d = toolRendererFor("job_watch");
   const Body = d.body!;
   const id = "watch_034KEfjYFbfoUaPeHJcLXY";
@@ -207,7 +209,7 @@ test("list watch IDs are clipped entity triggers with no open control or navigat
 
   const row = screen.getByTestId("job-watch-row");
   const trigger = within(row).getByTestId("entity-trigger");
-  expect(trigger.textContent).toBe("watch_034KEfj…foUaPeHJcLXY");
+  expect(trigger.textContent).toBe("watch_034KEfjYFbfoUaPeHJcLXY");
   expect(trigger.getAttribute("tabindex")).toBe("0");
   expect(within(row).queryByRole("button")).toBeNull();
   fireEvent.click(trigger);
@@ -481,9 +483,10 @@ test("absent structured state falls back to the raw footer text (RoboRev PR #954
 test("clear summary names the cleared watch id", () => {
   const d = toolRendererFor("job_watch");
   const cleared = { watch_id: "watch_034KEfjYFbfoUaPeHJcLXY", source: "", watching: false };
-  // The long id clips (mockup §D truncates it); a short id renders whole.
+  // The id renders whole (no clip): the summary quotes the same id the entity
+  // card keys off, so the row can attach the card to it.
   expect(d.summary(watchItem({ operation: "clear", watch_id: "watch_034KEfjYFbfoUaPeHJcLXY" }, cleared))).toBe(
-    "Cleared watch_034KEfj…foUaPeHJcLXY",
+    "Cleared watch_034KEfjYFbfoUaPeHJcLXY",
   );
   expect(
     d.summary(watchItem({ operation: "clear", watch_id: "watch_short" }, { ...cleared, watch_id: "watch_short" })),

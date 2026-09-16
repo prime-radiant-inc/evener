@@ -1,12 +1,11 @@
+import { matchBuiltinInvocation, type ThreadCapabilities } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext, sessionBuiltinCommands } from "../../../shell/palette/commands";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { runBuiltinCommand } from "./builtinCommand";
-import { matchBuiltinInvocation } from "./builtinInvocation";
 
 const CAPS: ThreadCapabilities = {
   send: true,

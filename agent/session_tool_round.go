@@ -297,11 +297,15 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				if path != "" {
 					label += " for " + path
 				}
+				var steerErr error
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
+					steerErr = s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
+				}
+				if steerErr != nil {
+					return steerErr
 				}
 			}
 		}
@@ -440,9 +444,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Inject any queued steering messages before the next model call. A terminal
 	// communicate result owns this input's boundary, so leave client-authored
-	// steering durable pending work for wakeForPendingSteering and
-	// EntrySteeringCarrier. Consuming it here would mark it incorporated in a
-	// result that ends the turn without a model request that can act on it.
+	// steering durable pending work for the steering carrier turn the drain
+	// ladder runs next (or, failing that, wakeForPendingSteering). Consuming it
+	// here would mark it incorporated in a result that ends the turn without a
+	// model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		if !s.Communicated() {
 			if s.hasPendingSteering() {
@@ -528,7 +533,9 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		hi.Reason = "communicate.end_turn"
 		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
 		for _, m := range stopResult.ModelContext {
-			s.deliverHookContext(m)
+			if err := s.deliverHookContext(m); err != nil {
+				return false, "", err
+			}
 		}
 		for _, m := range stopResult.UserMessages {
 			s.deliverHookUserMessage(m)

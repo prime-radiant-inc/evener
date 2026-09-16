@@ -1,6 +1,6 @@
+import type { ItemModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { ItemModel } from "../protocol/model";
-import { makeTranscriptDisplayConfig } from "./config";
 import { makeTranscriptPreviewModel } from "./previewFixture";
 import { projectThread } from "./projector";
 

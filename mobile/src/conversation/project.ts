@@ -1,12 +1,29 @@
-import type { SandboxEscalationRequested } from "../../../appwire-client/typescript/types.gen";
-import type { MobileApproval } from "./model";
-// Pure AppWire-to-mobile thread projection. projectThread folds a wire
-// Thread (protocol/types.gen.ts) into a MobileConversation view model that
-// React components consume. No DOM, no network, no clock — given the same
-// Thread it produces the same MobileConversation. Protocol DTOs never cross
-// into React props; only the mobile view models in model.ts do.
+import type {
+  AskQuestionRef,
+  InputItem,
+  ItemFailureSignals,
+  ItemImage,
+  ItemModel,
+  OutputImage,
+  ThreadItem,
+  ThreadModel,
+  Turn,
+  TurnModel,
+} from "@evener/appwire-client";
+// The native shim between the package's thread model and the phone timeline.
+// It shrinks as seam 2 lands (SDK migration plan, D21–D24): the conversation is
+// hydrated by reducer.hydrateThread (D22), D23 replaces the store's
+// notification appliers with reducer.applyNotification (the wire-item helpers
+// marked below exist for that live path until then), and D24 replaces the
+// display rows with transcriptDisplay/projector.ts entries and deletes this
+// file.
 //
-// Forward-compatibility is load-bearing: an unknown ThreadItem.type never
+// projectConversation folds a ThreadModel's turns into the display rows. No
+// DOM, no network, no clock — given the same model it produces the same rows.
+// Protocol DTOs never cross into React props; only the package's model types
+// and the display rows declared here do.
+//
+// Forward-compatibility is load-bearing: an unknown ItemModel.type never
 // disappears and never exposes raw HTML. It becomes a neutral collapsed
 // activity row. Every Hub/user/agent/tool/filename field is untrusted plain
 // text here; the sanitizer (markdown.ts) is the only place assistant Markdown
@@ -15,31 +32,132 @@ import type { MobileApproval } from "./model";
 import {
   hasItemFailure,
   isInProgressStatus,
-} from "../../../appwire-client/typescript/itemFailure";
-import type {
-  EvenerUsage,
-  InputItem,
-  OutputImage,
-  Thread,
-  ThreadCapabilities,
-  ThreadItem,
-  Turn,
-} from "../../../appwire-client/typescript/types.gen";
-import type {
-  ActivityDetail,
-  ActivityMember,
-  ActivityState,
-  AttachmentRef,
-  MobileAskOption,
-  MobileAskQuestion,
-  MobileCapabilities,
-  MobileConversation,
-  MobileQueue,
-  MobileTimelineItem,
-  MobileUsage,
-  NoticeFamily,
-  NoticeTone,
-} from "./model";
+  liveAskQuestions,
+  parseAskUserQuestions,
+  pendingTextJoined,
+} from "@evener/appwire-client";
+
+// --- the conversation native holds -------------------------------------------
+
+// The package ThreadModel, as reducer.hydrateThread produces it, plus the
+// display rows this shim still projects from its turns; D24 removes `items`.
+// Until D23 routes notifications through reducer.applyNotification, the
+// store's live appliers update `items` only, so `turns` is the last read's
+// snapshot between rereads — nothing native renders reads it yet.
+export type MobileConversation = ThreadModel & {
+  items: MobileTimelineItem[];
+};
+
+export function projectConversation(model: ThreadModel): MobileConversation {
+  return { ...model, items: projectTimeline(model) };
+}
+
+// --- display rows (D24 replaces these with the package's projector) ----------
+// Every field is untrusted plain text; only assistant Markdown is sanitized
+// later (markdown.ts). Treat string fields as display-only, never executable.
+
+// One image attachment row entry: the package's ItemImage (src is the resolved
+// fetch URL, name the wire's own field carried alongside) keyed for display.
+export type AttachmentRef = ItemImage & { id: string };
+
+// Lifecycle state of a collapsed activity row (tool call, reasoning, or an
+// unknown forward-compatible item). "running" while in progress, "completed"
+// on clean settlement, "failed" when the wire carried an error (status stays
+// "completed" even for errored calls — error presence is the real signal).
+export type ActivityState = "running" | "completed" | "failed";
+
+// Durable activity family discriminator, independent of the display `label`.
+// The projection sets this from the item's *type* — commandExecution (tool)
+// vs reasoning vs anything else — never from the label string, so a
+// commandExecution whose toolName is "Reasoning" is still family "tool" and a
+// reasoning item is family "reasoning". Closed type: tool | reasoning | unknown.
+// Consumers branch on `family`, never on `label`, so a renamed or localized
+// label cannot change an item's family.
+export type ActivityFamily = "tool" | "reasoning" | "unknown";
+
+// Expandable detail behind a one-line activity card. Every field is plain
+// text — never raw HTML — and may be truncated by the renderer. `arguments`
+// is the tool's argumentsJSON verbatim (untrusted JSON text), `output` is the
+// tool result text, `error` is the tool-result error text. `callId` lets a
+// diagnostics disclosure cite the stable identifier without exposing it in
+// the default collapsed row.
+export interface ActivityDetail {
+  description?: string;
+  arguments?: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  durationMs?: number;
+  callId?: string;
+}
+
+export interface ActivityMember {
+  id: string;
+  label: string;
+  family: ActivityFamily;
+  state: ActivityState;
+  detail: ActivityDetail;
+  transcriptKey?: string;
+  position?: { entry: number; item: number };
+}
+
+// Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
+// notices, "warning" for loop detection / turn limit / provider failure, and
+// "system" for environment / prelude scaffold that is purely informational.
+export type NoticeTone = "info" | "warning" | "system";
+
+export type NoticeOrigin = "steering" | "system";
+
+export type NoticeFamily =
+  | "informational"
+  | "warning"
+  | "hidden-instruction"
+  | "system-prelude"
+  | "lifecycle"
+  | "diagnostic"
+  | "unknown-system";
+
+// The mobile timeline item union. A pure projection of one thread's turns
+// into the families the phone timeline renders. Discriminated by `kind`.
+export type MobileTimelineItem = (
+  | { kind: "user"; id: string; text: string; transcriptEntryIndex?: number }
+  | { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+  | {
+      kind: "activity";
+      id: string;
+      label: string;
+      // Durable activity-family discriminator, independent of `label`. The
+      // projection sets this from the item's type (commandExecution → "tool",
+      // reasoning → "reasoning", anything else → "unknown"), never from the
+      // label text. Required: every activity constructor MUST set it to a
+      // concrete ActivityFamily; consumers branch on `family`, never `label`.
+      family: ActivityFamily;
+      state: ActivityState;
+      detail: ActivityDetail;
+      members?: ActivityMember[];
+    }
+  | {
+      kind: "notice";
+      id: string;
+      origin: NoticeOrigin;
+      steeringKind?: string;
+      eventKind?: string;
+      exitCode?: number;
+      family: NoticeFamily;
+      tone: NoticeTone;
+      text: string;
+    }
+  // The pending ask_user questions of one call, each carrying that call's id
+  // (AskQuestionRef.callId); the composer renders them as interactive cards
+  // with a single "Send answers" action.
+  | { kind: "question"; id: string; questions: AskQuestionRef[] }
+  | { kind: "failure"; id: string; title: string; detail: string }
+  | { kind: "attachments"; id: string; items: AttachmentRef[] }
+) & {
+  transcriptKey?: string;
+  sourceTranscriptKey?: string;
+  position?: { entry: number; item: number };
+};
 
 // --- item classification ------------------------------------------------------
 
@@ -78,31 +196,31 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
   return "unknown-system";
 }
 
-function isUserMessage(item: ThreadItem): boolean {
+function isUserMessage(item: ItemModel): boolean {
   return item.type === "userMessage";
 }
 
-function isAgentMessage(item: ThreadItem): boolean {
+function isAgentMessage(item: ItemModel): boolean {
   return item.type === "agentMessage";
 }
 
-function isReasoning(item: ThreadItem): boolean {
+function isReasoning(item: ItemModel): boolean {
   return item.type === "reasoning";
 }
 
-function isCommandExecution(item: ThreadItem): boolean {
+function isCommandExecution(item: ItemModel): boolean {
   return item.type === "commandExecution";
 }
 
-function isAskUser(item: ThreadItem): boolean {
+function isAskUser(item: ItemModel): boolean {
   return isCommandExecution(item) && item.toolName === "ask_user";
 }
 
-function isSteering(item: ThreadItem): boolean {
+function isSteering(item: ItemModel): boolean {
   return item.type === "steering";
 }
 
-function isSystemMessage(item: ThreadItem): boolean {
+function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
 }
 
@@ -113,7 +231,7 @@ function isSystemMessage(item: ThreadItem): boolean {
 // store's incremental projection applies the same rule against the turn
 // status it derives from the active turn.
 export function isActiveItem(
-  item: ThreadItem,
+  item: ItemFailureSignals,
   turnStatus: string | undefined,
 ): boolean {
   if (item.status !== undefined) return isInProgressStatus(item.status);
@@ -125,7 +243,7 @@ export function isActiveItem(
 // Exported so the store's incremental projection settles a tool item exactly
 // as the canonical projector does, instead of keeping a second copy.
 export function activityState(
-  item: ThreadItem,
+  item: ItemFailureSignals,
   turnStatus: string | undefined,
 ): ActivityState {
   if (hasItemFailure(item)) return "failed";
@@ -133,12 +251,38 @@ export function activityState(
   return "completed";
 }
 
-function toolLabel(item: ThreadItem): string {
+function toolLabel(item: ItemModel): string {
   return item.toolName ?? item.description?.trim() ?? "Tool";
 }
 
 // --- image / attachment projection -------------------------------------------
 
+// Attachment rows keyed by their item and index; the package resolved each
+// image's src at hydrate (url, inline bytes, sha route, path, name).
+function attachmentRows(
+  itemId: string,
+  images: ItemImage[] | undefined,
+  prefix = "",
+): AttachmentRef[] | undefined {
+  if (!images?.length) return undefined;
+  return images.map((img, i) => ({ id: `${itemId}:${prefix}${i}`, ...img }));
+}
+
+function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
+  // Human steering uses the same message and image presentation as user input.
+  if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
+    return attachmentRows(item.id, item.images);
+  }
+  if (isCommandExecution(item)) {
+    return attachmentRows(item.id, item.outputImages, "out:");
+  }
+  return undefined;
+}
+
+// The store's live path (item/started, item/completed) still holds a wire
+// ThreadItem, so it resolves image sources itself with the reducer's
+// precedence (url, inline bytes, path, name); D23 hands that path to the
+// package reducer and deletes this.
 function inlineImageSrc(img: InputItem): string | undefined {
   if (
     img.data === undefined ||
@@ -151,130 +295,48 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-function inputAttachment(
-  itemId: string,
-  index: number,
-  img: InputItem,
-): AttachmentRef {
-  const src = img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "";
+function inputImage(img: InputItem): ItemImage {
   return {
-    id: `${itemId}:${index}`,
-    src,
+    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
     name: img.name,
-    mediaType: img.mediaType,
   };
 }
 
-function outputAttachment(
-  itemId: string,
-  index: number,
-  img: OutputImage,
-): AttachmentRef {
-  const src = img.url ?? img.path ?? img.name ?? img.source ?? "";
+function outputImage(img: OutputImage): ItemImage {
   return {
-    id: `${itemId}:out:${index}`,
-    src,
+    src: img.url ?? img.path ?? img.name ?? img.source ?? "",
     name: img.name,
-    mediaType: img.mediaType,
   };
 }
 
-// --- ask_user question parsing ----------------------------------------------
-// Mirrors parseAskUserQuestions (protocol/askShared.ts): defensive throughout.
-// Malformed argumentsJson degrades to a fallback (undefined) rather than
-// throwing, since this is untrusted wire JSON.
-
-interface ParsedAskQuestion {
-  header: string;
-  question: string;
-  options: MobileAskOption[];
-  multiSelect: boolean;
-  why?: string;
-  ifUnanswered?: string;
-}
-
-function parseOption(raw: unknown): MobileAskOption | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.label !== "string" || typeof obj.detail !== "string")
-    return undefined;
-  return {
-    label: obj.label,
-    detail: obj.detail,
-    recommended: obj.recommended === true,
-  };
-}
-
-function parseQuestion(
-  raw: unknown,
-  index: number,
-): ParsedAskQuestion | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  if (
-    (obj.header !== undefined && typeof obj.header !== "string") ||
-    typeof obj.question !== "string" ||
-    !Array.isArray(obj.options)
-  ) {
-    return undefined;
-  }
-  const options = obj.options
-    .map(parseOption)
-    .filter((o): o is MobileAskOption => o !== undefined);
-  if (options.length === 0) return undefined;
-  return {
-    header:
-      typeof obj.header === "string" ? obj.header : `Question ${index + 1}`,
-    question: obj.question,
-    options,
-    multiSelect: obj.multi_select === true,
-    why: typeof obj.why === "string" ? obj.why : undefined,
-    ifUnanswered:
-      typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
-  };
-}
-
-function parseAskUserQuestions(
+export function projectItemAttachments(
   item: ThreadItem,
-): ParsedAskQuestion[] | undefined {
-  if (item.argumentsJson === undefined || item.argumentsJson === "")
-    return undefined;
-  let args: unknown;
-  try {
-    args = JSON.parse(item.argumentsJson);
-  } catch {
-    return undefined;
+): AttachmentRef[] | undefined {
+  if (
+    item.type === "userMessage" ||
+    (item.type === "steering" && item.source === "user")
+  ) {
+    return attachmentRows(item.id, item.images?.map(inputImage));
   }
-  if (typeof args !== "object" || args === null) return undefined;
-  const raw = (args as Record<string, unknown>).questions;
-  if (!Array.isArray(raw)) return undefined;
-  const questions = raw
-    .map((q, i) => parseQuestion(q, i))
-    .filter((q): q is ParsedAskQuestion => q !== undefined);
-  return questions.length > 0 ? questions : undefined;
+  if (item.type === "commandExecution") {
+    return attachmentRows(item.id, item.outputImages?.map(outputImage), "out:");
+  }
+  return undefined;
 }
 
-// A pending (answerable) ask_user: completed, no error, parseable questions,
-// AND positioned AFTER the most recent userMessage (a later [answers] reply
-// resolves the whole pending set at once). Mirrors liveAskQuestions.
-function pendingAskUserIds(turns: readonly Turn[]): Set<string> {
-  const items = turns.flatMap((turn) => turn.items ?? []);
-  let lastUserIndex = -1;
-  items.forEach((item, i) => {
-    if (isUserMessage(item)) lastUserIndex = i;
-  });
-  const pending = new Set<string>();
-  items.slice(lastUserIndex + 1).forEach((item) => {
-    if (
-      isAskUser(item) &&
-      item.status === "completed" &&
-      !hasItemFailure(item) &&
-      parseAskUserQuestions(item) !== undefined
-    ) {
-      pending.add(item.id);
-    }
-  });
-  return pending;
+// --- pending ask_user questions ---------------------------------------------
+
+// The package's rule for which ask_user calls are still answerable
+// (settled without error, after the last user message), grouped by call so
+// each call becomes one question row.
+function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
+  const byCall = new Map<string, AskQuestionRef[]>();
+  for (const ref of liveAskQuestions(model)) {
+    const questions = byCall.get(ref.callId);
+    if (questions) questions.push(ref);
+    else byCall.set(ref.callId, [ref]);
+  }
+  return byCall;
 }
 
 // --- single-item projection (pre-cluster) -----------------------------------
@@ -291,20 +353,28 @@ type PreResult =
   | { kind: "final"; item: MobileTimelineItem; attachments?: AttachmentRef[] }
   | { kind: "activity"; pre: PreActivity; attachments?: AttachmentRef[] };
 
+// The item's text as the reader sees it: the settled text plus any in-flight
+// delta chunks a live reducer has accumulated (none on a hydrated item).
+function itemMarkdown(item: ItemModel): string {
+  return item.pendingText
+    ? item.text + pendingTextJoined(item.pendingText)
+    : item.text;
+}
+
 function projectItem(
-  item: ThreadItem,
-  turn: Turn,
-  pendingAsks: Set<string>,
+  item: ItemModel,
+  turn: TurnModel,
+  asks: ReadonlyMap<string, AskQuestionRef[]>,
 ): PreResult {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
-    const attachments = projectItemAttachments(item);
+    const attachments = itemAttachments(item);
     return {
       kind: "final",
       item: {
         kind: "user",
         id: item.id,
-        text: item.text ?? "",
+        text: item.text,
         ...(isUserMessage(item) && item.transcriptEntryIndex !== undefined
           ? { transcriptEntryIndex: item.transcriptEntryIndex }
           : {}),
@@ -315,11 +385,15 @@ function projectItem(
 
   // Assistant message — streaming while the turn is still in progress.
   if (isAgentMessage(item)) {
-    const markdown = `${item.text ?? ""}${item.delta ?? ""}`;
     const streaming = isInProgressStatus(turn.status);
     return {
       kind: "final",
-      item: { kind: "assistant", id: item.id, markdown, streaming },
+      item: {
+        kind: "assistant",
+        id: item.id,
+        markdown: itemMarkdown(item),
+        streaming,
+      },
     };
   }
 
@@ -351,36 +425,22 @@ function projectItem(
   }
 
   // Pending ask_user — a question item (conversational boundary, not clustered).
-  if (isAskUser(item) && pendingAsks.has(item.id)) {
-    const parsed = parseAskUserQuestions(item);
-    if (parsed) {
-      const callId = item.callId ?? item.id;
-      const questions: MobileAskQuestion[] = parsed.map((q, idx) => ({
-        key: `${callId}:${idx}`,
-        header: q.header,
-        question: q.question,
-        options: q.options,
-        multiSelect: q.multiSelect,
-        why: q.why,
-        ifUnanswered: q.ifUnanswered,
-      }));
-      return {
-        kind: "final",
-        item: {
-          kind: "question",
-          id: item.id,
-          batch: { callId, questions },
-        },
-      };
-    }
+  const questions = isAskUser(item)
+    ? asks.get(item.callId ?? item.id)
+    : undefined;
+  if (questions) {
+    return {
+      kind: "final",
+      item: { kind: "question", id: item.id, questions },
+    };
   }
 
   // Tool call (commandExecution, including answered/errored ask_user) — activity.
   // family is always "tool" for a commandExecution, even when toolName is
-  // "Reasoning"; the discriminator is derived from the wire type, never the
+  // "Reasoning"; the discriminator is derived from the item type, never the
   // label. callId is preserved exactly for diagnostics disclosure.
   if (isCommandExecution(item)) {
-    const attachments = projectItemAttachments(item);
+    const attachments = itemAttachments(item);
     const failed = hasItemFailure(item);
     const family = failed ? `failed:${item.id}` : "tool";
     return {
@@ -415,7 +475,7 @@ function projectItem(
         steeringKind: item.steeringKind,
         family: tone === "warning" ? "warning" : "informational",
         tone,
-        text: item.text ?? "",
+        text: item.text,
       },
     };
   }
@@ -434,7 +494,7 @@ function projectItem(
         origin: "system",
         family: systemFamily(item.eventKind),
         tone,
-        text: item.text ?? "",
+        text: item.text,
         ...(item.eventKind ? { eventKind: item.eventKind } : {}),
         ...(item.exitCode !== undefined ? { exitCode: item.exitCode } : {}),
       },
@@ -458,13 +518,13 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: item.text ?? item.output },
+        detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
   };
 }
 
-function activityDescription(item: ThreadItem): string | undefined {
+function activityDescription(item: ItemModel): string | undefined {
   if (item.description?.trim() || !isAskUser(item)) return item.description;
   const questions = parseAskUserQuestions(item);
   if (!questions) return item.description;
@@ -474,30 +534,26 @@ function activityDescription(item: ThreadItem): string | undefined {
     .join("; ")}`;
 }
 
-function activityDetail(item: ThreadItem): ActivityDetail {
+// The wire item carries no duration of its own; like the web's transcript,
+// the span is the settled item's own timestamps. Undefined while either is
+// missing (a running call, or a producer that stamps neither).
+function itemDurationMs(item: ItemModel): number | undefined {
+  if (item.startedAt === undefined || item.completedAt === undefined) {
+    return undefined;
+  }
+  return Date.parse(item.completedAt) - Date.parse(item.startedAt);
+}
+
+function activityDetail(item: ItemModel): ActivityDetail {
   return {
     description: activityDescription(item),
-    arguments: item.argumentsJson,
+    arguments: item.argumentsJSON,
     output: item.output,
     error: item.error,
     exitCode: item.exitCode,
-    durationMs: item.durationMs,
+    durationMs: itemDurationMs(item),
     callId: item.callId,
   };
-}
-
-export function projectItemAttachments(
-  item: ThreadItem,
-): AttachmentRef[] | undefined {
-  if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
-    if (!item.images?.length) return undefined;
-    return item.images.map((img, i) => inputAttachment(item.id, i, img));
-  }
-  if (isCommandExecution(item)) {
-    if (!item.outputImages?.length) return undefined;
-    return item.outputImages.map((img, i) => outputAttachment(item.id, i, img));
-  }
-  return undefined;
 }
 
 // --- clustering pass ---------------------------------------------------------
@@ -550,26 +606,10 @@ export function clusterActivities(
   return result;
 }
 
-// --- top-level projection ----------------------------------------------------
+// --- timeline projection -----------------------------------------------------
 
-export function projectApproval(
-  value: SandboxEscalationRequested,
-): MobileApproval {
-  return {
-    id: value.escalationId,
-    tool: value.tool,
-    kind: value.kind,
-    mode: value.mode,
-    path: value.deniedPath,
-    command: value.command,
-    output: value.outputSoFar,
-    partiallyRan: value.partiallyRan === true,
-  };
-}
-
-export function projectThread(thread: Thread): MobileConversation {
-  const turns = thread.turns ?? [];
-  const pendingAsks = pendingAskUserIds(turns);
+export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
+  const asks = askQuestionsByCall(model);
 
   // Project every item in order, preserving whether it is a final item or a
   // clusterable activity pre-item. Attachments emitted alongside an item
@@ -582,10 +622,9 @@ export function projectThread(thread: Thread): MobileConversation {
   }
   const ordered: Ordered[] = [];
 
-  for (const turn of turns) {
-    const items = turn.items ?? [];
-    for (const item of items) {
-      const result = projectItem(item, turn, pendingAsks);
+  for (const turn of model.turns) {
+    for (const item of turn.items) {
+      const result = projectItem(item, turn, asks);
       if (result.kind === "final") {
         ordered.push({
           type: "final",
@@ -624,7 +663,10 @@ export function projectThread(thread: Thread): MobileConversation {
     }
     // A turn error produces a failure item at the end of that turn's items.
     if (turn.error) {
-      ordered.push({ type: "final", item: failureItem(turn.error, turn.id) });
+      ordered.push({
+        type: "final",
+        item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+      });
     }
   }
 
@@ -683,38 +725,7 @@ export function projectThread(thread: Thread): MobileConversation {
   }
   flushActivityRun();
 
-  return {
-    id: thread.id,
-    activeTurnId:
-      thread.evener.activeTurnId ||
-      thread.turns?.find((turn) => isInProgressStatus(turn.status))?.id,
-    instanceId: thread.evener.instanceId ?? thread.id,
-    sessionId: thread.sessionId,
-    name: thread.name,
-    preview: thread.preview,
-    modelProvider: thread.modelProvider,
-    visionModel: thread.evener.visionModel,
-    status: thread.status.type,
-    resumeRequired: thread.evener.resumeRequired === true,
-    mutationStateAuthoritative:
-      thread.evener.mutationStateAuthoritative === true,
-    items,
-    capabilities: projectCapabilities(thread.evener.capabilities),
-    queue: projectQueue(thread.evener.queue),
-    usage: projectUsage(thread.evener),
-    reasoningEffort: thread.evener.reasoningEffort,
-    reasoningEffortLevels: thread.evener.reasoningEffortLevels,
-    supportsReasoning: thread.evener.supportsReasoning,
-    goal: thread.evener.goal ?? null,
-    tasks: thread.evener.tasks ?? null,
-    askPending: pendingAsks.size > 0,
-    pendingApprovals: (thread.evener.pendingEscalations ?? [])
-      .filter(
-        (value) =>
-          value.threadId === thread.id && value.ref === thread.evener.ref,
-      )
-      .map(projectApproval),
-  };
+  return items;
 }
 
 function failureItem(
@@ -730,43 +741,5 @@ function failureItem(
     id: `failure:${turnID}:${title}`,
     title,
     detail: parts.join("\n"),
-  };
-}
-
-function projectCapabilities(caps: ThreadCapabilities): MobileCapabilities {
-  return { ...caps };
-}
-
-export function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
-  const depth = queue.depth ?? 0;
-  const preview = queue.preview ?? queue.texts ?? [];
-  return {
-    revision: queue.revision,
-    depth,
-    preview: [...preview],
-    ...(queue.ids ? { ids: [...queue.ids] } : {}),
-    ...(queue.texts ? { texts: [...queue.texts] } : {}),
-    ...(queue.clientMutationIds
-      ? { clientMutationIds: [...queue.clientMutationIds] }
-      : {}),
-  };
-}
-
-// projectUsage copies EvenerThread's usage aggregate and context fields into
-// MobileUsage. Values are passed straight through: an absent wire field stays
-// undefined rather than becoming a 0 that would read as a real measurement.
-// Shared with the activity service, which adds only durationMs on top.
-export function projectUsage(evener: Thread["evener"]): MobileUsage {
-  const usage: EvenerUsage | undefined = evener.usage;
-  return {
-    inputTokens: usage?.inputTokens,
-    outputTokens: usage?.outputTokens,
-    cacheReadTokens: usage?.cacheReadTokens,
-    totalTokens: usage?.totalTokens,
-    cost: evener.cost,
-    contextUsed: evener.contextUsed,
-    contextWindow: evener.contextWindow,
-    contextRemaining: evener.contextRemaining,
-    contextPressure: evener.contextPressure,
   };
 }

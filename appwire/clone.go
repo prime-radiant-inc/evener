@@ -102,7 +102,7 @@ func cloneTurnError(e *TurnError) *TurnError {
 }
 
 func cloneEvenerThread(e EvenerThread) EvenerThread {
-	e.Diagnostics = cloneEvenerDiagnostics(e.Diagnostics)
+	e.Diagnostics = CloneEvenerDiagnostics(e.Diagnostics)
 	e.Queue = cloneQueueState(e.Queue)
 	e.PendingMutations = clonePendingMutations(e.PendingMutations)
 	e.PendingEscalations = append([]SandboxEscalationRequested(nil), e.PendingEscalations...)
@@ -185,7 +185,12 @@ func cloneCodexErrorInfo(value any) any {
 	}
 }
 
-func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
+// CloneEvenerDiagnostics returns a defensive copy of d in which every nested
+// mutable slice and pointer is independent of the original. It is the
+// diagnostics-level counterpart of CloneThread and lets a caller that needs to
+// attach one extra slice (e.g. sampled watches) do so without aliasing any other
+// slice of the source block.
+func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	if d == nil {
 		return nil
 	}
@@ -200,11 +205,13 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
+	cp.Watches = CloneEvenerWatches(d.Watches)
 	if d.TurnSlots != nil {
 		ts := *d.TurnSlots
 		cp.TurnSlots = &ts
 	}
 	cp.Agents = append([]string(nil), d.Agents...)
+	cp.DelegateDiagnostics = append([]string(nil), d.DelegateDiagnostics...)
 	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
 	return &cp
 }
@@ -219,6 +226,23 @@ func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 		out[i] = jobs[i]
 		out[i].Resumable = cloneBool(jobs[i].Resumable)
 		out[i].ExitCode = cloneInt(jobs[i].ExitCode)
+	}
+	return out
+}
+
+// CloneEvenerWatches returns a defensive copy of typed watch diagnostics.
+// Cadence, event, and delivery-time slices are copied so a consumer mutating
+// its copy cannot reach the shared wire value.
+func CloneEvenerWatches(watches []EvenerWatchInfo) []EvenerWatchInfo {
+	if watches == nil {
+		return nil
+	}
+	out := make([]EvenerWatchInfo, len(watches))
+	for i := range watches {
+		out[i] = watches[i]
+		out[i].Cadence = append([]EvenerWatchCadence(nil), watches[i].Cadence...)
+		out[i].Events = append([]string(nil), watches[i].Events...)
+		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
 	}
 	return out
 }

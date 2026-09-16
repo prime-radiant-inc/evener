@@ -1,15 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { initNotifications, resetNotificationsForTests } from "../notifications";
-import * as composerFocus from "../panes/session/composer/composerFocus";
-import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
-import { AppwireClient, type ConnectionState } from "../protocol/client";
-import { WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   InitializeResponse,
   NavigationReadParams,
@@ -17,7 +8,17 @@ import type {
   NavigationSessionLocation,
   NavigationSessionSummary,
   ThreadStartResponse,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { initNotifications, resetNotificationsForTests } from "../notifications";
+import * as composerFocus from "../panes/session/composer/composerFocus";
+import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -26,8 +27,6 @@ import {
   navigationStore,
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
-import { wireV2 } from "../stores/navigation/testing";
-import { keyID } from "../stores/navigation/types";
 import { resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";

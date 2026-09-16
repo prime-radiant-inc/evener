@@ -39,6 +39,11 @@ type FavoriteProjectAuthority struct {
 	ID       string
 	Quality  FavoriteAuthorityQuality
 	ClaimKey string
+	// Source is the normalized owning source of the project identity: "" for the
+	// controller's own projects and the host name for a remote one. Two hosts'
+	// projects may share an ID, so classification matches the decision key's
+	// source as well as its ID instead of collapsing every host onto the bare ID.
+	Source string
 }
 
 // FavoriteNodeKind identifies the current, collision-checked kind of a
@@ -106,8 +111,14 @@ type favoriteSessionIndex struct {
 }
 
 type favoriteProjectIndex struct {
-	byID         map[string][]FavoriteProjectAuthority
-	ambiguousIDs map[string]bool
+	byKey         map[projectDecisionKey][]FavoriteProjectAuthority
+	ambiguousKeys map[projectDecisionKey]bool
+}
+
+// projectDecisionKey is the source-qualified identity of a project decision.
+type projectDecisionKey struct {
+	source string
+	id     string
 }
 
 type favoriteNodeIndex struct {
@@ -196,16 +207,17 @@ func indexFavoriteSessions(authorities []FavoriteSessionAuthority) favoriteSessi
 
 func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProjectIndex {
 	index := favoriteProjectIndex{
-		byID:         make(map[string][]FavoriteProjectAuthority, len(authorities)),
-		ambiguousIDs: make(map[string]bool),
+		byKey:         make(map[projectDecisionKey][]FavoriteProjectAuthority, len(authorities)),
+		ambiguousKeys: make(map[projectDecisionKey]bool),
 	}
 	for _, authority := range authorities {
 		if authority.ID == "" {
 			continue
 		}
-		index.byID[authority.ID] = append(index.byID[authority.ID], authority)
+		key := projectDecisionKey{source: NormalizeDecisionSource(authority.Source), id: authority.ID}
+		index.byKey[key] = append(index.byKey[key], authority)
 	}
-	for id, authorities := range index.byID {
+	for key, authorities := range index.byKey {
 		if len(authorities) <= 1 {
 			continue
 		}
@@ -218,7 +230,7 @@ func indexFavoriteProjects(authorities []FavoriteProjectAuthority) favoriteProje
 			claimKeys[authority.ClaimKey] = struct{}{}
 		}
 		if len(claimKeys) > 1 || len(claimKeys) == 1 && authorities[0].ClaimKey == "" {
-			index.ambiguousIDs[id] = true
+			index.ambiguousKeys[key] = true
 		}
 	}
 	return index
@@ -323,14 +335,65 @@ func classifyFavoriteSession(key ArchiveKey, sessions favoriteSessionIndex, node
 }
 
 func classifyFavoriteProject(key ArchiveKey, projects favoriteProjectIndex) FavoriteDecisionClassification {
-	authorities := projects.byID[key.ID]
-	if len(authorities) != 1 || projects.ambiguousIDs[key.ID] {
+	decisionKey := projectDecisionKey{source: NormalizeDecisionSource(key.Source), id: key.ID}
+	authority, exact, ok := resolveProjectAuthority(projects, decisionKey)
+	if !ok {
 		return FavoriteDecisionClassification{State: FavoriteDecisionDormant}
 	}
-	if authorities[0].Quality != FavoriteAuthorityComplete {
-		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: key}
+	// An exact (source, ID) match canonicalizes to the decision's own key, the
+	// pre-existing shape. A bare decision matched across sources takes the
+	// authority's source-qualified key so presentation lands on that host.
+	canonicalKey := key
+	if !exact {
+		canonicalKey = ArchiveKey{Kind: "project", ID: authority.ID, Source: NormalizeDecisionSource(authority.Source)}
 	}
-	return FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: key}
+	if authority.Quality != FavoriteAuthorityComplete {
+		return FavoriteDecisionClassification{State: FavoriteDecisionDormant, CanonicalKey: canonicalKey}
+	}
+	return FavoriteDecisionClassification{State: FavoriteDecisionValid, CanonicalKey: canonicalKey}
+}
+
+// resolveProjectAuthority finds the single project authority a decision
+// addresses. An exact (source, ID) authority always wins, so an empty-source
+// decision keeps addressing the controller's own project when one exists.
+//
+// When a decision carries no source and has no exact authority, it resolves
+// against the authorities for that ID across every source. The rail now
+// qualifies its project favorites with the summary's sources, so its decisions
+// resolve exactly and this fallback is not on the rail's path: it exists for
+// decisions persisted before source qualification (and for clients that still
+// omit `source`), which would otherwise be stored under the controller key and
+// never match the host-keyed authority they were written against. Exactly one
+// candidate is accepted; two sources claiming the ID, or any ambiguous
+// candidate, stays unresolved so the decision cannot silently borrow another
+// host's authority.
+func resolveProjectAuthority(projects favoriteProjectIndex, key projectDecisionKey) (FavoriteProjectAuthority, bool, bool) {
+	if authorities := projects.byKey[key]; len(authorities) == 1 && !projects.ambiguousKeys[key] {
+		return authorities[0], true, true
+	}
+	if key.source != "" {
+		return FavoriteProjectAuthority{}, false, false
+	}
+	var (
+		found     FavoriteProjectAuthority
+		matches   int
+		ambiguous bool
+	)
+	for candidate, authorities := range projects.byKey {
+		if candidate.id != key.id {
+			continue
+		}
+		if len(authorities) != 1 || projects.ambiguousKeys[candidate] {
+			ambiguous = true
+			continue
+		}
+		found = authorities[0]
+		matches++
+	}
+	if ambiguous || matches != 1 {
+		return FavoriteProjectAuthority{}, false, false
+	}
+	return found, false, true
 }
 
 func appendUniqueString(values []string, value string) []string {

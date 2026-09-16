@@ -1,14 +1,13 @@
 import {
+	ACTION_DISPLAY_ROWS,
+	createKeybindingsRegistry,
 	DEFAULT_BINDINGS,
-	registerDefaultBindings,
-} from "../../cmd/evener-hub/frontend/src/keybindings/defaults";
-import { ACTION_DISPLAY_ROWS } from "../../cmd/evener-hub/frontend/src/keybindings/display";
-import { createKeybindingsRegistry } from "../../cmd/evener-hub/frontend/src/keybindings/registry";
-import {
 	type KeybindingsPlatform,
+	type KeybindingsRule,
+	registerDefaultBindings,
 	validateOverrideRules,
-} from "../../cmd/evener-hub/frontend/src/keybindings/validation";
-import type { KeybindingsRule } from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
+import { parseKeybinding } from "tinykeys";
 
 const actionIds = new Set(ACTION_DISPLAY_ROWS.map((row) => row.actionId));
 
@@ -49,7 +48,7 @@ export function keybindingPreview(
 	rules: readonly KeybindingsRule[],
 	platform: KeybindingsPlatform = "apple",
 ) {
-	const registry = createKeybindingsRegistry();
+	const registry = createKeybindingsRegistry(parseKeybinding);
 	registerDefaultBindings(registry);
 	// Native has no browser navigator. Resolve the portable alias explicitly;
 	// default registrations already contain both Command and Control bindings.

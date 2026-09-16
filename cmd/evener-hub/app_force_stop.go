@@ -27,9 +27,15 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		return appwire.Unavailable("local session ownership is not configured")
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget)
+	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
 	if err != nil {
 		return appwire.Unavailable(err.Error())
+	}
+	// A caller-rendered daemon identity is compared against verified
+	// discovery before any admission or recovery fence, so a stale row can
+	// never signal a replacement process.
+	if err := expectedDaemonConflict(entry, params.ExpectedDaemon); err != nil {
+		return err
 	}
 	// Verify the process before interrupting RPCs. Kill verifies this retained
 	// process handle again after ownership and deletion reservations are held.
@@ -37,11 +43,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if controller == nil {
 		controller = daemonprocess.NewController()
 	}
-	sessionID := entry.SessionID
-	if sessionID == "" {
-		sessionID = entry.ThreadID
-	}
-	target := daemonprocess.Target{PID: entry.PID, SessionID: sessionID, StateDir: entry.StateDir, StartedAt: entry.StartedAt}
+	target := hubcore.DaemonTarget(entry)
 	process, err := controller.Open(target)
 	exited := errors.Is(err, daemonprocess.ErrExited)
 	if err != nil && !exited {
@@ -55,7 +57,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			log.Printf("force stop process handle cleanup: %v", err)
 		}
 	}()
-	if exited && recoveryTarget != "" && sessionID != recoveryTarget {
+	if exited && recoveryTarget != "" && target.SessionID != recoveryTarget {
 		return appwire.Unavailable("exited daemon claim does not match session recovery authority")
 	}
 	// Descendants share the stopped process, but keep independent transcript
@@ -74,7 +76,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		if entry.StateDir == "" {
 			return nil
 		}
-		ids, err := agent.SessionOwnedDelegateIDs(scanCtx, entry.StateDir, sessionID)
+		ids, err := agent.SessionOwnedDelegateIDs(scanCtx, entry.StateDir, target.SessionID)
 		if err != nil {
 			return appwire.Unavailable(fmt.Sprintf("read daemon delegates: %v", err))
 		}
@@ -123,8 +125,12 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if currentTarget != recoveryTarget {
 		return appwire.Unavailable("session recovery authority changed; retry force stop")
 	}
-	if err := forceStopOwnershipUnchanged(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget); err != nil {
+	current, err := forceStopRereadEntry(cfg.RunDir, ref.ThreadID, entry, cfg.DaemonProcesses, currentTarget, params.ExpectedDaemon)
+	if err != nil {
 		return appwire.Unavailable(err.Error())
+	}
+	if err := expectedDaemonConflict(current, params.ExpectedDaemon); err != nil {
+		return err
 	}
 	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return err
@@ -143,7 +149,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		// it would overwrite, even when the requested alias still names it.
 		for _, alias := range aliases {
 			authority := cfg.ResumeLocks.RecoveryState(alias).ResumeSessionID
-			if authority != "" && authority != sessionID {
+			if authority != "" && authority != target.SessionID {
 				return appwire.Unavailable("exited daemon claim conflicts with alias recovery authority")
 			}
 		}
@@ -153,11 +159,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
-	if err := cfg.ResumeLocks.PersistForceStop(aliases, sessionID); err != nil {
+	if err := cfg.ResumeLocks.PersistForceStop(aliases, target.SessionID); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {
-		if err := cfg.ResumeLocks.ConfirmForceStop(sessionID); err != nil {
+		if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
 			return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
 		}
 		refreshAfterForceStop(ctx, cfg)
@@ -178,7 +184,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := fenceDescendants(scanCtx); err != nil {
 		return err
 	}
-	if err := cfg.ResumeLocks.ConfirmForceStop(sessionID); err != nil {
+	if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
 	}
 	refreshAfterForceStop(ctx, cfg)
@@ -188,14 +194,45 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 // forceStopOwnershipUnchanged revalidates discovery after acquiring every
 // alias lock, before signaling the verified process.
 func forceStopOwnershipUnchanged(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string) error {
-	current, err := forceStopEntry(runDir, sessionID, controller, &previous, recoveryTarget)
+	_, err := forceStopRereadEntry(runDir, sessionID, previous, controller, recoveryTarget, nil)
+	return err
+}
+
+// forceStopRereadEntry revalidates discovery after acquiring every alias
+// lock and returns the current verified entry for the caller's own fences.
+func forceStopRereadEntry(runDir, sessionID string, previous rendezvous.Entry, controller daemonprocess.Controller, recoveryTarget string, expected *appwire.DaemonIdentity) (rendezvous.Entry, error) {
+	current, err := forceStopEntry(runDir, sessionID, controller, &previous, recoveryTarget, expected)
 	if err != nil {
-		return err
+		return rendezvous.Entry{}, err
 	}
 	if !sameForceStopEntry(current, previous) {
-		return errors.New("daemon ownership changed; refresh the session before force stopping")
+		return rendezvous.Entry{}, errors.New("daemon ownership changed; refresh the session before force stopping")
+	}
+	return current, nil
+}
+
+// expectedDaemonConflict compares a caller-rendered daemon identity (the
+// resident row the action was aimed at) against the verified current entry.
+// A nil expectation preserves existing ref-only callers. The identity is
+// recomputed from the current rendezvous entry on every call, so a cached
+// Generation across a daemon replacement yields a conflict — the intended
+// signal.
+func expectedDaemonConflict(entry rendezvous.Entry, expected *appwire.DaemonIdentity) error {
+	if expected == nil {
+		return nil
+	}
+	if daemonIdentity(entry) != *expected {
+		return appwire.Conflict("daemon identity changed since the resident row was rendered; refresh before acting")
 	}
 	return nil
+}
+
+// forceStopIdentityMatches reports whether entry is the exact resident the
+// caller rendered into expected. A nil expectation preserves ref-only
+// resolution. It reuses expectedDaemonConflict so selection and the caller's
+// final conflict check compare through one identity implementation.
+func forceStopIdentityMatches(entry rendezvous.Entry, expected *appwire.DaemonIdentity) bool {
+	return expectedDaemonConflict(entry, expected) == nil
 }
 
 // sameForceStopEntry compares persisted ownership values; timestamp location
@@ -208,10 +245,32 @@ func sameForceStopEntry(a, b rendezvous.Entry) bool {
 	return a == b
 }
 
-func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controller, previous *rendezvous.Entry, recoveryTarget string) (rendezvous.Entry, error) {
+func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controller, previous *rendezvous.Entry, recoveryTarget string, expected *appwire.DaemonIdentity) (rendezvous.Entry, error) {
 	entries, err := rendezvous.ListStrict(runDir)
 	if err != nil {
 		return rendezvous.Entry{}, err
+	}
+	// A caller that names one exact daemon resolves it before the ref-ambiguity
+	// checks: two live residents can share a ref, and the rendered identity says
+	// which one the request means. Candidates must also claim the requested
+	// session, so an identity can never retarget an unrelated resident. An
+	// identity that matches no claim leaves the list untouched, so the caller's
+	// own identity conflict check still refuses a stale or foreign row rather
+	// than a same-ref replacement being selected.
+	if expected != nil {
+		var addressed []rendezvous.Entry
+		for _, entry := range entries {
+			if !forceStopIdentityMatches(entry, expected) {
+				continue
+			}
+			if entry.SessionID != sessionID && entry.ThreadID != sessionID && entry.WorkspaceRef != "local:"+sessionID {
+				continue
+			}
+			addressed = append(addressed, entry)
+		}
+		if len(addressed) != 0 {
+			entries = addressed
+		}
 	}
 	// Retained crash markers are evidence, not competing live ownership. Only
 	// inspect overlapping claims, and retain every unresolved process identity.
@@ -244,11 +303,7 @@ func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controlle
 			if !overlaps(entry) {
 				return false
 			}
-			id := entry.SessionID
-			if id == "" {
-				id = entry.ThreadID
-			}
-			process, err := controller.Open(daemonprocess.Target{PID: entry.PID, SessionID: id, StateDir: entry.StateDir, StartedAt: entry.StartedAt})
+			process, err := controller.Open(hubcore.DaemonTarget(entry))
 			if err == nil {
 				_ = process.Close()
 			}

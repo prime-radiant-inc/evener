@@ -13,7 +13,7 @@
 // item.raw (registry.go marshals it straight into ToolState; appprojector
 // and apptranscript carry it onto ThreadItem.raw unchanged; reducer.ts's
 // wireItemToModel keeps it as item.raw verbatim), and taskData.ts's
-// parseTaskState narrows it - reusing chrome/taskData.ts's
+// parseTaskState narrows it - reusing the AppWire package's
 // parseTaskListData, since it's the same agent/task/task_store.go Task[]
 // shape the tasks side panel already parses from a different wire path. An
 // update row's label prefers the matched task's description there
@@ -34,8 +34,8 @@
 // the 2026-07-15 plan trimmed those from the legacy card deliberately (a
 // changes-only card, not a full-plan disclosure; the sidebar remains the
 // full-plan view), not because the data is unavailable.
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str, taskAggregateLabel } from "@evener/appwire-client";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -248,21 +248,26 @@ function TaskCardBody({ item }: ToolRenderProps) {
   if (item.error) return null;
   const rows = mutationRows(item) ?? [];
   const progress = parseProgress(item.output);
+  // The parsed footer keeps the backend's own outcome shape (done/cancelled/
+  // remaining/total, or legacy done/total); only the displayed sentence is
+  // condensed, through the same helper the panel trigger uses.
+  // Derived unconditionally: taskAggregateLabel always returns a non-empty
+  // sentence, and the head below only renders when progress parsed.
+  const progressLabel = taskAggregateLabel({
+    total: progress?.total ?? 0,
+    done: progress?.done ?? 0,
+    cancelled: progress?.cancelled,
+    remaining: progress?.remaining,
+  });
   return (
     <div className={CLASS.card} data-testid="task-card">
       {progress && (
         <div className={CLASS.head}>
           <span className={CLASS.progress} data-testid="task-card-progress">
-            {progress.cancelled === undefined || progress.remaining === undefined
-              ? `${progress.done} of ${progress.total} done`
-              : `${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`}
+            {progressLabel}
           </span>
           <Meter
-            label={
-              progress.cancelled === undefined || progress.remaining === undefined
-                ? `Task progress: ${progress.done} of ${progress.total} complete`
-                : `Task progress: ${progress.done} done, ${progress.cancelled} cancelled, ${progress.remaining} remaining (${progress.total} total)`
-            }
+            label={`Task progress: ${progressLabel}`}
             value={progress.done + (progress.cancelled ?? 0)}
             max={progress.total}
             tone="neutral"

@@ -1,9 +1,7 @@
+import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
@@ -256,7 +254,10 @@ test("watch card renders a trigger and its note separately", () => {
   );
 
   const card = focusCard();
-  expect(card.textContent).toContain("output matching “ready”");
+  // The card words its trigger through the shared composer, so a pattern reads
+  // exactly as it does in a watch list row: quoted, with no label of its own.
+  expect(card.textContent).toContain("“ready”");
+  expect(card.textContent).not.toContain("output matching");
   const noteLabel = within(card).getByText("Note");
   expect(noteLabel.tagName).toBe("DT");
   expect(noteLabel.nextElementSibling?.textContent).toBe("Preserve the release context");
@@ -412,6 +413,20 @@ test("delegate card carries status, mandate, agent/model, duration, and usage", 
   expect(text).toContain("gpt-test");
   expect(text).toContain("2s");
   expect(text).toContain("↑1k ↓300");
+});
+
+// A blank resolvedModel is absence, not a model name: the card falls through
+// to the next name the projection carries.
+test("delegate card skips a blank resolved model", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={delegateView("dlg_blank_model", {}, { resolvedModel: "  ", model: "fallback-model" })}
+      id="dlg_blank_model"
+    />,
+  );
+
+  expect(focusCard().textContent).toContain("fallback-model");
 });
 
 test("an ended running job shows ended without a live indicator or stale caption", () => {

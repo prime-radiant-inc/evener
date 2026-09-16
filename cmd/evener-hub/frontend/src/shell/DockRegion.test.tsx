@@ -1,12 +1,12 @@
+import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
-import { wireV2 } from "../stores/navigation/testing";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";

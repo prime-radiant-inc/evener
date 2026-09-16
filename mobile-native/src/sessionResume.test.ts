@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WebSocketLike } from "../../appwire-client/typescript/transport";
-import type {
-	AnyNotification,
-	Thread,
-} from "../../appwire-client/typescript/types.gen";
+import type { AnyNotification, Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import {
 	createConversationStore,
@@ -142,7 +138,6 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 const sink: LiveActivitySink = {
 	setLiveView: () => true,
 	applyLiveNotification: (_n: AnyNotification, _identity) => "applied",
-	setLiveCapabilities: () => true,
 	reset: () => {},
 };
 

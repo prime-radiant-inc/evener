@@ -82,6 +82,81 @@ func TestBuildTreeCarriesSessionJobsForNavigation(t *testing.T) {
 	}
 }
 
+// The daemon's watch inventory rides the live entry onto the tree node, per
+// session. Each session's row carries only its own daemon's rows, so a
+// receiver watch that both sessions can see is never copied across and a
+// rollup cannot double count it.
+func TestBuildTreeCarriesSessionWatchesForNavigation(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "sibling", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "child", CreatedAt: now, UpdatedAt: now, ParentSessionID: "parent", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle,
+			Watches:            []appwire.EvenerWatchInfo{{ID: "watch-parent", Source: "timer", Note: "owner"}},
+			RunningSubagentIDs: []string{"child"},
+			// The child has no LiveEntry of its own; its watches ride the parent's
+			// ChildWatches, the way the prober now reports them.
+			ChildWatches: map[string][]appwire.EvenerWatchInfo{
+				"child": {{ID: "watch-child", Source: "self", Note: "child-own"}},
+			}},
+		{PID: 2, SessionID: "sibling", Status: appwire.ThreadStatusIdle,
+			Watches: []appwire.EvenerWatchInfo{{ID: "watch-sibling", Source: "output", Note: "receiver"}}},
+	}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	parentRow, inLive, parentProject, inProject := liveAndProjectRowsFor(tree, "parent")
+	if !inLive || !inProject {
+		t.Fatalf("parent missing: live=%v project=%v", inLive, inProject)
+	}
+	if len(parentRow.Watches) != 1 || parentRow.Watches[0].ID != "watch-parent" {
+		t.Fatalf("parent live watches = %+v, want only watch-parent", parentRow.Watches)
+	}
+	if len(parentProject.Watches) != 1 || parentProject.Watches[0].ID != "watch-parent" {
+		t.Fatalf("parent project watches = %+v, want only watch-parent", parentProject.Watches)
+	}
+	siblingRow, inLive, _, _ := liveAndProjectRowsFor(tree, "sibling")
+	if !inLive {
+		t.Fatal("sibling missing from the Live tier")
+	}
+	if len(siblingRow.Watches) != 1 || siblingRow.Watches[0].ID != "watch-sibling" {
+		t.Fatalf("sibling watches = %+v, want only watch-sibling", siblingRow.Watches)
+	}
+	for _, watch := range siblingRow.Watches {
+		if watch.ID == "watch-parent" {
+			t.Fatalf("sibling carries the parent's watch: %+v", siblingRow.Watches)
+		}
+	}
+	// The in-process child carries its own watches on its nested row — live and
+	// project — and neither the parent's nor the sibling's.
+	if len(parentRow.Children) != 1 {
+		t.Fatalf("parent children = %+v, want the one nested subagent", parentRow.Children)
+	}
+	childRow := parentRow.Children[0]
+	if childRow.ID != "child" {
+		t.Fatalf("child row ID = %q, want child", childRow.ID)
+	}
+	if len(childRow.Watches) != 1 || childRow.Watches[0].ID != "watch-child" {
+		t.Fatalf("child live watches = %+v, want only watch-child", childRow.Watches)
+	}
+	if len(parentProject.Children) != 1 || len(parentProject.Children[0].Watches) != 1 || parentProject.Children[0].Watches[0].ID != "watch-child" {
+		t.Fatalf("child project watches = %+v, want only watch-child", parentProject.Children)
+	}
+}
+
+// An older daemon omits Watches entirely; the diagnostics helper must treat
+// that (and a nil probe) as an empty list rather than an error.
+func TestDiagnosticsWatchesAbsentYieldsEmptyList(t *testing.T) {
+	if got := diagnosticsWatches(nil); len(got) != 0 {
+		t.Fatalf("diagnosticsWatches(nil) = %+v, want empty", got)
+	}
+	if got := diagnosticsWatches(&appwire.EvenerDiagnostics{}); len(got) != 0 {
+		t.Fatalf("diagnosticsWatches(without Watches) = %+v, want empty", got)
+	}
+}
+
 func TestBuildTreeNeedsYouCarriesSessionJobs(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "parent", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
@@ -234,7 +309,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 		OK:                    true,
 	}}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true }
+	r.SetProcessAlive(func(int) bool { return true })
 	r.Refresh()
 
 	metas := []schema.SessionMeta{
@@ -247,7 +322,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 
 	// kill -9 the parent: its probe fails and the process is confirmed gone.
 	prober.result = ProbeResult{}
-	r.procAlive = func(int) bool { return false }
+	r.SetProcessAlive(func(int) bool { return false })
 	r.Refresh()
 	parent, ok := r.Find("01PARENT")
 	if !ok || !parent.Crashed || !slices.Contains(parent.RunningSubagentIDs, "01CHILD") {

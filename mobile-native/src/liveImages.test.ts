@@ -3,7 +3,7 @@ import type {
   AnyNotification,
   Thread,
   ThreadItem,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
   type ConversationClientLike,
   createConversationService,
@@ -128,7 +128,6 @@ it("shows and replaces live input images without waiting for the turn to stop", 
           id: "user:0",
           src: "data:image/png;base64,AQID",
           name: "first.png",
-          mediaType: "image/png",
         },
       ],
     },

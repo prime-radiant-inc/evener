@@ -2,12 +2,13 @@ import type {
 	NavigationInvalidationTarget,
 	NavigationMutation,
 	NavigationReadParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	normalizedGraphFromSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
+	requiredRevision,
+} from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { resourceKeyFor } from "./navigationPages";
 
@@ -63,28 +64,13 @@ export async function navigationReadback(
 			throw Error("Navigation could not be refreshed.");
 		if (generationId && decoded.version.generationId !== generationId)
 			throw Error("The hub restarted during the check. Refresh to try again.");
-		if (receipt?.generation_id === decoded.version.generationId) {
-			const floor = Math.max(
-				0,
-				...receipt.targets
-					.filter((target) => {
-						const resource = resourceFor(target);
-						return (
-							resource &&
-							resource.resource === params.resource &&
-							resource.section === params.section &&
-							resource.sectionId === params.sectionId &&
-							resource.catalog === params.catalog &&
-							resource.projectKey === params.projectKey
-						);
-					})
-					.map((target) => target.revision ?? 0),
+		if (
+			receipt?.generation_id === decoded.version.generationId &&
+			decoded.version.revision < requiredRevision(key, receipt.targets)
+		)
+			throw Error(
+				"Navigation is older than the acknowledged change. Refresh to try again.",
 			);
-			if (decoded.version.revision < floor)
-				throw Error(
-					"Navigation is older than the acknowledged change. Refresh to try again.",
-				);
-		}
 		return {
 			...decoded,
 			data:

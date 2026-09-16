@@ -33,7 +33,7 @@ export interface NavigationSessionModel {
 type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
-  onOpenPane(pane: SessionPanelKind): void;
+  onOpenPane(pane: SessionPanelKind | "notes"): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
   onForceStop?(): Promise<void>;
@@ -54,7 +54,7 @@ export interface SessionMenuProps {
   /** Compatibility input for rail rows; the pane chrome uses `session`. */
   treeNode?: NavigationSessionModel;
   panesOpen: { details: boolean; tasks: boolean; activity: boolean; notes: boolean };
-  taskLabel?: string; // e.g. "Tasks 3/7"; defaults to "Tasks"
+  taskLabel?: string; // e.g. "Tasks"; defaults to "Tasks"
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
   /** Pane-only action. Rail/sidebar callers omit it. */
   onOpenVerbosity?: () => void;

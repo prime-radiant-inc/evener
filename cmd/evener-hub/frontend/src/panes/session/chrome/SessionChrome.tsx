@@ -22,10 +22,11 @@
 // composer is where you act on this session"; the command palette only
 // hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
+
+import type { NavigationSessionLocation } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
+import { isNavigationUnavailable } from "@evener/appwire-client/state/navigation";
 import { useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -37,8 +38,8 @@ import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
-import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
@@ -47,10 +48,9 @@ import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
-import { NotesPanel, type NotesPanelHandle } from "./NotesPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel, type TasksPanelHandle, taskAggregateLabel } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 import "../../sessionPanels";
 
 export type SessionChromePlacement = "footer" | "composer" | "menu";
@@ -61,6 +61,14 @@ export interface SessionChromeProps {
   onOpenTasks?: () => void;
   /** Live session mounts opt into the hidden panel's initial activity discovery. */
   discoverActivity?: boolean;
+  /**
+   * Mount ONLY the hidden discovery owner, with no chrome of its own. The
+   * composer uses this while its follow-up card rests, when the card's own
+   * control row - the mount that otherwise carries `discoverActivity` - is
+   * absent, so initial activity discovery still follows the pane on screen
+   * (issue #1335).
+   */
+  discoveryOnly?: boolean;
 }
 
 const CLASS = {
@@ -81,6 +89,7 @@ export function SessionChrome({
   placement = "footer",
   onOpenTasks,
   discoverActivity = false,
+  discoveryOnly = false,
 }: SessionChromeProps) {
   const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -90,7 +99,7 @@ export function SessionChrome({
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
-  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref: sessionRef }));
+  const notesOpen = useTopNotesExpanded(sessionRef);
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
@@ -140,8 +149,29 @@ export function SessionChrome({
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
-  const notesRef = useRef<NotesPanelHandle>(null);
   if (!model) return null;
+
+  // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
+  // is the opt-in wiring that must not drift, so it is spelled exactly once
+  // here; `discoveryOnly` is itself an opt-in (it exists for nothing else).
+  const hiddenActivityPanel = (
+    <ActivityPanel
+      ref={activityRef}
+      sessionRef={sessionRef}
+      model={model}
+      watches={fallbackSession?.watches}
+      omittedWatches={fallbackSession?.omitted_watches}
+      omittedArmedWatches={fallbackSession?.omitted_armed_watches}
+      hideTrigger
+      refreshWhenHidden
+      discoverWhenHidden={discoverActivity || discoveryOnly}
+    />
+  );
+
+  // A chrome-less mount returns the hidden discovery owner and nothing else:
+  // no status row, no menu, no second "⋯". This early return sits after every
+  // hook call above (everything below is plain values and handlers).
+  if (discoveryOnly) return hiddenActivityPanel;
 
   // Force-stop eligibility mirrors the reach of the retired inline footer
   // button (Session.tsx): any local session that isn't closed, including
@@ -172,8 +202,7 @@ export function SessionChrome({
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    if (isMobile) notesRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionNotes", { ref: sessionRef });
+    topNotesStore.getState().toggleAndFocus(sessionRef);
   };
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
@@ -234,7 +263,11 @@ export function SessionChrome({
   const archiveAction = async () => {
     if (!menuSession) return;
     try {
-      const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
+      // The canonical ref, not the bare session ID: a remote row's ref is
+      // host-qualified and is the identity its archive decision is read back
+      // under, so the bare ID would store a local decision the row never
+      // consults. "local:<id>" refs normalize server-side to the bare ID.
+      const result = await setArchived("session", menuSession.ref, menuSession.tier !== "archived");
       if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't update archive state", err));
@@ -296,16 +329,7 @@ export function SessionChrome({
         <div className={CLASS.right}>
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
           {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
-          <ActivityPanel
-            ref={activityRef}
-            sessionRef={sessionRef}
-            model={model}
-            now={now}
-            hideTrigger
-            refreshWhenHidden
-            discoverWhenHidden={discoverActivity}
-          />
-          <NotesPanel ref={notesRef} sessionRef={sessionRef} model={model} hideTrigger />
+          {hiddenActivityPanel}
           <SessionMenu
             sessionRef={sessionRef}
             title={model.name}
@@ -315,7 +339,9 @@ export function SessionChrome({
             canReadNotes={canReadSharedNotes(model)}
             session={menuSession}
             panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen, notes: notesOpen }}
-            taskLabel={model.tasks ? `Tasks ${taskAggregateLabel(model.tasks)}` : undefined}
+            // No taskLabel: the menu entry stays a plain "Tasks". Counts live
+            // inline and in the panel; even a condensed aggregate would crowd
+            // the menu's leading pane group.
             activityLabel={activityLabel}
             onOpenVerbosity={() => setVerbosityOpen(true)}
             actions={{

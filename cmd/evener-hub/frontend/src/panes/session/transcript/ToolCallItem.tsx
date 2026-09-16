@@ -4,11 +4,17 @@
 // (toolRenderers.ts) by ItemModel.toolName, which pairs a raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
+
+import type { ItemModel, ThreadModel } from "@evener/appwire-client";
+import {
+  hasErrorText,
+  parseArgs,
+  parseJSONObject,
+  scopedDisclosureId,
+  stableDelegateDisplayStatus,
+  str,
+} from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
-import { hasErrorText } from "../../../protocol/itemFailure";
-import type { ItemModel, ThreadModel } from "../../../protocol/model";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { parseArgs, parseJSONObject, str } from "../../../protocol/toolCallText";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
@@ -18,12 +24,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";

@@ -6,10 +6,10 @@
 // default) and the layered credential display moved into InstanceSheet,
 // so the list stays one-target-per-row on desktop and touch alike. Pure
 // presentational: the section owns selection.
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { InstanceEntry } from "@evener/appwire-client";
+import { credentialLayers, keylessByDesign, styleInfoText, unconfiguredLabel } from "@evener/appwire-client";
 import { Chevron, Chip, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { credentialLayers, keylessByDesign, styleInfoText, unconfiguredLabel } from "./credentialLabels";
 import styles from "./InstanceRow.module.css";
 
 const CLASS = {

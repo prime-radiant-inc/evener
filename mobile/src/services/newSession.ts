@@ -23,7 +23,7 @@ import type {
   Thread,
   ThreadStartResponse,
   Turn,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation";
 
 export interface NewSessionParams {

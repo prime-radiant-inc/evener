@@ -6,26 +6,23 @@
 // the keyboard-navigable results list, the inline error strip, and the help
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
+
+import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
+import { errorText, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
-import { errorText, isHubLaunchError } from "../../protocol/errors";
-import type {
-  CommandDescriptor,
-  NavigationSessionSummary,
-  SearchResponse,
-  SearchResult,
-} from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { useConnectionStore } from "../../stores/connection";
 import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
 import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useClient } from "../clientContext";
+import { openInNewTab } from "../openInNewTab";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { cadenceStateFor } from "../rail/RailRow";
 import { navigate } from "../routing";
@@ -259,12 +256,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const activeThread = useStore(threadsStore, (state) =>
     ctx.sessionRef !== null ? state.threads.get(ctx.sessionRef) : undefined,
   );
-  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(() => {
-    if (ctx.sessionRef === null) return undefined;
-    const diagnostics = activeThread?.diagnostics;
-    if (!diagnostics?.plugins) return null;
-    return new Set(diagnostics.plugins.map((plugin) => plugin.name));
-  }, [activeThread, ctx.sessionRef]);
+  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(
+    () => (ctx.sessionRef === null ? undefined : sessionPluginNames(activeThread?.diagnostics)),
+    [activeThread, ctx.sessionRef],
+  );
   const visibleCatalog = useMemo(
     () => visibleCatalogCommands(catalogCommands, activePluginNames),
     [activePluginNames, catalogCommands],
@@ -539,7 +534,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // uses to open a session. A bare-id URL does not route, and naming a
       // session differently from the rail can open it twice in two panes.
       const url = `/s/${encodeURIComponent(item.result.ref)}`;
-      if (newTab) window.open(url, "_blank");
+      // openInNewTab keeps the new tab from copying this tab's sessionStorage -
+      // which carries the per-client mutation identity, and a shared identity
+      // would let both tabs claim each other's durable sends.
+      if (newTab) openInNewTab(url);
       else navigate(url);
     }
   }

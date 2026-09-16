@@ -10,8 +10,15 @@
 // The list rendering is this widget's own rather than a shared generic
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
+
+import {
+  buildPickerRows,
+  friendlyLaunchErrorMessage,
+  type ModelCatalogEntry,
+  type ModelCatalog as ModelCatalogShape,
+  pickableModelRows,
+} from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { friendlyLaunchErrorMessage } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -20,10 +27,8 @@ import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
-import { buildPickerRows, pickableRows } from "./pickerRows";
-import type { ModelCatalogEntry, ModelCatalog as ModelCatalogShape } from "./types";
 
-export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
+export type { ModelCatalogEntry } from "@evener/appwire-client";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
@@ -147,7 +152,7 @@ export function ModelCatalogPanel({
   // FocusScope (the first tabbable option).
   const query = isSheet ? "" : (typed ?? "");
   const rows = useMemo(() => buildPickerRows(catalog, query), [catalog, query]);
-  const picks = useMemo(() => pickableRows(rows), [rows]);
+  const picks = useMemo(() => pickableModelRows(rows), [rows]);
   const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
   // The current model can appear TWICE (once under Recent, once under its
   // provider group), but a single-select listbox may have exactly one

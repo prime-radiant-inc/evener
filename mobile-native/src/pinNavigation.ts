@@ -1,15 +1,17 @@
 import type {
 	NavigationPinSectionDescriptor,
 	NavigationSessionLocation,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	normalizedGraphFromSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
+	requiredRevision,
+} from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import type { NavigationPages } from "./navigationPages";
+import { singleFlight } from "./singleFlight";
 
 export async function readPinLocation(
 	client: ConversationClientLike,
@@ -145,16 +147,11 @@ export async function refreshPinNavigation(
 			throw Error(
 				"The hub restarted before the pin change could be confirmed. Refresh to read its current state.",
 			);
-		if (version.generationId === receipt.generation_id) {
-			const floor = Math.max(
-				0,
-				...receipt.targets
-					.filter((target) => target.kind === "pin_catalog")
-					.map((target) => target.revision ?? 0),
-			);
-			if (version.revision < floor)
-				throw Error("The pin catalog is older than the acknowledged change.");
-		}
+		if (
+			version.generationId === receipt.generation_id &&
+			version.revision < requiredRevision(pages.resourceKey, receipt.targets)
+		)
+			throw Error("The pin catalog is older than the acknowledged change.");
 	}
 	checkCurrent();
 	checkedPage();
@@ -168,4 +165,40 @@ export async function refreshPinNavigation(
 				(section) => section.id === (sectionId ?? location?.pin_section_id),
 			) ?? null,
 	};
+}
+
+/** Re-read the pin navigation whenever the hub says the pin catalog changed,
+ * one read at a time. A run only reads while the catalog is still stale, so
+ * a change that a read in flight (or a mutation's own confirmation) already
+ * absorbed costs nothing and a hub that notifies on every read cannot keep
+ * this reading. A read that ends stale is retried once, so a change that
+ * landed between its location and catalog steps is not lost. */
+export function followPinCatalog(
+	pages: Pick<
+		NavigationPages<NavigationPinSectionDescriptor>,
+		"watch" | "getSnapshot"
+	>,
+	read: () => Promise<unknown>,
+	canRead: () => boolean,
+) {
+	const reads = singleFlight(
+		() =>
+			(pages.getSnapshot().stale ? read() : Promise.resolve())
+				.catch(() =>
+					pages.getSnapshot().stale && canRead() ? read() : undefined,
+				)
+				.catch(() => undefined),
+		canRead,
+	);
+	return { drain: reads.drain, stop: pages.watch(reads.request) };
+}
+
+/** True while the catalog still lists a section exactly as the user was
+ * shown it; a renamed, recounted or missing section is a change. */
+export function pinSectionAsShown(
+	rows: readonly NavigationPinSectionDescriptor[],
+	shown: NavigationPinSectionDescriptor,
+) {
+	const now = rows.find((row) => row.id === shown.id);
+	return !!now && now.name === shown.name && now.count === shown.count;
 }

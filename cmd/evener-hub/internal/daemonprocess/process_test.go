@@ -206,3 +206,69 @@ func TestInspectionFailureAfterExitIsIdempotent(t *testing.T) {
 		t.Fatalf("Open did not report confirmed exit: %v", err)
 	}
 }
+
+// withFakeKernel binds Identify to a fake process for the test's duration.
+func withFakeKernel(t *testing.T, k *kernelProcess) {
+	t.Helper()
+	previous := nativeBind
+	nativeBind = func(int) (processHandle, error) { return k, nil }
+	t.Cleanup(func() { nativeBind = previous })
+}
+
+// Identify answers NotOwner only on positive evidence: the process is gone,
+// its owner or earliest possible start cannot be the daemon's. A fact that
+// merely fails to vouch (no generation or start read, the log not seen, an
+// argv that is not an `evener serve` invocation - the skill guard's daemons
+// run inside a test binary, a start that may postdate the entry to the tick)
+// is Unknown, with the reason; Open refuses on every one of them alike.
+func TestIdentifyAnswersNotOwnerOnlyOnPositiveEvidence(t *testing.T) {
+	target := validTarget() // StartedAt 200
+	cases := []struct {
+		name   string
+		change func(*kernelProcess)
+		want   Identity
+	}{
+		{"owner", func(*kernelProcess) {}, IdentityOwner},
+		{"wrong owner", func(k *kernelProcess) { k.facts.uid++ }, IdentityNotOwner},
+		{"started after the entry", func(k *kernelProcess) { k.facts.startedAt = time.Unix(201, 0) }, IdentityNotOwner},
+		{"earliest start after the entry", func(k *kernelProcess) {
+			k.facts.startedAtLower, k.facts.startedAt = time.Unix(201, 0), time.Unix(202, 0)
+		}, IdentityNotOwner},
+		{"gone", func(k *kernelProcess) { k.inspectErr = ErrExited }, IdentityNotOwner},
+		{"same-tick start", func(k *kernelProcess) {
+			k.facts.startedAtLower, k.facts.startedAt = time.Unix(199, 0), time.Unix(201, 0)
+		}, IdentityUnknown},
+		{"wrong command", func(k *kernelProcess) { k.facts.argv = []string{"evener", "hub", "serve"} }, IdentityUnknown},
+		{"missing argv", func(k *kernelProcess) { k.facts.argv = nil }, IdentityUnknown},
+		{"missing log ownership", func(k *kernelProcess) { k.facts.ownsLog = false }, IdentityUnknown},
+		{"missing generation", func(k *kernelProcess) { k.facts.generation = "" }, IdentityUnknown},
+		{"missing start", func(k *kernelProcess) { k.facts.startedAt = time.Time{} }, IdentityUnknown},
+		{"inspection error", func(k *kernelProcess) { k.inspectErr = errors.New("fdinfo vanished") }, IdentityUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			k := &kernelProcess{facts: validIdentity()}
+			tc.change(k)
+			withFakeKernel(t, k)
+			got, err := Identify(target)
+			if got != tc.want {
+				t.Fatalf("Identify = %v (%v), want %v", got, err, tc.want)
+			}
+			if got == IdentityOwner && err != nil {
+				t.Fatalf("Identify called the process the owner with a reason attached: %v", err)
+			}
+			if got == IdentityUnknown && err == nil {
+				t.Fatalf("Identify could not vouch and gave no reason")
+			}
+			if !k.closed {
+				t.Fatal("Identify leaked the process handle")
+			}
+			if tc.want != IdentityOwner {
+				if p, err := testController(k).Open(target); err == nil {
+					_ = p.Close()
+					t.Fatal("Open accepted a process Identify would not call the owner")
+				}
+			}
+		})
+	}
+}

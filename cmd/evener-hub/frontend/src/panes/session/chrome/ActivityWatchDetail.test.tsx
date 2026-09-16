@@ -1,0 +1,424 @@
+// DOM assertions for the watch detail's delivery timeline: real props, real
+// component, positions derived only from the supplied instants and `now`.
+
+import type { NavigationWatchSummary } from "@evener/appwire-client";
+import { type ActivityWatchRow, formatClockTime, watchRowID } from "@evener/appwire-client";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
+
+const NOW = Date.parse("2026-08-05T15:00:12.000Z");
+const CREATED = "2026-08-05T12:48:00Z";
+
+function row(overrides: Partial<NavigationWatchSummary> = {}): ActivityWatchRow {
+  const watch: NavigationWatchSummary = {
+    id: "watch_1",
+    source: "sess_root",
+    deliveries: 0,
+    created_at: CREATED,
+    active: true,
+    ...overrides,
+  };
+  return { kind: "watch", id: watchRowID(watch.id), level: 1, watch, defaultDetailOpen: true };
+}
+
+function leftOf(element: HTMLElement): number {
+  const value = element.style.left;
+  return Number.parseFloat(value);
+}
+
+afterEach(() => {
+  cleanup();
+});
+
+describe("ActivityWatchDetail timeline", () => {
+  const INSTANTS = ["2026-08-05T13:00:00Z", "2026-08-05T14:00:00Z", "2026-08-05T15:00:00Z"];
+
+  test("draws one dot per supplied instant with non-decreasing positions inside the rail", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    const dots = screen.getAllByTestId("watch-timeline-dot");
+    expect(dots).toHaveLength(3);
+    const positions = dots.map((dot) => leftOf(dot));
+    for (const position of positions) {
+      expect(position).toBeGreaterThanOrEqual(0);
+      // The last 2% is reserved for the now marker's own column, so even the
+      // newest dot stays strictly inside the rail.
+      expect(position).toBeLessThanOrEqual(98);
+    }
+    expect(positions[0]).toBeLessThan(positions[1] as number);
+    expect(positions[1]).toBeLessThan(positions[2] as number);
+  });
+
+  test("clamps a newest delivery in the span's final percent below the now marker", () => {
+    // now=15:00:12 with earliest=13:00 puts a delivery one second before now at
+    // ~99.99% of the span, which would sit under the now marker without a clamp.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T13:00:00Z", "2026-08-05T15:00:11Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const newest = screen.getAllByTestId("watch-timeline-dot")[1] as HTMLElement;
+    expect(leftOf(newest)).toBe(98);
+    expect(leftOf(newest)).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
+  });
+
+  test("keeps instants ahead of the browser clock distinct, with the now marker before them", () => {
+    // A browser clock behind the daemon's instants put every instant after
+    // `now` at the same clamped position: two distinct deliveries drew as one
+    // dot, and the far-right now marker claimed to sit after both of them.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    for (const position of positions) {
+      expect(position).toBeGreaterThanOrEqual(0);
+      expect(position).toBeLessThanOrEqual(98);
+    }
+    expect(positions[0]).toBeLessThan(positions[1] as number);
+    expect(positions[1]).toBeLessThan(positions[2] as number);
+    // now (15:00:12) falls between the earliest instant and the two ahead of
+    // it, so the marker belongs between them, not pinned to the far right.
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    expect(marker).toBeGreaterThan(positions[0] as number);
+    expect(marker).toBeLessThan(positions[1] as number);
+  });
+
+  test("a timeline whose every instant is ahead of the browser clock still reads chronologically", () => {
+    // The browser clock can lag the daemon's far enough that every retained
+    // instant is in `now`'s future. That is the one case where the rail's own
+    // span ran backwards: the now marker collapsed onto the left edge with the
+    // deliveries ahead of it, and the labels described a range running from a
+    // future instant to a past one.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T15:10:00Z", "2026-08-05T15:20:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    for (const position of positions) {
+      expect(marker).toBeLessThan(position);
+    }
+    // The rail is anchored at `now`, so its left end is the clock and its right
+    // end is the newest instant the wire carried.
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(`now ${nowClock}`);
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:20:00Z"));
+  });
+
+  test("a single instant that IS the browser clock draws apart from the marker", () => {
+    // The zero-span case: one retained instant equal to `now`. Both the dot and
+    // the marker collapsed onto the left edge before, drawing two facts as one.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 1,
+          delivery_times: [new Date(NOW).toISOString()],
+        })}
+        now={NOW}
+      />,
+    );
+    const dot = leftOf(screen.getAllByTestId("watch-timeline-dot")[0] as HTMLElement);
+    expect(dot).toBeLessThan(leftOf(screen.getByTestId("watch-timeline-now")));
+  });
+
+  test("labels the end the now marker is drawn at when an instant lands exactly on the clock", () => {
+    // `now` equals the earliest retained instant, with newer deliveries ahead of
+    // the clock. The marker belongs at the rail's left edge there, so the left
+    // label is the one that says "now"; the right end is the newest delivery.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 2,
+          delivery_times: [new Date(NOW).toISOString(), "2026-08-05T15:20:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(`now ${nowClock}`);
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:20:00Z"));
+    // The end that says "now" is the end the marker actually draws at.
+    expect(leftOf(screen.getByTestId("watch-timeline-now"))).toBe(0);
+  });
+
+  test("describes a marker that sits between the ends without mislabeling either end", () => {
+    // The browser clock lags, so the newest delivery is ahead of it: the rail
+    // spans earliest -> newest with the marker somewhere inside. Neither end IS
+    // `now`, so neither label may claim it, and the marker's own instant is
+    // still described because the marks themselves are hidden from assistive
+    // tech.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:55:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(formatClockTime("2026-08-05T14:00:00Z"));
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(formatClockTime("2026-08-05T15:55:00Z"));
+    const nowClock = formatClockTime(new Date(NOW).toISOString());
+    expect(screen.getByTestId("watch-timeline-rail").getAttribute("aria-label")).toContain(`now ${nowClock}`);
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    const marker = leftOf(screen.getByTestId("watch-timeline-now"));
+    expect(marker).toBeGreaterThan(positions[0] as number);
+    expect(marker).toBeLessThan(positions[1] as number);
+  });
+
+  test("keeps two instants apart even when both sit inside a stretched rail's headroom", () => {
+    // The two newest deliveries are within the reserved last 2% of a rail that
+    // already reaches past `now`. Clamping them into that reserve would still
+    // merge two real deliveries into one dot; the stretched rail scales
+    // instead, so the positions stay distinct and the newest still stops at the
+    // headroom.
+    render(
+      <ActivityWatchDetail
+        row={row({
+          cadence: [{ kind: "every", seconds: 600 }],
+          deliveries: 3,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T15:50:00Z", "2026-08-05T15:50:01Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    const positions = screen.getAllByTestId("watch-timeline-dot").map(leftOf);
+    expect(positions[0]).toBeLessThan(positions[1] as number);
+    expect(positions[1]).toBeLessThan(positions[2] as number);
+    expect(positions[2]).toBeLessThanOrEqual(98);
+  });
+
+  test("renders one dot per instant when two deliveries share a millisecond", () => {
+    const same = "2026-08-05T15:00:11Z";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <ActivityWatchDetail
+          row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 2, delivery_times: [same, same] })}
+          now={NOW}
+        />,
+      );
+      expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(2);
+      // A millisecond-only key would collide and make React warn about two
+      // children with the same key. The composite key keeps both real dots.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("paints the now marker over the dots so a delivery on the clock cannot hide it", () => {
+    // These are positioned siblings with no z-index, so the last one in DOM
+    // order paints on top. The marker is the reference the rail is read
+    // against: a dot that lands exactly on the clock must not bury it, or the
+    // rail reads as having no marker at all. The dot is wider than the marker's
+    // bar, so it stays legible around it.
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    const rail = screen.getByTestId("watch-timeline-rail");
+    const order = Array.from(rail.children);
+    const markerIndex = order.indexOf(screen.getByTestId("watch-timeline-now"));
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    for (const dot of screen.getAllByTestId("watch-timeline-dot")) {
+      expect(order.indexOf(dot)).toBeLessThan(markerIndex);
+    }
+  });
+
+  test("draws a now marker at the right end and hides the marks from assistive tech", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    const marker = screen.getByTestId("watch-timeline-now");
+    expect(leftOf(marker)).toBe(100);
+    expect(marker.getAttribute("aria-hidden")).toBe("true");
+    for (const dot of screen.getAllByTestId("watch-timeline-dot")) {
+      expect(dot.getAttribute("aria-hidden")).toBe("true");
+    }
+    const rail = screen.getByTestId("watch-timeline-rail");
+    expect(rail.getAttribute("role")).toBe("img");
+    expect(rail.getAttribute("aria-label")).toBeTruthy();
+  });
+
+  test("labels the rail with the earliest retained instant and now, both local HH:MM", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-timeline-start").textContent).toBe(formatClockTime(INSTANTS[0]));
+    expect(screen.getByTestId("watch-timeline-end").textContent).toBe(
+      `now ${formatClockTime(new Date(NOW).toISOString())}`,
+    );
+  });
+
+  test("caps the caption when deliveries exceed the retained instants", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Last 3 of 214 deliveries");
+  });
+
+  test("says delivered to this session when the count fits inside the ring", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 3, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-timeline-caption").textContent).toBe("Delivered to this session");
+  });
+
+  test("an output watch gets the no-schedule line and no timeline", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ target: "job_ab12cd", output_match: "/DONE/", cadence: [{ kind: "output" }], deliveries: 4 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-timeline")).toBeNull();
+    expect(screen.queryAllByTestId("watch-timeline-dot")).toHaveLength(0);
+    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+  });
+
+  test("an event watch gets the no-schedule line and no timeline", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ events: ["job.completed"], cadence: [{ kind: "events" }], deliveries: 1 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-timeline")).toBeNull();
+    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+  });
+
+  test("a watch with no clock cadence and no condition gets the no-schedule line, not an empty timeline", () => {
+    // An empty watch has no clock cadence, so it has no schedule to draw. It used
+    // to fall through to "scheduled", mount ActivityWatchTimeline (which renders
+    // nothing for zero deliveries), and skip the no-schedule line, leaving the
+    // detail strip blank.
+    render(<ActivityWatchDetail row={row()} now={NOW} />);
+    expect(screen.queryByTestId("watch-timeline")).toBeNull();
+    expect(screen.queryAllByTestId("watch-timeline-dot")).toHaveLength(0);
+    expect(screen.getByTestId("watch-no-schedule").textContent).toBe(WATCH_NO_SCHEDULE_LINE);
+  });
+
+  test("a watch with an output match and a clock cadence draws its timeline, not the no-schedule line", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({
+          target: "job_ab12cd",
+          output_match: "/DONE/",
+          cadence: [{ kind: "output" }, { kind: "progress", seconds: 10 }],
+          deliveries: 2,
+          delivery_times: ["2026-08-05T14:00:00Z", "2026-08-05T14:30:00Z"],
+        })}
+        now={NOW}
+      />,
+    );
+    // This watch has BOTH an output condition and a real period. It used to be
+    // collapsed to output-only and told there was no schedule to draw.
+    expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
+    expect(screen.getByTestId("watch-timeline")).toBeTruthy();
+    expect(screen.getAllByTestId("watch-timeline-dot")).toHaveLength(2);
+  });
+
+  test("a scheduled watch with no instants draws neither timeline nor no-schedule line", () => {
+    render(<ActivityWatchDetail row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })} now={NOW} />);
+    expect(screen.queryByTestId("watch-timeline")).toBeNull();
+    expect(screen.queryByTestId("watch-no-schedule")).toBeNull();
+    expect(screen.getByTestId("watch-facts").textContent).toContain("no deliveries yet");
+  });
+
+  test("the timeline text never mentions drops or a next fire", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ cadence: [{ kind: "every", seconds: 600 }], deliveries: 214, delivery_times: INSTANTS })}
+        now={NOW}
+      />,
+    );
+    const text = document.body.textContent ?? "";
+    expect(text).not.toMatch(/dropped/i);
+    expect(text).not.toMatch(/\bnext\b/i);
+    expect(text).not.toMatch(/countdown/i);
+  });
+});
+
+describe("ActivityWatchDetail note", () => {
+  // The row header already prints the note as the row's own name, so the
+  // detail's lead paragraph exists only to show what the header's narrow name
+  // column truncated. 48 is the documented budget in the component.
+  test("renders no lead paragraph for a short note the row title can show in full", () => {
+    render(
+      <ActivityWatchDetail
+        row={row({ note: "Poll the queue depth", cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-note")).toBeNull();
+    expect(screen.getByTestId("watch-facts")).toBeTruthy();
+  });
+
+  test("renders the full note once when it exceeds the row title's character budget", () => {
+    const note = "Check the deploy log every morning before the daily standup meeting starts";
+    render(
+      <ActivityWatchDetail row={row({ note, cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })} now={NOW} />,
+    );
+    const lead = screen.getByTestId("watch-note");
+    expect(lead.textContent).toBe(note);
+    expect(screen.getAllByTestId("watch-note")).toHaveLength(1);
+  });
+
+  test("holds the lead paragraph at the 48-character budget boundary", () => {
+    const { rerender } = render(
+      <ActivityWatchDetail
+        row={row({ note: "x".repeat(48), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByTestId("watch-note")).toBeNull();
+    rerender(
+      <ActivityWatchDetail
+        row={row({ note: "x".repeat(49), cadence: [{ kind: "every", seconds: 600 }], deliveries: 0 })}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByTestId("watch-note").textContent).toBe("x".repeat(49));
+  });
+});

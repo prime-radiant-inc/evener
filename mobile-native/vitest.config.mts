@@ -8,11 +8,20 @@ export default defineConfig({
 		// resolveRequest branch: the package is checked in at
 		// appwire-client/typescript, never installed, so the name resolves
 		// nowhere without an explicit alias. An alias key also matches
-		// `<key>/<subpath>`, so the two specific entries have to come first or
-		// the root entry swallows them.
+		// `<key>/<subpath>`, so the specific entries have to come first or the
+		// root entry swallows them.
 		alias: {
 			"@evener/appwire-client/docContent": fileURLToPath(
 				new URL("../appwire-client/typescript/docContent.ts", import.meta.url),
+			),
+			"@evener/appwire-client/state/navigation": fileURLToPath(
+				new URL("../appwire-client/typescript/state/navigation/index.ts", import.meta.url),
+			),
+			"@evener/appwire-client/state/credentials": fileURLToPath(
+				new URL("../appwire-client/typescript/state/credentials/index.ts", import.meta.url),
+			),
+			"@evener/appwire-client/state/extensions": fileURLToPath(
+				new URL("../appwire-client/typescript/state/extensions/index.ts", import.meta.url),
 			),
 			"@evener/appwire-client/testing": fileURLToPath(
 				new URL("../appwire-client/typescript/testing", import.meta.url),

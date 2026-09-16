@@ -123,11 +123,9 @@ func loadCachedJobRecords(ctx context.Context, jobsPath string) ([]*jobstore.Job
 // historicalDelegateFold is delegatestore's fold-cache payload. Unlike
 // historicalJobFold, this retains the FOLDED delegatestore.State directly
 // (not raw events), extended incrementally via delegatestore.Apply for each
-// new event: delegatestore.Apply/Fold internally clone the ENTIRE state and
-// re-diff it on every single event applied (agent/internal/delegatestore/
-// fold.go), so re-folding a growing root's full event history from scratch
-// on every request — the same treatment jobstore gets above — would cost
-// O(events x aggregates) per request instead of O(new events x aggregates).
+// new event, so a request folds only the events appended since the cached
+// state instead of re-folding a growing root's full event history from
+// scratch — the same treatment jobstore gets above.
 // eventCount tracks how many events have been applied so far, so a delta can
 // still be checked for sequence continuity (event.Seq must equal
 // eventCount+1 as each is applied) the same way delegatestore.Fold checks a
@@ -146,11 +144,11 @@ var historicalDelegateFoldCache = foldcache.New[historicalDelegateFold](historic
 // not defensive boilerplate: Apply mutates the map it is given in place
 // (agent/internal/delegatestore/fold.go), and foldcache.Cache may still be
 // holding prior.state as another caller's already-returned Result.Value —
-// mutating it in place would race that caller. Apply itself deep-clones
-// each *Aggregate internally before writing back into whatever map it was
-// given, so a SHALLOW maps.Clone here (copying the map's pointers, not each
-// Aggregate) is sufficient: the clone becomes Apply's write target, the
-// original prior.state and its aggregates are never touched.
+// mutating it in place would race that caller. Apply clones each *Aggregate
+// an event touches before writing to it and leaves the rest shared, so a
+// SHALLOW maps.Clone here (copying the map's pointers, not each Aggregate)
+// is sufficient: the clone becomes Apply's write target, the original
+// prior.state and its aggregates are never touched.
 func extendHistoricalDelegateFold(ctx context.Context, path string, fromOffset int64, prior historicalDelegateFold) (historicalDelegateFold, int64, error) {
 	delta, toOffset, readDiagnostics, err := scanDelegateJournal(ctx, path, fromOffset, delegatestore.ScanLimits{})
 	if err != nil {

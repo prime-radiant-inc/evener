@@ -4,7 +4,7 @@
 // (parity-m7-settings.md §8). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
-import { friendlyErrorMessage } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { EmptyState, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";

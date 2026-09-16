@@ -42,6 +42,11 @@ func (s *Session) SetKickFunc(f func(prompt string)) {
 // pending, where an idle /goal must kick normally, exactly as it would on
 // SessionIdle.
 func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
+	release, admissionErr := s.beginRetirementMutation("autonomous")
+	if admissionErr != nil {
+		return false, admissionErr
+	}
+	defer release()
 	_ = ctx
 	objective = strings.TrimSpace(objective)
 	if objective == "" {
@@ -83,7 +88,12 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 // SetGoal so a clear landing exactly as the drain-loop gate arms cannot leak one
 // extra unwanted continuation: the gate's terminal "clear flag + go idle" step
 // and this clear are mutually exclusive on s.mu (spec §7).
-func (s *Session) ClearGoal() {
+func (s *Session) ClearGoal() error {
+	release, err := s.beginRetirementMutation("autonomous")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.goalUpdateMu.Lock()
 	s.mu.Lock()
 	s.getOrCreateGoalStore().Clear()
@@ -91,6 +101,7 @@ func (s *Session) ClearGoal() {
 	s.mu.Unlock()
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
+	return nil
 }
 
 // GoalStatus reports the session's current /goal lifecycle state. The objective
@@ -375,8 +386,13 @@ func (s *Session) settleGoalOnIdle() bool {
 	// its notification is already queued — cannot strand the goal.
 	held := s.goalDependentsHeld
 	s.goalDependentsHeld = false
+	// No kick while user steering is parked after a failed attempt
+	// (Session.steeringParked): the continuation would drain the parked steer
+	// under its own turn id. The goal stays active; the settle after the
+	// carrier the next external wake runs kicks it.
+	parked := s.steeringParked && s.hasPendingUserSteeringLocked()
 	var prompt string
-	if kick != nil && !pendingAsk && (!held || !wakePending) {
+	if kick != nil && !pendingAsk && !parked && (!held || !wakePending) {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}

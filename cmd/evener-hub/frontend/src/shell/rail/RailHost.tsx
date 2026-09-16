@@ -13,9 +13,9 @@
 // RailHost also owns the reveal seam: the palette's /project command
 // (railController) hands it a session ref; if the rail is hidden, revealing
 // docks it first so there's a mounted Rail to expand + scroll.
+import { ACTIONS } from "@evener/appwire-client";
 import { type JSX, useCallback, useEffect, useState } from "react";
-import { ACTIONS } from "../../keybindings/actions";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";

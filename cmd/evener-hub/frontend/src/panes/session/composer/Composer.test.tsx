@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -34,11 +34,8 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "./queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
@@ -93,13 +90,14 @@ const FULL_CAPABILITIES: ThreadCapabilities = {
 
 // What a real daemon publishes for an IDLE thread, read off
 // server/appwire_runtime.go's appCapabilities: `active` is false there, and
-// both Steer and Queue are gated on it, so an idle thread advertises
-// queue:false. Clear and ForkFromTurn are hardcoded false. This is the set the
-// client is actually holding in the window kata 8c65 describes, and it is not
+// Queue is gated on it, so an idle thread advertises queue:false; Steer is
+// harness support and stays true (the composer applies the status itself).
+// Clear and ForkFromTurn are hardcoded false. This is the set the client is
+// actually holding in the window kata 8c65 describes, and it is not
 // FULL_CAPABILITIES.
 const DAEMON_IDLE_CAPABILITIES: ThreadCapabilities = {
   send: true,
-  steer: false,
+  steer: true,
   interrupt: true,
   compact: true,
   clear: false,
@@ -335,15 +333,23 @@ function notAcceptedError(clientMutationId: string): WireError {
   });
 }
 
-async function seedRejectedRecovery(storage: MutationOutboxIndexedDB, ref: string, text: string) {
-  const input = [{ type: "text", text }];
+// `intent` overrides the record's method and input; the default is a turn/start
+// carrying `text`, and a drain rejected with nothing queued carries no input.
+async function seedRejectedRecovery(
+  storage: MutationOutboxIndexedDB,
+  ref: string,
+  text: string,
+  intent: { method?: string; input?: unknown[] } = {},
+) {
+  const method = intent.method ?? "turn/start";
+  const input = intent.input ?? [{ type: "text", text }];
   const outbox = await storage.enqueueIntent({
     targetRef: ref,
     threadId: "thread_a",
-    method: "turn/start",
+    method,
     payload: { ref, input },
     attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
+    optimisticDisplay: { method, input },
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed recovery");
@@ -559,6 +565,27 @@ test("confirmed goal replacement invalidates pending attachments without later c
   expect(textarea().value).toBe("/goal Keep the session focused");
   expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
+  // A rejected turn/drainAsSteer recovers with no input, so its activation
+  // writes the same empty text the composer already holds (#1308).
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "", { method: "turn/drainAsSteer", input: [] });
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await flushPendingTurnsProjectionForTests();
+  // Activated, then discarded again by the recovery persistence because the
+  // recovered draft is empty: only that path removes the durable row.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(textarea().value).toBe("");
+
+  fireEvent.change(textarea(), { target: { value: "h" } });
+
+  expect(textarea().value).toBe("h");
+  expect(textarea().selectionStart).toBe(1);
+  expect(textarea().selectionEnd).toBe(1);
 });
 
 test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
@@ -881,6 +908,42 @@ test("the real live Composer mount discovers initial activity without a test-sup
     </ClientProvider>,
   );
 
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+  expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
+  expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
+});
+
+// The companion to the test above for the state it cannot cover: a SAVED
+// (notLoaded) session that still advertises send arrives with a collapsed
+// follow-up card, and the card's own control row - the composer's only
+// discovery opt-in - is not mounted while the card rests. Without a
+// chrome-less owner, entity ids in that session's transcript would stay plain
+// text until the card is engaged (issue #1335).
+test("a saved notLoaded session with sending enabled discovers activity while its card rests", async () => {
+  const ref = "ref_activity_saved";
+  const fake = connectFakeClient();
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: { ref, mutationStateAuthoritative: true, capabilities: PAST_THREAD_CAPABILITIES, queue: { revision: 0 } },
+    }),
+  );
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  await threadsStore.getState().ensureThread(ref);
+
+  render(
+    <ClientProvider client={fake}>
+      <Composer ref={ref} focused={false} />
+    </ClientProvider>,
+  );
+
+  // The card rests as a bare invitation, so the composer's own chrome - the
+  // other discovery opt-in - is genuinely absent for this whole interval.
+  expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
@@ -1223,10 +1286,9 @@ test("the timing caption is absent when nothing is running", async () => {
 // caption claiming it queues would be a lie; this pins the caption to
 // availability.canQueue, not to `busy` alone.
 // status can read "active" before turn/started has populated activeTurnId
-// (isTurnActive's own doc comment on that race window) - Stop/Steer stay
-// hidden there since neither is meaningful without a real turn to act on,
-// and the caption follows the same rule: nothing to explain the timing of
-// until Send/Steer's own ambiguity actually exists.
+// (a hydrate cut inside that window, or a session holding queued work) -
+// Stop/Steer follow the status there (isTurnActive), and the caption stays
+// absent all the same.
 test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1945,17 +2007,20 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
 });
 
-// The window after status flips "active" and before activeTurnId arrives is
-// where the two controls part company.
+// The window after status flips "active" and before activeTurnId arrives:
+// both controls follow the status, because both requests name no turn.
 //
-// Steer redirects a turn in flight and its handler needs the id, so it stays
-// behind isTurnActive. Stop does not: threadsStore.interrupt sends turn/interrupt
-// with the ref alone ("Stop is session-scoped, always"), and the daemon decides
-// on the session's own quiescence. Gating the BUTTON on an id the REQUEST does
-// not carry took Stop away from a session the user can see working, and
-// active-with-no-id is a state the wire really reaches: a session holding queued
-// work reports active with no turn running (kata vewa/5gdv).
-test("stop renders during the window after status flips active but before activeTurnId arrives, and steer does not", async () => {
+// threadsStore.interrupt sends turn/interrupt with the ref alone ("Stop is
+// session-scoped, always") and turn/steer carries ref and input; the daemon
+// decides each on the session's own state. Gating a BUTTON on an id the
+// REQUEST does not carry took Stop away from a session the user can see
+// working (kata vewa/5gdv: a session holding queued work reports active with
+// no turn running) and took Steer away for a frame at every inline turn
+// boundary, where the projector closes one turn row before it opens the next
+// while the status never leaves active (issue #1330). The click follows the
+// same rule as the button (issue #1341): the daemon's v3 turn/steer takes no
+// turn id and has no active-turn precondition, so the steer is sent.
+test("stop and steer both render and both work during the window after status flips active but before activeTurnId arrives", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1971,10 +2036,12 @@ test("stop renders during the window after status flips active but before active
   }));
 
   await user.type(textarea(), "hi");
-  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
 
-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+  await user.click(screen.getByTestId("composer-steer"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
 
   // And it is a working button, not a decoration: the request it sends names
   // the ref and nothing else, which is why it needs no id to exist.
@@ -1990,14 +2057,160 @@ test("stop renders during the window after status flips active but before active
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
 
+// A press is judged on the session's controls at the moment it lands, not on
+// the render that offered the button. Here the status frame and the press
+// share one task (no render between them), so the render-time verdict still
+// says active while the store says idle; the handler has to ask the store.
+function foldStatusFrame(fake: FakeClient, statusType: string): void {
+  fake.emitNotification({
+    method: "thread/status/changed",
+    params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: statusType } },
+  });
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe(statusType);
+}
+
+test("Steer pressed after an idle frame folded in the same task is refused on the live status", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.type(textarea(), "hi");
+  const steer = steerButton();
+  foldStatusFrame(fake, "idle");
+  fireEvent.click(steer);
+  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+});
+
+test("Stop pressed after an idle frame folded in the same task is refused on the live status", async () => {
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  const stop = stopButton();
+  foldStatusFrame(fake, "idle");
+  fireEvent.click(stop);
+  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
+  expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
+});
+
+test("submit after an active frame folded in the same task routes to queue on the live status", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  for (const method of ["turn/start", "turn/queue"] as const) {
+    fake.on(method, (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+  }
+  await user.type(textarea(), "hi");
+  const submit = submitButton();
+  foldStatusFrame(fake, "active");
+  fireEvent.click(submit);
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
+});
+
+// The Send/Queue route also reads this client's pending send live: tier 6 of
+// the availability table routes a second message to queue while this page's
+// first send is still pending, and that pending state can clear (or appear)
+// after the render that offered the button. Here it clears in the same task as
+// the press, so the render-time verdict still says queue.
+test("submit after the pending send cleared in the same task routes to send on the live pending state", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  // The seeded send is this page's own and stays in flight: the runtime
+  // dispatches it and the hub never answers.
+  const inFlight = deferred<never>();
+  const sentText = (params: unknown) => (params as { input?: { text?: string }[] }).input?.[0]?.text;
+  fake.on("turn/start", (params) =>
+    sentText(params) === "first"
+      ? inFlight.promise
+      : { ...receipt(params), turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+  );
+  fake.on("turn/queue", receipt);
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  // The route a press takes is the durable record it writes (the dispatcher
+  // holds it behind the in-flight send, so the wire shows nothing yet).
+  const routeOf = async (text: string) =>
+    (await storage.listOutbox("ref_a")).find((record) => sentText(record.payload) === text)?.method;
+  // Render-time verdict: this page's own pending send puts the next message in
+  // queue mode (tier 6).
+  await user.type(textarea(), "second");
+  await user.click(submitButton());
+  await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
+  await waitFor(() => expect(textarea().value).toBe(""));
+  // The next message renders in the same queue mode; its pending send clears
+  // in the same task as the press, so the press has to read the store.
+  await user.type(textarea(), "third");
+  const submit = submitButton();
+  resetPendingTurnsStoreForTests();
+  fireEvent.click(submit);
+  await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
+});
+
 // Shift+Enter reaches the steer handler directly off the keydown event, so
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"
 // (the SAME function, not a separately-gated path). The handler's own
-// internal activeTurnId check is therefore the only thing standing between
-// the keyboard and a doomed steer, and these two cases are where it earns
-// its keep: no turn is in flight, so no Steer button is rendered to gate on.
-test("Shift+Enter with no active turn id shows a 'no active turn' toast rather than attempting a doomed steer", async () => {
+// readiness check is therefore the only thing standing between the keyboard
+// and a steer on an idle session, and it is the button's own rule: the thread
+// status. An active session with no open turn row (a hydrate cut inside the
+// window, or the gap between turn/completed and turn/started of an inline
+// turn boundary) is working, and the daemon's v3 turn/steer names no turn and
+// has no active-turn precondition (agent/session_client_mutation_queue.go
+// clientMutationSteer), so the keybinding sends it.
+test("Shift+Enter while active with no active turn id sends the steer", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2015,23 +2228,21 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
-  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
-// The drain route has the same doomed-without-a-turn shape as steer, but the
-// handler only guarded the steer branch, so a Steer-click that routed to drain
-// (non-empty queue, or staged attachments) minted a durable poison intent
-// instead of a toast. That is the exact first stuck message of the kata-wr3s
-// incident.
-//
-// The guard is still right; only its reason moved. The hub's empty-
-// expectedTurnId rejection is gone with the field (appwire v3 dropped it from
-// drain too, and handleAppTurnDrainAsSteer now validates nothing but ref,
-// input and clientMutationId). What refuses a turnless drain now is the agent:
-// "drain: no active turn to steer" at agent/session_queue.go:396, pinned by
-// agent/session_lifecycle_test.go's DrainAsSteerWithInput-while-idle case.
-test("Shift+Enter routing to drain with no active turn id toasts rather than minting a doomed drain", async () => {
+// The drain route follows the same rule. It used to be guarded on the turn id
+// because an unguarded Steer-click routing to drain (non-empty queue, or
+// staged attachments) once minted a durable intent the hub rejected forever
+// (kata wr3s, the empty-expectedTurnId rejection). That field is gone with
+// appwire v3, and the daemon's v3 drain (agent/session_client_mutation_queue.go
+// clientMutationDrain, reached through the hub's retrySafeTurns.Drain) refuses
+// only an interrupt fence, a stale queue revision, an empty queue or a reserved
+// entry. The "drain: no active turn to steer" refusal is the legacy
+// DrainAsSteerWithInput's, which turn/drainAsSteer never reaches. So a drain
+// on an active session with no open turn row is sent, not toasted.
+test("Shift+Enter routing to drain while active with no active turn id sends the drain", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2053,8 +2264,41 @@ test("Shift+Enter routing to drain with no active turn id toasts rather than min
   await user.type(textarea(), "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
-  expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1));
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
+});
+
+// The keybinding shares the button's whole rule, capability included: a busy
+// session on a harness that advertises no steer draws no Steer button, and
+// Shift+Enter there must not send a turn/steer (or a drain) the daemon would
+// answer Unavailable. The feedback is the composer's existing "not available
+// for this session" toast, the one Send uses.
+test("Shift+Enter on a busy session whose harness advertises no steer sends nothing and says steer is unavailable", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, steer: false },
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "hi");
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(screen.getByText(/steer is not available for this session/i)).toBeTruthy());
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
 test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
@@ -3398,13 +3642,15 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
 
   // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
   // built-ins first), not just the two catalog entries. Fuzzy matching also
-  // finds the command labels whose "r" and "e" are separated.
+  // finds the command labels whose "r" and "e" are separated. /drain-as-steer
+  // would match too, but the session is idle with nothing queued, so the
+  // menu hides it the way it hides any unavailable built-in (scopeCommand's
+  // canDrainQueue rule).
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/review"),
     expect.stringContaining("/release"),
     expect.stringContaining("/project"),
-    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -3460,7 +3706,6 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/project"),
-    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -3603,7 +3848,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
-  // Five matches: three contiguous beginnings, then two fuzzy matches.
+  // Four matches: three contiguous beginnings, then one fuzzy match
+  // (/drain-as-steer would be a second, but it is unavailable on an idle
+  // session with nothing queued and the menu hides it).
+  expect(slashOptions()).toHaveLength(4);
 
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
@@ -3612,12 +3860,10 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
-  await user.keyboard("{ArrowDown}");
-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {
@@ -3816,14 +4062,19 @@ test("an argless built-in invocation (/compact) runs and clears the draft", asyn
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
-test("a no-active-turn built-in (/steer) is blocked with the floor's message, draft preserved", async () => {
+// /steer on an idle session is unavailable (scopeCommand applies the
+// running-turn rule the handler uses, since the hub's steer capability is
+// harness support alone), and a typed invocation for an unavailable built-in
+// gets the honest "not available right now" rather than the handler's floor
+// message or a plain-message send.
+test("an unavailable built-in (/steer while idle) is refused with the unavailable message, draft preserved", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_steer", { status: { type: "idle" } });
 
   await user.type(textarea(), "/steer go left");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/steer failed: no active turn/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
   expect(textarea().value).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });

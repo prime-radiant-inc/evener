@@ -29,101 +29,107 @@ const ProtocolVersion = "evener-appwire-v5"
 const ThreadStatusRestartRequired = "restartRequired"
 
 const (
-	MethodInitialize                  = "initialize"
-	MethodInitialized                 = "initialized"
-	MethodPing                        = "ping"
-	MethodThreadList                  = "thread/list"
-	MethodThreadRead                  = "thread/read"
-	MethodThreadUnsubscribe           = "thread/unsubscribe"
-	MethodThreadTurnsList             = "thread/turns/list"
-	MethodThreadTurnItemsList         = "thread/turns/items/list"
-	MethodThreadStart                 = "thread/start"
-	MethodThreadResume                = "thread/resume"
-	MethodThreadFork                  = "thread/fork"
-	MethodThreadClear                 = "thread/clear"
-	MethodThreadModelSet              = "thread/model/set"
-	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
-	MethodThreadVisionModelSet        = "thread/vision-model/set"
-	MethodThreadCompactStart          = "thread/compact/start"
-	MethodThreadShutdown              = "thread/shutdown"
-	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
-	MethodTurnStart                   = "turn/start"
-	MethodTurnSteer                   = "turn/steer"
-	MethodTurnInterrupt               = "turn/interrupt"
-	MethodTurnQueue                   = "turn/queue"
-	MethodTurnDrainAsSteer            = "turn/drainAsSteer"
-	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
-	MethodTurnCancelQueued            = "turn/cancelQueued"
-	MethodGoalSet                     = "goal/set"
-	MethodNotesHumanSet               = "notes/human/set"
-	MethodNotesAgentSet               = "notes/agent/set"
-	MethodUrlsAdd                     = "urls/add"
-	MethodUrlsRemove                  = "urls/remove"
-	MethodEvenerTasksList             = "evener/tasks/list"
-	MethodEvenerJobsList              = "evener/jobs/list"
-	MethodEvenerJobsOutput            = "evener/jobs/output"
-	MethodEvenerThreadNameSet         = "evener/thread/name/set"
-	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
-	MethodEvenerSubagentPreview       = "evener/subagentPreview"
-	MethodEvenerPathsComplete         = "evener/paths/complete"
-	MethodEvenerDirsCreate            = "evener/dirs/create"
-	MethodEvenerProjectsRecent        = "evener/projects/recent"
-	MethodEvenerPathValidate          = "evener/path/validate"
-	MethodEvenerGitHead               = "evener/git/head"
-	MethodEvenerMobilePairing         = "evener/mobile/pairing"
-	MethodEvenerNavigationRead        = "evener/navigation/read"
-	MethodEvenerFavoriteSet           = "evener/favorite/set"
-	MethodEvenerArchiveSet            = "evener/archive/set"
-	MethodEvenerProjectDelete         = "evener/project/delete"
-	MethodEvenerSessionDelete         = "evener/session/delete"
-	MethodEvenerPinSectionRename      = "evener/pin-section/rename"
-	MethodEvenerPinSectionDelete      = "evener/pin-section/delete"
-	MethodEvenerSessionPinAssign      = "evener/session-pin/assign"
-	MethodEvenerSessionPinUnpin       = "evener/session-pin/unpin"
-	MethodEvenerSearch                = "evener/search"
-	MethodEvenerHarnessesList         = "evener/harnesses/list"
-	MethodEvenerUpgrade               = "evener/upgrade"
-	MethodEvenerUpdateCheck           = "evener/update/check"
-	MethodEvenerUpdateApply           = "evener/update/apply"
-	MethodEvenerAuthStatus            = "evener/auth/status"
-	MethodEvenerAuthTest              = "evener/auth/test"
-	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
-	MethodEvenerAuthLoginComplete     = "evener/auth/login/complete"
-	MethodEvenerAuthLogout            = "evener/auth/logout"
-	MethodEvenerAuthList              = "evener/auth/list"
-	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
-	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
-	MethodEvenerAuthCredentialJsonSet = "evener/auth/credentialJson/set"
-	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
-	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
-	MethodEvenerLaunchResolve         = "evener/launch/resolve"
-	MethodEvenerLaunchSchema          = "evener/launch/schema"
-	MethodEvenerLaunchGetLayer        = "evener/launch/getLayer"
-	MethodEvenerLaunchSetLayer        = "evener/launch/setLayer"
-	MethodEvenerLaunchTrustRepo       = "evener/launch/trustRepo"
-	MethodModelList                   = "model/list"
-	MethodEvenerInstanceList          = "evener/instance/list"
-	MethodEvenerInstanceCreate        = "evener/instance/create"
-	MethodEvenerInstanceEdit          = "evener/instance/edit"
-	MethodEvenerInstanceRemove        = "evener/instance/remove"
-	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
-	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
-	MethodEvenerPluginPreview         = "evener/plugin/preview"
-	MethodEvenerMarketplaceList       = "evener/marketplace/list"
-	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
-	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
-	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
-	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
-	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
-	MethodEvenerPluginList            = "evener/plugin/list"
-	MethodEvenerPluginInstall         = "evener/plugin/install"
-	MethodEvenerPluginUpgrade         = "evener/plugin/upgrade"
-	MethodEvenerPluginRemove          = "evener/plugin/remove"
-	MethodEvenerPluginEnable          = "evener/plugin/enable"
-	MethodEvenerPluginDisable         = "evener/plugin/disable"
-	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
-	MethodEvenerCommandList           = "evener/command/list"
-	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
+	MethodInitialize                     = "initialize"
+	MethodInitialized                    = "initialized"
+	MethodPing                           = "ping"
+	MethodThreadList                     = "thread/list"
+	MethodThreadRead                     = "thread/read"
+	MethodThreadUnsubscribe              = "thread/unsubscribe"
+	MethodThreadTurnsList                = "thread/turns/list"
+	MethodThreadTurnItemsList            = "thread/turns/items/list"
+	MethodThreadStart                    = "thread/start"
+	MethodThreadResume                   = "thread/resume"
+	MethodThreadFork                     = "thread/fork"
+	MethodThreadClear                    = "thread/clear"
+	MethodThreadModelSet                 = "thread/model/set"
+	MethodThreadReasoningEffortSet       = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet           = "thread/vision-model/set"
+	MethodThreadCompactStart             = "thread/compact/start"
+	MethodThreadShutdown                 = "thread/shutdown"
+	MethodEvenerThreadForceStop          = "evener/thread/forceStop"
+	MethodTurnStart                      = "turn/start"
+	MethodTurnSteer                      = "turn/steer"
+	MethodTurnInterrupt                  = "turn/interrupt"
+	MethodTurnQueue                      = "turn/queue"
+	MethodTurnDrainAsSteer               = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer       = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued               = "turn/cancelQueued"
+	MethodGoalSet                        = "goal/set"
+	MethodNotesHumanSet                  = "notes/human/set"
+	MethodNotesAgentSet                  = "notes/agent/set"
+	MethodUrlsAdd                        = "urls/add"
+	MethodUrlsRemove                     = "urls/remove"
+	MethodEvenerTasksList                = "evener/tasks/list"
+	MethodEvenerJobsList                 = "evener/jobs/list"
+	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerDaemonList               = "evener/daemon/list"
+	MethodEvenerDaemonRetire             = "evener/daemon/retire"
+	MethodEvenerDaemonStatus             = "evener/daemon/status"
+	MethodEvenerThreadNameSet            = "evener/thread/name/set"
+	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerSubagentPreview          = "evener/subagentPreview"
+	MethodEvenerPathsComplete            = "evener/paths/complete"
+	MethodEvenerDirsCreate               = "evener/dirs/create"
+	MethodEvenerProjectsRecent           = "evener/projects/recent"
+	MethodEvenerPathValidate             = "evener/path/validate"
+	MethodEvenerGitHead                  = "evener/git/head"
+	MethodEvenerMobilePairing            = "evener/mobile/pairing"
+	MethodEvenerNavigationRead           = "evener/navigation/read"
+	MethodEvenerFavoriteSet              = "evener/favorite/set"
+	MethodEvenerArchiveSet               = "evener/archive/set"
+	MethodEvenerProjectDelete            = "evener/project/delete"
+	MethodEvenerSessionDelete            = "evener/session/delete"
+	MethodEvenerPinSectionRename         = "evener/pin-section/rename"
+	MethodEvenerPinSectionDelete         = "evener/pin-section/delete"
+	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
+	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
+	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerHarnessesList            = "evener/harnesses/list"
+	MethodEvenerUpgrade                  = "evener/upgrade"
+	MethodEvenerUpdateCheck              = "evener/update/check"
+	MethodEvenerUpdateApply              = "evener/update/apply"
+	MethodEvenerAuthStatus               = "evener/auth/status"
+	MethodEvenerAuthTest                 = "evener/auth/test"
+	MethodEvenerAuthLoginStart           = "evener/auth/login/start"
+	MethodEvenerAuthLoginComplete        = "evener/auth/login/complete"
+	MethodEvenerAuthLogout               = "evener/auth/logout"
+	MethodEvenerAuthList                 = "evener/auth/list"
+	MethodEvenerAuthApiKeySet            = "evener/auth/apiKey/set"
+	MethodEvenerAuthApiKeyClear          = "evener/auth/apiKey/clear"
+	MethodEvenerAuthCredentialJsonSet    = "evener/auth/credentialJson/set"
+	MethodEvenerAuthDeviceStart          = "evener/auth/device/start"
+	MethodEvenerAuthDevicePoll           = "evener/auth/device/poll"
+	MethodEvenerLaunchResolve            = "evener/launch/resolve"
+	MethodEvenerLaunchSchema             = "evener/launch/schema"
+	MethodEvenerLaunchGetLayer           = "evener/launch/getLayer"
+	MethodEvenerLaunchSetLayer           = "evener/launch/setLayer"
+	MethodEvenerLaunchTrustRepo          = "evener/launch/trustRepo"
+	MethodModelList                      = "model/list"
+	MethodEvenerInstanceList             = "evener/instance/list"
+	MethodEvenerInstanceCreate           = "evener/instance/create"
+	MethodEvenerInstanceEdit             = "evener/instance/edit"
+	MethodEvenerInstanceRemove           = "evener/instance/remove"
+	MethodEvenerInstanceSetDefault       = "evener/instance/setDefault"
+	MethodEvenerInstanceSetModelDisabled = "evener/instance/setModelDisabled"
+	MethodEvenerInstanceRefreshModels    = "evener/instance/refreshModels"
+	MethodEvenerPluginCheckNow           = "evener/plugin/checkNow"
+	MethodEvenerPluginPreview            = "evener/plugin/preview"
+	MethodEvenerMarketplaceList          = "evener/marketplace/list"
+	MethodEvenerMarketplaceAdd           = "evener/marketplace/add"
+	MethodEvenerMarketplaceRemove        = "evener/marketplace/remove"
+	MethodEvenerMarketplaceRefresh       = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit          = "evener/marketplace/edit"
+	MethodEvenerMarketplaceBrowse        = "evener/marketplace/browse"
+	MethodEvenerPluginList               = "evener/plugin/list"
+	MethodEvenerPluginInstall            = "evener/plugin/install"
+	MethodEvenerPluginUpgrade            = "evener/plugin/upgrade"
+	MethodEvenerPluginRemove             = "evener/plugin/remove"
+	MethodEvenerPluginEnable             = "evener/plugin/enable"
+	MethodEvenerPluginDisable            = "evener/plugin/disable"
+	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerCommandList              = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
+
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -134,6 +140,10 @@ const (
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
 	// the model.
 	MethodEvenerSandboxEscalationResolve = "evener/sandbox/escalation/resolve"
+	// MethodEvenerHostRequest forwards one hub-scoped admin RPC to a named
+	// remote host's hub (component 07a). Host is the component-03 source ID;
+	// Method must be in the proxy's exact allow-list. See HostRequestParams.
+	MethodEvenerHostRequest = "evener/host/request"
 )
 
 const (
@@ -189,6 +199,14 @@ const (
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
 	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
+	// NotifyEvenerHostNotification re-emits one host-owned config notification
+	// (evener/auth/updated, evener/launch/updated, evener/marketplace/updated,
+	// evener/plugin/updated, evener/settings/agentsDoc/changed) tagged with the
+	// source host (component 07a). Local notifications keep their own unwrapped
+	// methods; this wrapper is emitted only for remote hosts. See
+	// HostNotificationParams: the emitter is this component's hub-side fan-out,
+	// and the browser-side consumer that unwraps it is component 07b.
+	NotifyEvenerHostNotification = "evener/host/notification"
 )
 
 const (
@@ -331,6 +349,11 @@ type FavoriteSetParams struct {
 	Kind      string `json:"kind"`
 	ID        string `json:"id"`
 	Favorited bool   `json:"favorited"`
+	// Source names the registered source (host) that owns the project. Empty
+	// and "local" both address the controller's own projects; a configured host
+	// name addresses that host's project, so two hosts' projects with the same
+	// ID keep separate favorites.
+	Source string `json:"source,omitempty"`
 }
 
 // FavoriteSetResponse acknowledges the committed favorite decision and gives
@@ -374,12 +397,19 @@ const (
 
 // ArchiveParams sets or clears an explicit archive decision. Project targets
 // must include the working directory used to resolve and verify their
-// canonical project ID; session targets omit it.
+// canonical project ID; session targets omit it. For a non-local Source,
+// WorkingDir is optional and is only cross-checked against the identity the
+// host already reported, never resolved against the controller's filesystem.
 type ArchiveParams struct {
 	Kind       ArchiveTargetKind `json:"kind"`
 	ID         string            `json:"id"`
 	WorkingDir string            `json:"workingDir,omitempty"`
 	Archived   bool              `json:"archived"`
+	// Source names the registered source (host) that owns the project. Empty
+	// and "local" both address the controller's own projects; a configured host
+	// name addresses that host's project, so two hosts' projects with the same
+	// ID (or path) keep separate archive decisions.
+	Source string `json:"source,omitempty"`
 }
 
 // ArchiveResponse confirms the durable decision and returns the navigation
@@ -394,6 +424,13 @@ type ArchiveResponse struct {
 type ProjectDeleteParams struct {
 	Key        string `json:"key"`
 	WorkingDir string `json:"workingDir"`
+	// Source names the registered source (host) that owns the project row.
+	// Deletion is local-only in v1: empty and "local" both address the
+	// controller's own projects, and any other source is refused before
+	// anything is resolved or removed, so a remote row's delete can never be
+	// answered with a controller-local removal of a project that merely shares
+	// its ID or path.
+	Source string `json:"source,omitempty"`
 }
 
 // ProjectDeleteSkip records one session that a project deletion could not own
@@ -992,6 +1029,7 @@ type EvenerDiagnostics struct {
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
+	Watches    []EvenerWatchInfo       `json:"watches,omitempty"`
 	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`
 	Agents     []string                `json:"agents,omitempty"`
 	// DelegateDiagnostics carries delegate-SUBSYSTEM diagnostics that are
@@ -1110,6 +1148,59 @@ type EvenerJobInfo struct {
 	OriginTurnID     string `json:"originTurnId,omitempty"`
 	OriginToolCallID string `json:"originToolCallId,omitempty"`
 	OriginItemID     string `json:"originItemId,omitempty"`
+}
+
+// EvenerWatchCadence is one trigger cadence on a live watch: Kind is one of
+// "after" (one-shot timer), "every" (repeating timer), "progress" (progress
+// interval), "output" (output match), or "events" (session/job event watch).
+// Seconds carries the interval for the timer and progress kinds and is absent
+// for output and event watches. Trigger sources are orthogonal, so one watch
+// can carry more than one cadence.
+type EvenerWatchCadence struct {
+	Kind    string  `json:"kind"`
+	Seconds float64 `json:"seconds,omitempty"`
+	// DerivedNextFireAt is the next instant this clock-driven cadence is
+	// expected to fire, derived at the daemon from the install instant and the
+	// newest CLOCK fire (a repeating cadence advances from whichever of the two
+	// is later; a one-shot from the install instant alone). The delivery ring is
+	// display-only and is deliberately not consulted, because it mixes every
+	// delivery kind and an output match would move a progress cadence's date. It
+	// is approximate (the runtime keeps a ticker the scheduler can delay) and
+	// can slide later, so consumers word it with a "~". Absent for output and
+	// event cadences, which have no schedule.
+	DerivedNextFireAt string `json:"derivedNextFireAt,omitempty"`
+	// Every is the fire-every-Nth-matching-event throttle on an "events"
+	// cadence; absent (zero) means fire on every matching event. Only the
+	// events kind carries it.
+	Every int `json:"every,omitempty"`
+	// Filter is the events-kind watch's event filter in the model-facing
+	// condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+	// absent when the watch filters nothing. Only the events kind carries it.
+	Filter string `json:"filter,omitempty"`
+}
+
+// EvenerWatchInfo is the structured projection of one live watch, so the web
+// UI can render a watch's note and cadence without parsing the condition prose
+// job_list hands the model. It is purely additive: an older daemon omits
+// Watches entirely, and consumers treat absence as an empty list.
+type EvenerWatchInfo struct {
+	ID             string               `json:"id"`
+	Source         string               `json:"source"`
+	Target         string               `json:"target,omitempty"`
+	SendTo         string               `json:"sendTo,omitempty"`
+	Note           string               `json:"note,omitempty"`
+	Cadence        []EvenerWatchCadence `json:"cadence,omitempty"`
+	OutputMatch    string               `json:"outputMatch,omitempty"`
+	Events         []string             `json:"events,omitempty"`
+	WildcardEvents bool                 `json:"wildcardEvents,omitempty"`
+	Deliveries     int                  `json:"deliveries"`
+	// DeliveryTimes is the bounded, oldest-first ring of this watch's most
+	// recent delivery instants, formatted like CreatedAt. Absent when the
+	// watch has not delivered.
+	DeliveryTimes []string `json:"deliveryTimes,omitempty"`
+	CreatedAt     string   `json:"createdAt"`
+	Active        bool     `json:"active"`
+	EndReason     string   `json:"endReason,omitempty"`
 }
 
 // EvenerDelegateInfo is the turn-free stable delegate projection shared by live
@@ -1551,7 +1642,11 @@ type EvenerSubagentPreviewResponse struct {
 }
 
 type ThreadStartParams struct {
-	Harness         string             `json:"harness,omitempty"`
+	Harness string `json:"harness,omitempty"`
+	// Source names the registered source that should spawn this thread, e.g. a
+	// remote host's host name. It is a bare source ID, not a ref. Empty falls
+	// back to the harness/default routing (local).
+	Source          string             `json:"source,omitempty"`
 	CWD             string             `json:"cwd"`
 	Input           []InputItem        `json:"input,omitempty"`
 	ModelProvider   string             `json:"modelProvider,omitempty"`
@@ -1804,6 +1899,9 @@ type ThreadCompactStartParams struct {
 
 type ThreadForceStopParams struct {
 	Ref string `json:"ref"`
+	// ExpectedDaemon carries the exact ownership evidence the resident UI
+	// resolved for this daemon; nil preserves existing ref-only callers.
+	ExpectedDaemon *DaemonIdentity `json:"expectedDaemon,omitempty"`
 }
 
 type ThreadShutdownParams struct {
@@ -2239,6 +2337,13 @@ const (
 
 type AuthTestParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client reviewed Provider
+	// against (InstanceEntry.endpointFingerprint), when it captured one. The hub
+	// validates it against the configuration the probe will dial and refuses the
+	// check rather than send the stored credential to an endpoint the client
+	// never showed. Empty asserts nothing, which is what the TUI's credential
+	// panel always sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 type AuthTestResponse struct {
@@ -2286,6 +2391,12 @@ type AuthLoginCompleteParams struct {
 	Provider    string `json:"provider"`
 	FlowID      string `json:"flowId"`
 	RedirectURL string `json:"redirectUrl"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this login completion triggers, so the
+	// originator can recognize its own echo by id instead of by provider plus
+	// timing. Optional: empty (an older build, the TUI) leaves the broadcast
+	// without an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 type AuthLoginCompleteResponse struct {
@@ -2294,6 +2405,20 @@ type AuthLoginCompleteResponse struct {
 
 type AuthLogoutParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+	// logout when the name resolves to a different endpoint by the time it
+	// lands: the sign-out was confirmed for the row the client listed, and a
+	// name another client has re-pointed since belongs to a different
+	// instance. Empty asserts nothing, which is what a client that never saw
+	// an endpoint sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this logout triggers, so the originator
+	// can recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 type AuthLogoutResponse struct {
@@ -2584,13 +2709,22 @@ type EvenerJobParams struct {
 }
 
 // EvenerAuthUpdatedParams is the params shape for the evener/auth/updated
-// notification. Both fields are absent when the broadcast follows a
-// provider-instance mutation, which no single provider/activeSource pair
-// honestly summarizes; clients treat this notification as payload-agnostic
-// ("credentials or instances changed, refetch") either way.
+// notification. Provider and ActiveSource are absent when the broadcast
+// follows a provider-instance mutation, which no single provider/activeSource
+// pair honestly summarizes; clients treat this notification as
+// payload-agnostic ("credentials or instances changed, refetch") either way.
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+	// OriginClientId is the echoed OriginClientId of the auth mutation that
+	// caused this broadcast - the identity of the client whose change it
+	// announces, so that client can recognize its own echo by id instead of
+	// by provider plus timing. Optional: a mutation from a client that sends
+	// none (an older build, the TUI) leaves the broadcast without an id, and
+	// a consumer matching a broadcast against its own mutation then falls
+	// back to provider-plus-timing correlation. Absent for a
+	// provider-instance broadcast, which echoes no auth mutation.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // NavigationTargetKind identifies one exact invalidation target variant.
@@ -2814,11 +2948,37 @@ type AuthListResponse struct {
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+	// write when the name resolves to a different endpoint by the time it
+	// lands: the client's own comparison reads a listing a concurrent change
+	// can outdate, so only the hub can make the check and the write one step.
+	// Empty asserts nothing, which is what a client that never saw an endpoint
+	// sends.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this write triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthApiKeyClearParams is the params for evener/auth/apiKey/clear.
 type AuthApiKeyClearParams struct {
 	Provider string `json:"provider"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider (InstanceEntry.endpointFingerprint), checked the way
+	// AuthApiKeySetParams's is. The clear was confirmed for the row the client
+	// listed, so a name another client has re-pointed since must not have its
+	// replacement instance's key removed. Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this clear triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
@@ -2827,6 +2987,15 @@ type AuthApiKeyClearParams struct {
 type AuthCredentialJsonSetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Provider, checked the same way as AuthApiKeySetParams's.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this write triggers, so the originator can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without
+	// an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthDeviceStartParams is the params for evener/auth/device/start.
@@ -2850,6 +3019,12 @@ type AuthDeviceStartResponse struct {
 type AuthDevicePollParams struct {
 	Provider string `json:"provider"`
 	FlowID   string `json:"flowId"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast an authorized poll triggers, so the
+	// originator can recognize its own echo by id instead of by provider plus
+	// timing. Optional: empty (an older build, the TUI) leaves the broadcast
+	// without an id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // AuthDevicePollResponse reports one poll attempt. State is "pending",
@@ -2868,13 +3043,18 @@ type InstanceEntry struct {
 	Name string `json:"name"`
 	// Base is the registry id an explicitly-named instance is built on;
 	// empty when the instance name is itself the registry id.
-	Base       string            `json:"base,omitempty"`
-	ProviderID string            `json:"providerId"`
-	Protocol   string            `json:"protocol"`
-	Surface    string            `json:"surface,omitempty"`
-	Auth       string            `json:"auth"`
-	BaseURL    string            `json:"baseUrl,omitempty"`
-	Vars       map[string]string `json:"vars,omitempty"`
+	Base       string `json:"base,omitempty"`
+	ProviderID string `json:"providerId"`
+	Protocol   string `json:"protocol"`
+	Surface    string `json:"surface,omitempty"`
+	Auth       string `json:"auth"`
+	BaseURL    string `json:"baseUrl,omitempty"`
+	// EndpointFingerprint is a digest of the complete endpoint this instance
+	// resolves, including what BaseURL deliberately leaves out (query
+	// parameters and userinfo). A client compares it to notice that the
+	// destination changed without the secret-bearing parts crossing the wire.
+	EndpointFingerprint string            `json:"endpointFingerprint,omitempty"`
+	Vars                map[string]string `json:"vars,omitempty"`
 	// APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
 	// entry) and credential header (as NAME=VALUE) from providers.toml, so
 	// the sheet's form can prefill them. Never the registry's own defaults
@@ -2912,6 +3092,18 @@ type InstanceEntry struct {
 	// Warnings are the registry's own notes about this instance, chiefly
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
+	// Models is the instance's known models with their effective
+	// disabled state, for the sheet's per-model toggles: exact catalog
+	// rows plus cached live ids. Empty for an instance with no rows.
+	Models []InstanceModelEntry `json:"models,omitempty"`
+}
+
+// InstanceModelEntry is one row of an instance's model inventory: the
+// catalog id and whether the config layer disabled it. The Providers pane's
+// instance sheet renders one toggle per row.
+type InstanceModelEntry struct {
+	ID       string `json:"id"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // ProviderDescriptor is a registry provider the add form can build on: its
@@ -2936,6 +3128,12 @@ type ProviderDescriptor struct {
 	Vars      map[string]string `json:"vars,omitempty"`
 	APIKeyEnv []string          `json:"apiKeyEnv,omitempty"`
 	Implicit  bool              `json:"implicit"`
+	AuthModes []string          `json:"authModes,omitempty"`
+	// Setup is safe discovery metadata for an addressable implicit provider
+	// or existing instance, not membership in InstanceListResponse.Instances.
+	// Hidden implicit providers retain setup even before their destination is
+	// configured; nil means the ID is not yet addressable as an instance.
+	Setup *InstanceEntry `json:"setup,omitempty"`
 }
 
 // InstanceListResponse is the result of evener/instance/list. Diagnostics
@@ -3011,11 +3209,34 @@ type InstanceEditParams struct {
 // InstanceRemoveParams is the params for evener/instance/remove.
 type InstanceRemoveParams struct {
 	Name string `json:"name"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// AuthApiKeySetParams's is. The removal was confirmed for the row the
+	// client listed, so a name another client has re-pointed since must not
+	// have its replacement instance removed. Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
 }
 
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
+}
+
+// InstanceRefreshModelsParams is the params for
+// evener/instance/refreshModels: fetch the instance's live listing, then
+// answer with the updated list (exact catalog rows plus cached live ids).
+type InstanceRefreshModelsParams struct {
+	Name string `json:"name"`
+}
+
+// InstanceSetModelDisabledParams is the params for
+// evener/instance/setModelDisabled. It writes an explicit disabled bool on
+// the named row (never deletes it), so the choice survives catalog
+// refreshes. A glob id is refused: the sheet toggles exact rows only.
+type InstanceSetModelDisabledParams struct {
+	Name     string `json:"name"`
+	Model    string `json:"model"`
+	Disabled bool   `json:"disabled"`
 }
 
 // CommandDescriptor describes one slash command — plugin-provided or
@@ -3411,6 +3632,12 @@ type SettingsHubOverview struct {
 	// PastIndex is nil only when no past-session index is configured
 	// (cfg.Past == nil) — e.g. a minimal/test hub config.
 	PastIndex *SettingsPastIndexOverview `json:"pastIndex,omitempty"`
+	// DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
+	// for spawned daemons, in integer milliseconds; zero means automatic
+	// retirement is disabled. No omitempty: zero is a real configured state,
+	// not "unknown". Source: cfg.DaemonIdleTimeout (hub.toml
+	// daemon_idle_timeout, default 1h).
+	DaemonIdleTimeoutMillis int64 `json:"daemonIdleTimeoutMillis"`
 }
 
 // SettingsPastIndexOverview describes the past-session SQLite index. Settings
@@ -3495,4 +3722,86 @@ type SettingsMCPServerEntry struct {
 type SettingsMCPOverview struct {
 	Servers []SettingsMCPServerEntry `json:"servers,omitempty"`
 	Error   string                   `json:"error,omitempty"`
+}
+
+// HostRequestParams is the evener/host/request payload (component 07a): one
+// hub-scoped admin RPC addressed to a named remote host. The controller's UI
+// sends this instead of calling the admin method directly when the selected
+// target is a remote host, so there is exactly one place that resolves the
+// host, decides whether the method may be forwarded at all, and refuses an
+// offline host rather than falling back to local execution.
+//
+// Host is a component-03 source ID. "local" is reserved for the controller's
+// own hub and is never a valid remote target.
+//
+// Method must name a method in the proxy's exact allow-list; an unlisted
+// method — including any catalog method added after that list was written —
+// is refused, and the proxy is never a generic hub-to-hub tunnel.
+//
+// Params is the forwarded method's own params, passed through unchanged. The
+// result of this call is likewise that method's own result, verbatim; the
+// proxy wraps it in no envelope of its own.
+//
+// A forwarded method that mutates the remote host — the non-idempotent half of
+// the proxy's allow-list — is answered with an explicit outcome-unknown error
+// when the response is lost after the request was sent: the change may or may
+// not have been applied. That error carries
+// evenerErrorInfo "mutationOutcomeUnknown" and retryDisposition "blocked"
+// instead of the SessionUnavailable a read-only forward reports, so a caller
+// knows not to retry a mutation with no idempotency key. A refusal the remote
+// itself sends keeps its own code and message on both paths.
+type HostRequestParams struct {
+	Host   string          `json:"host"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// HostForwardedResult names evener/host/request's result in the protocol
+// catalog. The result is the forwarded method's own result, re-serialized
+// verbatim: there is no single Go shape to declare, so the catalog declares an
+// opaque object rather than fields the proxy does not add. The handler itself
+// returns json.RawMessage; this marker exists so the catalog and the generated
+// protocol reference (docs/appwire-protocol.md, types.gen.ts) name the
+// passthrough honestly instead of borrowing an unrelated type.
+//
+// A typed TypeScript client therefore does NOT get the forwarded method's own
+// result type out of MethodTypes: internal/appwirets maps a named catalog type
+// to an interface (and a struct with no fields to an empty one), so
+// MethodTypes["evener/host/request"]["result"] is `{}` — "the passthrough is an
+// object, the catalog cannot say more". `unknown` is not expressible here: that
+// mapping belongs to a field typed json.RawMessage, and a top-level catalog
+// entry always names an interface. The declared contract is deliberately
+// weaker than the payload, so a caller has to widen the result and cast it to
+// the method it forwarded. Nothing does that yet: the host-scoped request seam
+// that will is component 07b (branch multi-host-pr07b-host-routing), which has
+// not landed here. Read this marker as "an opaque JSON object the proxy passes
+// through", never as an empty result.
+type HostForwardedResult struct{}
+
+// HostNotificationParams is the evener/host/notification payload (component
+// 07a): one host-owned config notification re-emitted to the controller's
+// browser clients, tagged with the source host. It is the Go-side fan-out
+// contract — what the controller emits for a remote host — and nothing more.
+//
+// Method and Params are the remote hub's own notification, unchanged:
+// evener/auth/updated, evener/launch/updated, evener/marketplace/updated,
+// evener/plugin/updated, or evener/settings/agentsDoc/changed. Local
+// notifications keep their existing, unwrapped methods; the wrapper is
+// emitted only for remote hosts, so a store that is not host-scoped never
+// sees remote traffic and cannot misapply it.
+//
+// There is no Go-side consumer of the wrapper: the emitter in this component is
+// cmd/evener-hub's remote-admin fan-out, and the client-side unwrapping into
+// host-scoped stores is component 07b (branch multi-host-pr07b-host-routing),
+// where the wrapped evener/auth/updated refreshes a remote host's own partition
+// in cmd/evener-hub/frontend/src/stores/credentials.ts and in the spawn pane's
+// catalog invalidation. Until that lands, a wrapped notification reaches browser
+// clients that do not yet route it; a local config change is still delivered
+// unwrapped, so no existing store changes behavior.
+//
+// Host is always present and is the only way a store tells two hosts apart.
+type HostNotificationParams struct {
+	Host   string          `json:"host"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
 }

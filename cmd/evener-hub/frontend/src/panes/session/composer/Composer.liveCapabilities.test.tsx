@@ -6,10 +6,11 @@
 //   showSteer = busy && capabilities.steer
 //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
 //
-// Three of the hub's capabilities are themselves defined by whether a turn is
+// Two of the hub's capabilities are themselves defined by whether a turn is
 // in flight (server/appwire_runtime.go's appCapabilities: Send is !active,
-// Steer and Queue are active), so a snapshot cut before the turn says
-// steer=false/queue=false about the turn that follows. Reading it back once
+// Queue is active; Steer is harness support alone and the composer applies
+// the status), so a snapshot cut before the turn says queue=false about the
+// turn that follows. Reading it back once
 // the status has moved on produced kata 06t8's report exactly: submit a reply,
 // and the session it KNOWS is running shows no Steer, no Stop, and a Send that
 // stays grey however much you type — until a reload re-reads the snapshot from
@@ -27,12 +28,13 @@
 // stampClosedThreadCapabilities). Without it a session that shut down mid-turn
 // keeps send=false, and an ended composer is a follow-up card gated on exactly
 // that bit — so the whole composer disappears.
-import { act, cleanup, render, screen } from "@testing-library/react";
+
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
@@ -103,11 +105,11 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
 // What a LIVE daemon with every callback wired advertises, verbatim from
 // server/appwire_runtime.go's appCapabilities. `active` is the whole
 // difference, and it is the reason a snapshot cannot be reused across a
-// status change.
+// status change. Steer is harness support and does not move with it.
 function daemonCapabilities(active: boolean): ThreadCapabilities {
   return {
     send: !active,
-    steer: active,
+    steer: true,
     interrupt: true,
     compact: true,
     clear: false,
@@ -158,16 +160,34 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
 // user's message, then the status — with the capability set the daemon stamps
 // on it at its notification egress. `capabilities: undefined` is the same
 // sequence from a source that state-gates nothing.
+function turnStartedFrame(turnId: string): AnyNotification {
+  return {
+    method: "turn/started",
+    params: {
+      threadId: `thr_${REF}`,
+      ref: REF,
+      turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
+    },
+  };
+}
+
+function turnCompletedFrame(turnId: string): AnyNotification {
+  return {
+    method: "turn/completed",
+    params: { threadId: `thr_${REF}`, ref: REF, turn: { id: turnId, status: "completed", itemsView: "" } },
+  };
+}
+
+function statusActiveFrame(capabilities?: ThreadCapabilities): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
+  };
+}
+
 function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCapabilities): void {
   act(() => {
-    fake.emitNotification({
-      method: "turn/started",
-      params: {
-        threadId: `thr_${REF}`,
-        ref: REF,
-        turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
-      },
-    });
+    fake.emitNotification(turnStartedFrame(turnId));
     fake.emitNotification({
       method: "item/completed",
       params: {
@@ -177,10 +197,7 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
         item: { type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
       },
     });
-    fake.emitNotification({
-      method: "thread/status/changed",
-      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
-    });
+    fake.emitNotification(statusActiveFrame(capabilities));
   });
 }
 
@@ -255,24 +272,24 @@ test("a live idle session's controls follow the turn its own send starts", async
   expect(submitButton().disabled).toBe(false);
 });
 
-// Stop is SESSION-scoped, so its gate cannot be "a turn has told us its name".
+// Both verbs are SESSION-scoped, so neither gate can be "a turn has told us
+// its name".
 //
-// turn/interrupt carries no turn id (appwire v3 dropped expectedTurnId from
-// every control mutation) and the daemon decides on the session's own
-// quiescence. But the composer gated Stop on `busy`, which is isTurnActive:
-// `statusType === "active" && !!activeTurnId` -- gating the BUTTON on an id the
-// REQUEST does not carry, which can only ever withhold a Stop the daemon would
-// have accepted.
+// turn/interrupt and turn/steer carry no turn id (appwire v3 dropped
+// expectedTurnId from every control mutation) and the daemon decides each on
+// the session's own state. The composer once gated both on an activeTurnId the
+// REQUEST does not carry, which can only ever withhold a control the daemon
+// would have accepted. The status alone gates either verb now (isTurnActive:
+// `statusType === "active"`), and the capability gates them independently, so
+// the pair drawn is the pair the daemon advertised beside that status.
 //
 // Active-with-no-id is a state the wire really reaches: a session holding queued
-// work reports active with no turn running. (An earlier version of this comment
-// blamed a turn reservation taken at turn/start. That reservation has no
-// production callers; it is not how this state is reached, and the gate is wrong
-// for the reason above regardless.)
-//
-// Steer stays behind `busy`: it needs a turn to redirect, and Send already
-// covers "say something now" for a session between turns.
-test("a working session offers Stop before its turn has announced a name", async () => {
+// work reports active with no turn running, and the id is cleared between the
+// turn/completed and turn/started of an inline turn boundary (issue #1330).
+// (An earlier version of this comment blamed a turn reservation taken at
+// turn/start. That reservation has no production callers; it is not how this
+// state is reached, and the gate was wrong for the reason above regardless.)
+test("a working session offers Stop and Steer before its turn has announced a name", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
 
   act(() => {
@@ -288,6 +305,7 @@ test("a working session offers Stop before its turn has announced a name", async
     activeTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
 });
 
 // The breadcrumb for kata 5gdv, wired end to end rather than unit-tested in
@@ -339,8 +357,10 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
               activeTurnId: undefined,
               capabilities: { ...daemonCapabilities(true), interrupt: false },
               capabilitySource: "statusFrame",
-              // This frame names no in-flight turn, so there is nothing to steer.
-              showSteer: false,
+              // The frame advertised steer for this status, and the composer
+              // draws what the status says (isTurnActive): Steer present with
+              // Stop gone is the shape the report named.
+              showSteer: true,
               ended: false,
             },
           ],
@@ -464,4 +484,99 @@ test("the follow-up to a session that ended mid-turn can be sent", async () => {
   expect(submitButton().disabled).toBe(false);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
+
+// The frames the projector's openTurn emits when the daemon runs the next
+// turn inline behind the one that just ended (a queued message, a notification
+// turn, a goal continuation, a drained steering carrier): the previous turn
+// closes, the next opens, the status is republished active. The thread status
+// never leaves active, and the hub relays each frame as its own WebSocket
+// message, so the composer renders between them. Issue #1330: Steer must not
+// blink out at that boundary, because the skill guard's turn-end barrier reads
+// exactly that button and the daemon is still mid-input.
+function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnId: string): void {
+  const frames: Array<[string, AnyNotification]> = [
+    ["turn/completed of the previous turn", turnCompletedFrame(endedTurnId)],
+    ["turn/started of the next turn", turnStartedFrame(nextTurnId)],
+    ["the status frame", statusActiveFrame(daemonCapabilities(true))],
+  ];
+  for (const [step, frame] of frames) {
+    act(() => {
+      fake.emitNotification(frame);
+    });
+    expect(screen.queryByTestId("composer-steer"), `Steer after ${step}`).not.toBeNull();
+    expect(screen.queryByTestId("composer-stop"), `Stop after ${step}`).not.toBeNull();
+  }
+}
+
+// The click follows the same rule as the button. Between the two turn frames
+// the model has no activeTurnId, and the handler used to refuse there with a
+// "no active turn" toast (issue #1341); the daemon is mid-input and its v3
+// turn/steer names no turn, so the steer is sent.
+test("a Steer clicked between turn/completed and turn/started sends turn/steer, with no toast", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: `thr_${REF}`,
+      projectionState: "reflected",
+    },
+  }));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("go left");
+
+  act(() => {
+    fake.emitNotification(turnCompletedFrame("turn_5"));
+  });
+  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
+
+  await userEvent.click(screen.getByTestId("composer-steer"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
+    ref: REF,
+    input: [{ type: "text", text: "go left" }],
+  });
+  expect(screen.queryByText(/no active turn/i)).toBeNull();
+});
+
+// A genuine turn failure ends with turn/completed{status: "failed"} and no
+// status frame behind it (the projector's EventError branch; the agent returns
+// the failure before the EventSessionEnd that only a clean completion or an
+// interrupt reaches, kata s8x8). The reducer settles the session idle on that
+// frame, so Stop and Steer leave and Send returns.
+test("a failed turn takes Stop and Steer off and gives Send back", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("another thought");
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: `thr_${REF}`,
+        ref: REF,
+        turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
+      },
+    });
+  });
+
+  expect(threadsStore.getState().threads.get(REF)?.status.type).toBe("idle");
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(false);
+});
+
+test("Steer and Stop stay on screen across an inline turn boundary delivered one frame at a time", async () => {
+  const fake = await mountComposer("idle", daemonCapabilities(false));
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  await type("another thought");
+  expect(screen.queryByTestId("composer-steer")).not.toBeNull();
+
+  emitInlineTurnBoundary(fake, "turn_5", "turn_6");
+
+  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBe("turn_6");
 });

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -29,7 +30,11 @@ func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
 	}
 }
 
-func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
+// Steer advertises harness support, not a turn in flight: the daemon accepts
+// turn/drainAsSteer and turn/promoteQueuedAsSteer with nothing running (they
+// release a queue a Stop parked), and clients apply the status themselves for
+// turn/steer. Only a closed thread withholds it (#1363).
+func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -42,17 +47,18 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	}{
 		{"processing with steerFunc", "active", true, false, false, true, true},
 		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, false},
-		{"idle with steerFunc", "idle", false, false, false, true, false},
-		{"awaiting with steerFunc", "awaiting", false, false, false, true, false},
+		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
+		{"idle with steerFunc", "idle", false, false, false, true, true},
+		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
 		{"closed with steerFunc", "closed", false, false, false, true, false},
 		{"processing without steerFunc", "active", true, false, false, false, false},
+		{"idle without steerFunc", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			if tc.setSteer {
-				s.SetSteerFunc(func(string) {})
+				s.SetSteerFunc(func(string) error { ; return nil })
 			}
 			if tc.reserved {
 				s.appActiveTurnID = "turn_reserved"
@@ -138,7 +144,7 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetSteerFunc(func(string) {})
+			s.SetSteerFunc(func(string) error { ; return nil })
 			s.SetCancelFunc(func() {})
 			s.appReservedTurnID = tc.reserved
 
@@ -149,8 +155,11 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			if caps.Interrupt != working {
 				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
 			}
-			if caps.Steer != working {
-				t.Fatalf("status=%q (working=%v) but steer=%v: one frame, two threads", status, working, caps.Steer)
+			// Steer is harness support, withheld only by closed: it does not
+			// follow `working` (see TestAppCapabilities_SteerAdvertisesHarnessSupport).
+			wantSteer := status != appwire.ThreadStatusClosed
+			if caps.Steer != wantSteer {
+				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed
@@ -165,25 +174,27 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // 5gdv: the set this daemon publishes must never say "a turn is running, and it
 // cannot be stopped".
 //
-// Steer and Interrupt were derived from different facts on different clocks.
-// Steer comes from `active` -- the reservation plus the processing flag, which
-// is also what the wire publishes as the thread's status. Interrupt came from
-// the ambient cancelFunc, which the session loop arms and clears once per turn,
-// and cmd/evener/serve.go's drain path (nextTurnCtx) published processing BEFORE
-// arming it, where the other two arming sites do it the other way round. In
-// between, this set said steer=true interrupt=false -- and a composer applying
-// it draws Steer and Send with no Stop, which is the shape Jesse reported.
+// Steer is harness support (steerAvailable && !closed; the client applies the
+// status, #1363), so on its own it says nothing about a running turn. The
+// forbidden shape is narrower: for an ACTIVE status, steer=true beside
+// interrupt=false. Interrupt used to come from the ambient cancelFunc, which the
+// session loop arms and clears once per turn, and cmd/evener/serve.go's drain
+// path (nextTurnCtx) published processing BEFORE arming it, where the other two
+// arming sites do it the other way round. In that window the set said steer=true
+// interrupt=false for an active thread -- and a composer applying it draws Steer
+// and Send with no Stop, which is the shape Jesse reported.
 //
-// Deriving both from `active` makes the disagreement unrepresentable rather
-// than merely unlikely, which matters because the set is PUSHED: a client keeps
-// it until the next status change, so a frame stamped inside that window takes
-// Stop away for the whole turn that follows.
+// Deriving Interrupt from `active` (the status) rather than the cancelFunc
+// makes the disagreement unrepresentable rather than merely unlikely, which
+// matters because the set is PUSHED: a client keeps it until the next status
+// change, so a frame stamped inside that window takes Stop away for the whole
+// turn that follows.
 //
 // The state below is the drain path's, in its own order.
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetSteerFunc(func(string) {})
+	s.SetSteerFunc(func(string) error { ; return nil })
 	s.SetCancelFunc(func() {})
 
 	// End of a turn: the loop clears processing and the cancel together.
@@ -251,6 +262,81 @@ func TestAppDiagnosticsFromDetailedStatus_PreservesPluginPresence(t *testing.T) 
 	}
 	if _, ok := wire["plugins"]; ok {
 		t.Fatalf("nil plugins must remain absent: %s", raw)
+	}
+}
+
+// TestAppDiagnosticsFromDetailedStatus_ProjectsWatches proves the structured
+// watch rows reach the wire verbatim, including the cadence list, and that the
+// projection copies the mutable event slice rather than aliasing agent state.
+func TestAppDiagnosticsFromDetailedStatus_ProjectsWatches(t *testing.T) {
+	ds := DetailedStatus{Watches: []agent.WatchStatusInfo{{
+		ID:          "w1",
+		Source:      "self",
+		Target:      "caller",
+		SendTo:      "caller",
+		Note:        "wake me",
+		Cadence:     []agent.WatchCadenceInfo{{Kind: "after", Seconds: 600}, {Kind: "events"}},
+		OutputMatch: "",
+		Events:      []string{"assistant.tool"},
+		Deliveries:  3,
+		DeliveryTimes: []string{
+			"1970-01-01T00:16:40Z",
+			"1970-01-01T00:16:41Z",
+		},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+		EndReason: "",
+	}}}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.Watches) != 1 {
+		t.Fatalf("Watches = %+v, want 1 row", got.Watches)
+	}
+	w := got.Watches[0]
+	if w.ID != "w1" || w.Source != "self" || w.Target != "caller" || w.SendTo != "caller" ||
+		w.Note != "wake me" || w.Deliveries != 3 || w.CreatedAt != "1970-01-01T00:16:40Z" || !w.Active {
+		t.Fatalf("watch row = %+v, want the projected fields", w)
+	}
+	wantCadence := []appwire.EvenerWatchCadence{{Kind: "after", Seconds: 600}, {Kind: "events"}}
+	if !reflect.DeepEqual(w.Cadence, wantCadence) {
+		t.Fatalf("Cadence = %+v, want %+v", w.Cadence, wantCadence)
+	}
+	if !reflect.DeepEqual(w.Events, []string{"assistant.tool"}) {
+		t.Fatalf("Events = %+v, want [assistant.tool]", w.Events)
+	}
+	wantDeliveryTimes := []string{"1970-01-01T00:16:40Z", "1970-01-01T00:16:41Z"}
+	if !reflect.DeepEqual(w.DeliveryTimes, wantDeliveryTimes) {
+		t.Fatalf("DeliveryTimes = %+v, want %+v", w.DeliveryTimes, wantDeliveryTimes)
+	}
+	got.Watches[0].Events[0] = "mutated"
+	if ds.Watches[0].Events[0] != "assistant.tool" {
+		t.Fatal("projection aliased the agent event slice")
+	}
+	got.Watches[0].DeliveryTimes[0] = "mutated"
+	if ds.Watches[0].DeliveryTimes[0] != "1970-01-01T00:16:40Z" {
+		t.Fatal("projection aliased the agent delivery-time slice")
+	}
+}
+
+// TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter proves the
+// events cadence's every-Nth count and filter summary survive the wire
+// projection: without the carry a throttled or filtered event watch would be
+// indistinguishable from one that fires on every matching event.
+func TestAppDiagnosticsFromDetailedStatus_ProjectsEventEveryAndFilter(t *testing.T) {
+	ds := DetailedStatus{Watches: []agent.WatchStatusInfo{{
+		ID:        "w2",
+		Source:    "self",
+		Cadence:   []agent.WatchCadenceInfo{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}},
+		Events:    []string{"assistant.tool"},
+		CreatedAt: "1970-01-01T00:16:40Z",
+		Active:    true,
+	}}}
+	got := appDiagnosticsFromDetailedStatus(ds)
+	if len(got.Watches) != 1 {
+		t.Fatalf("Watches = %+v, want 1 row", got.Watches)
+	}
+	wantCadence := []appwire.EvenerWatchCadence{{Kind: "events", Every: 3, Filter: "tool_name=Bash, status=error"}}
+	if !reflect.DeepEqual(got.Watches[0].Cadence, wantCadence) {
+		t.Fatalf("Cadence = %+v, want %+v", got.Watches[0].Cadence, wantCadence)
 	}
 }
 

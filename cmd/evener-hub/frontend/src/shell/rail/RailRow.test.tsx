@@ -1,28 +1,40 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NavigationManifest, NavigationWatchSummary } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
+import {
+  keyID,
+  type NormalizedResource,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
+import { manifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { hydrateThread } from "../../protocol/reducer";
-import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import {
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-  type ResourceState,
-} from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
+import {
+  activityGloss,
+  cadenceStateFor,
+  RailRow,
+  type RailRowActions,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+} from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
   CompletedJobsFoldRailNode,
@@ -34,6 +46,7 @@ import type {
   RailProject,
   RailSession,
   SessionRailNode,
+  WatchRailNode,
 } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
 
@@ -67,6 +80,29 @@ function seedPinCatalogForPicker(): void {
   };
   navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
+}
+
+// Seeds the manifest's launch sources, which a row's host badge/offline
+// affordance derives from (Component 06b). A row whose host the manifest does
+// not name reads as online, so the default empty manifest adds no affordance.
+function seedSources(
+  sources: NavigationManifest["sources"],
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): void {
+  const resource: ResourceState<NavigationManifest> = {
+    key: { kind: "manifest" },
+    data: manifest({ sources }),
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "e",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+    ...overrides,
+  };
+  navigationStore.setState({ manifest: resource });
 }
 
 function PaneFixture() {
@@ -110,6 +146,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
 });
 
@@ -191,6 +228,13 @@ function apiProject(overrides: Partial<RailProject> = {}): RailProject {
   };
 }
 
+/** A project summary stamped with the owning sources the navigation read model
+ * carries (component 06a's field; RailProject's own interface on this branch
+ * predates it, so the row reads it structurally). */
+function withSources(project: RailProject, sources: string[]): RailProject {
+  return { ...project, sources } as RailProject;
+}
+
 function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
   return { id: session.row_id, kind: "session", session, expanded: false, children: [], ...overrides };
 }
@@ -223,6 +267,22 @@ function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
 
 function completedJobsFoldRailNode(count: number): CompletedJobsFoldRailNode {
   return { id: "completed-jobs:parent", kind: "completedJobsFold", count, expanded: false, children: [] };
+}
+
+function watchSummary(overrides: Partial<NavigationWatchSummary> = {}): NavigationWatchSummary {
+  return {
+    id: "watch-1",
+    source: "self",
+    deliveries: 0,
+    created_at: "2026-09-12T19:00:00Z",
+    active: true,
+    ...overrides,
+  };
+}
+
+function watchRailNode(overrides: Partial<NavigationWatchSummary> = {}): WatchRailNode {
+  const watch = watchSummary(overrides);
+  return { id: `watch:parent:${watch.id}`, kind: "watch", watch, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -270,7 +330,8 @@ test("rail Notes follows its hydrated capability from unknown to false to suppor
     { state: "ended", live: false },
     actions({
       onOpenSessionPane: (target, pane) => {
-        workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
+        if (pane === "notes") topNotesStore.getState().toggle(target.ref);
+        else workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
       },
     }),
   );
@@ -296,9 +357,7 @@ test("rail Notes follows its hydrated capability from unknown to false to suppor
     });
   });
   await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: session.ref } })]),
-  );
+  expect(topNotesStore.getState().isExpanded(session.ref)).toBe(true);
 });
 
 function normalizedRailResource(
@@ -523,6 +582,81 @@ describe("activityGloss", () => {
   });
 });
 
+// A watch row's own second line. It carries what the runtime really knows -
+// the cadence it repeats on and whether it is still armed - and never a
+// countdown, because no next-fire instant exists to count down to (the runtime
+// holds a ticker per watch). "armed" is the state word for every kind.
+describe("watchGloss", () => {
+  test.each([
+    ["every", 600, "every 10m · armed"],
+    ["after", 90, "after 1m30s · armed"],
+    ["progress", 30, "every 30s · armed"],
+  ] as const)("renders a %s cadence as %s", (kind, seconds, expected) => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind, seconds }] }))).toBe(expected);
+  });
+
+  test("an output watch reads 'on output', not 'every'", () => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "output" }] }))).toBe("on output · armed");
+  });
+
+  test("an event watch reads 'on events'", () => {
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "events" }], events: ["turn_complete"] }))).toBe(
+      "on events · armed",
+    );
+  });
+
+  // The events cadence carries the fire-every-Nth count and the filter in the
+  // model-facing prose summary's vocabulary, so a throttled or filtered event
+  // watch no longer reads identically to one that fires on every match.
+  test("an event watch names its count and filter", () => {
+    expect(watchCadenceLabel({ kind: "events", every: 3, filter: "tool_name=Bash, status=error" })).toBe(
+      "on events every 3 where tool_name=Bash, status=error",
+    );
+    expect(watchCadenceLabel({ kind: "events", every: 3 })).toBe("on events every 3");
+    expect(watchCadenceLabel({ kind: "events", filter: "tool_name=Bash" })).toBe("on events where tool_name=Bash");
+  });
+
+  // An absent count or filter - the old-server case and most watches - must
+  // leave the label byte-identical to before the fields existed.
+  test("an event watch with no count or filter stays byte-identical", () => {
+    expect(watchCadenceLabel({ kind: "events" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "" })).toBe("on events");
+    expect(watchCadenceLabel({ kind: "events", every: 0, filter: "   " })).toBe("on events");
+  });
+
+  test("combines every trigger source the wire sent, in order", () => {
+    expect(
+      watchGloss(
+        watchSummary({
+          cadence: [{ kind: "output" }, { kind: "every", seconds: 600 }, { kind: "events" }],
+          events: ["turn_complete"],
+        }),
+      ),
+    ).toBe("on output · every 10m · on events · armed");
+  });
+
+  // A one-shot that already fired but is still registered until its durable
+  // teardown lands (firedPendingEnd) is in the list but no longer armed.
+  test.each([
+    ["after", 90],
+    ["output", undefined],
+  ] as const)("a watch that is no longer active reads as not armed (%s)", (kind, seconds) => {
+    const watch = watchSummary({ active: false, cadence: [{ kind, seconds }] });
+    expect(watchGloss(watch)).toMatch(/not armed$/);
+    expect(watchGloss(watch)).not.toMatch(/· armed$/);
+  });
+
+  test("a watch with no cadence at all still says whether it is armed", () => {
+    expect(watchGloss(watchSummary({ cadence: [] }))).toBe("armed");
+  });
+
+  test("a periodless cadence still names its kind instead of rendering nothing", () => {
+    expect(watchCadenceLabel({ kind: "every" })).toBe("every");
+    expect(watchDurationLabel(undefined)).toBe("");
+    expect(watchGloss(watchSummary({ cadence: [{ kind: "every" }] }))).toBe("every · armed");
+  });
+});
+
 describe("loading row", () => {
   test("renders a non-interactive loading indicator", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
@@ -542,11 +676,205 @@ describe("overflow row", () => {
     expect(screen.getByText("+12 older")).toBeTruthy();
   });
 
+  // A capped watch list reuses this row shape with its own wording, so the
+  // rail keeps ONE overflow grammar ("+N ...") rather than inventing a second.
+  test("names a capped watch list in the same grammar", () => {
+    render(
+      <RailRow
+        node={{ id: "watches:parent:overflow", kind: "overflow", count: 4, pages: [], suffix: "more watches" }}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("+4 more watches")).toBeTruthy();
+  });
+
   // Nothing to open and nothing to act on: the rows it counts were never sent
   // to the client, so a chevron or a menu would both be lies.
   test("offers nothing to click", () => {
     render(<RailRow node={overflowRailNode(3)} info={info({ hasChildren: false })} actions={actions()} />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+// A live watch inside its receiver session's fold-out: the drawn clock, the
+// note, and the cadence + state line. Quieter than a job row on purpose -
+// pending work is inventory, not attention, and it must not spend one of the
+// rail's four attention hues.
+describe("watch row", () => {
+  test("leads with a drawn clock and a visually-hidden 'Watch:' before the note", () => {
+    render(
+      <RailRow
+        node={watchRailNode({ note: "Check the deploy log", cadence: [{ kind: "every", seconds: 600 }] })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-watch-glyph").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Watch:")).toBeTruthy();
+    expect(screen.getByText("Check the deploy log")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("every 10m · armed");
+  });
+
+  // No typed glyph: the app's fonts stop at U+2215, so a "◷" would fall back
+  // to a system font, and name-from-content would announce the character.
+  test("never renders a text glyph for the watch mark", () => {
+    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
+    expect(screen.queryByText("◷")).toBeNull();
+    expect(screen.getByTestId("rail-row-watch-glyph").tagName.toLowerCase()).toBe("svg");
+  });
+
+  test("the note is the title, with its full text as a tooltip since it ellipsizes", () => {
+    const note = "Ping me if the queue depth crosses 500, and keep pinging until I answer.";
+    render(<RailRow node={watchRailNode({ note })} info={info()} actions={actions()} />);
+    expect(screen.getByText(note).getAttribute("title")).toBe(note);
+  });
+
+  test("falls back to the watch id when the wire sent no note, so the row is never blank", () => {
+    render(<RailRow node={watchRailNode({ id: "watch-9", note: "" })} info={info()} actions={actions()} />);
+    expect(screen.getByText("watch-9")).toBeTruthy();
+  });
+
+  test("a fired-but-still-registered watch reads as not armed", () => {
+    render(
+      <RailRow
+        node={watchRailNode({ note: "One shot", active: false, cadence: [{ kind: "after", seconds: 600 }] })}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-watch-status").textContent).toBe("after 10m · not armed");
+  });
+
+  test("carries no signal dot and nothing to act on", () => {
+    render(<RailRow node={watchRailNode({ note: "Check" })} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+// The count on the session's summary line. It is its own element beside the
+// gloss (never text inside it) so it keeps neutral ink: the gloss is tinted by
+// the row's signal family, and a watch is not a call for a human, a failure, or
+// a success. It leads the line so it precedes the branch - the deliberate
+// ellipsis sacrifice - and ellipsis can therefore never eat it.
+describe("watch count on the summary line", () => {
+  test("shows on an otherwise-quiet watch-bearing row", () => {
+    const session = apiNode({ state: "idle", age: "2m", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+    // The watch-only line is just the count: the state word "idle" beside it
+    // would be noise, not a gloss.
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+  });
+
+  test("counts its own watches, never a subagent's", () => {
+    const child = apiNode({ row_id: "child", ref: "child", state: "idle", watches: [watchSummary({ id: "c1" })] });
+    const parent = apiNode({
+      state: "idle",
+      age: "1m",
+      watches: [watchSummary({ id: "p1" })],
+      children: [child],
+    });
+    render(<RailRow node={sessionRailNode(parent)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
+  });
+
+  test("reports the retained total with the armed count, so a fired row is still counted", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    // A retained-but-inactive row is still listed by the fold-out, so the
+    // summary's total is two; the armed count stays visible beside it and is
+    // not inflated by the fired row.
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("2 watches · 1 armed");
+  });
+
+  test("pluralizes the count", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("3 watches");
+  });
+
+  test("surfaces omitted watches so the row never silently undercounts", () => {
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: [watchSummary()],
+      omitted_watches: 2,
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch · 1 armed total · +2 more");
+  });
+
+  test("reports the armed total across omitted rows, not just the retained rows", () => {
+    // A session with more armed watches than the hub's per-session cap keeps 32
+    // of them and reports the rest as omitted_armed_watches. The summary must
+    // state the true armed total, labelled as covering the omitted rows, rather
+    // than the retained 32.
+    const session = apiNode({
+      state: "idle",
+      age: "2m",
+      watches: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })),
+      omitted_watches: 8,
+      omitted_armed_watches: 8,
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-watches").textContent).toBe("32 watches · 40 armed total · +8 more");
+  });
+
+  test("precedes the branch on the visible line", () => {
+    const session = apiNode({ state: "active", branch: "feature/x", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    const count = screen.getByTestId("rail-row-watches");
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.textContent).toBe("working · feature/x");
+    expect(count.textContent).toBe("1 watch ·");
+    expect(count.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("keeps neutral ink on a signal row instead of inheriting the gloss's tint", () => {
+    const session = apiNode({ state: "errored", watches: [watchSummary()] });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    const count = screen.getByTestId("rail-row-watches");
+    expect(count.className.split(" ")).toContain(railStyles.watchCount);
+    for (const tint of [railStyles.activityAlive, railStyles.activityAttention, railStyles.activityDanger]) {
+      expect(count.className.split(" ")).not.toContain(tint);
+    }
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.className.split(" ")).toContain(railStyles.activityDanger);
+  });
+
+  test("renders nothing for a session with no watches", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-watches")).toBeNull();
+  });
+
+  // jsdom applies no stylesheet, so the neutral ink is only checkable against
+  // the (comment-stripped) stylesheet text - the same discipline the shared
+  // right-slot describe below uses.
+  test("the count's stylesheet rule is neutral ink, never one of the four hues", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "RailRow.module.css"), "utf8").replace(
+      /\/\*[\s\S]*?\*\//g,
+      " ",
+    );
+    const rule = /\.watchCount\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toMatch(/color:\s*var\(--ink-mid\)/);
+    expect(rule).not.toMatch(/var\(--(alive|attention|danger|accent)\)/);
   });
 });
 
@@ -1438,7 +1766,11 @@ describe("session row", () => {
       onOpenSessionPane: (target, pane) => {
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: target.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
+        if (pane === "notes") {
+          topNotesStore.getState().toggle(target.ref);
+        } else {
+          workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
+        }
       },
     });
     renderRow({}, acts);
@@ -1786,11 +2118,109 @@ describe("project row", () => {
 
   test("menu offers 'Delete project…' and calls onDeleteProjectRequest on select", async () => {
     const acts = actions();
-    const project = apiProject();
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
+  });
+
+  // Deletion is local-only (cmd/evener-hub/project_delete.go refuses any
+  // non-local or unknown source), but the row does not withhold the item on
+  // that account: the judgement lives one level up, where the Rail's
+  // onDeleteProjectRequest refuses a project a remote host also owns, with a
+  // toast that names the hosts (Rail.test.tsx pins that). The person gets an
+  // explanation instead of an item that is silently missing. These tests pin
+  // the row's half of that split: the item is offered whatever the row's
+  // ownership state reads as.
+  test("menu offers 'Delete project…' for a project row a remote host also owns", async () => {
+    const acts = actions();
+    const project = apiProject({
+      loaded: true,
+      session_count: 2,
+      sessions: [
+        apiNode({ row_id: "project:p1:local:a" }),
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    // The rest of the project menu is untouched - and the row is still a
+    // project row with its own actions.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+    expect(acts.onDeleteProjectRequest).not.toHaveBeenCalled();
+  });
+
+  test("menu offers 'Delete project…' for a remote-only project row", async () => {
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  // A collapsed project loads its sessions on expand, so an unexpanded row
+  // reads sessions: [] whatever a remote host owns - which is exactly why the
+  // row's menu no longer reads ownership from them: the item is offered, and
+  // the Rail's refusal is the guard.
+  test("menu offers 'Delete project…' when the project's sessions have not loaded", async () => {
+    const project = apiProject({ loaded: false, session_count: 2, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    // The rest of the project menu is unaffected.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+  });
+
+  // The one unloaded row that is still knowably controller-only: a project with
+  // no rows at all. session_count counts every source's top-level rows
+  // (hubcore.TreeProject.TotalSessionCount), so zero means no host owns a
+  // session here and the source-less request cannot address another project.
+  test("menu keeps 'Delete project…' for an empty controller project", async () => {
+    const project = apiProject({ loaded: false, session_count: 0, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  // The navigation summary's own owning sources, which a controller-only
+  // project omits: a present list settles ownership, and it lands on the Rail
+  // side of the split, not the row's.
+  test("menu offers 'Delete project…' when the summary names a remote owner", async () => {
+    const project = withSources(apiProject(), ["local", "buildbox"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' when the summary names only this controller as an owner", async () => {
+    const project = withSources(apiProject(), ["local"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' for a project row only this controller owns", async () => {
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
   });
 
   test("a childless project renders no chevron; a parent project's chevron trails its name", () => {
@@ -2192,4 +2622,66 @@ test.each(["subagent", "job"] as const)("restart explanation survives %s activit
   const gloss = screen.getByTestId("rail-row-activity").textContent;
   expect(gloss).toContain("restart required");
   expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
+});
+
+// --- host badge / offline affordance (Component 06b) -----------------------
+
+test("a non-local row renders its host as a badge", () => {
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  const badge = screen.getByTestId("rail-row-host");
+  expect(badge.textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a local row renders no host badge", () => {
+  renderRow({ ref: "local:abc", host_id: "local" });
+  expect(screen.queryByTestId("rail-row-host")).toBeNull();
+});
+
+test("a row on an offline host renders the offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+});
+
+test("a row on an online host has no offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a host the manifest does not name defaults to online (no offline affordance)", () => {
+  renderRow({ ref: "mystery:abc", host_id: "mystery" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("mystery");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+// The badge is a DISPLAY of the last reading, and the store retains that reading
+// while the fresh manifest is in flight (loading/stale). A display read that
+// withheld it turned every offline badge back into an ONLINE host for the length
+// of the refresh (round nine).
+test("an offline host's badge survives a manifest revalidation", () => {
+  const sources: NavigationManifest["sources"] = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ];
+  seedSources(sources);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  act(() => seedSources(sources, { loading: true, stale: true }));
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  // The FRESH manifest, once it settles, is the authority again: a host it no
+  // longer names is the unchanged "unknown host" case and reads as online.
+  act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
 });

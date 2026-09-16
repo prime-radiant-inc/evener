@@ -75,7 +75,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 
 		switch seed % 3 {
 		case 0:
-			configured := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir})
+			configured := newHubSourceRegistry(hubcore.WebConfig{RunDir: cfg.RunDir, Roster: rosterOverRunDir(t, cfg.RunDir)})
 			if local, ok := configured.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}
@@ -122,7 +122,7 @@ func FuzzRPCSourcesPass6(f *testing.F) {
 			}
 			notifyMarketplaceUpdated(server)
 			notifyPluginUpdated(server)
-			notifyAuthUpdated(server, "provider", "source")
+			notifyAuthUpdated(server, "provider", "source", "client")
 			notifyLaunchUpdated(server, root, "user")
 
 		case 2:

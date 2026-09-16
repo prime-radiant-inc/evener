@@ -124,6 +124,12 @@ func runModelsList(args []string, stdout, stderr io.Writer) error {
 		for _, id := range ids {
 			res, err := resolve(id)
 			if err != nil {
+				if errors.Is(err, registry.ErrModelDisabled) {
+					if *all {
+						_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\tdisabled\n", name, id)
+					}
+					continue
+				}
 				_, _ = fmt.Fprintf(tw, "%s/%s\t\t\t\t\t\t\terror: %v\n", name, id, err)
 				continue
 			}

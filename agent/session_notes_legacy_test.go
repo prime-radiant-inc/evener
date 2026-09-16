@@ -167,7 +167,7 @@ func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 		}}},
 	}
 
-	out := escapeNotesHistoryTurns(history)
+	out := escapeNotesHistoryTurns(history, nil)
 	for _, turn := range out {
 		for _, r := range turn.Message.Text() {
 			if unicode.IsControl(r) && r != '\n' {
@@ -244,7 +244,7 @@ func TestNotesHistoryCopyKeepsOrdinarySteeringVerbatim(t *testing.T) {
 	const steering = "run the tests\tand show\x1b[31mred\x1b[0m lines"
 	history := []schema.Turn{{Kind: schema.TurnSteering, Message: llm.User(steering)}}
 
-	out := escapeNotesHistoryTurns(history)
+	out := escapeNotesHistoryTurns(history, nil)
 	if got := out[0].Message.Text(); got != steering {
 		t.Fatalf("ordinary steering copy = %q, want it verbatim (%q)", got, steering)
 	}
@@ -268,7 +268,7 @@ func TestNotesHistoryCopyKeepsUserTypedNotePrefixVerbatim(t *testing.T) {
 	for name, turn := range cases {
 		t.Run(name, func(t *testing.T) {
 			want := turn.Message.Text()
-			out := escapeNotesHistoryTurns([]schema.Turn{turn})
+			out := escapeNotesHistoryTurns([]schema.Turn{turn}, nil)
 			if got := out[0].Message.Text(); got != want {
 				t.Fatalf("steering copy = %q, want it verbatim (%q)", got, want)
 			}
@@ -276,7 +276,7 @@ func TestNotesHistoryCopyKeepsUserTypedNotePrefixVerbatim(t *testing.T) {
 	}
 	// The exact shape a note update writes is still note-origin and still strips.
 	note := schema.Turn{Kind: schema.TurnSteering, Message: llm.User("human updated their whiteboard: note\x1b[31m text")}
-	out := escapeNotesHistoryTurns([]schema.Turn{note})
+	out := escapeNotesHistoryTurns([]schema.Turn{note}, nil)
 	if strings.ContainsRune(out[0].Message.Text(), 0x1b) {
 		t.Fatalf("note-origin steering was not stripped: %q", out[0].Message.Text())
 	}

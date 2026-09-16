@@ -22,7 +22,7 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		Usage:   llm.Usage{InputTokens: 500, TotalTokens: 500},
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentWebSearch}}},
 	}
-	sess.recordResponseUsage(webResp, llm.Request{})
+	sess.recordResponseUsage(webResp, llm.Request{}, sess.currentProfile())
 
 	// Normal response with a larger full-history estimate exercises the floor.
 	cacheRead := 10
@@ -31,7 +31,7 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		Usage:   llm.Usage{InputTokens: 100, CacheReadTokens: &cacheRead, CacheWriteTokens: &cacheWrite},
 		Message: llm.Assistant("done"),
 	}
-	sess.recordResponseUsage(normalResp, llm.Request{FullHistoryInputTokensEstimate: 9000})
+	sess.recordResponseUsage(normalResp, llm.Request{FullHistoryInputTokensEstimate: 9000}, sess.currentProfile())
 }
 
 // TestS2Cov_MaybeWarnContextUsage covers both the under-threshold no-op and the

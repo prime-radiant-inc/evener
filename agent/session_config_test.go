@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -960,7 +961,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: "touch " + shellQuote(marker),
+		Command: "touch " + shellquote.Literal(marker),
 		Timeout: 5,
 	})
 	sess.hookRunner = runner
@@ -984,7 +985,7 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 		"hooks": {
 			"SubagentStop": [{
 				"matcher": "*",
-				"hooks": [{"type": "command", "command": "touch ` + shellQuote(marker) + `"}]
+				"hooks": [{"type": "command", "command": "touch ` + shellquote.Literal(marker) + `"}]
 			}]
 		}
 	}`
@@ -1224,7 +1225,8 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	// for parallel execution (non-read-only tools are serialized).
 	_ = sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
-			Name: "slow",
+			Name:        "slow",
+			Description: "Wait for release to exercise concurrent read-only tool calls.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
@@ -1309,8 +1311,9 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	makeTool := func(name string, readOnly bool) tool.RegisteredTool {
 		return tool.RegisteredTool{
 			Definition: llm.ToolDefinition{
-				Name:       name,
-				Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+				Name:        name,
+				Description: "Record completion order to exercise read/write tool scheduling.",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 			ReadOnly: readOnly,
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {

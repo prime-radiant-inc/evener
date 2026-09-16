@@ -1,10 +1,10 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { manifest as navigationManifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { manifest as navigationManifest } from "../../stores/navigation/testing";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";

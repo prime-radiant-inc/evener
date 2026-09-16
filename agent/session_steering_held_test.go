@@ -667,13 +667,12 @@ func TestARestoredHoldOverAnEmptyRailIsReleased(t *testing.T) {
 	}
 }
 
-// TestStopParksSteeringClaimedButNotYetIncorporated closes the window between
-// a steer's durable claim and its transcript append. popSteeringHead commits
-// ExecutionState "claimed" before consumeSteeringMessage writes the entry, and
-// restore returns a claim that never landed to "accepted" -- so a steer sitting
-// in that window is still deliverable across a restart, and a Stop that reads
-// only "accepted" steering arms no hold and lets it through anyway (#174).
-func TestStopParksSteeringClaimedButNotYetIncorporated(t *testing.T) {
+// TestStopParksSteeringPoppedButNotYetIncorporated closes the window between
+// a steer's pop and its transcript append. The store keeps the steer accepted
+// until consumeSteeringMessage records the append, so a steer sitting in that
+// window is still deliverable across a restart, and a Stop must park it
+// rather than let it through on the next wake (#174).
+func TestStopParksSteeringPoppedButNotYetIncorporated(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -687,16 +686,16 @@ func TestStopParksSteeringClaimedButNotYetIncorporated(t *testing.T) {
 		t.Fatalf("steer: %v", err)
 	}
 
-	// The window itself: claimed durably, transcript entry not yet appended.
+	// The window itself: popped, transcript entry not yet appended.
 	msg, ok := sess.popSteeringHead()
 	if !ok {
-		t.Fatal("popSteeringHead found no steering to claim; this test is not in the state it means to be")
+		t.Fatal("popSteeringHead found no steering; this test is not in the state it means to be")
 	}
 	if msg.ClientMutationID != "steer-mid-round" {
-		t.Fatalf("popSteeringHead claimed %q, want the user's steer", msg.ClientMutationID)
+		t.Fatalf("popSteeringHead took %q, want the user's steer", msg.ClientMutationID)
 	}
-	if state := sess.clientMutations.snapshot().PendingExecutions["steer-mid-round"].ExecutionState; state != "claimed" {
-		t.Fatalf("the claimed steer reads %q, want %q; this test is not in the window it means to be", state, "claimed")
+	if state := sess.clientMutations.snapshot().PendingExecutions["steer-mid-round"].ExecutionState; state != "accepted" {
+		t.Fatalf("the popped steer reads %q, want accepted; this test is not in the window it means to be", state)
 	}
 
 	if _, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
@@ -705,7 +704,7 @@ func TestStopParksSteeringClaimedButNotYetIncorporated(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 	if !sess.clientMutations.steeringHeld() {
-		t.Fatal("a Stop landing while the steer was claimed but not yet incorporated armed no hold: restore returns the claim to accepted, so the steer the user stopped is delivered on the next wake anyway")
+		t.Fatal("a Stop landing while the steer was popped but not yet incorporated armed no hold: the steer the user stopped is delivered on the next wake anyway")
 	}
 	sess.Close()
 
@@ -713,23 +712,21 @@ func TestStopParksSteeringClaimedButNotYetIncorporated(t *testing.T) {
 	defer restored.Close()
 
 	if !restored.hasPendingUserSteering() {
-		t.Fatal("restore did not return the never-appended claim to the pending queue; this test no longer covers the window it names")
+		t.Fatal("restore did not queue the never-appended steer; this test no longer covers the window it names")
 	}
 	if !restored.clientMutations.steeringHeld() {
-		t.Fatal("the hold did not survive the restart, so the returned claim is delivered on the next wake")
+		t.Fatal("the hold did not survive the restart, so the steer is delivered on the next wake")
 	}
 	if claimedID, ok := restored.claimSteeringCarrierTurn(); ok {
 		t.Fatalf("claimSteeringCarrierTurn claimed turn %q after restore: the steer the Stop should have parked runs anyway", claimedID)
 	}
 }
 
-// TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer is the exclusion the
-// claimed window needs. The steer whose reserved id IS the turn being
-// cancelled is not a passenger the Stop has to hold back -- it is the turn.
-// Its record disappears the moment its transcript append finalizes, so parking
-// for it leaves a hold naming nothing, and a hold naming nothing swallows the
-// next steer the user sends (#710).
-func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
+// TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt: a Stop that
+// cancels a carrier whose steer was popped but never appended parks that
+// steer -- it is still accepted in the store and the user's next run carries
+// it -- and the hold it arms names that steer, not nothing (#710).
+func TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -746,10 +743,7 @@ func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
 	}
 	msg, ok := sess.popSteeringHead()
 	if !ok || msg.ClientMutationID != "steer-with-no-turn" {
-		t.Fatalf("popSteeringHead claimed %q (ok=%v), want the carrier's own steer", msg.ClientMutationID, ok)
-	}
-	if state := sess.clientMutations.snapshot().PendingExecutions["steer-with-no-turn"].ExecutionState; state != "claimed" {
-		t.Fatalf("the carrier's steer reads %q, want %q; this test is not in the window it means to be", state, "claimed")
+		t.Fatalf("popSteeringHead took %q (ok=%v), want the carrier's own steer", msg.ClientMutationID, ok)
 	}
 
 	response, err := sess.InterruptClientMutation(context.Background(), appwire.TurnInterruptParams{
@@ -761,7 +755,25 @@ func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
 	if response.Receipt.TurnID != carrier {
 		t.Fatalf("the Stop cancelled turn %q, want the carrier turn %q; the exclusion this test names would not apply", response.Receipt.TurnID, carrier)
 	}
-	if sess.clientMutations.steeringHeld() {
-		t.Fatal("the Stop armed a hold for the very steer whose carrier turn it cancelled: that record vanishes when its append finalizes, leaving a hold naming nothing that swallows the user's next steer")
+	// No append ever landed here, so the steer is still accepted in the
+	// store at finalization: the Stop parks it (reconcileClientSteering rule
+	// 2). The hold names that steer -- it is not the hold naming nothing
+	// that #710 forbids.
+	snapshot := sess.clientMutations.snapshot()
+	if state := snapshot.PendingExecutions["steer-with-no-turn"].ExecutionState; state != "accepted" {
+		t.Fatalf("the carrier's steer reads %q after the Stop, want accepted", state)
 	}
+	if !snapshot.SteeringHeld {
+		t.Fatal("the Stop finalized without parking the steer the carrier never recorded: the next wake would deliver what the user just stopped")
+	}
+	if !snapshotHasPendingUserSteering(&snapshot) {
+		t.Fatal("the hold names nothing: exactly the hold #710 forbids")
+	}
+}
+
+// claimSteeringCarrierTurn is the tests' shorthand for claimSteeringCarrierInput
+// when only the reserved turn id the claim published matters.
+func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
+	carrier, ok := s.claimSteeringCarrierInput()
+	return carrier.StableTurnID, ok
 }

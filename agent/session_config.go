@@ -291,6 +291,14 @@ type testConfig struct {
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
+	// steeringCarrierClaimed observes the drain ladder claiming a steering
+	// carrier turn, before that turn is accepted -- the window a Stop or a
+	// write fault can land in. Nil in production.
+	steeringCarrierClaimed func(turnID string)
+	// steeringCarrierClaiming observes a steering carrier claim about to be
+	// written, before the store write -- where a test arms a write fault that
+	// refuses exactly that claim. Nil in production.
+	steeringCarrierClaiming func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)
@@ -538,6 +546,11 @@ type testConfig struct {
 	// close cancels that work. Nil in production.
 	swapEnvAfterAdopt func(refreshCtx context.Context)
 
+	// scratchSwapBeforeUpdate runs inside stageScratchSwapBinding immediately
+	// before each UpdateScratchBindings attempt, so a test can make the first
+	// attempt stale and exercise the rebase-and-retry loop. Nil in production.
+	scratchSwapBeforeUpdate func()
+
 	// enterWorktreeAfterSwap observes the point in enterWorktree right after
 	// the environment swap returned — the earliest point outside the swap a
 	// close can land — so a test can run one there against a session whose
@@ -607,6 +620,8 @@ type spawnConfig struct {
 	// delegateController is the single root-owned authority inherited by every
 	// child session in the live tree.
 	delegateController *delegateTreeController
+	// retirementController is inherited before initialization can launch work.
+	retirementController *RetirementController
 
 	// delegateRootSessionID identifies the root session that owns the inherited
 	// controller. It is stable across every child construction in the tree.
@@ -651,7 +666,7 @@ type spawnConfig struct {
 	// injection is attributable to the watch delivery that produced it, and the
 	// events.SteeringKind* naming what was sent so the caller's transcript
 	// labels it from ground truth.
-	parentSteer func(string, *provenance.Causal, string)
+	parentSteer func(string, *provenance.Causal, string) error
 
 	// parentSystemNotification routes a child-owned restart notice up the live
 	// session tree to the callback receiver.

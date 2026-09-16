@@ -41,6 +41,23 @@ var (
 	listRendezvousForWait           = rendezvous.List
 )
 
+// daemonProcessCommand builds the subprocess that runs an `evener serve`
+// daemon from its already-resolved binary, argv and environment. It is the
+// external process-launch seam: production builds a plain exec.Cmd, and the
+// rendezvous wait, listeners, serve admission/release and every hub-side
+// algorithm stay real on both paths. A test replaces it to run the real serve
+// lifecycle from a cmd/evener test-binary entry while the resolved argv and
+// env are passed through unchanged.
+//
+// The env belongs to the command because the two daemon launch sites assign it
+// exactly once, here; a caller-side assignment after this returns would
+// silently drop anything the seam added.
+var daemonProcessCommand = func(binary string, args, env []string) *exec.Cmd {
+	cmd := exec.Command(binary, args...) //nolint:noctx // detached daemon must outlive ctx (see spawnDaemon)
+	cmd.Env = env
+	return cmd
+}
+
 // HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg                 Config
@@ -156,6 +173,11 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	// The idle-retirement deadline is a runtime launch parameter owned by the
+	// Hub's config, assigned AFTER layer resolution/materialization on both
+	// launch paths (resume's resolved is a historical reconstruction — the
+	// timeout must reflect the Hub's CURRENT config, not the past launch's).
+	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
 	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
@@ -202,6 +224,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 	}
 	defer cleanup()
 	req.Resolved = resolved
+	// The idle-retirement deadline is a runtime launch parameter owned by the
+	// Hub's config, assigned AFTER layer resolution/materialization on both
+	// launch paths (resume's resolved is a historical reconstruction — the
+	// timeout must reflect the Hub's CURRENT config, not the past launch's).
+	req.Resolved.DaemonIdleTimeout = h.Cfg.DaemonIdleTimeout
 	applyHubAPILogDefault(&req.Resolved, h.Cfg.APILog)
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
@@ -378,9 +405,8 @@ func spawnDaemon(ctx context.Context, evenerBinary string, runDir string, req hu
 	// NOT CommandContext: the spawned daemon must outlive this call's ctx (it
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
-	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd := daemonProcessCommand(evenerBinary, args, req.Env)
 	cmd.SysProcAttr = daemonSysProcAttr()
-	cmd.Env = req.Env
 	// A fresh spawn cannot name the log after its session yet: the daemon mints
 	// the id and reports it through rendezvous, so the file is adopted below.
 	dlog, err := openDaemonLog(runDir, "")
@@ -468,9 +494,8 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	// NOT CommandContext: the resumed daemon must outlive this call's ctx (it
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.
-	cmd := exec.Command(evenerBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
+	cmd := daemonProcessCommand(evenerBinary, args, req.Env)
 	cmd.SysProcAttr = daemonSysProcAttr()
-	cmd.Env = req.Env
 	// A resume keeps its session's id, so it keeps — and appends to — that
 	// session's own log.
 	dlog, err := openDaemonLog(runDir, req.SessionID)

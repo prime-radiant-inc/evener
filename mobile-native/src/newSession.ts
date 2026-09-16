@@ -1,23 +1,21 @@
 import { createStore } from "zustand/vanilla";
-import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
 import {
+  buildComposerInput,
+  harnessSupportsPluginSelection,
+  MAX_ATTACHMENTS,
   markerText,
-  stripMarker,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
-import { harnessSupportsPluginSelection } from "../../cmd/evener-hub/frontend/src/panes/spawn/harnessModels";
-import {
   pluginSelectionIssues,
+  resolveScalars,
+  stripMarker,
+  WireError,
   withPluginSelection,
-} from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
-import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
-import { WireError } from "../../appwire-client/typescript/errors";
+} from "@evener/appwire-client";
 import type {
   HarnessDescriptor,
   LaunchConfigLayer,
   ModelDescriptor,
   Thread,
-} from "../../appwire-client/typescript/types.gen";
-import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
+} from "@evener/appwire-client";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import {
   type CreationDraft,

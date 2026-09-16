@@ -1,9 +1,10 @@
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
+import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
 import { Code, SettingsField } from "./settingsField";
 
@@ -77,6 +78,7 @@ export function HubSection() {
         />
       </dl>
       <HubUpdates />
+      <HubResidents />
     </div>
   );
 }

@@ -1,8 +1,7 @@
 // ActivityStore (Zustand) tests. The store owns the current ActivityView
 // projection (never the raw wire Thread) and exposes ONLY the strict
-// LiveActivityState surface: setLiveView / applyLiveNotification /
-// setLiveCapabilities / reset / generationForTest. No identity-free fail-open
-// API exists.
+// LiveActivityState surface: setLiveView / applyLiveNotification / reset /
+// generationForTest. No identity-free fail-open API exists.
 //
 // Identity safety (CRITICAL): the store tracks an ActivityIdentity
 // { threadId, ref, generation }. setLiveView installs view + identity
@@ -30,8 +29,7 @@ import type {
   AnyNotification,
   Thread,
   ThreadCapabilities,
-} from "../../../appwire-client/typescript/types.gen";
-import type { MobileCapabilities } from "../conversation/model";
+} from "@evener/appwire-client";
 import { type ActivityView, createActivityService } from "../services/activity";
 import {
   type ActivityIdentity,
@@ -67,7 +65,7 @@ function emptyView(): ActivityView {
     tasks: [],
     work: [],
     usage: {},
-    capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+    capabilities: ALL_TRUE_CAPS,
   };
 }
 
@@ -121,7 +119,7 @@ function delegateView(): ActivityView {
       },
     ],
     usage: {},
-    capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+    capabilities: ALL_TRUE_CAPS,
   };
 }
 
@@ -652,7 +650,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: { totalTokens: 500, cost: "$5.00" },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store.getState().applyLiveNotification(
@@ -738,7 +736,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: { totalTokens: 500, inputTokens: 200, outputTokens: 300 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       // Same exact identity — authoritative reread replaces the view.
       const ok = store.getState().setLiveView(refreshed, id);
@@ -854,7 +852,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store
@@ -916,7 +914,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store
@@ -1000,7 +998,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store
@@ -1041,7 +1039,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store
@@ -1099,7 +1097,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store.getState().applyLiveNotification(
@@ -1162,7 +1160,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store.getState().applyLiveNotification(
@@ -1286,7 +1284,7 @@ describe("ActivityStore", () => {
           },
         ],
         usage: { totalTokens: 500 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const newCaps: ThreadCapabilities = {
@@ -1313,7 +1311,7 @@ describe("ActivityStore", () => {
       expect(result).toBe("applied");
       const v = store.getState().view;
       // capabilities replaced exactly.
-      expect(v?.capabilities).toEqual(newCaps as MobileCapabilities);
+      expect(v?.capabilities).toEqual(newCaps);
       // tasks/work/usage preserved.
       expect(v?.tasks).toHaveLength(1);
       expect(v?.tasks[0]?.count).toBe(3);
@@ -1328,7 +1326,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       const result = store.getState().applyLiveNotification(
@@ -1339,7 +1337,7 @@ describe("ActivityStore", () => {
       expect(result).toBe("applied");
       const v = store.getState().view;
       // Capabilities untouched when not supplied.
-      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS);
     });
 
     it("thread/status/changed is ignored for wrong identity", () => {
@@ -1354,7 +1352,7 @@ describe("ActivityStore", () => {
       expect(result).toBe("ignored");
       // capabilities unchanged.
       expect(store.getState().view?.capabilities).toEqual(
-        ALL_TRUE_CAPS as MobileCapabilities,
+        ALL_TRUE_CAPS,
       );
     });
 
@@ -1374,7 +1372,7 @@ describe("ActivityStore", () => {
         );
       expect(result).toBe("ignored");
       expect(store.getState().view?.capabilities).toEqual(
-        ALL_TRUE_CAPS as MobileCapabilities,
+        ALL_TRUE_CAPS,
       );
     });
 
@@ -1384,7 +1382,7 @@ describe("ActivityStore", () => {
         tasks: [{ status: "done", count: 2 }],
         work: [],
         usage: { totalTokens: 100 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
         reasoningEffortLevels: ["low", "high"],
         supportsReasoning: true,
@@ -1406,7 +1404,7 @@ describe("ActivityStore", () => {
       // tasks/usage/capabilities preserved.
       expect(v?.tasks[0]?.count).toBe(2);
       expect(v?.usage.totalTokens).toBe(100);
-      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS);
     });
 
     it("thread/model/changed with explicit undefined supportsReasoning clears it to undefined", () => {
@@ -1415,7 +1413,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         supportsReasoning: true,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
@@ -1439,7 +1437,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
       // A model label that "looks" reasoning-capable must not cause the store
@@ -1463,7 +1461,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffortLevels: ["low"],
         supportsReasoning: true,
       };
@@ -1487,7 +1485,7 @@ describe("ActivityStore", () => {
         tasks: [{ status: "done", count: 1 }],
         work: [],
         usage: { totalTokens: 50 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
         reasoningEffortLevels: ["low", "high"],
         supportsReasoning: true,
@@ -1508,7 +1506,7 @@ describe("ActivityStore", () => {
       // tasks/usage/capabilities preserved.
       expect(v?.tasks[0]?.count).toBe(1);
       expect(v?.usage.totalTokens).toBe(50);
-      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS);
     });
 
     it("thread/reasoning-effort/changed with undefined reasoningEffort clears it to undefined", () => {
@@ -1517,7 +1515,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
@@ -1537,7 +1535,7 @@ describe("ActivityStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
       };
       store.getState().setLiveView(view, identity({ generation: 1 }));
@@ -1552,189 +1550,6 @@ describe("ActivityStore", () => {
     });
   });
 
-  // --- I4: setLiveCapabilities narrow strict sink --------------------------
-  // The seam the conversation cap-refresh writer calls independently. Updates
-  // ONLY view.capabilities for the exact current identity + open view; returns
-  // false on stale/missing/wrong identity; preserves tasks/work/usage/reasoning.
-
-  describe("setLiveCapabilities (I4)", () => {
-    it("updates only capabilities for exact current identity", () => {
-      const store = createActivityStore();
-      const view: ActivityView = {
-        tasks: [{ status: "done", count: 3 }],
-        work: [
-          {
-            kind: "job",
-            label: "shell",
-            tone: "running",
-            outputSummary: "0 B",
-            diagnostics: {
-              rawId: "job-1",
-              operationName: "shell",
-              statusClass: "running",
-            },
-          },
-        ],
-        usage: { totalTokens: 500 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        reasoningEffort: "high",
-        reasoningEffortLevels: ["low", "high"],
-        supportsReasoning: true,
-      };
-      store.getState().setLiveView(view, identity({ generation: 1 }));
-      const newCaps: ThreadCapabilities = {
-        send: true,
-        steer: false,
-        interrupt: true,
-        compact: false,
-        clear: true,
-        forkFromTurn: false,
-        shutdown: true,
-        changeModel: false,
-        changeVisionModel: false,
-        sharedNotes: false,
-        queue: true,
-        goal: false,
-        rename: true,
-      };
-      const ok = store
-        .getState()
-        .setLiveCapabilities(newCaps, identity({ generation: 1 }));
-      expect(ok).toBe(true);
-      const v = store.getState().view;
-      expect(v?.capabilities).toEqual(newCaps as MobileCapabilities);
-      // Everything else preserved.
-      expect(v?.tasks[0]?.count).toBe(3);
-      expect(v?.work[0]?.diagnostics?.rawId).toBe("job-1");
-      expect(v?.usage.totalTokens).toBe(500);
-      expect(v?.reasoningEffort).toBe("high");
-      expect(v?.reasoningEffortLevels).toEqual(["low", "high"]);
-      expect(v?.supportsReasoning).toBe(true);
-    });
-
-    it("returns false and preserves view when identity is wrong (different generation)", () => {
-      const store = createActivityStore();
-      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
-      const ok = store
-        .getState()
-        .setLiveCapabilities(
-          { ...ALL_TRUE_CAPS, steer: false },
-          identity({ generation: 2 }),
-        );
-      expect(ok).toBe(false);
-      expect(store.getState().view?.capabilities).toEqual(
-        ALL_TRUE_CAPS as MobileCapabilities,
-      );
-    });
-
-    it("returns false and preserves view when identity is wrong (different thread)", () => {
-      const store = createActivityStore();
-      store
-        .getState()
-        .setLiveView(
-          emptyView(),
-          identity({ threadId: "thread-1", generation: 1 }),
-        );
-      const ok = store
-        .getState()
-        .setLiveCapabilities(
-          { ...ALL_TRUE_CAPS, steer: false },
-          identity({ threadId: "thread-OTHER", generation: 1 }),
-        );
-      expect(ok).toBe(false);
-      expect(store.getState().view?.capabilities).toEqual(
-        ALL_TRUE_CAPS as MobileCapabilities,
-      );
-    });
-
-    it("returns false and preserves view when identity is wrong (different ref)", () => {
-      const store = createActivityStore();
-      store
-        .getState()
-        .setLiveView(emptyView(), identity({ ref: "ref-1", generation: 1 }));
-      const ok = store
-        .getState()
-        .setLiveCapabilities(
-          { ...ALL_TRUE_CAPS, steer: false },
-          identity({ ref: "ref-OTHER", generation: 1 }),
-        );
-      expect(ok).toBe(false);
-      expect(store.getState().view?.capabilities).toEqual(
-        ALL_TRUE_CAPS as MobileCapabilities,
-      );
-    });
-
-    it("returns false when view is null (no open view)", () => {
-      const store = createActivityStore();
-      const ok = store
-        .getState()
-        .setLiveCapabilities(ALL_TRUE_CAPS, identity({ generation: 1 }));
-      expect(ok).toBe(false);
-      expect(store.getState().view).toBeNull();
-    });
-
-    it("returns false after reset for stale identity even after reopening gen6", () => {
-      const store = createActivityStore();
-      // Open at gen5 with known capabilities, then reset (invalidates gen5).
-      const capsGen5: ThreadCapabilities = {
-        send: true,
-        steer: true,
-        interrupt: true,
-        compact: true,
-        clear: true,
-        forkFromTurn: true,
-        shutdown: true,
-        changeModel: true,
-        changeVisionModel: true,
-        sharedNotes: false,
-        queue: true,
-        goal: true,
-        rename: true,
-      };
-      store
-        .getState()
-        .setLiveView(
-          { ...emptyView(), capabilities: capsGen5 as MobileCapabilities },
-          identity({ generation: 5 }),
-        );
-      store.getState().reset();
-      // Reopen a new view at gen6 with different capabilities.
-      const capsGen6: ThreadCapabilities = {
-        send: true,
-        steer: false,
-        interrupt: true,
-        compact: false,
-        clear: true,
-        forkFromTurn: false,
-        shutdown: true,
-        changeModel: false,
-        changeVisionModel: false,
-        sharedNotes: false,
-        queue: true,
-        goal: false,
-        rename: true,
-      };
-      store
-        .getState()
-        .setLiveView(
-          { ...emptyView(), capabilities: capsGen6 as MobileCapabilities },
-          identity({ generation: 6 }),
-        );
-      // A stale gen5 identity must be rejected even though a view is now open
-      // at gen6 — the sink must not mutate the open view's capabilities.
-      const ok = store
-        .getState()
-        .setLiveCapabilities(
-          { ...ALL_TRUE_CAPS, queue: false },
-          identity({ generation: 5 }),
-        );
-      expect(ok).toBe(false);
-      // The open gen6 view's capabilities are untouched.
-      expect(store.getState().view?.capabilities).toEqual(
-        capsGen6 as MobileCapabilities,
-      );
-    });
-  });
 
   // --- reset idempotency (I3) ----------------------------------------------
   // A real reset invalidates the current accepted generation and clears the
@@ -1816,11 +1631,6 @@ function _liveTypeCheck(state: LiveActivityState): void {
     generation: 1,
   });
   state.reset();
-  state.setLiveCapabilities({} as ThreadCapabilities, {
-    threadId: "t",
-    ref: "r",
-    generation: 1,
-  });
 }
 void _liveTypeCheck;
 

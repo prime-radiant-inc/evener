@@ -200,7 +200,7 @@ func TestContinuationRecoveryDiscardsFailedCommunicatePreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := startPreviewEventRecorder(sess)
-	resp, _, _, callErr := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
+	resp, _, _, _, callErr := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
 	evs := recorder.stop(sess)
 	if callErr != nil {
 		t.Fatalf("callModelWithFallback: %v", callErr)
@@ -292,7 +292,7 @@ func TestCallModelWithFallbackRetainsOnlyActivePreviewIDs(t *testing.T) {
 				t.Fatal(err)
 			}
 			recorder := startPreviewEventRecorder(sess)
-			resp, _, _, callErr := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
+			resp, _, _, _, callErr := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
 			evs := recorder.stop(sess)
 			if callErr != nil {
 				t.Fatalf("fallback call: %v", callErr)
@@ -348,7 +348,7 @@ func TestCallModelWithFallbackPanicResetsTransferredPrimaryExactlyOnce(t *testin
 	panicked := false
 	func() {
 		defer func() { panicked = recover() != nil }()
-		_, _, _, _ = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
+		_, _, _, _, _ = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, nil, "", 0)
 	}()
 	sess.Close()
 	<-done

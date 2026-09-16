@@ -1,4 +1,3 @@
-import { useState } from "react";
 import {
   contentSummary,
   type HubTranscriptDisplayDefault,
@@ -6,7 +5,8 @@ import {
   type TranscriptDisplayConfigV1,
   type ViewportClass,
   visibleCategoryInventory,
-} from "../../../transcriptDisplay/config";
+} from "@evener/appwire-client";
+import { useState } from "react";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import { Button, Card } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

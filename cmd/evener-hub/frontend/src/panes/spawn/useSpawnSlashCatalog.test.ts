@@ -1,9 +1,10 @@
+import type { SpawnSlashCatalogResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { SpawnSlashCatalogResponse } from "../../protocol/types.gen";
 import {
+  SPAWN_SLASH_CATALOG_DEBOUNCE_MS,
   type SpawnSlashCatalogLoadState,
   type UseSpawnSlashCatalogArgs,
   useSpawnSlashCatalog,
@@ -121,7 +122,7 @@ describe("useSpawnSlashCatalog", () => {
           cwd: "/repo",
           harness: "evener",
           // cast through unknown to satisfy LaunchConfigLayer without importing extra typing
-          launchOverrides: overrides as unknown as import("../../protocol/types.gen").LaunchConfigLayer,
+          launchOverrides: overrides as unknown as import("@evener/appwire-client").LaunchConfigLayer,
           pluginRevision: 0,
         }),
       { initialProps: { overrides: {} as Record<string, unknown> } },
@@ -398,4 +399,24 @@ test("does not reuse the previous client's catalog as the loading response after
   rerender({ client: clientB });
   // B's own request is still in flight: A's catalog has no authority to stand in.
   expect(result.current.state).toEqual({ status: "loading" });
+});
+
+// Component 07b: the slash catalog is host-dependent, so a remote selection
+// resolves it through evener/host/request on the selected host.
+test("resolves the catalog on the selected remote host through the proxy", async () => {
+  vi.useFakeTimers();
+  const client = new FakeClient();
+  client.on("evener/host/request", (params) => {
+    expect(params).toEqual({ host: "buildbox", method: "evener/spawn/slashCatalog", params: { cwd: "/repo" } });
+    return { commands: [], skills: [] };
+  });
+  const { result } = renderHook(() =>
+    useSpawnSlashCatalog({ client, cwd: "/repo", host: "buildbox", launchOverrides: {}, pluginRevision: 0 }),
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(SPAWN_SLASH_CATALOG_DEBOUNCE_MS);
+    await flush();
+  });
+  expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+  expect(client.calls.map((call) => call.method)).toEqual(["evener/host/request"]);
 });

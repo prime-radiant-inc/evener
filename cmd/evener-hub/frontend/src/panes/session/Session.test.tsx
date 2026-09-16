@@ -1,17 +1,23 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type {
+  ActivityJob,
+  ActivityTree,
+  AnyNotification,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../protocol/activityData";
-import { AppwireClient } from "../../protocol/client";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { FakeSocket } from "../../protocol/testing/fakeSocket";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
@@ -29,7 +35,6 @@ import { connectionStore } from "../../stores/connection";
 import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { recoveryClientFixture } from "../../stores/testing/recoveryClient";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import {
@@ -40,7 +45,6 @@ import {
   threadsStore,
 } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -49,11 +53,8 @@ import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
 import { writeComposerDraft } from "./composer/draft";
-import {
-  flushPendingTurnsProjectionForTests,
-  refreshPendingTurnsProjection,
-  resetPendingTurnsStoreForTests,
-} from "./composer/queue/pendingTurnsStore";
+import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
@@ -361,6 +362,23 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   await flushUntil(() => box.resolve !== null);
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
+});
+
+test("mounts TopNotesPanel at the top of the session content once hydrated", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => Promise.resolve(readResponse("ref_notes_top")));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_notes_top" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("top-notes-panel")).toBeTruthy());
+  // "Top" is DOM order, not just presence: the panel sits above the
+  // transcript area below it in the pane scaffold.
+  const below = screen.getByText("Send the first message");
+  expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
 test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {

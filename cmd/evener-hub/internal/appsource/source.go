@@ -673,7 +673,11 @@ type RelayHandoff interface {
 
 type RelayDelivery struct {
 	Notification appwire.Notification
-	Acknowledge  func()
+	// DaemonGone marks the relay's own announcement that the daemon behind
+	// this session is gone (DaemonGoneResync), the one notification the hub
+	// fans out to every route it serves. Nothing a daemon sends carries it.
+	DaemonGone  bool
+	Acknowledge func()
 	// Proceed transfers bounded pending ownership to the listener without
 	// acknowledging the delivery. It permits later ordered publications to
 	// reach that listener; capture barriers still wait for Acknowledge.
