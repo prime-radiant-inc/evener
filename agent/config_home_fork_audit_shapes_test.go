@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -26,53 +27,40 @@ func isolateHome(t *testing.T) { t.Setenv("HOME", t.TempDir()) }
 func TestViaHelper(t *testing.T) {
 	isolateHome(t)
 	_, _ = NewSession(nil, nil, nil, SessionConfig{})
-}
-func TestViaHelperGated(t *testing.T) {
-	isolateHome(t)
-	_, _ = NewSession(nil, nil, nil, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 }`,
 			flagged: []string{"TestViaHelper"},
 		},
 		{
-			// The gate is set and then cleared before the constructor runs.
-			name: "a later false un-gates",
+			// A config held in a variable is refused whatever it holds: only
+			// the literal the constructor or option receives counts, and an
+			// unrelated use of a gated variable is not a gate.
+			name: "a config held in a variable is refused",
 			src: `
-func TestClearedByAssignment(t *testing.T) {
+func optionalSession(t *testing.T, opts ...sessionOpt) *Session {
+	var o sessionOpts
+	s, _ := NewSession(nil, nil, nil, o.cfg)
+	return s
+}
+func TestVariableConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
-	cfg.testOnly.skipGitSnapshot = false
 	_, _ = NewSession(nil, nil, nil, cfg)
 }
-func TestClearedByReplacingTestOnly(t *testing.T) {
+func TestVariableThroughOption(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	cfg := SessionConfig{}
-	cfg.testOnly.skipGitSnapshot = true
-	cfg.testOnly = testConfig{minimalSystemPrompt: true}
-	_, _ = NewSession(nil, nil, nil, cfg)
+	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
+	_ = optionalSession(t, withConfig(cfg))
 }
-func TestSetLast(t *testing.T) {
+func TestGatedVariableUsedElsewhere(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	cfg := SessionConfig{}
-	cfg.testOnly.skipGitSnapshot = false
-	cfg.testOnly.skipGitSnapshot = true
-	_, _ = NewSession(nil, nil, nil, cfg)
+	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
+	_ = optionalSession(t, withDir(cfg.StateDir), withConfig(SessionConfig{StateDir: cfg.StateDir}))
+}
+func TestLiteral(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	_, _ = NewSession(nil, nil, nil, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 }`,
-			flagged: []string{"TestClearedByAssignment", "TestClearedByReplacingTestOnly"},
-		},
-		{
-			// A gate written under a condition is not a gate the constructor
-			// can be relied on to see.
-			name: "a conditional true does not gate",
-			src: `
-func TestConditional(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	cfg := SessionConfig{}
-	if os.Getenv("X") != "" {
-		cfg.testOnly.skipGitSnapshot = true
-	}
-	_, _ = NewSession(nil, nil, nil, cfg)
-}`,
-			flagged: []string{"TestConditional"},
+			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableUsedElsewhere"},
 		},
 		{
 			// Helpers: one gates unconditionally in its own body, one only on
@@ -134,36 +122,6 @@ func TestRestoreBare(t *testing.T) {
 			flagged: []string{"TestRestoreBare", "TestRestoreUngated"},
 		},
 		{
-			// A constructor inside a subtest closure sees the gate written in
-			// the enclosing body and in its own body.
-			name: "closures see enclosing writes",
-			src: `
-func TestClosureOuterGate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
-	t.Run("sub", func(t *testing.T) {
-		_, _ = NewSession(nil, nil, nil, cfg)
-	})
-}
-func TestClosureInnerGate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Run("sub", func(t *testing.T) {
-		cfg := SessionConfig{}
-		cfg.testOnly.skipGitSnapshot = true
-		_, _ = NewSession(nil, nil, nil, cfg)
-	})
-}
-func TestClosureInnerClear(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
-	t.Run("sub", func(t *testing.T) {
-		cfg.testOnly.skipGitSnapshot = false
-		_, _ = NewSession(nil, nil, nil, cfg)
-	})
-}`,
-			flagged: []string{"TestClosureInnerClear"},
-		},
-		{
 			// No isolated home, or no constructor: nothing to say.
 			name: "quiet without both halves",
 			src: `
@@ -191,6 +149,8 @@ func TestOtherEnv(t *testing.T) {
 			for _, f := range findings {
 				got = append(got, f[strings.LastIndex(f, " ")+1:])
 			}
+			sort.Strings(got)
+			sort.Strings(tc.flagged)
 			if strings.Join(got, ",") != strings.Join(tc.flagged, ",") {
 				t.Fatalf("flagged %v, want %v\nfindings:\n%s", got, tc.flagged, strings.Join(findings, "\n"))
 			}
