@@ -2142,3 +2142,91 @@ func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
 		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reload receipt back", pending)
 	}
 }
+
+// TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs:
+// pending handoffs are processed in slice order, so the slice order is the
+// delivery order. A receipt the failed save puts back must return to the
+// position it held, ahead of a handoff a fold published while the save ran;
+// appended after it, the retry would deliver the newer publication's reload
+// before the older one's.
+func TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "older", "---\nname: older\ndescription: fixture\n---\nBODY_order_older\n")
+	writeSkillMD(t, root, "newer", "---\nname: newer\ndescription: fixture\n---\nBODY_order_newer\n")
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_order", nil),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+	)
+	drainSessionEvents(s)
+	plantOrdinaryRecord(t, s, root, "older", true)
+	plantOrdinaryRecord(t, s, root, "newer", true)
+	const olderPublication = "pub-order-older"
+	const newerPublication = "pub-order-newer"
+	plantReloadReceipt(s, olderPublication, schema.SkillReloadSelection{State: "valid", Names: []string{"older"}})
+	metaFS.before = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"newer"}},
+				PublicationID: newerPublication,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	wantPending := []string{olderPublication, newerPublication}
+	if got := pendingPublicationIDs(s); !slices.Equal(got, wantPending) {
+		t.Fatalf("handoffs after the failed save = %v, want the restored receipt back at its position: %v", got, wantPending)
+	}
+
+	// The retry delivers the publications in the order they were published.
+	metaFS.before = nil
+	metaFS.fail = false
+	batch, outcomes, staged, err = s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	}
+	wantInvocations := []string{olderPublication + ":older", newerPublication + ":newer"}
+	var gotInvocations []string
+	for _, outcome := range outcomes {
+		gotInvocations = append(gotInvocations, outcome.InvocationID)
+	}
+	if !slices.Equal(gotInvocations, wantInvocations) {
+		t.Fatalf("retry prepared %v, want the older publication's reload first: %v", gotInvocations, wantInvocations)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads (retry): %v", err)
+	}
+	var gotCarriers []string
+	for _, state := range skillTurnStates(s) {
+		for _, obligation := range state.Obligations {
+			gotCarriers = append(gotCarriers, obligation.InvocationID)
+		}
+	}
+	if !slices.Equal(gotCarriers, wantInvocations) {
+		t.Fatalf("retry recorded carriers %v, want the older publication's body first: %v", gotCarriers, wantInvocations)
+	}
+}
+
+// pendingPublicationIDs reports the pending handoffs' publication identities
+// in slice order, the order preparation processes them.
+func pendingPublicationIDs(s *Session) []string {
+	var ids []string
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		ids = append(ids, handoff.Operation.PublicationID)
+	}
+	return ids
+}
