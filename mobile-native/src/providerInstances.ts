@@ -78,14 +78,16 @@ export class ProviderInstances {
     // post-write refresh is this screen's change and leaves the result standing.
     if (foreignListingChange(state, previous)) Object.assign(change, this.invalidateTest());
     if (state.loading !== previous.loading) change.loading = state.loading;
-    if (state.error !== previous.error)
-      change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
+    if (state.error !== previous.error) change.error = this.loadFailure(state.error);
     if (Object.keys(change).length > 0) this.publish(change);
   }
   private listing(state: CredentialInstancesState): CredentialListing | null {
     return state.listingEstablished ? listingOf(state) : null;
   }
-
+  // loadFailure is the sentence the screen shows for the core's read error.
+  private loadFailure(error: string | null): string | null {
+    return error === null ? null : sessionActionError("Could not load providers", error);
+  }
   // invalidateTest retires any credential test - a shown result, or a probe
   // still in flight - and returns the state change that takes it down.
   private invalidateTest(): Pick<ProviderState, "credentialTest"> {
@@ -97,12 +99,13 @@ export class ProviderInstances {
     this.started = true;
     this.connect();
     // A listing the store already holds for this connection - a list remounted
-    // after a sign-in, say - is published as it is: the store's own refresh
-    // keeps it current, and a read here would only repeat it. A listing that
-    // belongs to a replaced connection is read past, as ever.
+    // after a sign-in, say - is published as it is, with the read state it came
+    // with (a failed background refetch keeps its rows and its error): the
+    // store's own refresh keeps it current, and a read here would only repeat
+    // it. A listing that belongs to a replaced connection is read past, as ever.
     const held = this.core.getState();
     if (held.listingEstablished && !held.listingFromPreviousConnection) {
-      this.publish({ data: this.listing(held) });
+      this.publish({ data: listingOf(held), loading: held.loading, error: this.loadFailure(held.error) });
       return;
     }
     void this.refresh();

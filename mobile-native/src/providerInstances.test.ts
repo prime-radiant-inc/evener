@@ -104,6 +104,20 @@ it("start publishes the rows the store already holds for this connection without
   expect(model.getSnapshot().data).toEqual(held);
   expect(requests).toHaveLength(reads);
 });
+it("start adopting held rows also shows the failure a background refetch left with them", async () => {
+  const { model, io, store } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  io.request = async () => {
+    throw new Error("offline");
+  };
+  await store.getState().fetch();
+  expect(store.getState().instances).toEqual(held.instances);
+  model.start();
+  expect(model.getSnapshot().data).toEqual(held);
+  expect(model.getSnapshot().error).toBe("Could not load providers: offline");
+  expect(model.getSnapshot().loading).toBe(false);
+});
 it("start reads when the rows the store holds belong to a replaced connection", async () => {
   const { model, io, requests, store, client } = boundary();
   io.request = async () => held;
