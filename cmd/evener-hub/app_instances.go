@@ -1174,6 +1174,15 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	return nil
 }
 
+// keylessScheme reports whether an auth scheme resolves without a credential, so
+// the registry derives the instance whether or not one is stored
+// (computeInstances): a keyless local endpoint (auth: none) and a gateway on the
+// optional-bearer scheme. Those instances come back with their provider, which
+// is what makes them the environment's rather than the user's.
+func keylessScheme(auth string) bool {
+	return auth == registry.AuthNone || auth == registry.AuthOptionalBearer
+}
+
 // environmentBacked reports whether an instance owes its existence to the
 // host's environment rather than to a credential the user added through the
 // UI. The two differ in what a removal can achieve: a stored key and a
@@ -1189,12 +1198,7 @@ func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
 		return false
 	}
-	// An instance whose scheme tolerates a missing credential is re-derived by
-	// the reload with or without one (computeInstances), so a removal would
-	// delete the credential and leave the row standing - with the badge the
-	// affordance just said it did not have. Those are refused, and clearing the
-	// credential is the action that describes what the user wants.
-	if inst.Auth == registry.AuthNone || inst.Auth == registry.AuthOptionalBearer {
+	if keylessScheme(inst.Auth) {
 		return true
 	}
 	return inst.CredentialSource != "store" && inst.CredentialSource != "oauth"
@@ -1242,6 +1246,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(inst) {
+		// The remedy has to name an action that exists. A keyless instance
+		// (auth: none, optional-bearer) is re-derived with or without a
+		// credential, so there may be no variable to unset and no OAuth record
+		// to remove - what can be taken away is the stored credential itself.
+		if keylessScheme(inst.Auth) {
+			return fmt.Errorf("%s comes back with its provider however its credential changes, so it cannot be removed; clear the stored credential instead (%s)", name, describeImplicit(inst))
+		}
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
 

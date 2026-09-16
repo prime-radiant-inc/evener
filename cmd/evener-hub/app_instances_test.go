@@ -759,6 +759,16 @@ func TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey(t *testing.T) {
 
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "ollama"}); err == nil {
 		t.Fatal("Remove accepted an instance the reload would re-derive anyway")
+	} else {
+		// The remedy has to be one the user can take: this instance has no
+		// variable to unset and no OAuth record to remove, so the message must
+		// not send them after either.
+		if strings.Contains(err.Error(), "unset it") || strings.Contains(err.Error(), "OAuth record") {
+			t.Fatalf("the refusal names a remedy that does not exist here: %v", err)
+		}
+		if !strings.Contains(err.Error(), "clear the stored credential") {
+			t.Fatalf("the refusal must name the action that does work: %v", err)
+		}
 	}
 	if v, _ := f.store.Get("ollama"); v != "gk" {
 		t.Fatalf("the refused removal deleted the stored key: %q", v)

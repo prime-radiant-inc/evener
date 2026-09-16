@@ -197,6 +197,14 @@ function renamedInstanceLanded(
   // rename's own outcome rather than evidence of a later tenant of the freed
   // name. The other direction, and any change on an authored row, still says
   // this save's instance is not what holds the new name.
+  //
+  // What separates this save's row from a look-alike is then the identity
+  // fields compared below, not the flag: a concurrent client that authored an
+  // instance under the new name with the same provider, endpoint and auth
+  // between the write and this read would pass. That was already true of an
+  // authored rename before this relaxation, and the listing carries no
+  // per-mutation identifier to close it with - an incarnation or generation
+  // number on the wire is what that would take.
   const authoredByRename = before.implicit && !listed.implicit;
   if (listed.implicit !== before.implicit && !authoredByRename) return undefined;
   const changed = changedFields(params);
