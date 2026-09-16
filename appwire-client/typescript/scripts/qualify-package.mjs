@@ -238,6 +238,9 @@ assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
+assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
+assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
+assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
 `;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off

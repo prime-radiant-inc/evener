@@ -1,8 +1,8 @@
 // @vitest-environment node
 
-import type { LaunchOption } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./schema";
+import { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
+import type { LaunchOption } from "./types.gen";
 
 function option(partial: Partial<LaunchOption> & { wireField: string; kind: string }): LaunchOption {
   return {
