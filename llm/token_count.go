@@ -761,6 +761,9 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {
 		return false
 	}
+	if registry.BoolValue(a.Caps.MultimodalToolResults) != registry.BoolValue(b.Caps.MultimodalToolResults) {
+		return false
+	}
 	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
 }
 

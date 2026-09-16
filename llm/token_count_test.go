@@ -1029,6 +1029,28 @@ func TestEstimatorTargetsEquivalentCoversTheModelID(t *testing.T) {
 	}
 }
 
+// The MultimodalToolResults cap decides whether a tool-result image is billed, so
+// two rows that differ only in it are not one estimator target: a caller that
+// keeps a measurement keyed to the target would otherwise hold a count that bills
+// an image the shaped request no longer carries.
+func TestEstimatorTargetsEquivalentCoversMultimodalToolResults(t *testing.T) {
+	declared, undeclared := true, false
+	base := registry.Resolved{
+		Instance: "gateway", ModelID: "gateway-zz", Protocol: registry.ProtocolOpenAIChat,
+		Caps: registry.Caps{MultimodalToolResults: &declared},
+	}
+	same := base
+	same.Caps.MultimodalToolResults = &declared
+	if !EstimatorTargetsEquivalent(base, same) {
+		t.Fatal("rows that agree on MultimodalToolResults are one estimator target")
+	}
+	other := base
+	other.Caps.MultimodalToolResults = &undeclared
+	if EstimatorTargetsEquivalent(base, other) {
+		t.Fatal("rows that disagree on MultimodalToolResults are different estimator targets: the estimate reads it")
+	}
+}
+
 // A namespaced OpenAI id is the same model as its bare spelling, and a gemma id
 // is Google's: the name rule has to read both, with no row facts to decide from.
 func TestProviderTokenFamilyReadsNamespacedAndGemmaNames(t *testing.T) {
