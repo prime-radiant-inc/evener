@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
-import { pageStatus } from "./navigationPages";
+import { updating } from "./navigationPages";
 import type { PinAssignmentSelection } from "./pinAssignmentDrafts";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -149,7 +149,7 @@ export function PinAssignmentEditor({
 				{loading ? (
 					<ActivityIndicator accessibilityLabel="Loading pinned sections" />
 				) : null}
-				{pageStatus({ loading, error, stale, remaining }) === "stale" ? (
+				{updating({ loading, error, stale, remaining }) ? (
 					<Copy muted>Updating…</Copy>
 				) : null}
 				{!loading && remaining > 0 ? (

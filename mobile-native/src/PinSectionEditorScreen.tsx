@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { sectionDrafts } from "./nativeOrganization";
-import { pageStatus } from "./navigationPages";
+import { updating } from "./navigationPages";
 import { pinSectionAsShown } from "./pinNavigation";
 import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
@@ -65,7 +65,7 @@ export function PinSectionEditorScreen({
 	const message = changedUnderAlert
 		? "This section changed while you were deciding. Check it and delete again."
 		: (selected?.error ?? pin.action?.error ?? pin.page?.error ?? null);
-	const status = pin.page ? pageStatus({ ...pin.page, error: message }) : null;
+	const isUpdating = !!pin.page && updating({ ...pin.page, error: message });
 	const blocked =
 		!settled ||
 		!section ||
@@ -181,7 +181,7 @@ export function PinSectionEditorScreen({
 						) : null}
 						{pin.action?.pending ? (
 							<Copy muted>Checking the section…</Copy>
-						) : status === "stale" ? (
+						) : isUpdating ? (
 							<Copy muted>Updating…</Copy>
 						) : null}
 						{pin.confirmed && !section ? (

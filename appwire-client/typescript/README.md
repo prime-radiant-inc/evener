@@ -8,7 +8,9 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
-answer's questions frozen while late ones arrive, the attachment count, size
+answer's questions frozen while late ones arrive, the ask-dock store that
+reconciliation feeds (`createAskDockStore({ send })`, a framework-free store
+each app points at its thread source with `followThreads`), the attachment count, size
 and type limits every composer rejects a staged file against, the `[image N]`
 marker splicing that anchors a staged image in the composer text and removes
 it again, the translation that turns those markers into prose at send and
@@ -17,13 +19,21 @@ attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
 rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
-delegate status rule,
+delegate status rule, the delegate timing and model derivations both apps'
+delegate details render from,
 the slash invocation and catalog visibility rules the palette and composer
-share, the inline slash-completion token parser, menu merge, filter and
+share, the command catalog itself as a framework-free store
+(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
+and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
+beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
-tasks panel and native tasks sheet render from, the display formatters
+tasks panel and native tasks sheet render from, and the tasks-panel store
+both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
+coalescing `refresh` and a notification-following `watch`, over a
+`TasksListRead` port so the web's reconnect-waiting read and native's direct
+one both fit), the display formatters
 both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
@@ -74,7 +84,7 @@ completion affordance and ships its MIT attribution at
 
 ## Published subpaths
 
-Besides the root, `package.json` `exports` publishes two subpaths:
+Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
@@ -84,6 +94,19 @@ Besides the root, `package.json` `exports` publishes two subpaths:
   merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
   subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
   the four modules whole.
+- `@evener/appwire-client/state/extensions` - the extensions state layer both
+  apps' plugin settings surfaces are built on: the marketplaces store
+  (`createMarketplacesStore(client)`, a framework-free store over a
+  `request`/`onNotification` client port holding a hub's marketplace list and
+  one cached browse result per marketplace, where fetches record their failure
+  in state and mutations reject), with the installed-plugin and directory
+  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
+  barrel over the layer's modules.
+- `@evener/appwire-client/state/credentials` - the credentials state layer:
+  `createCredentialInstancesStore()` is the framework-free listing core
+  (`instances`) each app's Providers & credentials store adapts, with the
+  stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
