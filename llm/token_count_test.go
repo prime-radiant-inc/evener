@@ -973,6 +973,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	}{
 		{"anthropic bills redacted data", row(anthropic, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text, Signature: sig}), textChars / 4},
 		{"responses drops a redacted part", row(responses, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
+		{"responses drops a redacted part carrying a blob", row(responses, registry.Caps{}), part(ContentRedThinking, &ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), 0},
 		{"chat drops a redacted part", row(chat, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
 		{"google drops a redacted part", row(google, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
 
