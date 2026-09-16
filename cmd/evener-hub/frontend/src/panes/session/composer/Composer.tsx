@@ -89,7 +89,13 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
-import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
+import {
+  type PendingTurnEntry,
+  pendingTurnEntries,
+  QueueStrip,
+  submitWithPendingTracking,
+  usePendingTurnEntries,
+} from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
@@ -848,16 +854,18 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Reading routing off the presentation source therefore lost tier 6 for the
   // sender at exactly the moment the daemon confirmed it had the send - the
   // next message went to turn/start and bounced.
-  const hasPendingSend = pendingSendEntries.some((entry) => entry.fromThisClient);
-  // The Send/Queue availability of a model: read at render for the button and
-  // its tooltip, and again at submit from the store's live model, so a status
-  // frame that landed between the two routes the submit rather than the
-  // render.
-  function availabilityFor(target: ThreadModel): { canSend: boolean; canQueue: boolean } {
+  const ownPendingSend = (entries: readonly PendingTurnEntry[]) => entries.some((entry) => entry.fromThisClient);
+  const hasPendingSend = ownPendingSend(pendingSendEntries);
+  // The Send/Queue availability of a model and this client's pending send: read
+  // at render for the button and its tooltip, and again at submit from the
+  // stores' live model and live pending entries, so a status frame or a
+  // pending send that landed (or cleared) between the two routes the submit
+  // rather than the render.
+  function availabilityFor(target: ThreadModel, pendingSend: boolean): { canSend: boolean; canQueue: boolean } {
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
       capabilities: target.capabilities,
-      hasPendingSend,
+      hasPendingSend: pendingSend,
     });
     // A finished session can still be sent to when the source says so: the hub
     // advertises Send for an exited evener thread and auto-resumes it on the first
@@ -878,7 +886,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       ? { canSend: true, canQueue: false }
       : tableAvailability;
   }
-  const availability = availabilityFor(model);
+  const availability = availabilityFor(model, hasPendingSend);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
@@ -1294,7 +1302,10 @@ export function Composer({ ref, focused }: ComposerProps) {
     // then the frame is what the submit has to follow.
     const route = decideSubmitRoute({
       hasContent,
-      availability: availabilityFor(liveThreadModel(ref) ?? renderedModel),
+      availability: availabilityFor(
+        liveThreadModel(ref) ?? renderedModel,
+        ownPendingSend(pendingTurnEntries(ref, "send")),
+      ),
     });
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");

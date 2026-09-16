@@ -2107,6 +2107,69 @@ test("submit after an active frame folded in the same task routes to queue on th
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
+// The Send/Queue route also reads this client's pending send live: tier 6 of
+// the availability table routes a second message to queue while this page's
+// first send is still pending, and that pending state can clear (or appear)
+// after the render that offered the button. Here it clears in the same task as
+// the press, so the render-time verdict still says queue.
+test("submit after the pending send cleared in the same task routes to send on the live pending state", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  // The seeded send is this page's own and stays in flight: the runtime
+  // dispatches it and the hub never answers.
+  const inFlight = deferred<never>();
+  const sentText = (params: unknown) => (params as { input?: { text?: string }[] }).input?.[0]?.text;
+  fake.on("turn/start", (params) =>
+    sentText(params) === "first"
+      ? inFlight.promise
+      : { ...receipt(params), turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+  );
+  fake.on("turn/queue", receipt);
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+  });
+  // The route a press takes is the durable record it writes (the dispatcher
+  // holds it behind the in-flight send, so the wire shows nothing yet).
+  const routeOf = async (text: string) =>
+    (await storage.listOutbox("ref_a")).find((record) => sentText(record.payload) === text)?.method;
+  // Render-time verdict: this page's own pending send puts the next message in
+  // queue mode (tier 6).
+  await user.type(textarea(), "second");
+  await user.click(submitButton());
+  await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
+  await waitFor(() => expect(textarea().value).toBe(""));
+  // The next message renders in the same queue mode; its pending send clears
+  // in the same task as the press, so the press has to read the store.
+  await user.type(textarea(), "third");
+  const submit = submitButton();
+  resetPendingTurnsStoreForTests();
+  fireEvent.click(submit);
+  await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
+});
+
 // Shift+Enter reaches the steer handler directly off the keydown event, so
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"
