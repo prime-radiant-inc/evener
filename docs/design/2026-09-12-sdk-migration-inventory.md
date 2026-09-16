@@ -127,7 +127,7 @@ consumers share into a place both can name, not about discovering new sharing.
 | Module (lines) | Owns | Wire surface | Counterpart | Class | Seam needed to move |
 | --- | --- | --- | --- | --- | --- |
 | `stores/threads.ts` (2997) | `ThreadModel` per open ref, refcounted across panes; routes notifications into the reducer; owns send/steer/queue/drain and mutation lifecycle | `evener/thread/{name/set,resync}`, `turn/*`, `evener/{tasks,jobs}/list`, `evener/jobs/output`, `evener/goal/updated`, `evener/steering/injected`, `evener/sandbox/escalation/resolve`, `evener/auth/updated` | `mobile/src/state/conversation.ts` (3369) + `services/conversation.ts` (1263) | DUPLICATED | store core without zustand; durable-outbox interface; panel-eviction callback instead of `panelStoreEviction` import |
-| `stores/activityPanel.ts` (371) | Per-ref activity-tree load state + disclosure; grafts continuations | none (fetch injected; tree comes from `evener/jobs/list` via threads.ts) | `protocol/activityList.ts` (188, native-only) and `mobile/src/state/activity.ts` (495) | DUPLICATED | a fetch/subscribe port; `ActivityList` already is the shared shape |
+| `stores/activityPanel.ts` (371) | Per-ref activity-tree load state + disclosure; grafts continuations | none (fetch injected; tree comes from `evener/jobs/list` via threads.ts) | `protocol/activityList.ts` (188, native-only) and `mobile/src/state/activity.ts` (495) | PLATFORM-ONLY | **re-classed by D17'' (was DUPLICATED):** a pure multi-ref state machine with no fetch body; `ActivityList` is a self-fetching per-thread class with none of its surface (request-ID protocol, disclosure, folds, per-node page failures), so there is nothing here for it to replace. D17'' cut its import cycle with `activitySummary.ts`; convergence with `activityList` is D18's question |
 | `stores/activitySummary.ts` (327) | Per-ref counts, root-fetch sequencing, failure sentences | none | `mobile/src/services/activity.ts` (481) | DUPLICATED | error-sentence helpers already in `protocol/errors.ts`; needs a scheduler port |
 | `stores/agentsDoc.ts` (178) | Personal AGENTS.md document, refreshed by broadcast | `evener/settings/agentsDoc/{get,set,changed}` | none (native has no AGENTS editor) | PACKAGE CANDIDATE | client port only |
 | `stores/attachmentMarkers.ts` (48) | Translating `[image N]` editing anchors to prose at send | none | native imports this file (1 site) | PACKAGE CANDIDATE (2 consumers) | none — already pure |
@@ -345,9 +345,9 @@ later PR a place to land. Both have since been written — see "Delta since base
 | Class | Rows |
 | --- | --- |
 | SHARED ALREADY | 6 |
-| DUPLICATED | 33 |
+| DUPLICATED | 32 |
 | PACKAGE CANDIDATE | 56 (of which **33** have two consumers by direct import: `sendQueueAvailability.ts` left that set in round 23 and `deriveAskQuestions.ts` in round 26 under the counting rule in §1, and `builtinInvocation.ts` joined it in round 30, having been missing from this document entirely) |
-| PLATFORM-ONLY | 13 |
+| PLATFORM-ONLY | 14 |
 | dead code | 1 |
 | **Total rows** | **109** |
 
