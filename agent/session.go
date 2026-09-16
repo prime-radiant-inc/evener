@@ -2031,8 +2031,18 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 // seqHeldPreAttach is the sequence number reported for a turn written before
 // the transcript writer is attached: the turn is queued and gets its real Seq
 // when attachTranscript flushes it, so its in-memory Seq is stamped there, not
-// here. -1 can never collide with a real Entry.Seq (which starts at 0).
-const seqHeldPreAttach = -1
+// here. It is a distinct negative marker so it can never collide with a real
+// Entry.Seq (>= 0), with schema.NoTranscriptEntrySeq (a turn that will NEVER
+// get an entry), or with seqFoldInjectedSteering — attachTranscript stamps
+// exactly the turns still carrying THIS marker.
+const seqHeldPreAttach = -2
+
+// seqFoldInjectedSteering marks a steering turn a compaction fold injected into
+// history: its durable entry is written during the fold's commit, so its
+// in-memory copy carries this marker until commit stamps the real Seq. It lets
+// writeFoldRecordLocked name such a turn by the steering-write's Seq without
+// treating Seq 0 (a real entry) as load-bearing.
+const seqFoldInjectedSteering = -3
 
 func (s *Session) writeTranscript(t schema.Turn) (int, error) {
 	s.attentionMu.Lock()
@@ -2155,7 +2165,7 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
-	for i, t := range held {
+	for _, t := range held {
 		seq, err := w.Append(t)
 		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
@@ -2165,14 +2175,18 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			continue
 		}
-		// The held turns were appended to history in this same order with a
-		// seqHeldPreAttach placeholder; stamp each with the Seq the flush spent
-		// so the fold can name it by Seq. attachTranscript is the single
-		// readiness transition and runs before any turn processes, so history's
-		// leading run is exactly these held turns in order.
+		// The held turns were appended to history carrying the seqHeldPreAttach
+		// marker; stamp them, in flush order, with the Seq each write spent so
+		// the fold can name them by Seq. Stamp by FINDING the next turn still
+		// carrying the marker rather than assuming held[i] is history[i]: a fork
+		// delegate's history leads with its inherited prefix (already stamped
+		// with its own entries), so the held boundary turn is not at index 0.
 		s.mu.Lock()
-		if i < len(s.history) && s.history[i].Seq == seqHeldPreAttach {
-			s.history[i].Seq = seq
+		for j := range s.history {
+			if s.history[j].Seq == seqHeldPreAttach {
+				s.history[j].Seq = recordedSeq(seq, err)
+				break
+			}
 		}
 		s.mu.Unlock()
 	}

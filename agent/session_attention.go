@@ -99,6 +99,7 @@ func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, e
 	fold := newDelegateAttentionFold()
 	for _, entry := range entries {
 		turn := entry.Turn
+		turn.Seq = entry.Seq // seed the durable per-line id so a retained attention turn carries its own entry, not Seq 0
 		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
 			return delegateAttentionFold{}, err
 		}
@@ -402,10 +403,15 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
 	// AppendSynced records AND syncs, or errors; a retained (recorded but
-	// unsynced) line the read-back would find is not durable.
-	if _, err := writer.AppendSynced(turn); err != nil {
+	// unsynced) line the read-back would find is not durable. Stamp the turn
+	// with the durable Seq it spent so retainDelegateAttentionTurn carries an
+	// entry-backed turn into history (not a Seq-0 turn a later fold's merge-back
+	// would resolve to the session's first entry).
+	seq, err := writer.AppendSynced(turn)
+	if err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
+	turn.Seq = recordedSeq(seq, err)
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
 	}

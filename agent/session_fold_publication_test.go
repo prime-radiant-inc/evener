@@ -303,7 +303,8 @@ func TestWriteFoldRecordLocked_NoEntryTurnDoesNotStealSteeringSeq(t *testing.T) 
 	}
 	noEntry := schema.NewTurn(schema.TurnUserInput, llm.User("repair synthetic"))
 	noEntry.Seq = schema.NoTranscriptEntrySeq
-	steer := schema.NewTurn(schema.TurnSteering, llm.User("injected steering")) // unstamped copy, Seq 0
+	steer := schema.NewTurn(schema.TurnSteering, llm.User("injected steering"))
+	steer.Seq = seqFoldInjectedSteering // the fold-injected marker; its durable Seq is the steering write's
 	published := []schema.Turn{summary, noEntry, steer}
 	// steeringSeqs holds the durable Seq the fold wrote the steering turn at.
 	s.writeFoldRecordLocked(published, 0, []schema.Turn{summary}, []int{headSeq}, []int{42}, "fold-x")
@@ -336,6 +337,141 @@ func TestResumeHistoryFoldRecord_NeverInjectsAFoldRecord(t *testing.T) {
 		if turn.Kind == schema.TurnFoldRecord {
 			t.Fatal("resumed history contains a fold record: a self-referential seq was resolved into history")
 		}
+	}
+}
+
+// assertHistorySeqsNameEntries is the class invariant: every history turn's
+// Seq either faithfully names a durable transcript entry (>= 0, and that entry
+// exists) or is a negative marker for a turn with no entry — and NO turn is
+// left carrying the transient seqFoldInjectedSteering placeholder the commit
+// must resolve. No two entry-backed turns may share a Seq. Any bare-0 or
+// hand-stamped-unspent Seq that names the wrong entry fails it.
+func assertHistorySeqsNameEntries(t *testing.T, s *Session) {
+	t.Helper()
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	bySeq := map[int]bool{}
+	for _, e := range data.Entries {
+		bySeq[e.Seq] = true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[int]int{}
+	for i, turn := range s.history {
+		if turn.Seq == seqFoldInjectedSteering {
+			t.Fatalf("history[%d] still carries the transient fold-injected steering marker; the fold's commit must resolve it to a real Seq", i)
+		}
+		if turn.Seq >= 0 {
+			if !bySeq[turn.Seq] {
+				t.Fatalf("history[%d] (kind %s) carries Seq %d, which names no transcript entry", i, turn.Kind, turn.Seq)
+			}
+			if prev, dup := seen[turn.Seq]; dup {
+				t.Fatalf("history[%d] and history[%d] both carry Seq %d — one turn's entry named for two turns", prev, i, turn.Seq)
+			}
+			seen[turn.Seq] = i
+		}
+	}
+}
+
+// The class invariant, exercised through a real fold that injects a note-handoff
+// steering turn: after publication every live history turn must name its own
+// durable entry (or be an explicit no-entry marker), with the injected steering
+// resolved from its placeholder to its real Seq.
+func TestFold_HistoryTurnSeqsNameTheirEntries(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "seq-invariant", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 10 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("t%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	s.setPinnedNote("REMEMBER: the API signature") // injects a note-handoff steering turn at the fold
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	assertHistorySeqsNameEntries(t, s)
+}
+
+// Instance 2: a decoded attention turn must carry the durable Seq of the entry
+// it was read from, not a bare 0 — otherwise a fold's merge-back names it Seq 0
+// and resume resolves it to the session's FIRST entry, resurrecting a
+// summarized-away turn.
+func TestFoldDelegateAttention_SeedsTurnSeq(t *testing.T) {
+	t.Parallel()
+	attn := schema.NewTurn(schema.TurnSteering, llm.User("attend to X"))
+	attn.AttentionID = "attn-1"
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hi"))},
+		{Kind: "entry", Seq: 5, Turn: attn},
+	}
+	fold, err := foldDelegateAttention(entries)
+	if err != nil {
+		t.Fatalf("foldDelegateAttention: %v", err)
+	}
+	if got := fold.turns["attn-1"].Seq; got != 5 {
+		t.Fatalf("decoded attention turn Seq = %d, want 5 (its durable entry)", got)
+	}
+}
+
+// Instance 3: attachTranscript must stamp a held turn at its real position, not
+// assume held[i] is history[i]. A fork delegate's history leads with an
+// inherited prefix, so the held boundary turn is not at index 0.
+func TestAttachTranscript_StampsHeldTurnAfterInheritedPrefix(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const id = "attach-scan-session"
+	w, err := transcript.NewWriter(transcriptPath(dir, id), transcript.Header{SessionID: id})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	s := &Session{id: id, stateDir: dir}
+	inherited := schema.NewTurn(schema.TurnUserInput, llm.User("inherited"))
+	inherited.Seq = schema.NoTranscriptEntrySeq // inherited prefix names no child entry
+	boundary := schema.NewTurn(schema.TurnSteering, llm.User("boundary"))
+	boundary.Seq = seqHeldPreAttach
+	s.history = []schema.Turn{inherited, boundary}
+	s.pendingTranscriptTurns = []schema.Turn{boundary}
+
+	s.attachTranscript(w)
+
+	if s.history[0].Seq != schema.NoTranscriptEntrySeq {
+		t.Fatalf("inherited turn Seq = %d, want it left untouched", s.history[0].Seq)
+	}
+	if s.history[1].Seq < 0 {
+		t.Fatalf("held boundary Seq = %d, want a real durable Seq after attach (it was stamped at index 0 instead)", s.history[1].Seq)
+	}
+}
+
+// Instance 1: a failed-but-usable write returns the UNSPENT next seq;
+// appendUserInputTurnRefusingPoison must mark the turn as having no entry, not
+// stamp that seq (which the next successful append reuses).
+func TestAppendUserInputRefusingPoison_MarksFailedWriteNoEntry(t *testing.T) {
+	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
+	w, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: "poison-seq"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	s := &Session{id: "poison-seq", stateDir: t.TempDir()}
+	s.attachTranscript(w)
+
+	fs.fail = true
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("input whose write fails"))
+	_ = s.appendUserInputTurnRefusingPoison(turn)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.history) == 0 {
+		t.Fatal("the failed input was not kept in model history")
+	}
+	last := s.history[len(s.history)-1]
+	if last.Seq >= 0 {
+		t.Fatalf("failed-write turn Seq = %d, want NoTranscriptEntrySeq — the unspent seq must not be stamped", last.Seq)
 	}
 }
 

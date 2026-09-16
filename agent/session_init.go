@@ -355,6 +355,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// text for display.
 		s.history = escapeInheritedHistory(inheritedContext)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
+		// The boundary is written to the child transcript when attachTranscript
+		// flushes pendingTranscriptTurns; mark it held so that flush stamps it
+		// with the Seq it spends (it sits after the inherited prefix, not at
+		// index 0, so attachTranscript must find it by this marker).
+		boundary.Seq = seqHeldPreAttach
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
 	}
@@ -509,6 +514,20 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}
 		}
+		// The inherited prefix in s.history carries the parent transcript's Seqs
+		// (ResumeHistory seeded them), which do not name entries in THIS child's
+		// transcript. A child fold must therefore not name an inherited turn by
+		// Seq; mark the whole inherited prefix as having no child entry so the
+		// fold omits it (the inherited prefix is background the child re-folds
+		// into its own summary, never a resumable tail it owns).
+		s.mu.Lock()
+		for i := range s.history {
+			if s.history[i].Seq == seqHeldPreAttach {
+				break // reached the boundary turn; the inherited prefix ends here
+			}
+			s.history[i].Seq = schema.NoTranscriptEntrySeq
+		}
+		s.mu.Unlock()
 	}
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
