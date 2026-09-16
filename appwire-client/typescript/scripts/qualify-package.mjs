@@ -470,11 +470,13 @@ marketplacesStore
 `,
     },
     // The mutation state layer: the durable record shapes both apps' outboxes
-    // store and the provenance rule their projections ask (did THIS client
-    // submit it), published as its own subpath because a host's storage and
-    // scheduling stay out of the package - this is the shape and the rule
-    // alone. Every call here is synchronous, unlike the fetch-backed layers
-    // above: there is no client port to script.
+    // store, the provenance rule their projections ask (did THIS client
+    // submit it), and the pure reconciliation that turns durable records plus
+    // a live model into the rows a composer's queue renders. Published as its
+    // own subpath because a host's storage and scheduling stay out of the
+    // package - this is the shape, the rule and the reconciliation alone.
+    // Every call here is synchronous, unlike the fetch-backed layers above:
+    // there is no client port to script.
     "./state/mutation": {
       esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
 const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
@@ -485,13 +487,19 @@ const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: 
 const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;`,
-      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;`,
+const pendingMethod: PendingMethod = "send";
+const pendingState: PendingTurnState = "submitting";
+const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
+const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;`,
       // ownClientId is memoized per process (one client, one identity), so
       // setMutationClientIdentityForTests resets it before the probe: two
       // reads against the same fake storage return the same identity, that
       // identity is what makes a record isOwnMutationRecord, another client's
-      // is not, and an unattributed record stays claimable.
+      // is not, and an unattributed record stays claimable. reconcilePendingEntries
+      // needs no model to prove it runs: an absent one is the same "no live
+      // projection yet" case a fresh composer starts from.
       smoke: `client.setMutationClientIdentityForTests(undefined);
 const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
 const firstId = client.ownClientId(identityStorage);
@@ -500,6 +508,7 @@ assert.equal(firstId, secondId);
 assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(client.isOwnMutationRecord({}), true);
+assert.deepEqual(client.reconcilePendingEntries("ref", [], undefined, new Set()), []);
 `,
     },
   };

@@ -86,6 +86,7 @@
     "state/extensions/marketplaces.ts",
     "state/mutation/index.ts",
     "state/mutation/records.ts",
+    "state/mutation/pendingEntries.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
     "spawnHarnessModels.ts",

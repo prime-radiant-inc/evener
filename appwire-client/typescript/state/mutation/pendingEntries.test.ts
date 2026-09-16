@@ -1,7 +1,8 @@
-import type { InputItem, PendingMutation, ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
-import { reconcilePendingEntries } from "./pendingReconcile";
+import type { ThreadModel } from "../../model";
+import type { InputItem, PendingMutation } from "../../types.gen";
+import { reconcilePendingEntries } from "./pendingEntries";
+import type { MutationOutboxRecord } from "./records";
 
 function outbox(
   clientMutationId: string,
@@ -139,7 +140,7 @@ test("a locally submitted mutation stays this client's own once the authoritativ
 });
 
 // The hydrate that re-describes the row also settles the durable record behind
-// it (threads.ts's reconcileIdentities -> settleApplied), so the outbox list is
+// it (the host's reconcileIdentities -> settleApplied), so the outbox list is
 // empty by the time the next message is composed. The submitted-here identities
 // are what carries the answer across that deletion.
 test("a mutation this client submitted stays its own after its durable record is settled away", () => {
