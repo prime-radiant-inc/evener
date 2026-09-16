@@ -183,6 +183,9 @@ it("preserves tool-output image references in live item events", async () => {
   expect(reads()).toBe(1);
 });
 
+// The read response is ordered at the snapshot cut, so a live image change
+// this store folded before the response is already reflected in the snapshot
+// that arrives: the snapshot's images are the ones that commit.
 for (const replacement of [
   [],
   [
@@ -194,7 +197,7 @@ for (const replacement of [
     },
   ],
 ]) {
-  it(`keeps a live image ${replacement.length ? "replacement" : "removal"} when an older snapshot arrives`, async () => {
+  it(`commits the snapshot's image over a live ${replacement.length ? "replacement" : "removal"}`, async () => {
     const item: ThreadItem = {
       type: "userMessage",
       id: "user",
@@ -207,16 +210,22 @@ for (const replacement of [
     const refresh = store.getState().rehydrate(service, sink);
     await held.started;
     publish({ ...item, images: replacement });
+    // The live change is on screen at once.
+    expect(
+      store
+        .getState()
+        .conversation?.items.filter((row) => row.kind === "attachments"),
+    ).toHaveLength(replacement.length);
     held.release();
     await refresh;
+    // The snapshot then settles it: its own image is what the row shows.
     const rows = store
       .getState()
-      .conversation?.items.filter((item) => item.kind === "attachments");
-    expect(rows).toHaveLength(replacement.length);
-    if (replacement.length)
-      expect(rows?.[0]).toMatchObject({
-        items: [{ src: "data:image/png;base64,BAUG" }],
-      });
+      .conversation?.items.filter((row) => row.kind === "attachments");
+    expect(rows).toHaveLength(1);
+    expect(rows?.[0]).toMatchObject({
+      items: [{ src: "data:image/png;base64,AQID" }],
+    });
   });
 }
 
@@ -236,7 +245,7 @@ it("does not restore obsolete images from an overlapping older page", async () =
   );
 });
 
-it("keeps a newly added image beside its source after an overlapping snapshot", async () => {
+it("commits the snapshot's own rows over an image added while the read was in flight", async () => {
   const item: ThreadItem = {
     type: "userMessage",
     id: "user",
@@ -259,11 +268,17 @@ it("keeps a newly added image beside its source after an overlapping snapshot", 
     ...item,
     images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
   });
-  held.release();
-  await refresh;
-  expect(store.getState().conversation?.items.map((item) => item.id)).toEqual([
+  // On screen at once, beside its source...
+  expect(store.getState().conversation?.items.map((row) => row.id)).toEqual([
     "user",
     "user:attachments",
+    "assistant",
+  ]);
+  held.release();
+  await refresh;
+  // ...and settled by the snapshot, which carries no image for that item.
+  expect(store.getState().conversation?.items.map((row) => row.id)).toEqual([
+    "user",
     "assistant",
   ]);
 });
