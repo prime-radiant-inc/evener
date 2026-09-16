@@ -65,15 +65,20 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 }
 
 // Every capability a remote thread is allowed to advertise must have a working
-// method behind it. The staged methods below are the 05c/05d work: 05c forwards
-// the turn mutations and 05d intersects the result with a completed capability
-// probe, and each re-enables its capability in remoteForwardedThreadCapabilities.
+// method behind it. The methods below are the 05c/05d work: component 05c
+// implements the turn mutations and lifecycle verbs in remote_hub_mutations.go,
+// and each capability stays masked until 05d's host capability probe answers what
+// the host supports (remoteForwardedThreadCapabilities is still empty).
 // Enumerating the promise here means a field cannot be flipped on while its
 // method still fails closed, and a future capability field cannot be added
 // without deciding which method answers for it.
 func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 	ctx := context.Background()
-	source := NewRemoteHubSource("host", nil, nil)
+	// A connector that always fails: every method below must reach the forward
+	// path (never the staged not-implemented one) without a live remote hub.
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, errors.New("no remote client in this test")
+	})
 	cases := []struct {
 		field   string
 		methods map[string]func() error
@@ -149,11 +154,11 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		enumerated[tc.field] = true
 		for name, call := range tc.methods {
 			err := call()
-			// A method that stops failing closed must have its capability re-enabled
-			// in remoteForwardedThreadCapabilities by whichever component implements
-			// it, otherwise the flag and the method disagree.
-			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-				t.Errorf("%s = %v, want the staged notImplemented error until its capability is forwarded", name, err)
+			// An implemented method must never report the staged not-implemented
+			// error: the capability assertions below would then advertise an action
+			// nothing answers for.
+			if err == nil || strings.Contains(err.Error(), "not implemented yet") {
+				t.Errorf("%s = %v, want the implemented method's own error, not the staged not-implemented one", name, err)
 			}
 		}
 		advertised, ok := capabilityFieldValue(masked, tc.field)
@@ -162,7 +167,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			continue
 		}
 		if advertised {
-			t.Errorf("capability %s is advertised while its methods still fail closed", tc.field)
+			t.Errorf("capability %s is advertised although remoteForwardedThreadCapabilities forwards nothing", tc.field)
 		}
 	}
 
