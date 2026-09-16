@@ -5,7 +5,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { toolRendererFor } from "../toolRenderers";
 import { stripRedundantCd } from "./shellTool";
 import "./shellTool";
-import type { ItemModel, ThreadModel } from "../../../../protocol/model";
+import type { ItemModel, ThreadModel } from "@evener/appwire-client";
 
 afterEach(() => {
   cleanup();

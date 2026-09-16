@@ -1,9 +1,8 @@
+import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel, TurnModel } from "../../../protocol/model";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext } from "../../../shell/palette/commands";
 import { registerPane } from "../../../shell/paneRegistry";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";

@@ -36,7 +36,11 @@ type darwinProcess struct {
 }
 
 // NewController creates the native daemon identity verifier.
-func NewController() Controller { return controller{bind: openDarwinProcess} }
+func NewController() Controller { return controller{bind: nativeBind} }
+
+// nativeBind opens this platform's generation-bound handle on a process.
+var nativeBind = openDarwinProcess
+
 func openDarwinProcess(pid int) (processHandle, error) {
 	unique, version, err := darwinGeneration(pid)
 	if err != nil {
@@ -137,7 +141,8 @@ func (p *darwinProcess) inspect(t Target) (identity, error) {
 	if gone {
 		return identity{}, ErrExited
 	}
-	return identity{generation: strconv.FormatUint(p.unique, 10) + ":" + strconv.FormatUint(uint64(p.version), 10), uid: int(binary.NativeEndian.Uint32(info[20:])), startedAt: time.Unix(int64(binary.NativeEndian.Uint64(info[120:])), int64(binary.NativeEndian.Uint64(info[128:]))*1000), argv: argv, ownsLog: owns}, nil
+	started := time.Unix(int64(binary.NativeEndian.Uint64(info[120:])), int64(binary.NativeEndian.Uint64(info[128:]))*1000)
+	return identity{generation: strconv.FormatUint(p.unique, 10) + ":" + strconv.FormatUint(uint64(p.version), 10), uid: int(binary.NativeEndian.Uint32(info[20:])), startedAt: started, startedAtLower: started, argv: argv, ownsLog: owns}, nil
 }
 
 func darwinArguments(data []byte) ([]string, error) {

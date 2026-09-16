@@ -41,8 +41,9 @@
 // visited before, or - same reasoning as useTranscriptScroll's own
 // full-resync branch - a shape too different to confidently place a
 // marker in), this shows no divider rather than guessing.
+
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import type { ThreadModel } from "../../../../protocol/model";
 import { readSeenWatermark, writeSeenWatermark } from "./seenWatermark";
 
 export function useSeenDivider(ref: string, model: ThreadModel | undefined): string | null {

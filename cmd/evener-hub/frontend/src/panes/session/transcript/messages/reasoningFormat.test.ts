@@ -1,8 +1,10 @@
 // @vitest-environment node
+
+import type { AnyNotification } from "@evener/appwire-client";
+import { applyNotification } from "@evener/appwire-client";
+import { chunkViewBackingForTests } from "@evener/appwire-client/testing/reducerHooks";
+import { buildFloodChunks, hydrateFloodModel } from "@evener/appwire-client/testing/tokenFlood";
 import { expect, test } from "vitest";
-import { applyNotification, chunkViewBackingForTests } from "../../../../protocol/reducer";
-import { buildFloodChunks, hydrateFloodModel } from "../../../../protocol/testing/tokenFlood";
-import type { AnyNotification } from "../../../../protocol/types.gen";
 import {
   formatThoughtDuration,
   joinedReasoningParagraphs,

@@ -22,11 +22,10 @@
 // `data`, but joins an already-in-flight request rather than firing a
 // second concurrent one (same dedup queued fetch() calls share).
 
+import type { AppwireClientLike, SettingsOverviewResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { errorText } from "../protocol/errors";
-import type { SettingsOverviewResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 
 export interface SettingsOverviewStoreState {

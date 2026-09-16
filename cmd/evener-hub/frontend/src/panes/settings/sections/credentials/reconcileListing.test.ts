@@ -1,6 +1,6 @@
+import type { InstanceListResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InstanceListResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { confirmListingState } from "./reconcileListing";

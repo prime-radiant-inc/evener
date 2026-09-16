@@ -10,7 +10,7 @@
 // item.raw only when its producer state is stable and materially improves the
 // display.
 
-import { clip, tailFold, tailSlice } from "../../../../protocol/toolCallText";
+import { clip, tailFold, tailSlice } from "@evener/appwire-client";
 import { CodeBlock } from "../../../../widgets";
 
 interface OutputBodyProps {

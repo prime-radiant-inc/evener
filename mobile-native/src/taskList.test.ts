@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
-import { WireError } from "../../appwire-client/typescript/errors";
-import type { AnyNotification } from "../../appwire-client/typescript/types.gen";
+import { WireError } from "@evener/appwire-client";
+import type { AnyNotification } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { TaskList } from "./taskList";
 

@@ -3,7 +3,7 @@ import type {
 	NavigationInvalidationTarget,
 	NavigationMutation,
 	NavigationReadParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	type DecodedNavigationResponse,
 	decodeNavigationResponse,

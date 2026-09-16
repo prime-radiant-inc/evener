@@ -1,4 +1,4 @@
-import type { ActivityTree } from "../../appwire-client/typescript/activityData";
+import type { ActivityTree } from "@evener/appwire-client";
 
 export type RetainedActivity = {
 	ref: string;

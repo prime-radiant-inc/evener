@@ -1,8 +1,8 @@
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { connectionStore } from "../../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import type { ModelCatalog } from "../../../widgets";

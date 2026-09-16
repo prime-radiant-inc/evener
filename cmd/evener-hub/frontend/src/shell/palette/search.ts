@@ -10,9 +10,7 @@
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
 //     legacy's escapeHtml has no successor here.
 
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import type { ItemModel, ThreadModel } from "../../protocol/model";
-import type { SearchResponse } from "../../protocol/types.gen";
+import type { AppwireClientLike, ItemModel, SearchResponse, ThreadModel } from "@evener/appwire-client";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.

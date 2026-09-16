@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { NavigationWatchSummary } from "../../protocol/types.gen";
 import type { OverflowRailNode, RailPinSection, RailProject, RailSession } from "./railNodes";
 import {
   activeWatchCount,

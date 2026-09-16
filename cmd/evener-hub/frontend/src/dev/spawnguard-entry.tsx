@@ -5,11 +5,12 @@
 // leaving the browser to answer the questions jsdom cannot: which branch of
 // the breakpoint won, where the prompt card's control row and everything in it
 // actually landed, and whether any rendered box escaped the viewport.
+
+import type { ThreadStartParams } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import Spawn from "../panes/spawn/Spawn";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { ThreadStartParams } from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { PathField, Toast } from "../widgets";

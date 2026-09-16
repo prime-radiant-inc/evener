@@ -7,11 +7,10 @@
 // real workspace shell"; the waves landed, the replacement did not, and the
 // workspace shell now ships alongside it rather than instead of it. See
 // DevHarness.module.css and kata j3t1.
+
+import type { AppwireClientLike, Thread } from "@evener/appwire-client";
+import { AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { AppwireClient } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { rpcURLFromLocation } from "../protocol/transport";
-import type { Thread } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { useThreadsStore } from "../stores/threads";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";

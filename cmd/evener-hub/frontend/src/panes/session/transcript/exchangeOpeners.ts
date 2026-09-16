@@ -4,7 +4,7 @@
 // after each userMessage, scanning turns in wire order. Computed once per
 // transcript model at the Session level - a TurnBlock renders one turn in
 // isolation and cannot see this relation across turn boundaries.
-import type { TurnModel } from "../../../protocol/model";
+import type { TurnModel } from "@evener/appwire-client";
 
 export function exchangeOpenersFor(turns: TurnModel[]): ReadonlySet<string> {
   const openers = new Set<string>();

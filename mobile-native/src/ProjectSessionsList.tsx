@@ -17,7 +17,7 @@ import {
 import type {
 	NavigationProjectSummary,
 	NavigationSessionSummary,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { navigationTree } from "./navigationTree";
 import {

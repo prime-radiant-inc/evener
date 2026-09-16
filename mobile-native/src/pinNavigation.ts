@@ -1,7 +1,7 @@
 import type {
 	NavigationPinSectionDescriptor,
 	NavigationSessionLocation,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,

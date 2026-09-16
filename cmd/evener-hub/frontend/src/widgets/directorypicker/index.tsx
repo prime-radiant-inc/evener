@@ -1,6 +1,6 @@
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { friendlyErrorMessage } from "../../protocol/errors";
 import { Button } from "../button";
 import { OverlayPanel } from "../dialog/OverlayPanel";
 import { requireClass } from "../internal/requireClass";

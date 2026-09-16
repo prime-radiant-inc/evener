@@ -1,12 +1,12 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   AttentionChanged,
   InitializeResponse,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionSummary,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";

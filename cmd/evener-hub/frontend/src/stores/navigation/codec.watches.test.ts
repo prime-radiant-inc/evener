@@ -7,9 +7,10 @@
 //
 // The watch fixture is copied from a real AppWire frame (`appwire-2.jsonl`)
 // captured during a live run: keys in wire order and RFC3339 instants included.
+
+import type { NavigationSnapshot, NavigationWatchSummary } from "@evener/appwire-client";
+import { buildWatchRows } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import { buildWatchRows } from "../../protocol/activityRows";
-import type { NavigationSnapshot, NavigationWatchSummary } from "../../protocol/types.gen";
 import { armedWatchCount } from "../../shell/rail/railNodes";
 import { decodeNavigationResponse, materializeNavigationResource, normalizedGraphFromSnapshot } from "./codec";
 import { applyDelta } from "./merge";

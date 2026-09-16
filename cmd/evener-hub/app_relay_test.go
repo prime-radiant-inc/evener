@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func TestHubAtomicRejoinUsesRelaySessionRead(t *testing.T) {
@@ -294,6 +299,505 @@ func TestHubRelayReconnectRoutesOneResyncThroughCanonicalListener(t *testing.T) 
 	if got := lease.listenCallCount(); got != 1 {
 		t.Fatalf("RelaySession Listen calls after reconnect resync = %d, want one resumed canonical listener", got)
 	}
+}
+
+// The reconnect resync above is targeted at the canonical ref on purpose. The
+// resync recovery publishes when the daemon has left the roster for good is
+// the opposite case: nothing else will ever tell a subscriber on a read-only
+// child alias that the daemon behind its session is gone, so it reaches every
+// route the relay serves, each stamped with that route's own identity - the
+// clients act on params.ref (issue #1318).
+func TestHubRelayDaemonGoneResyncReachesEveryRouteWithItsOwnRef(t *testing.T) {
+	const (
+		rootRef  = "local:gone-root"
+		childRef = "local:gone-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+		Acknowledge:  func() { close(acknowledged) },
+	}
+	<-acknowledged
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+		ref    string
+	}{{"root", root, rootRef}, {"child", child, childRef}} {
+		select {
+		case got := <-subscriber.client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				t.Fatalf("%s received %q, want %q", subscriber.name, got.Method, appwire.NotifyEvenerThreadResync)
+			}
+			var params appwire.ThreadResyncParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("%s resync params: %v", subscriber.name, err)
+			}
+			want, _ := appwire.ParseRef(subscriber.ref)
+			if params.Ref != subscriber.ref || params.ThreadID != want.ThreadID {
+				t.Fatalf("%s resync names ref=%q threadId=%q, want its own %q/%q", subscriber.name, params.Ref, params.ThreadID, subscriber.ref, want.ThreadID)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never received the daemon-gone resync", subscriber.name)
+		}
+	}
+}
+
+// A daemon that died leaves its rendezvous file behind. The roster drops a
+// file whose process is gone, and that is what lets the relay tell the
+// subscriber the daemon is gone; the file alone must not keep a dead process
+// dialable.
+func TestHubRelayTellsSubscribersWhenTheDaemonProcessIsGone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon := startAliasRecoveryDaemon(t, "gone", "gone")
+	hub := openSubscribedHub(ctx, t, daemon.entry, daemon.entry.SessionID, nil)
+
+	// The daemon dies: its process is gone and its socket closes, but its
+	// rendezvous file stays. The roster's watcher would refresh here; the
+	// test does it.
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "gone", "local:gone", 10*time.Second)
+}
+
+// The roster keeps a confirmed daemon through a probe miss as long as its PID
+// answers signal 0, so a daemon that crashed and had its PID reused would stay
+// listed and its subscriber never told. Once the process behind the PID is
+// verified not to be the daemon, the entry reads as crashed, leaves the
+// listing, and the daemon is announced gone (see hubcore.ProcessIdentity).
+func TestHubRelayAnnouncesGoneWhenARetainedDaemonsPIDIsReused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon := startAliasRecoveryDaemon(t, "reused", "reused")
+	var identity atomic.Int32
+	identity.Store(int32(hubcore.ProcessOwnsEntry))
+	hub := openSubscribedHub(ctx, t, daemon.entry, daemon.entry.SessionID, func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentity(identity.Load()) })
+
+	// The daemon crashes and its PID is reused: the endpoint stops answering,
+	// the process (here, still the fixture's) is no longer the daemon.
+	identity.Store(int32(hubcore.ProcessNotOwner))
+	daemon.server.Close()
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "reused", "local:reused", 10*time.Second)
+}
+
+// A daemon resync whose ref cannot be read is malformed. It fans out exactly
+// as any malformed frame does (TestHubRelaySharedSessionAliasesDeliverEachNotificationOnce
+// pins that), but the hub must not mistake it for its own daemon-gone
+// announcement: that one is marked as the relay's own, not recognised by an
+// absent target, so a frame like {"ref": null} reaches each route as the
+// daemon sent it, never rewritten into a valid per-route re-read (review
+// round 7 on #1325).
+func TestHubRelayDoesNotPromoteAMalformedDaemonResync(t *testing.T) {
+	const (
+		rootRef  = "local:malformed-root"
+		childRef = "local:malformed-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	if _, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+
+	const malformed = `{"ref":null}`
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage(malformed)},
+		Acknowledge:  func() { close(acknowledged) },
+	}
+	<-acknowledged
+	for _, subscriber := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"root", root}, {"child", child}} {
+		select {
+		case got := <-subscriber.client.Notifications():
+			if got.Method != appwire.NotifyEvenerThreadResync || string(got.Params) != malformed {
+				t.Fatalf("%s received the malformed daemon resync rewritten as %s %s, want it untouched", subscriber.name, got.Method, got.Params)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s never received the malformed daemon resync", subscriber.name)
+		}
+	}
+}
+
+// A daemon whose rendezvous claim changes identity mid-transition while a
+// probe is missed is parked unresolved, off the listing; it is not announced
+// gone until its claim is gone altogether.
+func TestHubRelayKeepsDiallingAnUnconfirmedClaimAndAnnouncesGoneOnlyWhenItIsGone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon := startAliasRecoveryDaemon(t, "before", "before")
+	hub := openSubscribedHub(ctx, t, daemon.entry, daemon.entry.SessionID, func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
+
+	// Mid-transition: the claim changes identity under the same PID while the
+	// endpoint stops answering. The roster parks both claims unresolved.
+	claim := daemon.entry
+	claim.SessionID, claim.ThreadID = "after", "after"
+	writeRendezvous(t, hub.runDir, claim)
+	daemon.server.Close()
+	hub.roster.Refresh()
+	if len(hub.roster.List()) != 0 || len(hub.roster.UnconfirmedEntries()) == 0 {
+		t.Fatalf("expected the claims parked unresolved, got listed=%+v unconfirmed=%+v", hub.roster.List(), hub.roster.UnconfirmedEntries())
+	}
+	select {
+	case got := <-hub.client.Notifications():
+		if got.Method == appwire.NotifyEvenerThreadResync {
+			t.Fatalf("an unresolved claim was announced gone: %s", got.Params)
+		}
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	// The claim is gone altogether: now the daemon is gone.
+	if err := os.Remove(filepath.Join(hub.runDir, strconv.Itoa(claim.PID)+".json")); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "before", "local:before", 10*time.Second)
+}
+
+// subscribedHub is a hub over one rendezvous entry with a client subscribed to
+// that entry's session: the shape every "the daemon left" test starts from.
+type subscribedHub struct {
+	runDir string
+	roster *hubcore.Roster
+	client *appwire.Client
+}
+
+// openSubscribedHub writes entry into a fresh rendezvous directory, builds a
+// hub over a roster of it (with identity, if given, standing in for the
+// host's process inspection), and subscribes a client to sessionID.
+func openSubscribedHub(ctx context.Context, t *testing.T, entry rendezvous.Entry, sessionID string, identity func(rendezvous.Entry) hubcore.ProcessIdentity) subscribedHub {
+	t.Helper()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	if identity != nil {
+		roster.SetProcessIdentity(identity)
+	}
+	roster.Refresh()
+	if _, ok := roster.Find(sessionID); !ok {
+		t.Fatalf("the daemon %q was not confirmed into the roster", sessionID)
+	}
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	server := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""), Roster: roster}, sources)
+	wire := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	t.Cleanup(wire.Close)
+	client := dialHubRPC(t, wire)
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	return subscribedHub{runDir: runDir, roster: roster, client: client}
+}
+
+// The daemon-gone announcement is addressed to every subscriber of the
+// daemon, including one whose subscription is mid-flight: a route being bound
+// while the announcement fans out must still hear it once bound.
+func TestHubRelayDaemonGoneReachesARouteBoundDuringTheFanOut(t *testing.T) {
+	const (
+		rootRef  = "local:midflight-root"
+		childRef = "local:midflight-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	childReadEntered, releaseChildRead := make(chan struct{}), make(chan struct{})
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			if params.Ref == childRef {
+				close(childReadEntered)
+				<-releaseChildRead
+			}
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	<-childReadEntered
+
+	// The daemon is announced gone while the child's route is being bound.
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+		Acknowledge:  func() { close(acknowledged) },
+		Proceed:      func() {},
+	}
+	expectRelayResync(t, root.Notifications(), "midflight-root", rootRef)
+	// The relay session's acknowledgement does not wait for the route being
+	// bound: that route's read is what the acknowledgement would gate.
+	select {
+	case <-acknowledged:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the announcement was not acknowledged once every subscribed route had heard it")
+	}
+
+	close(releaseChildRead)
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitRelayResync(t, child.Notifications(), "midflight-child", childRef, 5*time.Second)
+}
+
+// A hub built without a roster has no local daemons to list, and says so: it
+// registers no local source, so a local ref is refused as "source not found"
+// rather than resolved against a source that quietly lists nothing.
+func TestHubSourceRegistryWithoutRosterHasNoLocalSource(t *testing.T) {
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: t.TempDir()})
+	if _, ok := sources.Source("local"); ok {
+		t.Fatal("a roster-less hub registered a local source")
+	}
+	if _, err := sourceForThread(sources, "local:anything", ""); err == nil {
+		t.Fatal("a local ref resolved on a hub with no roster")
+	}
+}
+
+// Between the relay publishing a route and the appserver installing the
+// client's subscription on it, a broadcast on that key reaches nobody. A
+// departure announced in that window must still reach the subscriber once
+// the subscription lands.
+func TestHubRelayDaemonGoneAnnouncedBetweenPublishAndSubscribeStillArrives(t *testing.T) {
+	const (
+		rootRef  = "local:gap-root"
+		childRef = "local:gap-child"
+	)
+	deliveries := make(chan appsource.RelayDelivery)
+	lease := &scriptedRelaySessionLease{
+		readFunc: func(params appwire.ThreadReadParams) (appsource.RelayReadResult, error) {
+			ref, err := appwire.ParseRef(params.Ref)
+			if err != nil {
+				return appsource.RelayReadResult{}, err
+			}
+			return appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: appwire.Thread{
+					ID: ref.ThreadID, Source: ref.SourceID,
+					Evener: appwire.EvenerThread{Ref: params.Ref},
+				}},
+				Handoff: &guardedRelayHandoff{prepareAllowed: true, commitAllowed: true},
+			}, nil
+		},
+		deliveries: deliveries,
+	}
+	source := &relaySessionTestSource{
+		lease: lease,
+		resolveRelay: func(appwire.ThreadReadParams) (appwire.Ref, error) {
+			return appwire.ParseRef(rootRef)
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	}, sources)
+	// The gate fires right before each subscription registers; armed for the
+	// child's read only, it holds that read in the publish-to-subscribe
+	// window while the departure is announced.
+	var gateArmed atomic.Bool
+	gateEntered, gateRelease := make(chan struct{}, 1), make(chan struct{})
+	appServer.SetBeforeSubscriptionGate(func() {
+		if gateArmed.CompareAndSwap(true, false) {
+			gateEntered <- struct{}{}
+			<-gateRelease
+		}
+	})
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	root := dialHubRPC(t, hub)
+	defer root.Close()
+	child := dialHubRPC(t, hub)
+	defer child.Close()
+	for _, client := range []*appwire.Client{root, child} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+	if _, err := root.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("root ThreadRead: %v", err)
+	}
+	gateArmed.Store(true)
+	childRead := make(chan error, 1)
+	go func() {
+		_, err := child.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		childRead <- err
+	}()
+	<-gateEntered
+
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appsource.DaemonGoneResync(),
+		DaemonGone:   true,
+		Acknowledge:  func() { close(acknowledged) },
+		Proceed:      func() {},
+	}
+	expectRelayResync(t, root.Notifications(), "gap-root", rootRef)
+	select {
+	case <-acknowledged:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the announcement was not acknowledged once every subscribed route had heard it")
+	}
+	close(gateRelease)
+	if err := <-childRead; err != nil {
+		t.Fatalf("child ThreadRead: %v", err)
+	}
+	awaitRelayResync(t, child.Notifications(), "gap-child", childRef, 5*time.Second)
+}
+
+// A legacy rendezvous entry names no session; the probe resolves one and the
+// relay session is keyed by it. The departure announcement carries that
+// resolved id, or it never finds the relay session to tell.
+func TestHubRelayAnnouncesGoneForALegacyEntryThroughItsResolvedSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	daemon := startAliasRecoveryDaemon(t, "resolved", "resolved")
+	legacy := daemon.entry
+	legacy.SessionID, legacy.ThreadID, legacy.WorkspaceRef = "", "legacy-thread", ""
+	hub := openSubscribedHub(ctx, t, legacy, "resolved", nil)
+
+	if err := daemon.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.roster.Refresh()
+	awaitRelayResync(t, hub.client.Notifications(), "resolved", "local:resolved", 10*time.Second)
 }
 
 func TestHubAtomicRejoinFansOutAndAcknowledgesAfterResponse(t *testing.T) {

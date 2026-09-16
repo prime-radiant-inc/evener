@@ -1,5 +1,5 @@
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";

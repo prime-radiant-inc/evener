@@ -5,7 +5,7 @@
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
 
-import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "../../protocol/types.gen";
+import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 import { projectNodeExpansionKey } from "./railExpansion";
 
 export type TreeTier = "current" | "recent" | "archived";

@@ -30,13 +30,8 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
-import type { AskBatch } from "../../appwire-client/typescript/reconcileBatches";
-import {
-	parseSlashToken,
-	spliceSlashCommand,
-} from "../../appwire-client/typescript/slashCompletion";
-import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
+import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
+import type { AskBatch } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
