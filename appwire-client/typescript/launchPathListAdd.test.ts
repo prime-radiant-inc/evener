@@ -1,6 +1,7 @@
-import type { LaunchOption } from "@evener/appwire-client";
+// @vitest-environment node
 import { describe, expect, test, vi } from "vitest";
-import { validatePathListAdd } from "./pathListAdd";
+import { validatePathListAdd } from "./launchPathListAdd";
+import type { LaunchOption } from "./types.gen";
 
 function pathListOption(pathKind: string | undefined, wireField = "skillsDirs"): LaunchOption {
   return {

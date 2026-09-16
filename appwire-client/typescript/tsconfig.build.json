@@ -58,6 +58,9 @@
     "modelCatalogPickerRows.ts",
     "taskListData.ts",
     "taskListGroups.ts",
-    "taskListTime.ts"
+    "taskListTime.ts",
+    "launchSchema.ts",
+    "launchInherited.ts",
+    "launchPathListAdd.ts"
   ]
 }

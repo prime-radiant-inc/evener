@@ -1,11 +1,12 @@
-// The one add-a-path-to-a-pathList decision, shared by both surfaces that own
-// a pathList field: the settings LaunchConfigForm (collectionFields.tsx's
-// PathListField) and the spawn pane's Advanced options (AdvancedOptions.tsx's
-// PathListControl). Both feed the same wire fields (skillsDirs/pluginDirs/
-// mcpConfigs) to the same daemon, so both gate an add the same way instead of
-// one of them trusting whatever text the picker produced.
-import type { LaunchOption } from "@evener/appwire-client";
-import { schemaPathKind } from "./schema";
+// The one add-a-path-to-a-pathList decision, shared by every surface that
+// owns a pathList field: the web settings form's path list field, the spawn
+// pane's advanced options, and native's launch path lists. All feed the same
+// wire fields (skillsDirs/pluginDirs/mcpConfigs) to the same daemon, so all
+// gate an add the same way instead of one of them trusting whatever text the
+// picker produced.
+
+import { schemaPathKind } from "./launchSchema";
+import type { LaunchOption } from "./types.gen";
 
 /** The subset of evener/path/validate's response this decision reads. `path` is
  * the server-canonicalized path when the server rewrites one; a caller whose
