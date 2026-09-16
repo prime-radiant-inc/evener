@@ -305,12 +305,10 @@ const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
 export function truncateText(text: string, maxBytes: number): string {
   const encoded = textEncoder.encode(text);
   if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: every caller judges an item by
-  // exceedsByteLimit against the same limit, and the truncation freeze
-  // assumes an already-truncated item sits within it. No caller requires the
-  // marker — truncation is tracked by item identity, never by the suffix — so
-  // a limit too small to hold the marker yields the longest prefix that fits,
-  // with no marker, rather than a marker that busts the limit.
+  // The byte limit is the hard contract: the marker is best effort. Every
+  // publish re-applies this to whatever text a row carries, so a limit too
+  // small to hold the marker yields the longest prefix that fits, with no
+  // marker, rather than a marker that busts the limit.
   const fitsMarker = maxBytes >= markerBytes.length;
   const marker = fitsMarker ? TRUNCATION_MARKER : "";
   const markerLength = fitsMarker ? markerBytes.length : 0;
@@ -681,7 +679,6 @@ export function createConversationStore() {
   let suspendedService: LiveConversationService | null = null;
   let acceptedRehydrate: { generation: number; sink: LiveActivitySink } | null =
     null;
-  let liveNoticeSerial = 0;
   // I1: Binding epoch — incremented on every openProjected/open/close/reset so
   // a request queued for an older binding (serviceA+refA) can never run after
   // the store switched to a newer binding (serviceB+refB). Every request
@@ -1844,11 +1841,17 @@ export function createConversationStore() {
         }
         if (state.ref === null) return;
         // evener/thread/resync is the authoritative refresh path (the store
-        // never re-reads on its own); an item frame the reducer has no case
-        // for leaves the model untouched and needs the canonical projection.
+        // never re-reads on its own). An item frame the reducer could not
+        // place — an unknown method, or one naming an item or turn this model
+        // does not hold — leaves `turns` untouched by reference (every applied
+        // fold rebuilds it through mapTurn), while the model itself is still a
+        // new object because the frame is evidence of liveness. That is the
+        // gap case: this client missed the item/started that would have made
+        // the frame placeable, so it asks for the canonical read at once
+        // rather than showing an incomplete transcript until the next resync.
         if (
           n.method === "evener/thread/resync" ||
-          (applied === state.conversation && n.method.startsWith("item/"))
+          (n.method.startsWith("item/") && applied.turns === state.conversation.turns)
         ) {
           requestRehydrate(state.ref);
         }

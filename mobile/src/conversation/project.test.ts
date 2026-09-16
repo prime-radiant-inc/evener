@@ -1875,7 +1875,7 @@ it("keeps failures of unknown activity types individually visible", () => {
 
 // --- what the live model carries into the rows (D23c-2b) ---------------------
 
-it("projects a warning item as the failure card its notice is", () => {
+it("projects a warning item as a notice the phone reads as critical", () => {
   // A warning only ever reaches the model through the reducer's own
   // `case "warning"` fold, which stamps ItemModel.warning beside the text —
   // warnings are not transcript-persisted, so no snapshot carries one.
@@ -1889,15 +1889,17 @@ it("projects a warning item as the failure card its notice is", () => {
   warning.warning = { title: "Provider warning", hint: "attempt 2 of 3" };
   expect(projectConversation(model).items).toMatchObject([
     {
-      kind: "failure",
+      kind: "notice",
       id: "item_warning_live_t_0",
-      title: "Provider warning",
-      detail: "Retrying the provider\nattempt 2 of 3",
+      origin: "system",
+      family: "warning",
+      tone: "warning",
+      text: "Provider warning\nRetrying the provider\nattempt 2 of 3",
     },
   ]);
 });
 
-it("titles a warning that carries none", () => {
+it("carries a warning that has no title of its own", () => {
   const projected = projectThread(
     thread([
       turn("t", [
@@ -1906,7 +1908,7 @@ it("titles a warning that carries none", () => {
     ]),
   );
   expect(projected.items).toMatchObject([
-    { kind: "failure", title: "Warning", detail: "something happened" },
+    { kind: "notice", family: "warning", tone: "warning", text: "something happened" },
   ]);
 });
 
