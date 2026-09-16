@@ -557,6 +557,21 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostForwardedResult {
+}
+
+export interface HostNotificationParams {
+  host: string;
+  method: string;
+  params?: unknown;
+}
+
+export interface HostRequestParams {
+  host: string;
+  method: string;
+  params?: unknown;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -2431,6 +2446,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/host/request",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -2475,6 +2491,7 @@ export const NOTIFICATION_NAMES = [
   "evener/settings/transcriptDisplay/changed",
   "evener/settings/keybindings/changed",
   "evener/settings/agentsDoc/changed",
+  "evener/host/notification",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2628,6 +2645,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
 }
 
 export interface NotificationTypes {
@@ -2670,6 +2688,7 @@ export interface NotificationTypes {
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
   "evener/settings/keybindings/changed": KeybindingsOverrides;
   "evener/settings/agentsDoc/changed": AgentsDocResponse;
+  "evener/host/notification": HostNotificationParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];
