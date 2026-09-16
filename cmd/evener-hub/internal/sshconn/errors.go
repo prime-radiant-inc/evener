@@ -43,10 +43,35 @@ var (
 	// the version-match deploy that fixes it is 04b.
 	ErrLaunchContract = errors.New("sshconn: host launch contract not satisfied")
 
+	// ErrVersionMismatch marks a host whose on-disk build is not the build this
+	// controller requires, on a Manager with no build source to install instead.
+	// Version auto-match exists to make the attached runtime match the
+	// controller: with nothing to deploy there is no way to resolve the
+	// difference, so attaching would silently serve the wrong build. Terminal,
+	// like the other contract refusals.
+	ErrVersionMismatch = errors.New("sshconn: host version does not match the controller")
+
 	// ErrPreflightDecode marks preflight output (launch-check JSON or the
 	// environment probe) that could not be parsed. Treated as an incompatible
 	// host: terminal.
 	ErrPreflightDecode = errors.New("sshconn: preflight output unparseable")
+
+	// ErrDeploy marks a failed cross-compile, push, or deploy-target
+	// resolution. The existing host binary is left untouched: the push writes a
+	// temp name and mv's it into place, so an interrupted deploy never leaves a
+	// truncated evener.
+	ErrDeploy = errors.New("sshconn: deploy failed")
+
+	// ErrRestart marks a failed hub restart. The manager stays disconnected and
+	// the next Ensure retries; a hub that fails to start leaves hub.lock free.
+	ErrRestart = errors.New("sshconn: hub restart failed")
+
+	// ErrHostAddr marks a host whose configured hub address the controller
+	// cannot use: malformed, not a loopback or wildcard bind, or a config_path
+	// with no address at all. Probing or killing through such an address could
+	// hit the wrong service, so it is refused before any ssh command runs.
+	// Terminal: no retry can make a configuration error go away.
+	ErrHostAddr = errors.New("sshconn: host hub address unusable")
 
 	// ErrManagerClosed marks an Ensure on a Manager whose Close has already run.
 	// Close is terminal for the Manager: the base context is canceled for good,
