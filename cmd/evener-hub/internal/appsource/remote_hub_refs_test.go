@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"strings"
@@ -8,6 +9,177 @@ import (
 
 	"primeradiant.com/evener/appwire"
 )
+
+// allRemoteThreadCapabilities is every thread action a remote hub can advertise,
+// spelled out field by field so a fixture cannot silently stop covering a field.
+func allRemoteThreadCapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{
+		Send:              true,
+		Steer:             true,
+		Interrupt:         true,
+		Compact:           true,
+		Clear:             true,
+		ForkFromTurn:      true,
+		Shutdown:          true,
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+		Queue:             true,
+		Goal:              true,
+		SharedNotes:       true,
+		Rename:            true,
+		SkillInput:        true,
+	}
+}
+
+// A remote hub reports the capability set of its OWN session daemon. Those flags
+// describe what the remote daemon can do, not what the controller can forward:
+// every mutation, lifecycle, and subscription method on RemoteHubSource is still
+// staged, so a thread read from a remote hub must not advertise an action that
+// would fail with an internal error the moment a client used it.
+func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	thread, err := source.fromRemoteThread(appwire.Thread{
+		ID:     "t1",
+		Source: "local",
+		Evener: appwire.EvenerThread{
+			Ref:          "local:t1",
+			InstanceID:   "inst-1",
+			Capabilities: allRemoteThreadCapabilities(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("fromRemoteThread: %v", err)
+	}
+	if got := maskRemoteThreadCapabilities(allRemoteThreadCapabilities()); got != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("masked capabilities = %+v, want every staged action masked", got)
+	}
+	if thread.Evener.Capabilities != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("remote thread advertised %+v, want the ref translation to mask staged actions", thread.Evener.Capabilities)
+	}
+	// The mask is a filter over the remote's own claim, not a replacement for it:
+	// nothing outside the capability set may change.
+	if thread.Source != "host" || thread.Evener.Ref != "host:t1" || thread.Evener.InstanceID != "inst-1" {
+		t.Fatalf("masked thread = %+v, want refs and opaque fields untouched", thread.Evener)
+	}
+}
+
+// Every capability a remote thread is allowed to advertise must have a working
+// method behind it. The staged methods below are the 05c/05d work: 05c forwards
+// the turn mutations and 05d intersects the result with a completed capability
+// probe, and each re-enables its capability in remoteForwardedThreadCapabilities.
+// Enumerating the promise here means a field cannot be flipped on while its
+// method still fails closed, and a future capability field cannot be added
+// without deciding which method answers for it.
+func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
+	ctx := context.Background()
+	source := NewRemoteHubSource("host", nil, nil)
+	cases := []struct {
+		field   string
+		methods map[string]func() error
+	}{
+		{"Send", map[string]func() error{
+			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
+			"ResumeThread": func() error {
+				_, err := source.ResumeThread(ctx, appwire.ThreadResumeParams{})
+				return err
+			},
+		}},
+		{"Steer", map[string]func() error{
+			"SteerTurn": func() error { _, err := source.SteerTurn(ctx, appwire.TurnSteerParams{}); return err },
+		}},
+		{"Interrupt", map[string]func() error{
+			"InterruptTurn": func() error { _, err := source.InterruptTurn(ctx, appwire.TurnInterruptParams{}); return err },
+		}},
+		{"Compact", map[string]func() error{
+			"CompactThread": func() error { return source.CompactThread(ctx, appwire.ThreadCompactStartParams{}) },
+		}},
+		{"Clear", map[string]func() error{
+			"ClearThread": func() error { _, err := source.ClearThread(ctx, appwire.ThreadClearParams{}); return err },
+		}},
+		{"ForkFromTurn", map[string]func() error{
+			"ForkThread": func() error { _, err := source.ForkThread(ctx, appwire.ThreadForkParams{}); return err },
+		}},
+		{"Shutdown", map[string]func() error{
+			"ShutdownThread": func() error { return source.ShutdownThread(ctx, appwire.ThreadShutdownParams{}) },
+		}},
+		{"ChangeModel", map[string]func() error{
+			"SetThreadModel": func() error { return source.SetThreadModel(ctx, appwire.ThreadModelSetParams{}) },
+			"SetThreadReasoningEffort": func() error {
+				return source.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{})
+			},
+		}},
+		{"ChangeVisionModel", map[string]func() error{
+			"SetThreadVisionModel": func() error { return source.SetThreadVisionModel(ctx, appwire.ThreadVisionModelSetParams{}) },
+		}},
+		{"Queue", map[string]func() error{
+			"QueueTurn":    func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+			"CancelQueued": func() error { _, err := source.CancelQueued(ctx, appwire.TurnCancelQueuedParams{}); return err },
+			"DrainAsSteer": func() error {
+				_, err := source.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{})
+				return err
+			},
+			"PromoteQueuedAsSteer": func() error {
+				_, err := source.PromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{})
+				return err
+			},
+		}},
+		{"Goal", map[string]func() error{
+			"GoalSet": func() error { _, err := source.GoalSet(ctx, appwire.GoalSetParams{}); return err },
+		}},
+		{"SharedNotes", map[string]func() error{
+			"NotesHumanSet": func() error { _, err := source.NotesHumanSet(ctx, appwire.NotesHumanSetParams{}); return err },
+			"UrlsRemove":    func() error { _, err := source.UrlsRemove(ctx, appwire.UrlsRemoveParams{}); return err },
+		}},
+		{"Rename", map[string]func() error{
+			"SetThreadName": func() error { return source.SetThreadName(ctx, appwire.ThreadNameSetParams{}) },
+		}},
+		{"SkillInput", map[string]func() error{
+			"StartTurn": func() error { _, err := source.StartTurn(ctx, appwire.TurnStartParams{}); return err },
+			"QueueTurn": func() error { _, err := source.QueueTurn(ctx, appwire.TurnQueueParams{}); return err },
+		}},
+	}
+
+	masked := maskRemoteThreadCapabilities(allRemoteThreadCapabilities())
+	enumerated := make(map[string]bool, len(cases))
+	for _, tc := range cases {
+		if enumerated[tc.field] {
+			t.Errorf("capability %s is enumerated twice", tc.field)
+		}
+		enumerated[tc.field] = true
+		for name, call := range tc.methods {
+			err := call()
+			// A method that stops failing closed must have its capability re-enabled
+			// in remoteForwardedThreadCapabilities by whichever component implements
+			// it, otherwise the flag and the method disagree.
+			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
+				t.Errorf("%s = %v, want the staged notImplemented error until its capability is forwarded", name, err)
+			}
+		}
+		advertised, ok := capabilityFieldValue(masked, tc.field)
+		if !ok {
+			t.Errorf("capability %s is not a field of appwire.ThreadCapabilities", tc.field)
+			continue
+		}
+		if advertised {
+			t.Errorf("capability %s is advertised while its methods still fail closed", tc.field)
+		}
+	}
+
+	for field := range reflect.TypeFor[appwire.ThreadCapabilities]().Fields() {
+		if !enumerated[field.Name] {
+			t.Errorf("capability field %s is not covered by this test's method table", field.Name)
+		}
+	}
+}
+
+// capabilityFieldValue reads one named bool field of a capability set.
+func capabilityFieldValue(caps appwire.ThreadCapabilities, field string) (bool, bool) {
+	value := reflect.ValueOf(caps).FieldByName(field)
+	if !value.IsValid() || value.Kind() != reflect.Bool {
+		return false, false
+	}
+	return value.Bool(), true
+}
 
 func TestRemoteHubRefRoundTrip(t *testing.T) {
 	source := NewRemoteHubSource("host", nil, nil)

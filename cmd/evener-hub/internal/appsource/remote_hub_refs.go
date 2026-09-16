@@ -75,13 +75,73 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String(), nil
 }
 
+// remoteForwardedThreadCapabilities lists the thread actions this source can
+// actually forward to the remote hub. It is the controller-side half of the
+// capability answer: maskRemoteThreadCapabilities intersects it with the remote
+// hub's own claim, so a later component re-enables an action by adding it here
+// once its method stops returning notImplemented (remote_hub_source.go):
+//
+//   - Send (StartTurn, ResumeThread), Steer (SteerTurn), Interrupt
+//     (InterruptTurn), Queue (QueueTurn, DrainAsSteer, PromoteQueuedAsSteer,
+//     CancelQueued), Compact (CompactThread), Clear (ClearThread), ForkFromTurn
+//     (ForkThread), Shutdown (ShutdownThread), ChangeModel (SetThreadModel,
+//     SetThreadReasoningEffort), ChangeVisionModel (SetThreadVisionModel),
+//     Goal (GoalSet), SharedNotes (NotesHumanSet, UrlsRemove), and Rename
+//     (SetThreadName) are the turn mutations and lifecycle verbs 05c forwards.
+//   - SkillInput rides on the input-bearing turn mutations
+//     (appwire.ValidateSkillInputSupport), so 05c re-enables it with Send.
+//
+// 05d replaces this constant answer with a completed capability probe of the host,
+// intersected with the remote hub's claim; until then the intersection is empty
+// and every action is masked.
+func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
+	return appwire.ThreadCapabilities{}
+}
+
+// maskRemoteThreadCapabilities intersects the capability set a remote hub reported
+// for its own thread with the actions this source can carry today.
+//
+// The remote hub reports the capabilities of its OWN session daemon: they describe
+// what the remote daemon can do, not what this controller can forward. On this
+// branch (05a) every mutating, lifecycle, and subscription method of
+// RemoteHubSource still returns notImplemented, so forwarding the remote's set
+// verbatim would advertise send, fork, rename, model, and queue actions that fail
+// with an internal error the moment a client used one (the hub gates each of them
+// on exactly these fields — cmd/evener-hub's threadActionAvailable).
+//
+// Fields are listed one by one rather than copied wholesale so a capability added
+// to appwire.ThreadCapabilities later starts masked until a component names the
+// method that answers for it.
+func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.ThreadCapabilities {
+	forwarded := remoteForwardedThreadCapabilities()
+	return appwire.ThreadCapabilities{
+		Send:              remote.Send && forwarded.Send,
+		Steer:             remote.Steer && forwarded.Steer,
+		Interrupt:         remote.Interrupt && forwarded.Interrupt,
+		Compact:           remote.Compact && forwarded.Compact,
+		Clear:             remote.Clear && forwarded.Clear,
+		ForkFromTurn:      remote.ForkFromTurn && forwarded.ForkFromTurn,
+		Shutdown:          remote.Shutdown && forwarded.Shutdown,
+		ChangeModel:       remote.ChangeModel && forwarded.ChangeModel,
+		ChangeVisionModel: remote.ChangeVisionModel && forwarded.ChangeVisionModel,
+		Queue:             remote.Queue && forwarded.Queue,
+		Goal:              remote.Goal && forwarded.Goal,
+		SharedNotes:       remote.SharedNotes && forwarded.SharedNotes,
+		Rename:            remote.Rename && forwarded.Rename,
+		SkillInput:        remote.SkillInput && forwarded.SkillInput,
+	}
+}
+
 // fromRemoteThread rewrites every ref-bearing field of a thread the remote hub
 // returned. Thread.Source becomes this source's ID; Evener.Ref and
 // Evener.ParentRef (sub-thread aliases) move from "local:" to "<host>:".
 // Evener.InstanceID is deliberately left byte-for-byte untouched: it is an
 // opaque precondition token round-tripped into turn/start.expectedInstanceId.
+// Evener.Capabilities is masked to the actions this source can forward: the
+// remote hub describes its own daemon, not this controller's ability to reach it.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
 	thread.Source = s.id
+	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities)
 	ref, err := s.fromRemoteRefString(thread.Evener.Ref)
 	if err != nil {
 		return appwire.Thread{}, err
