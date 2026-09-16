@@ -30,17 +30,19 @@ func lf_drainActionValid(a drainAction) bool {
 
 func FuzzLfSelectDrainNextAction(f *testing.F) {
 	// Seeds hitting distinct ladder rungs.
-	f.Add(uint8(0), false, "follow", "queued", 0, true) // follow-up wins
-	f.Add(uint8(0), false, "", "queued", 0, true)       // queued wins
-	f.Add(uint8(1), false, "", "", 2, true)             // queued via images
-	f.Add(uint8(1), false, "", "", 0, true)             // notification (ranKind != notif)
-	f.Add(uint8(1), false, "", "", 0, false)            // gate eligible => armGoalGate
-	f.Add(uint8(1), true, "", "", 0, false)             // already deferred => runDeferredContInline
-	f.Add(uint8(2), false, "", "", 0, true)             // ranKind==notif, pending ignored => goIdle
-	f.Add(uint8(2), true, "", "", 0, false)             // ranKind==notif, deferred => runDeferredContInline
+	f.Add(uint8(0), false, "follow", "queued", 0, true, false) // follow-up wins
+	f.Add(uint8(0), false, "", "queued", 0, true, false)       // queued wins
+	f.Add(uint8(1), false, "", "", 2, true, false)             // queued via images
+	f.Add(uint8(1), false, "", "", 0, true, false)             // notification (ranKind != notif)
+	f.Add(uint8(1), false, "", "", 0, false, false)            // gate eligible => armGoalGate
+	f.Add(uint8(1), true, "", "", 0, false, false)             // already deferred => runDeferredContInline
+	f.Add(uint8(2), false, "", "", 0, true, false)             // ranKind==notif, pending ignored => goIdle
+	f.Add(uint8(2), true, "", "", 0, false, false)             // ranKind==notif, deferred => runDeferredContInline
+	f.Add(uint8(1), false, "", "", 0, true, true)              // the steering carrier is queued input: outranks the notification
+	f.Add(uint8(0), false, "follow", "", 0, false, true)       // follow-up outranks the carrier
 
 	f.Fuzz(func(t *testing.T, kindSel uint8, haveDeferredCont bool,
-		followUp, queuedText string, queuedImages int, notificationsPending bool) {
+		followUp, queuedText string, queuedImages int, notificationsPending bool, queuedCarrier bool) {
 
 		in := drainInputs{
 			RanKind:              lf_entryKinds[int(kindSel)%len(lf_entryKinds)],
@@ -49,6 +51,7 @@ func FuzzLfSelectDrainNextAction(f *testing.F) {
 			QueuedText:           queuedText,
 			QueuedImages:         queuedImages,
 			NotificationsPending: notificationsPending,
+			QueuedCarrier:        queuedCarrier,
 		}
 
 		action, skip := selectDrainNextAction(in)
@@ -69,10 +72,10 @@ func FuzzLfSelectDrainNextAction(f *testing.F) {
 		}
 
 		hasFollowUp := strings.TrimSpace(in.FollowUp) != ""
-		hasQueued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0
+		hasQueued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedCarrier
 
-		// Priority ladder for the TURN that runs next: follow-up > queued >
-		// notification > deferred-inline > idle. The goal-gate FOLD is a separate
+		// Priority ladder for the TURN that runs next: follow-up > queued (a
+		// message, or the steering carrier) > notification > deferred-inline > idle. The goal-gate FOLD is a separate
 		// side effect the wrapper performs whenever !skipGoalGate (before running the
 		// notification turn), so "goal-gate > notification" holds at the fold level;
 		// armGoalGate is returned only when the gate is eligible and no notification

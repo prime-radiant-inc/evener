@@ -413,7 +413,18 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue    []steeringMessage
+	steeringQueue []steeringMessage
+	// steeringInFlight holds the client steers popSteeringHead has taken out of
+	// steeringQueue whose incorporation the store has not yet recorded
+	// (consumeSteeringMessage finalizes it after the transcript append lands).
+	// The store keeps such a steer accepted until then, so
+	// reflectDurableClientSteering must not put it back in the queue. The value
+	// is "" while the append is in flight, and the steer's terminal state --
+	// "incorporated", or "failed" for a skill selection that could not be
+	// prepared -- once the transcript holds it and only the store's write
+	// failed: recorded, and marked by reconcileRecordedSteering at the input's
+	// settle, the next wake, a Stop or restore. Guarded by mu.
+	steeringInFlight map[string]string
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 
@@ -1104,8 +1115,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
-	if pending || (!steeringHeld && s.hasPendingUserSteering()) || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
