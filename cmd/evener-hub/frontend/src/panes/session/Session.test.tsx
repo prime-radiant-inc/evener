@@ -2410,7 +2410,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(0);
   expect(hydration).toHaveBeenCalledWith(stableRef);
   expect(hydration).toHaveBeenCalledWith(currentRef);
-  expect(refresh).toHaveBeenCalledWith(currentRef);
+  expect(refresh).toHaveBeenCalledWith(currentRef, expect.any(Function));
   await act(async () => {
     await Promise.all(hydration.mock.results.map((result) => result.value));
     await Promise.all(refresh.mock.results.map((result) => result.value));
@@ -2452,7 +2452,7 @@ test("offers explicit resume after restart even without pending messages", async
   fireEvent.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(resumeTransport).toHaveBeenCalledWith("ref_a");
+  expect(resumeTransport).toHaveBeenCalledWith("ref_a", { beforeRequest: expect.any(Function) });
 });
 
 test.each(["success", "refused"])(
@@ -3672,6 +3672,132 @@ test("stopped-session Stop cancels a pending Send resume but not a subsequent fr
     { type: "text", text: "later fresh input" },
   ]);
 });
+
+test.each(["primary reconnect before resume RPC", "captured post-resume idle hydration"] as const)(
+  "review regression: Stop fences %s without consuming the draft or blocking a later fresh Send",
+  async (boundary) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const ref = `local:stop-boundary-${boundary.startsWith("primary") ? "reconnect" : "hydration"}`;
+    const holdReconnect = boundary === "primary reconnect before resume RPC";
+    let stopped = true;
+    let announceBoundary!: () => void;
+    const boundaryReached = new Promise<void>((resolve) => {
+      announceBoundary = resolve;
+    });
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let heldOpen: (() => void) | undefined;
+    let opens = 0;
+    const open = FakeSocket.prototype.open;
+    const openSpy = vi.spyOn(FakeSocket.prototype, "open").mockImplementation(function (this: FakeSocket) {
+      opens += 1;
+      // Socket 1 is initial primary; socket 2 is Resume's replacement. Socket
+      // 3 (the independent Stop connection) must open and acknowledge normally.
+      if (holdReconnect && opens === 2) {
+        heldOpen = () => open.call(this);
+        announceBoundary();
+        return;
+      }
+      open.call(this);
+    });
+    let readHeld = false;
+    const { client, requests } = recoveryClientFixture({
+      ref,
+      snapshot: () => stoppedRecoverySnapshot(ref, stopped),
+      read: async () => {
+        // Capture BEFORE Stop. Reading stopped again after release would make
+        // this a fresh snapshot and miss the publication race entirely.
+        const captured = stoppedRecoverySnapshot(ref, stopped);
+        if (!holdReconnect && !stopped && !readHeld) {
+          readHeld = true;
+          announceBoundary();
+          await readGate;
+        }
+        return captured;
+      },
+      resume: () => {
+        stopped = false;
+      },
+      stop: () => {
+        stopped = true;
+      },
+    });
+    const releaseBoundary = () => {
+      const resumeOpen = heldOpen;
+      heldOpen = undefined;
+      resumeOpen?.();
+      releaseRead();
+    };
+    onTestFinished(() => {
+      releaseBoundary();
+      client.close();
+      openSpy.mockRestore();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    render(
+      <ClientProvider client={client}>
+        <Session params={{ ref }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+    await flushPendingTurnsProjectionForTests();
+    const user = userEvent.setup();
+    const editor = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    await user.type(editor, "canceled input kept in draft");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await boundaryReached;
+    expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(holdReconnect ? 0 : 1);
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+    await act(async () => {
+      await threadsStore.getState().forceStop(ref);
+    });
+    // forceStop resolves only after the independent connection's RPC reply.
+    // No assertion asks Stop to undo a resume that was already on the wire.
+    expect(requests.filter(({ method }) => method === "evener/thread/forceStop")).toHaveLength(1);
+    const requestsAtStopAck = requests.length;
+    const stopObligation = threadsStore.getState().restartBlockingObligations.get(ref);
+    expect(stopObligation).toBeDefined();
+    expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+    await act(async () => releaseBoundary());
+    // The inline failure is the real composer's completion signal; do not
+    // count microtask flushes or replace the store's pending Send promise.
+    expect(await screen.findByText(/^Send failed:/, { selector: '[role="alert"]' })).toBeTruthy();
+    await waitFor(() =>
+      expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    // The cancellation alert settles the action, not its subscribed durable
+    // projection reads. Await that registered work inside the helper's act
+    // before the independent outbox read yields to those React updates.
+    await flushPendingTurnsProjectionForTests();
+    expect(editor.value).toBe("canceled input kept in draft");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(editor);
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+    expect(await mutationStorage.listOutbox(ref)).toEqual([]);
+    if (holdReconnect) {
+      expect.soft(requests.slice(requestsAtStopAck).filter(({ method }) => method === "thread/resume")).toEqual([]);
+    } else {
+      expect.soft(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
+      expect.soft(threadsStore.getState().restartBlockingObligations.get(ref)).toBe(stopObligation);
+    }
+
+    const requestsBeforeFreshSend = requests.length;
+    await user.clear(editor);
+    await user.type(editor, "later distinct fresh input");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+    expect(requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({
+      ref,
+      clientMutationId: expect.any(String),
+      input: [{ type: "text", text: "later distinct fresh input" }],
+    });
+    expect(requests.slice(requestsBeforeFreshSend).filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+  },
+);
 
 test("stopped-session repeated Stop through the menu preserves the writable draft without resume", async ({
   onTestFinished,

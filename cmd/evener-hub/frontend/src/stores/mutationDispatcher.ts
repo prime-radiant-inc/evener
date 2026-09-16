@@ -26,6 +26,11 @@ export class MutationDispatcher {
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
+  // "I selected this exact never-attempted turn/start under the normal rules,
+  // my markAttempted commit succeeded, and I have not yet crossed my own
+  // transport boundary." Dispatcher-instance state only: never persisted,
+  // never reconstructed on reload, never restored after an unknown receipt.
+  readonly #pretransportAdmissions = new Map<string, Set<string>>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
@@ -89,26 +94,70 @@ export class MutationDispatcher {
   }
 
   async #drainTarget(targetRef: string): Promise<boolean> {
+    // Guard the prune synchronously: with no admissions this adds no await
+    // boundary, so an ordinary drain keeps its existing step ordering.
+    if (this.#pretransportAdmissions.has(targetRef)) await this.#retireVanishedAdmissions(targetRef);
     for (;;) {
       const client = this.#getClient(targetRef);
       if (client?.state !== "ready") return false;
-      const loaded = await this.#storage.nextDispatchable(targetRef);
+      const loaded = await this.#storage.nextDispatchable(targetRef, this.#pretransportAdmissions.get(targetRef));
       if (!loaded) return true;
 
       // Another tab may have settled or reclassified the record after this
       // tab's list read. Sending is allowed only after an extant-state recheck.
       const current = await this.#storage.getOutbox(loaded.clientMutationId);
-      if (current?.state !== "submitting") continue;
+      if (!current) {
+        // A real read proved this record is durably gone. A temporary
+        // reclassification (blockedUnknown) is not a disappearance and is kept.
+        this.#retireAdmission(targetRef, loaded.clientMutationId);
+        continue;
+      }
+      if (current.state !== "submitting") continue;
       if (this.#getClient(targetRef) !== client) return false;
 
       if (!(await this.#storage.markAttempted(current.clientMutationId))) continue;
+      // Mint an admission only for this exact never-attempted turn/start, after
+      // the attempt commit succeeded. A persisted attempted row (reconnect,
+      // resync, read-only snapshot) and an older unknown row never mint.
+      if (current.method === "turn/start" && current.attempted === false) {
+        let admissions = this.#pretransportAdmissions.get(targetRef);
+        if (!admissions) {
+          admissions = new Set();
+          this.#pretransportAdmissions.set(targetRef, admissions);
+        }
+        admissions.add(current.clientMutationId);
+      }
       // Keep the committed attempt evidence if this client was retired: another
       // tab may have dispatched the same record, so absence of this send is not
-      // proof of non-delivery. Live recovery retries the original payload.
+      // proof of non-delivery. Live recovery retries the original payload. The
+      // admission is retained so a later drain still reaches transport with the
+      // record's original identity and payload.
       if (this.#getClient(targetRef) !== client) return false;
+      // Consume synchronously immediately before transport, with no await
+      // between. Never restore it after a failure or timeout.
+      this.#retireAdmission(targetRef, current.clientMutationId);
       const outcome = await this.#attempt(client, current);
       if (outcome === "stop") return false;
     }
+  }
+
+  #retireAdmission(targetRef: string, clientMutationId: string): void {
+    const admissions = this.#pretransportAdmissions.get(targetRef);
+    if (!admissions) return;
+    admissions.delete(clientMutationId);
+    if (admissions.size === 0) this.#pretransportAdmissions.delete(targetRef);
+  }
+
+  // Retire an admission only when a real read proves its record durably left
+  // the outbox. A record that is merely blockedUnknown, or otherwise not
+  // currently dispatchable, is not a disappearance.
+  async #retireVanishedAdmissions(targetRef: string): Promise<void> {
+    const admissions = this.#pretransportAdmissions.get(targetRef);
+    if (!admissions) return;
+    for (const clientMutationId of [...admissions]) {
+      if ((await this.#storage.getOutbox(clientMutationId)) === undefined) admissions.delete(clientMutationId);
+    }
+    if (admissions.size === 0) this.#pretransportAdmissions.delete(targetRef);
   }
 
   async #attempt(client: AppwireClientLike, record: MutationOutboxRecord): Promise<"advance" | "stop"> {

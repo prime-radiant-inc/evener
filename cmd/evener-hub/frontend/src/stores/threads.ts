@@ -135,7 +135,10 @@ export interface ThreadsStoreState {
   // an ordinary transient one.
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
-  refreshThread(ref: string): Promise<void>;
+  // beforePublish, when given, is evaluated synchronously immediately before
+  // this refresh publishes its snapshot. A throw cancels the read's result so
+  // a canceled action never republishes over newer authoritative state.
+  refreshThread(ref: string, beforePublish?: () => void): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -940,10 +943,12 @@ export function resumeSessionForUserIntent(ref: string, explicitRecovery = false
       throw new Error("Stop canceled this pending action; send again when ready.");
   };
   const resume = (async () => {
-    const { thread } = await client.resumeThread(ref);
+    // The guard runs after the reconnect settles and immediately before the
+    // resume RPC, so a Stop that lands during that reconnect sends nothing.
+    const { thread } = await client.resumeThread(ref, { beforeRequest: checkStopped });
     checkStopped();
     const resumedRef = thread.evener.ref;
-    await threadsStore.getState().refreshThread(resumedRef);
+    await threadsStore.getState().refreshThread(resumedRef, checkStopped);
     checkStopped();
     return resumedRef;
   })().finally(() => {
@@ -2098,6 +2103,7 @@ async function refreshTrackedThread(
   ref: string,
   targetedResync: boolean,
   reportFailure = false,
+  beforePublish?: () => void,
 ): Promise<void> {
   if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
   const previous = pendingThreadHydrations.get(ref);
@@ -2107,9 +2113,13 @@ async function refreshTrackedThread(
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
   // gate lives in one place.
-  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) =>
-    publishAndReconcileThreadHydration(ref, pending, result),
-  );
+  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
+    // Evaluated synchronously immediately before publication, with no await in
+    // between: a canceled read never reaches putThreadModel, the
+    // mutation-authority publication, or capture of the current Stop obligation.
+    beforePublish?.();
+    return publishAndReconcileThreadHydration(ref, pending, result);
+  });
   const completion = hydration.then(
     () => undefined,
     () => undefined,
@@ -2742,7 +2752,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     removeWatchedThreadModel(ref);
   },
 
-  async refreshThread(ref): Promise<void> {
+  async refreshThread(ref, beforePublish): Promise<void> {
     const deadline = Date.now() + REQUIRE_READY_TIMEOUT_MS;
     let client: AppwireClientLike;
     do {
@@ -2753,7 +2763,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       await requireReadyClient(remaining);
       client = requireClient();
     } while (client.state !== "ready");
-    await refreshTrackedThread(client, readyEpoch, ref, true, true);
+    await refreshTrackedThread(client, readyEpoch, ref, true, true, beforePublish);
     const runtime = getMutationRuntime();
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },

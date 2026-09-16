@@ -401,7 +401,17 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord | undefined> {
+  // pretransportAdmissions names records this dispatcher instance already
+  // committed a durable attempt for and has not yet crossed its own transport
+  // boundary on. They are already `attempted`, so the never-attempted rule
+  // refuses them, and an earlier blocked row keeps them out of the head
+  // position. Admitting them here keeps the first-submitting selection, the
+  // turn/start restriction, and the all-older-records-are-turn/start prefix
+  // rule unchanged.
+  async nextDispatchable(
+    targetRef: string,
+    pretransportAdmissions?: ReadonlySet<string>,
+  ): Promise<MutationOutboxRecord | undefined> {
     const records = await this.listOutbox(targetRef);
     const first = records[0];
     if (first?.state === "submitting") return first;
@@ -412,7 +422,7 @@ export class MutationOutboxIndexedDB {
     const nextIndex = records.findIndex((record) => record.state === "submitting");
     const next = records[nextIndex];
     return next?.method === "turn/start" &&
-      next.attempted === false &&
+      (next.attempted === false || pretransportAdmissions?.has(next.clientMutationId) === true) &&
       records.slice(0, nextIndex).every((record) => record.method === "turn/start")
       ? next
       : undefined;

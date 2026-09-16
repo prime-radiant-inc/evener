@@ -14,6 +14,7 @@ import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "
 import type { ThreadModel } from "../protocol/model";
 import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
 import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
+import { FakeSocket } from "../protocol/testing/fakeSocket";
 import { mulberry32 } from "../protocol/testing/tokenFlood";
 import type {
   AnyNotification,
@@ -34,6 +35,7 @@ import type {
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { recoveryClientFixture } from "./testing/recoveryClient";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -8161,6 +8163,180 @@ describe("retry-safe mutation outbox integration", () => {
     expect(await inspector.getOutbox("mutation-b")).toBeDefined();
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     inspector.close();
+  });
+
+  test("review regression: fresh Send survives attempted commit gate loss behind a repeatedly blocked older Send", async ({
+    onTestFinished,
+  }) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const ref = "ref_a";
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    let socket!: FakeSocket;
+    const open = FakeSocket.prototype.open;
+    const openSpy = vi.spyOn(FakeSocket.prototype, "open").mockImplementation(function (this: FakeSocket) {
+      socket = this;
+      open.call(this);
+    });
+    const resyncRead = deferred<ThreadReadResponse>();
+    const readReceived = deferred<void>();
+    let resyncing = false;
+    let olderId: string | undefined;
+    let freshId: string | undefined;
+    let replay = { received: deferred<void>(), reblocked: deferred<void>() };
+    const freshReceived = deferred<void>();
+    const { client, requests } = recoveryClientFixture({
+      ref,
+      snapshot: () => readResponse(ref),
+      read: () => {
+        if (!resyncing) return readResponse(ref);
+        readReceived.resolve();
+        return resyncRead.promise;
+      },
+      resume: () => {},
+      mutation: (params) => {
+        if (params.clientMutationId === olderId) {
+          replay.received.resolve();
+          throw new WireError("fixture unresolved original", -32000, {
+            clientMutationId: olderId,
+            mutationOutcome: "unknown",
+            retryDisposition: "blocked",
+          });
+        }
+        if (params.clientMutationId === freshId) freshReceived.resolve();
+      },
+    });
+    let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let authorityHold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    onTestFinished(() => {
+      hold?.release();
+      authorityHold?.release();
+      resyncRead.resolve(readResponse(ref));
+      client.close();
+      openSpy.mockRestore();
+      vi.useRealTimers();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    const original = await storage.enqueueIntent({
+      targetRef: ref,
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref, expectedInstanceId: "thr_ref_a", input: [{ type: "text", text: "older uncertain input" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "older uncertain input" }] },
+    });
+    olderId = original.clientMutationId;
+    await storage.markAttempted(olderId);
+    await storage.markUnknown(olderId, "blockedUnknown");
+    const older = await storage.getOutbox(olderId);
+    expect(older).toMatchObject({ attempted: true, state: "blockedUnknown" });
+    if (!older) throw new Error("expected durable older blocked Send");
+
+    // Enqueue uses a multi-store transaction. The next outbox-only write is
+    // the dispatcher's attempt transaction. Hold its completion notification,
+    // not the write: an independent read below proves B really committed.
+    const attemptHeld = deferred<ReturnType<typeof holdIndexedDBEvent>>();
+    const transaction = IDBDatabase.prototype.transaction;
+    let outboxReads = 0;
+    const transactionSpy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+      this: IDBDatabase,
+      ...args
+    ) {
+      const tx = transaction.apply(this, args);
+      if (args[0] === "outbox" && args[1] === "readonly") {
+        outboxReads += 1;
+        // Enqueue discovery issues dispatch's list first and its uncertainty
+        // list second. Let dispatch proceed; defer the competing authority
+        // refresh until our explicit resync has closed the gate. Both reads
+        // and the later attempted write still execute and commit in IndexedDB.
+        if (outboxReads === 2) authorityHold = holdIndexedDBEvent(tx, "complete");
+      }
+      if (!hold && args[0] === "outbox" && args[1] === "readwrite") {
+        hold = holdIndexedDBEvent(tx, "complete");
+        attemptHeld.resolve(hold);
+      }
+      return tx;
+    });
+    const put = IDBObjectStore.prototype.put;
+    const putSpy = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args
+    ) {
+      const request = put.apply(this, args);
+      const record = args[0];
+      if (this.name === "outbox" && record.clientMutationId === olderId && record.state === "blockedUnknown") {
+        const reblocked = replay.reblocked;
+        this.transaction.addEventListener("complete", () => reblocked.resolve(), { once: true });
+      }
+      return request;
+    });
+    onTestFinished(() => {
+      transactionSpy.mockRestore();
+      putSpy.mockRestore();
+    });
+    await threadsStore.getState().send(ref, "fresh independent input");
+    const attempted = await attemptHeld.promise;
+    await attempted.reached;
+    expect(authorityHold).toBeDefined();
+    if (!authorityHold) throw new Error("expected held uncertainty-authority read");
+    await authorityHold.reached;
+    const fresh = (await storage.listOutbox(ref)).find((record) => record.clientMutationId !== olderId);
+    expect(fresh).toMatchObject({
+      attempted: true,
+      state: "submitting",
+      payload: { ref, input: [{ type: "text", text: "fresh independent input" }] },
+    });
+    if (!fresh) throw new Error("expected durable fresh Send");
+    freshId = fresh.clientMutationId;
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+
+    resyncing = true;
+    socket.receive({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref } });
+    await readReceived.promise;
+    authorityHold.release();
+    attempted.release();
+    // This real IDB read crosses the dispatch continuation while hydration is
+    // still held. The committed ID is unchanged, and no B request was sent.
+    expect(await storage.getOutbox(fresh.clientMutationId)).toEqual(fresh);
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+    resyncRead.resolve(readResponse(ref));
+    // The events own completion; waitFor retains only its existing tripwire.
+    // Frozen intervals and an empty DOM cannot trigger a polling recheck.
+    await waitFor(async () => {
+      await replay.received.promise;
+      await replay.reblocked.promise;
+      expect(
+        requests.filter(({ method, params }) => method === "turn/start" && params.clientMutationId === olderId),
+      ).toHaveLength(1);
+      expect(await storage.getOutbox(older.clientMutationId)).toEqual(older);
+    });
+    replay = { received: deferred<void>(), reblocked: deferred<void>() };
+    socket.receive({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref } });
+    await waitFor(async () => {
+      await replay.received.promise;
+      await replay.reblocked.promise;
+      expect(
+        requests.filter(({ method, params }) => method === "turn/start" && params.clientMutationId === olderId),
+      ).toHaveLength(2);
+      expect(await storage.getOutbox(older.clientMutationId)).toEqual(older);
+    });
+    for (const { params } of requests.filter(
+      ({ method, params }) => method === "turn/start" && params.clientMutationId === olderId,
+    ))
+      expect(params).toEqual(older.payload);
+    // A remains unresolved; B must reach transport with its ORIGINAL identity
+    // and payload, not require A to settle or a second user Send to rescue it.
+    await waitFor(async () => {
+      await freshReceived.promise;
+      expect(
+        requests
+          .filter(({ method, params }) => method === "turn/start" && params.clientMutationId === fresh.clientMutationId)
+          .map(({ params }) => params),
+      ).toEqual([fresh.payload]);
+    });
+    expect(await storage.getOutbox(older.clientMutationId)).toEqual(older);
   });
 
   test("a targeted resync closes the target replay gate until its snapshot reconciles", async () => {

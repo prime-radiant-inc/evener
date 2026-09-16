@@ -196,7 +196,8 @@ export class FakeClient implements AppwireClientLike {
     this.retryNowCalls += 1;
   }
 
-  async resumeThread(ref: string): ReturnType<AppwireClient["resumeThread"]> {
+  async resumeThread(ref: string, options?: { beforeRequest?: () => void }): ReturnType<AppwireClient["resumeThread"]> {
+    options?.beforeRequest?.();
     return this.request("thread/resume", { ref });
   }
 
