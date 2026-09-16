@@ -4,8 +4,9 @@
 // group - the wire's id order is the session's own chronology and the panel
 // has no business re-sorting it. done and cancelled share `settled`: the
 // per-row glyph and strikethrough keep the distinction visible inside the
-// collapsed history group.
-import type { TaskRow } from "./taskData";
+// collapsed history group. Shared by the web tasks panel and native's tasks
+// sheet.
+import type { TaskRow } from "./taskListData";
 
 export interface TaskGroups {
   inProgress: TaskRow[];

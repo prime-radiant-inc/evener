@@ -6,7 +6,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskTime";
+import { absoluteTime } from "@evener/appwire-client";
 import {
   type ActivityDelegate,
   activityDelegateDiagnostics,

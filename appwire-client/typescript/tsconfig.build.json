@@ -47,6 +47,9 @@
     "slashCompletion.ts",
     "sharedNotesAvailability.ts",
     "railSessionState.ts",
-    "reasoningEffort.ts"
+    "reasoningEffort.ts",
+    "taskListData.ts",
+    "taskListGroups.ts",
+    "taskListTime.ts"
   ]
 }

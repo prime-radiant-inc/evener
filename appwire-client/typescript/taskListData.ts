@@ -1,4 +1,4 @@
-// Narrows TaskListResponse.data (protocol/types.gen.ts types it `unknown` -
+// Narrows TaskListResponse.data (types.gen.ts types it `unknown` -
 // the Go source (appwire/types.go:896-898) is `Data any`, so codegen has no
 // named struct to reflect) into a display-ready TaskRow[]. The real runtime
 // shape - confirmed by reading the daemon handler chain rather than
@@ -12,7 +12,8 @@
 // `null`/`undefined` only when no tasksFn is registered
 // server-side (server/appwire_runtime.go:713-721) - an old daemon - which
 // this parser reports as `null` ("no data"), distinct from a real empty
-// list (`[]`, "zero tasks").
+// list (`[]`, "zero tasks"). Shared by the web tasks panel and its store, the
+// transcript's task_list card, and native's tasks sheet and task list.
 //
 // created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
 // completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
