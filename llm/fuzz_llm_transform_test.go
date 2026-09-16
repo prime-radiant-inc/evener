@@ -296,28 +296,29 @@ func FuzzLmEstimateMessageInputParts(f *testing.F) {
 			},
 		}
 
-		chars, tokens := estimateMessageInputParts(provider, model, msg)
+		target := targetFromNames(provider, model)
+		chars, tokens := estimateMessageInputParts(target, msg)
 		if chars < 0 || tokens < 0 {
 			t.Fatalf("negative accumulators: chars=%d tokens=%d", chars, tokens)
 		}
-		if c2, tk2 := estimateMessageInputParts(provider, model, msg); c2 != chars || tk2 != tokens {
+		if c2, tk2 := estimateMessageInputParts(target, msg); c2 != chars || tk2 != tokens {
 			t.Fatalf("estimateMessageInputParts nondeterministic: (%d,%d) vs (%d,%d)", chars, tokens, c2, tk2)
 		}
 
 		// Monotonic: an extra text part never lowers either accumulator.
 		more := msg
 		more.Content = append(append([]ContentPart(nil), msg.Content...), ContentPart{Kind: ContentText, Text: "extra"})
-		c3, tk3 := estimateMessageInputParts(provider, model, more)
+		c3, tk3 := estimateMessageInputParts(target, more)
 		if c3 < chars || tk3 < tokens {
 			t.Fatalf("appending a part lowered an accumulator: (%d,%d) -> (%d,%d)", chars, tokens, c3, tk3)
 		}
 
 		// Whole-list estimate is non-negative and stable.
-		got := estimateMessagesInputTokens(provider, model, []Message{msg})
+		got := estimateMessagesInputTokens(target, []Message{msg})
 		if got < 0 {
 			t.Fatalf("negative message estimate: %d", got)
 		}
-		if again := estimateMessagesInputTokens(provider, model, []Message{msg}); again != got {
+		if again := estimateMessagesInputTokens(target, []Message{msg}); again != got {
 			t.Fatalf("estimateMessagesInputTokens nondeterministic: %d vs %d", got, again)
 		}
 	})
