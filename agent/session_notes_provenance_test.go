@@ -527,6 +527,97 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 	}
 }
 
+// A fork boundary measured against the raw transcript must survive repair: an
+// orphaned tool call inside the inherited prefix splices a synthetic result into
+// the resumed history, and a boundary that ignores the insertion slides one turn
+// early -- handing the prefix's steering turn to the child's journal, whose
+// colliding record says note and strips bytes the parent wrote.
+func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
+	t.Parallel()
+	const sessionID = "01KFORKREPAIRBOUND00000000"
+	const collideID = "cm-collide-notes"
+	const inheritedText = "keep \x1b[31mthese\x1b[0m parent bytes"
+	stateDir := t.TempDir()
+
+	store, err := newClientMutationStore(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(func(snapshot *clientMutationSnapshot) error {
+		collide := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, collideID, struct{ Note string }{Note: "child note"})
+		snapshot.Journal[collideID] = clientMutationRecord{
+			ClientMutationID:  collideID,
+			Method:            collide.Method,
+			Payload:           collide.Payload,
+			PayloadHash:       collide.PayloadHash,
+			OperationState:    clientMutationOperationTerminal,
+			ExecutionState:    "incorporated",
+			ProjectionState:   appwire.MutationProjectionReflected,
+			AttemptGeneration: 1,
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The child's transcript. The first three turns are inherited: an assistant
+	// turn whose tool call was never answered (repair splices a synthetic result
+	// for it before the parent's user turn), the parent's user turn, and a
+	// kindless parent steering turn whose id collides with a child note record.
+	// The child's own turn follows.
+	path := filepath.Join(stateDir, sessionsSubdir, sessionID+".transcript.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("new transcript writer: %v", err)
+	}
+	for _, turn := range []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call-orphan", Name: "read_file", Arguments: []byte("{}")}},
+		}}},
+		{Kind: schema.TurnUserInput, Message: llm.User("parent user turn")},
+		{Kind: schema.TurnSteering, ClientMutationID: collideID, Message: llm.User(inheritedText)},
+		{Kind: schema.TurnUserInput, Message: llm.User("child own turn")},
+	} {
+		if err := tw.AppendDurable(turn); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		// Three inherited turns precede the child's own history.
+		ParentSessionID: "01KPARENT0000000000000000",
+		DivergenceTurn:  4,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	got := modelBoundText(restored)
+	if !strings.Contains(got, inheritedText) {
+		t.Fatalf("the inherited steer lost bytes to the child's colliding record: %q", got)
+	}
+}
+
 // A note record beside a steer is not evidence about that steer: the note write's
 // own record carries the note kind (or, when it changed nothing, a kindless
 // notes/human/set), and no rule reads it to classify another mutation's record, so

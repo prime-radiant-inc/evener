@@ -154,29 +154,39 @@ func retainedFrom(entries []transcript.Entry) int {
 	return 0
 }
 
+// resumeHistoryIndexed is ResumeHistory, also reporting each synthetic repair
+// turn's insertion index in the returned turns (ascending, post-repair
+// coordinates), so a caller mapping a transcript position onto the resumed
+// history can shift it per insertion at or before that position, exactly as
+// history_repair.go shifts the in-flight boundary.
+func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
+	compactionIdx := retainedFrom(entries)
+
+	var turns []schema.Turn
+	if compactionIdx == 0 {
+		// No compaction: the whole transcript.
+		turns = make([]schema.Turn, len(entries))
+		for i, e := range entries {
+			turns[i] = e.Turn
+		}
+	} else {
+		// The compaction turn + everything after it.
+		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
+		for i := compactionIdx; i < len(entries); i++ {
+			turns = append(turns, entries[i].Turn)
+		}
+	}
+
+	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
+	return repaired, insertedAt
+}
+
 // ResumeHistory extracts the history needed for session resume from transcript entries.
 // If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
 // Otherwise returns all turns.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
-	compactionIdx := retainedFrom(entries)
-
-	if compactionIdx == 0 {
-		// No compaction: return all turns.
-		turns := make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-		}
-		repaired, _ := repairOrphanedToolResults(turns)
-		return repaired
-	}
-
-	// Return the compaction turn + everything after it.
-	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
-	for i := compactionIdx; i < len(entries); i++ {
-		result = append(result, entries[i].Turn)
-	}
-	repaired, _ := repairOrphanedToolResults(result)
-	return repaired
+	turns, _ := resumeHistoryIndexed(entries)
+	return turns
 }
 
 // reconcileSkillCompactionReceipts replays the typed compaction handoff
