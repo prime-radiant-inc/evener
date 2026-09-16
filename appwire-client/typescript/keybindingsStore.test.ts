@@ -215,8 +215,39 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft([])).toThrow("unavailable");
 
     await store.getState().refreshOverrides();
-    expect(store.getState()).toMatchObject({ writeUncertain: false, draftConflict: false, draft: { rules } });
+    expect(store.getState()).toMatchObject({
+      writeUncertain: false,
+      draftConflict: false,
+      draftError: null,
+      draft: { rules },
+    });
     expect(drafts.load()).toMatchObject({ writeUncertain: false });
+  });
+
+  test("a read carrying loadError after a lost reply supersedes the write's failure copy but settles nothing", async () => {
+    const drafts = memoryDraftStorage();
+    const client = new FakeClient("ready");
+    let response: KeybindingsOverrides = payload(3, []);
+    client.on("evener/settings/keybindings/get", () => response);
+    client.on("evener/settings/keybindings/patch", () => {
+      throw new Error("lost reply");
+    });
+    const store = createKeybindingsStore({ client, drafts: drafts.storage });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    await expect(store.getState().saveDraft([{ action: ACTIONS.paletteOpen, chord: "Meta+P" }])).rejects.toThrow();
+    expect(store.getState().draftError).not.toBeNull();
+
+    response = { ...payload(0, []), loadError: "state file unreadable" };
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      writeUncertain: true,
+      draftError: null,
+      loadError: "state file unreadable",
+    });
+    expect(drafts.load()).toMatchObject({ writeUncertain: true });
   });
 
   /** A store whose ready generation ends while a checkpointed write is in

@@ -827,14 +827,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
   }
 
-  /** What an authoritative read (a GET without loadError) settles for the
-   * draft editor: an uncertain write's outcome is now whatever the hub
-   * confirmed, so the checkpoint is re-marked and edits unblock. A read that
-   * started before the write left, or landed while one is in flight, says
-   * nothing about that write and settles nothing. */
+  /** What a read that started after the last checkpointed write settles for
+   * the draft editor. Any such read supersedes the write's own failure copy
+   * (draftError): the hub's answer is now the truth about that write. An
+   * AUTHORITATIVE read (no loadError) also settles the outcome itself: the
+   * checkpoint is re-marked and writeUncertain clears, so edits unblock. A
+   * read that started before the write left, or landed while one is in
+   * flight, says nothing about that write and settles nothing. */
   function settledWrite(payload: KeybindingsOverrides, writeEpochAtStart: number): Partial<StateFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (payload.loadError !== undefined || writeEpochAtStart !== writeEpoch || saving) return {};
+    if (writeEpochAtStart !== writeEpoch || saving) return {};
+    if (payload.loadError !== undefined) return { draftError: null };
     if (draft !== null && writeUncertain) {
       try {
         persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
@@ -842,7 +845,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
       }
     }
-    return { writeUncertain: false };
+    return { writeUncertain: false, draftError: null };
   }
 
   async function refreshFor(generation: number): Promise<void> {
