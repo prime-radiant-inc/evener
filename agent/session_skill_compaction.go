@@ -317,11 +317,12 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 // identified by publication identity — the consumption that prevents repeat
 // delivery after a handoff's reload or reminder was durably admitted. Only the
 // named publications are removed: identity-less terminal cancellations are
-// retired separately by retireSkillCompactionCancellationsLocked, and the
-// cycle's operation slot (PendingCompaction) is never touched, so a concurrent
-// newer pending operation is undisturbed. Callers hold s.mu; the return reports
-// the receipts it took out, so a caller whose durability step then fails can
-// put back exactly those and nothing else.
+// retired separately by retireSkillCompactionCancellationsLocked (an empty id
+// in publications names none of them), and the cycle's operation slot
+// (PendingCompaction) is never touched, so a concurrent newer pending
+// operation is undisturbed. Callers hold s.mu; the return reports the receipts
+// it took out, so a caller whose durability step then fails can put back
+// exactly those and nothing else.
 func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) []schema.SkillCompactionReceipt {
 	if len(publications) == 0 || len(s.skillLifecycle.PendingHandoffs) == 0 {
 		return nil
@@ -329,7 +330,7 @@ func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bo
 	kept := s.skillLifecycle.PendingHandoffs[:0]
 	var removed []schema.SkillCompactionReceipt
 	for _, handoff := range s.skillLifecycle.PendingHandoffs {
-		if publications[handoff.Operation.PublicationID] {
+		if id := handoff.Operation.PublicationID; id != "" && publications[id] {
 			removed = append(removed, handoff)
 			continue
 		}

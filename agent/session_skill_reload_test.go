@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -2043,17 +2044,52 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 		t.Fatalf("the recorded reminder must consume its receipt whatever the save did, got %+v", handoffs)
 	}
 
+	// A fold between the failed save and the retry compacts the reminder out
+	// of the live history. Recognizing an already-recorded reminder by scanning
+	// that history would re-append it here; the consumed receipt is what keeps
+	// the retry from delivering the inventory a second time.
+	s.mu.Lock()
+	s.history = slices.DeleteFunc(s.history, func(turn schema.Turn) bool {
+		return turn.SkillState != nil && turn.SkillState.ReloadReminder != nil
+	})
+	s.mu.Unlock()
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("test setup: %d reminder turn(s) survived the fold", got)
+	}
+
 	metaFS.fail = false
 	if _, _, staged, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
 		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
 	} else if staged != 0 {
 		t.Fatalf("the retry staged %d input tokens for a reminder it appended nothing for, want 0", staged)
 	}
-	if got := countSkillReloadReminderTurns(s); got != 1 {
-		t.Fatalf("reminders after the retry = %d, want 1: the transcript already holds the only reminder this handoff is owed", got)
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("the retry appended %d reminder(s): the transcript already holds the only reminder this handoff is owed", got)
 	}
 	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
 		t.Fatalf("handoffs after the retry = %+v, want the receipt consumed", handoffs)
+	}
+}
+
+// TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation: a
+// terminal cancellation receipt carries no publication identity. Consuming a
+// reminder whose receipt also names none must not sweep those cancellations
+// away with it — they are retired on their own schedule.
+func TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
+		{Phase: skillCompactionReceiptCancelled, Operation: schema.SkillCompactionOperation{Generation: 1}},
+		{Phase: skillCompactionReceiptDelivered, Operation: schema.SkillCompactionOperation{Generation: 2, Selection: schema.SkillReloadSelection{State: "absent"}}},
+	}
+	revision := s.skillLifecycle.Revision
+	s.consumeSkillReloadReminderLocked("")
+	kept := len(s.skillLifecycle.PendingHandoffs)
+	bumped := s.skillLifecycle.Revision != revision
+	s.mu.Unlock()
+	if kept != 2 || bumped {
+		t.Fatalf("consuming an identity-less reminder kept %d of 2 receipts (revision bumped: %v), want all of them untouched", kept, bumped)
 	}
 }
 

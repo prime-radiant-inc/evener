@@ -72,6 +72,9 @@ func TestAppEventProjectorAnnouncementsKeepAPendingStableReservationStable(t *te
 		live = append(live, notificationItemTurnID(t, projector.Project(event), appwire.NotifyItemCompleted))
 	}
 	project(events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{Text: "env block", TurnID: "turn_env_stable"}})
+	if projector.reservedTurnID != "turn_stable_input" || !projector.reservedTurnIDIsStable {
+		t.Fatalf("environment block left the reservation (%q, stable=%v), want turn_stable_input untouched and stable", projector.reservedTurnID, projector.reservedTurnIDIsStable)
+	}
 	// No id on the event: the reservation is what names this turn, which is
 	// the whole point of reserving it.
 	project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "first"}})
