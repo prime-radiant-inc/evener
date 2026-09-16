@@ -236,6 +236,37 @@ func (c *Client) SetPendingCoordinator(pc PendingCoordinator) {
 	c.pendingCoord = pc
 }
 
+// RequestNotSentError reports that Client.Request failed before the request was
+// transmitted: the caller's context had already ended when the request reached
+// the point where its frame would be written, so no byte of that frame was
+// handed to the transport and the peer cannot have observed it.
+//
+// It exists because "the caller's context ended" on its own does not say
+// whether a request went out. Client.request serializes frame writes on
+// sendMu, so a context that ends while the call is queued behind another writer
+// on the same client looks exactly like one that ends after the frame went out
+// and only the response was lost. A caller deciding whether a non-idempotent
+// remote mutation may have been applied has to tell those apart: the
+// blocked-retry "outcome unknown" reading is right for the second and wrong for
+// the first, where nothing happened and a retry is safe.
+//
+// Err is the context error that ended the call; it stays reachable through
+// Unwrap, so errors.Is(err, context.Canceled) and friends keep working. A
+// failure from the transport onward — including a transport that refuses the
+// write because its context was canceled a moment after dispatch — is
+// deliberately NOT reported this way: once Send has been called, this client
+// cannot prove the frame never left, so that case stays an ordinary in-flight
+// failure.
+type RequestNotSentError struct {
+	Err error // the context error that ended the call before transmission
+}
+
+func (e RequestNotSentError) Error() string {
+	return "appwire: request not sent: " + e.Err.Error()
+}
+
+func (e RequestNotSentError) Unwrap() error { return e.Err }
+
 func (c *Client) request(ctx context.Context, method string, params any, out any) error {
 	id := NewIntID(c.nextID.Add(1) - 1)
 	if observe := requestIDObserverFrom(ctx); observe != nil {
@@ -248,6 +279,16 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	c.pendingMu.Unlock()
 
 	c.sendMu.Lock()
+	if err := ctx.Err(); err != nil {
+		// The context ended before this request could take the write slot, so
+		// its frame is never dispatched: report it as provably unsent rather
+		// than as an in-flight cancellation whose response might have been
+		// lost. Nothing is written here, which is what lets
+		// RequestNotSentError promise the peer never saw the request.
+		c.sendMu.Unlock()
+		c.removePending(id)
+		return RequestNotSentError{Err: err}
+	}
 	if err := c.transport.Send(ctx, RequestMessage(id, method, params)); err != nil {
 		c.sendMu.Unlock()
 		c.removePending(id)

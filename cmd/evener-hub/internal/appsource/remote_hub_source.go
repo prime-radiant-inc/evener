@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -269,15 +270,20 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 // and the auto-resume gate can attribute it.
 //
 // A write-side connection failure counts as transport loss, which is what makes
-// io.ErrClosedPipe one of the shapes listed here (round eight). The send path
-// reports it when the stream's write side is already gone — a partial write
-// onto a connection the peer has torn down — and it is deliberately not
-// distinguishable from the read-side failures around it: like io.EOF or EPIPE
-// it says the connection failed mid-call, not that the request was never sent.
-// For a forwarded read that is SessionUnavailable either way, and for a
-// forwarded mutation remoteHubAdminMutationCallError re-labels exactly this
-// unavailability to outcome-unknown/blocked, so a closed pipe cannot escape as
-// a raw error a caller might blind-retry.
+// io.ErrClosedPipe, os.ErrClosed, and net.ErrClosed listed here (round eight).
+// The send path reports them when the stream's write side is already gone — a
+// partial write onto a connection the peer has torn down, or the first write
+// after this end closed it — and they are deliberately not distinguishable from
+// the read-side failures around it: like io.EOF or EPIPE they say the
+// connection failed mid-call, not that the request was never sent. All three
+// shapes are needed because each layer reports its own: a pipe gives
+// io.ErrClosedPipe, the SSH stdio path's closed descriptor gives os.ErrClosed
+// ("file already closed", often wrapped in an *fs.PathError), and a closed
+// network connection gives net.ErrClosed. For a forwarded read that is
+// SessionUnavailable either way, and for a forwarded mutation
+// remoteHubAdminMutationCallError re-labels exactly this unavailability to
+// outcome-unknown/blocked, so a closed write cannot escape as a raw error a
+// caller might blind-retry.
 func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if err == nil {
 		return nil
@@ -306,6 +312,8 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, context.DeadlineExceeded) {
@@ -331,6 +339,12 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "broken pipe"),
 		strings.Contains(lower, "closed pipe"),
+		// os.ErrClosed's text: the descriptor this end writes to is gone, the
+		// same class of failure as net.ErrClosed's "use of closed network
+		// connection" below. It matters on the WireError path, where the
+		// failure arrives as the peer's message and errors.Is has nothing to
+		// match against.
+		strings.Contains(lower, "file already closed"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):
 		return true
@@ -1472,13 +1486,24 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // stopped the frame write (StreamTransport.Send's own ctx check,
 // appwire/stream_transport.go) or the response wait after the frame went out
 // (Client.request's select on ctx.Done(), appwire/client.go). Nothing in the
-// client's API distinguishes the two, so the post-send reading — the response
-// was lost, the host may have applied the change — is the only safe one: the
-// raw cancellation this used to return reads as "nothing happened, retry",
-// which duplicates a forwarded instance/create or plugin/install whenever the
-// frame did reach the host. The pre-call ctx check inside the call stays,
-// because a context already canceled before the request is handed to the
-// client cannot have sent anything.
+// client's API distinguishes those two once the frame has been dispatched, so
+// the post-send reading — the response was lost, the host may have applied the
+// change — is the only safe one: the raw cancellation this used to return reads
+// as "nothing happened, retry", which duplicates a forwarded instance/create or
+// plugin/install whenever the frame did reach the host. The pre-call ctx check
+// inside the call stays, because a context already canceled before the request
+// is handed to the client cannot have sent anything.
+//
+// The client does distinguish one earlier window (round eight): a context that
+// has already ended when the request reaches the point where its frame would be
+// written — typically queued behind another writer on the client's sendMu, since
+// a controller browser can have two admin RPCs in flight on one host at once —
+// comes back as appwire.RequestNotSentError, which proves nothing was
+// transmitted. That case maps exactly as the pre-call check above does: a raw
+// cancellation, or SessionUnavailable for an expired deadline, and never
+// outcome-unknown, because a mutation that never reached the host cannot have
+// been applied and blocking its retry is simply wrong. Only from dispatch
+// onward does the ambiguous in-flight reading apply.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		// Provably not sent: this runs before the request is handed to the
@@ -1500,16 +1525,27 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 // remoteHubAdminMutationCallError turns a transport-level loss on a forwarded
 // admin mutation into an explicit outcome-unknown error.
 //
-// Three shapes reach it. A context end the in-flight call observed (the
-// caller's cancellation or deadline) is the ambiguous case described on
-// AdminMutationCall: it becomes outcome-unknown/blocked directly, so the
-// classification no longer depends on mapCallError turning a deadline into
-// SessionUnavailable and the unavailability re-label below catching it. A
-// semantic wire refusal keeps its own code and message, exactly as on
-// AdminCall. Everything else is mapped by mapCallError, and only an
-// unavailability it produced is re-labelled: that mapping stays deliberately
-// narrow because mapCallError's other outcomes are not lost responses.
+// Four shapes reach it. A pre-send failure the client proved never reached the
+// transport (appwire.RequestNotSentError — the caller's context ended while the
+// request was queued on the client's write slot) is not a lost response at all,
+// so it maps exactly as the pre-call context check does: a raw cancellation, or
+// SessionUnavailable for an expired deadline, both safe retries. A context end
+// the in-flight call observed (the caller's cancellation or deadline) is the
+// ambiguous case described on AdminMutationCall: it becomes
+// outcome-unknown/blocked directly, so the classification no longer depends on
+// mapCallError turning a deadline into SessionUnavailable and the
+// unavailability re-label below catching it. A semantic wire refusal keeps its
+// own code and message, exactly as on AdminCall. Everything else is mapped by
+// mapCallError, and only an unavailability it produced is re-labelled: that
+// mapping stays deliberately narrow because mapCallError's other outcomes are
+// not lost responses.
 func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
+	if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
+		// Provably not transmitted, so the mutation provably did not happen:
+		// report it the way the pre-call context check reports an unsent call
+		// rather than as an unknown outcome that blocks a safe retry.
+		return s.mapCallError(err)
+	}
 	var refused appwire.WireError
 	if !errors.As(err, &refused) && callerContextEnded(err) {
 		return s.hubAdminMutationOutcomeUnknown(

@@ -531,6 +531,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// host notification once a replacement subscribed too). Pinned by
 	// TestHostAdminFanOutStopsWhenServerShutdown here and by
 	// TestHostAdminFanOutStopsWhenContextCanceled at the controller level.
+	// The binding only holds if something actually shuts the server down: the
+	// hub's top-level lifecycle drains it unconditionally on the way out
+	// (main.go), not only on the tracing path, and does so before the SSH
+	// manager closes the transports these fan-outs read from.
 	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
 	return server
 }

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -927,5 +929,235 @@ func TestRemoteHubSourceSubscribeHostNotificationsDeliversAndUnregisters(t *test
 			t.Fatalf("hostSubs = %d after cancel, want 0", remaining)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// gatedSendTransport holds a client's single frame-write slot open: the first
+// Send parks inside the transport until the test releases it, so a second
+// request on the same client is provably still queued on Client.sendMu when the
+// test ends its context. Later Sends refuse a canceled context the way
+// appwire.StreamTransport.Send does — before any byte of the frame is written —
+// and every Send is counted, so a test can prove which frames reached a
+// transport at all.
+type gatedSendTransport struct {
+	firstSendEntered chan struct{}
+	releaseFirst     chan struct{}
+
+	mu    sync.Mutex
+	sends int
+}
+
+func (t *gatedSendTransport) Send(ctx context.Context, _ appwire.Message) error {
+	t.mu.Lock()
+	t.sends++
+	first := t.sends == 1
+	t.mu.Unlock()
+	if first {
+		close(t.firstSendEntered)
+		<-t.releaseFirst
+		return nil
+	}
+	// The stream transport's own shape: a context that ended before the write
+	// stops it, having emitted nothing.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (t *gatedSendTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+
+func (t *gatedSendTransport) Close() error { return nil }
+
+func (t *gatedSendTransport) sendCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.sends
+}
+
+// TestRemoteHubSourceAdminMutationCallPreSendCancellationStaysRetryable pins
+// round eight's medium finding on the mutating path. appwire.Client serializes
+// frame writes on sendMu, so a forwarded mutation can be queued behind another
+// call on the same client when the caller's context ends; that request never
+// reaches the transport, so the mutation provably did not happen and the caller
+// must NOT be told the outcome is unknown (which is what blocks a retry that is
+// in fact safe).
+//
+// The transport proves the claim: it counts every Send, and only the queued
+// holder's frame is ever offered to it. The post-send half of the contract — a
+// cancellation after the frame went out, which is genuinely ambiguous — stays
+// pinned by TestRemoteHubSourceAdminMutationCallPostSendCancellationIsOutcomeUnknown,
+// which asserts the blocked mapping for exactly that window.
+func TestRemoteHubSourceAdminMutationCallPreSendCancellationStaysRetryable(t *testing.T) {
+	transport := &gatedSendTransport{
+		firstSendEntered: make(chan struct{}),
+		releaseFirst:     make(chan struct{}),
+	}
+	client := appwire.NewClient(transport)
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	// Park a Notify inside the transport so the client's write slot stays taken
+	// for the whole window below.
+	holderCtx := t.Context()
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- client.Notify(holderCtx, appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	}()
+	select {
+	case <-transport.firstSendEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the queued send holder never reached the transport")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		var out json.RawMessage
+		done <- source.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, json.RawMessage(`{"name":"p"}`), &out)
+	}()
+	// Queue the mutation on the write slot, then end its context there. The
+	// outcome does not depend on this sleep — the mutation is behind the holder
+	// either way — but the sleep is what makes the window under test the queued
+	// one rather than "canceled before the call started".
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	close(transport.releaseFirst)
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AdminMutationCall did not return after its context was canceled while queued")
+	}
+	if err == nil {
+		t.Fatal("AdminMutationCall succeeded after its context was canceled while queued")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %T %v, want the caller's own cancellation (a safe retry): the mutation never reached the transport", err, err)
+	}
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
+		t.Fatalf("error = %+v, want no wire error: a request that was never transmitted has no unknown outcome", wire)
+	}
+	if got := transport.sendCount(); got != 1 {
+		t.Fatalf("transport saw %d sends, want 1 (the queued mutation must never be offered to the transport)", got)
+	}
+}
+
+// TestRemoteHubSourceClosedFileWriteIsTransportLoss pins the second round-eight
+// medium finding. io.ErrClosedPipe was recognized, but the closed-write errors
+// the SSH stdio path actually produces were not: os.ErrClosed is what a write
+// to an already-closed stdio pipe reports, net.ErrClosed is its network-conn
+// twin, and both can arrive wrapped. Unrecognized, they escaped the mutation
+// path as raw errors — read as "nothing happened, retry" for a forwarded
+// instance/create or plugin/install that may have been applied.
+//
+// The last case is the real shape rather than a stand-in: an
+// appwire.StreamTransport whose pipe was closed the way the SSH manager closes
+// a host's channel, so the classifier is fed the error the SSH stdio path
+// itself produces.
+func TestRemoteHubSourceClosedFileWriteIsTransportLoss(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		transport func(t *testing.T) appwire.Transport
+	}{
+		{
+			name:      "os.ErrClosed",
+			transport: func(*testing.T) appwire.Transport { return closedPipeTransport{err: os.ErrClosed} },
+		},
+		{
+			name: "wrapped os.ErrClosed",
+			transport: func(*testing.T) appwire.Transport {
+				return closedPipeTransport{err: fmt.Errorf("appwire send: %w", os.ErrClosed)}
+			},
+		},
+		{
+			name:      "net.ErrClosed",
+			transport: func(*testing.T) appwire.Transport { return closedPipeTransport{err: net.ErrClosed} },
+		},
+		{
+			name: "wrapped net.ErrClosed",
+			transport: func(*testing.T) appwire.Transport {
+				return closedPipeTransport{err: fmt.Errorf("appwire send: %w", net.ErrClosed)}
+			},
+		},
+		{
+			name:      "ssh stdio write end closed",
+			transport: closedStdioTransport,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := tc.transport(t)
+			source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+				return appwire.NewClient(transport), nil
+			})
+
+			// A mutation is what a blind retry can double-apply, so the closed
+			// write must be reported as an unknown outcome with retries blocked.
+			var out json.RawMessage
+			mutationErr := source.AdminMutationCall(context.Background(), appwire.MethodEvenerPluginInstall, nil, &out)
+			assertMutationOutcomeBlocked(t, mutationErr, "forwarded mutation")
+
+			// The read path stays SessionUnavailable: an idempotent read is safe
+			// to retry, and the blocked disposition must stay scoped to mutations.
+			readErr := source.AdminCall(context.Background(), appwire.MethodEvenerInstanceList, nil, &out)
+			assertSessionUnavailable(t, readErr, "forwarded read")
+		})
+	}
+}
+
+// closedStdioTransport is the transport the SSH stdio path really has: an
+// appwire.StreamTransport writing frames into a pipe whose write end was
+// closed, which is what the SSH manager does when it tears a host's channel
+// down. The next frame write reports os.ErrClosed ("file already closed") —
+// not io.ErrClosedPipe — through the same path a live host's write takes.
+func closedStdioTransport(t *testing.T) appwire.Transport {
+	t.Helper()
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = readEnd.Close() })
+	transport := appwire.NewStreamTransport(writeEnd)
+	if err := transport.Close(); err != nil {
+		t.Fatalf("close ssh stdio transport: %v", err)
+	}
+	return transport
+}
+
+// assertMutationOutcomeBlocked asserts err is the explicit
+// ErrorMutationOutcomeUnknown / RetryDispositionBlocked error every lost
+// forwarded admin mutation is reported as, with no retention of a retry hint.
+func assertMutationOutcomeBlocked(t *testing.T, err error, label string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected error, got nil", label)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("%s: error %T=%v, want appwire.WireError", label, err, err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("%s: code = %d, want %d", label, wire.Code, appwire.CodeInternalError)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorMutationOutcomeUnknown) {
+		t.Fatalf("%s: evenerErrorInfo = %q, want %q", label, info, appwire.ErrorMutationOutcomeUnknown)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("%s: Data = %T %v, want appwire.ErrorData", label, wire.Data, wire.Data)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+		t.Fatalf("%s: mutationOutcome = %q, want %q", label, data.MutationOutcome, appwire.MutationOutcomeUnknown)
+	}
+	if data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("%s: retryDisposition = %q, want %q", label, data.RetryDisposition, appwire.RetryDispositionBlocked)
+	}
+	if !strings.Contains(wire.Message, "host") {
+		t.Fatalf("%s: message = %q, want it to name the host", label, wire.Message)
 	}
 }

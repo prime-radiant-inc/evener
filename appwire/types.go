@@ -3759,12 +3759,11 @@ type HostRequestParams struct {
 // object, the catalog cannot say more". `unknown` is not expressible here: that
 // mapping belongs to a field typed json.RawMessage, and a top-level catalog
 // entry always names an interface. The declared contract is deliberately
-// weaker than the payload, and a caller must widen the result and cast to the
-// method it forwarded (component 07b's host-scoped request seam,
-// cmd/evener-hub/frontend/src/stores/hostRouting.ts, does exactly that in
-// hostRequest: `result as unknown as MethodTypes[M]["result"]`). Read this
-// marker as "an opaque JSON object the proxy passes through", never as an
-// empty result.
+// weaker than the payload, so a caller has to widen the result and cast it to
+// the method it forwarded. Nothing does that yet: the host-scoped request seam
+// that will is component 07b (branch multi-host-pr07b-host-routing), which has
+// not landed here. Read this marker as "an opaque JSON object the proxy passes
+// through", never as an empty result.
 type HostForwardedResult struct{}
 
 // HostNotificationParams is the evener/host/notification payload (component

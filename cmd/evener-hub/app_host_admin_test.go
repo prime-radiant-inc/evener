@@ -67,11 +67,11 @@ func (r *recordingBroadcaster) broadcasts() []recordedBroadcast {
 	return out
 }
 
-// newScriptedRemoteClient builds an initialized AppWire client backed by an
+// newScriptedAdminClient builds an initialized AppWire client backed by an
 // in-memory stream pair whose peer answers canned responses, records every
 // request, and can push notifications on demand. No SSH, no network, no host —
 // the component-05 test harness's shape, local to this package.
-func newScriptedRemoteClient(
+func newScriptedAdminClient(
 	t *testing.T,
 	handle func(method string, params json.RawMessage) hostAdminReply,
 ) (*appwire.Client, func() []hostAdminCall, func(method string, params any)) {
@@ -162,7 +162,7 @@ func scriptedHostAdmin(
 	handle func(method string, params json.RawMessage) hostAdminReply,
 ) (*hubHostAdminController, *recordingBroadcaster, func() []hostAdminCall) {
 	t.Helper()
-	client, calls, _ := newScriptedRemoteClient(t, handle)
+	client, calls, _ := newScriptedAdminClient(t, handle)
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})
@@ -656,7 +656,7 @@ func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T)
 }
 
 func TestHostAdminFanOutReEmitsOnlyConfigNotifications(t *testing.T) {
-	client, _, emit := newScriptedRemoteClient(t, func(string, json.RawMessage) hostAdminReply {
+	client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
 		return okReply()
 	})
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -721,7 +721,7 @@ func TestHostAdminFanOutReEmitsOnlyConfigNotifications(t *testing.T) {
 // subscription channel is still open, so a process-lifetime ctx or a test
 // context tears the goroutine down instead of parking it forever.
 func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
-	client, _, emit := newScriptedRemoteClient(t, func(string, json.RawMessage) hostAdminReply {
+	client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
 		return okReply()
 	})
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -769,7 +769,7 @@ func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
 // previous server's fan-out still subscribed beside its own, retaining the old
 // server's sources and relaying every host notification twice.
 func TestHostAdminFanOutStopsWhenServerShutdown(t *testing.T) {
-	client, _, _ := newScriptedRemoteClient(t, func(string, json.RawMessage) hostAdminReply {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
 		return okReply()
 	})
 	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -810,6 +810,68 @@ func TestHostAdminFanOutStopsWhenServerShutdown(t *testing.T) {
 	})
 	waitForHostNotificationSubscribers(t, source, 1,
 		"the replacement server's fan-out is not the only host-notification subscriber")
+}
+
+// TestHostAdminFanOutStopsBeforeItsTransportCloses pins the two lifecycle
+// properties round eight's finding depends on, in the order the hub's own defer
+// stack produces: the AppWire server is drained unconditionally (main.go,
+// registered after the SSH manager's teardown so it runs first), and only then
+// does the SSH manager close the channels the fan-out was reading from.
+//
+// The first property is what stops the fan-out: a shut-down server cancels its
+// lifetime, the fan-out's subscription is released while the transport is still
+// open, and the goroutine ends. The second checks that the teardown that follows
+// cannot resurrect it — a fan-out that outlived the close would re-dial a dead
+// channel on its next retry, which is exactly the leak this binding exists to
+// prevent. A second Shutdown is safe: the tracing drain and any embedder that
+// already drained the server call it again.
+func TestHostAdminFanOutStopsBeforeItsTransportCloses(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	var connects atomic.Int64
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		connects.Add(1)
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+	}
+
+	server := newHubAppServer(cfg, sources)
+	waitForHostNotificationSubscribers(t, source, 1, "the fan-out never subscribed to the remote host")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	// Released while the transport is still open, and therefore before the close
+	// below can race it.
+	waitForHostNotificationSubscribers(t, source, 0,
+		"the fan-out stayed subscribed across the server's shutdown")
+
+	// The SSH manager's half of the teardown: closing the channel the fan-out
+	// was reading from must not bring it back. A leaked fan-out would notice the
+	// closed subscription, wait out its backoff, and re-dial through the
+	// connector — so the assertion is on the connector count, sampled after a
+	// full retry interval.
+	_ = client.Close()
+	before := connects.Load()
+	time.Sleep(2 * hostNotificationRetryBase)
+	if got := connects.Load(); got != before {
+		t.Fatalf("the fan-out re-dialled a closed channel after shutdown: connector calls = %d, want %d", got, before)
+	}
+	waitForHostNotificationSubscribers(t, source, 0,
+		"a fan-out re-subscribed to the source after the server was shut down")
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
 }
 
 // waitForHostNotificationSubscribers waits for the source's host-level
