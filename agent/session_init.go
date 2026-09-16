@@ -891,10 +891,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
 	var resumeOrigins []int
+	var resumeFoldID string
+	var resumeUnresolvedSeqs []int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions, resumeOrigins = resumeHistoryReconstruct(transcriptEntries)
+		resumeHistory, repairInsertions, resumeOrigins, resumeFoldID, resumeUnresolvedSeqs = resumeHistoryReconstruct(transcriptEntries)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1100,6 +1102,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.now = s.clock.Now
 	jm.delegateController = s.delegateController
 	s.jobManager = jm
+	if len(resumeUnresolvedSeqs) > 0 {
+		// The fold record named entries this (corrupted or truncated)
+		// transcript no longer holds. Resume fails open — history was rebuilt
+		// from the turns that resolved — but the dropped retained turns must
+		// not vanish silently, the class #1200 fixes.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fold record %q named %d transcript seq(s) that no longer resolve; those retained turns are dropped on resume: %v", resumeFoldID, len(resumeUnresolvedSeqs), resumeUnresolvedSeqs)})
+	}
 	// Restore daemon steering before restore side effects can enqueue a
 	// restart-owned notification. Loading it later would overwrite that new
 	// notification with the pre-restart snapshot.

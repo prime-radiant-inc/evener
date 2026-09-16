@@ -2,6 +2,7 @@ package agent
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -149,5 +150,59 @@ func resumeTurnSeedFindSessionStart(t *testing.T, sess *Session) (events.Session
 		default:
 			return events.SessionStartData{}, false
 		}
+	}
+}
+
+// TestRestore_UnresolvedFoldRecordSeqWarns: a fold record naming a Seq the
+// transcript no longer holds (a corrupted or truncated file) must not silently
+// drop the retained turn. Resume fails open — the resolvable turns are rebuilt
+// — and a warning names the fold and the unresolved seq(s).
+func TestRestore_UnresolvedFoldRecordSeqWarns(t *testing.T) {
+	dir := t.TempDir()
+	id := "01RESUMEFOLDUNRESOLVED01"
+	tpath := filepath.Join(dir, sessionsSubdir, id+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{SessionID: id, ProfileID: "openai", Model: "gpt-5.2"})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("kept turn"))); err != nil { // seq 0
+		t.Fatal(err)
+	}
+	if _, err := tw.Append(schema.NewTurn(schema.TurnSummary, llm.User("fold summary"))); err != nil { // seq 1
+		t.Fatal(err)
+	}
+	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
+	record.Fold = &schema.FoldRecord{FoldID: "fold-7", Layers: []int{1}, RetainedSeqs: []int{0, 99}} // 99 is past the transcript's end
+	if _, err := tw.Append(record); err != nil {                                                     // seq 2
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	meta := schema.SessionMeta{ID: id, ProfileID: "openai", Model: "gpt-5.2", Config: (SessionConfig{}).toSnapshot()}
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	// The resolvable turns (summary at 1, kept at 0) are rebuilt; only the
+	// unresolved seq 99 is dropped.
+	hist := currentHistory(t, restored)
+	if indexOfTurnText(hist, "fold summary") < 0 || indexOfTurnText(hist, "kept turn") < 0 {
+		t.Fatalf("resolvable turns missing from resumed history: %+v", hist)
+	}
+	found := false
+	for _, ev := range drainPendingEvents(restored) {
+		if ev.Kind != events.EventWarning {
+			continue
+		}
+		if wd, ok := ev.Data.(events.WarningData); ok && strings.Contains(wd.Message, "fold-7") && strings.Contains(wd.Message, "99") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no warning naming the fold record and its unresolved seq")
 	}
 }
