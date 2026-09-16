@@ -171,7 +171,7 @@ func TestWatchInspectResultsCarryNote(t *testing.T) {
 		note:         note,
 		createdAt:    time.Now(),
 	}
-	fromCfg := inspectResultFromWatchConfig(watchKey{}, cfg)
+	fromCfg := inspectResultFromWatchConfig(cfg)
 	if fromCfg.Note != note {
 		t.Fatalf("config inspect note = %q, want %q", fromCfg.Note, note)
 	}

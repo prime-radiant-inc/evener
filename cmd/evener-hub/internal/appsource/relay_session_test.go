@@ -30,15 +30,29 @@ type relayTestDaemon struct {
 
 func newRelayTestSource(t *testing.T, entries []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
 	t.Helper()
+	return newRelayTestSourceListing(t, func() []rendezvous.Entry { return entries })
+}
+
+// newRelayTestSourceListing is newRelayTestSource over a live entry list, for
+// tests where a daemon leaves the roster mid-test.
+func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*LocalDaemonSource, *relayTestDaemon) {
+	t.Helper()
 	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		entries := list()
 		out := make([]LocalDaemonEntry, 0, len(entries))
 		for _, entry := range entries {
 			out = append(out, LocalDaemonEntry{Entry: entry})
 		}
 		return out
 	}, nil)
-	source.dial = func(_ context.Context, endpoint string, _ *http.Client, _ http.Header) (appwire.Transport, error) {
+	source.dial = relayTestDial(daemon)
+	return source, daemon
+}
+
+// relayTestDial is the scripted daemon's side of a relay dial.
+func relayTestDial(daemon *relayTestDaemon) appwireDialFunc {
+	return func(_ context.Context, endpoint string, _ *http.Client, _ http.Header) (appwire.Transport, error) {
 		daemon.dials.Add(1)
 		var transport *scriptedAppwireTransport
 		transport = newScriptedAppwireTransport(func(_ context.Context, message appwire.Message) error {
@@ -69,7 +83,6 @@ func newRelayTestSource(t *testing.T, entries []rendezvous.Entry) (*LocalDaemonS
 			},
 		}, nil
 	}
-	return source, daemon
 }
 
 type countedRelayTransport struct {
@@ -1715,5 +1728,173 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
 	}
 	if !replacementOutcome.result.Handoff.Commit() {
 		t.Fatal("replacement handoff commit lost")
+	}
+}
+
+// A daemon that exits for good never reconnects, so the resync a reconnect
+// would carry never comes. Its last frames, if still unpublished when its
+// socket closed, were revoked with the epoch (the contract
+// TestRelaySessionStaleEpochNotificationCannotPublish pins), so a listener is
+// left holding the state from before the exit with nothing on the way to
+// correct it: a web pane keeps reading "Message the agent…" on a session
+// whose daemon is gone (issue #1318). The roster sees the daemon go and the
+// source announces it to the daemon's relay session, which owes the listener
+// the re-read instruction.
+func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
+
+	// The daemon exits: its rendezvous entry goes, its socket closes, and the
+	// roster (here, the test) announces it.
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source.AnnounceDaemonGone(relayEntry("thread-1"), "thread-1")
+
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resync reached the listener after the daemon exited for good")
+	}
+	if dials := daemon.dials.Load(); dials != 1 {
+		t.Fatalf("dials = %d, want 1: a daemon that left the roster is not dialled", dials)
+	}
+}
+
+// expectDaemonGoneResync asserts the re-read instruction recovery publishes
+// for a daemon that is gone: a resync that names no ref, marked as the relay's
+// own so the hub fans it out to every route this session serves (a read-only
+// child alias shares the root's relay session) and stamps each route's own
+// identity in - a marking no daemon frame can carry, malformed or not.
+func expectDaemonGoneResync(t *testing.T, delivery RelayDelivery) {
+	t.Helper()
+	if !delivery.DaemonGone {
+		t.Fatalf("daemon-gone resync is not marked as the relay's own: %+v", delivery.Notification)
+	}
+	notification := delivery.Notification
+	if notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("delivery = %+v, want resync", notification)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(notification.Params, &params); err != nil {
+		t.Fatalf("resync params: %v", err)
+	}
+	if _, targeted := params["ref"]; targeted {
+		t.Fatalf("daemon-gone resync names ref %v; it must be untargeted so every route hears it", params["ref"])
+	}
+	if _, targeted := params["threadId"]; targeted {
+		t.Fatalf("daemon-gone resync names threadId %v; it must be untargeted so every route hears it", params["threadId"])
+	}
+}
+
+// Recovery keeps retrying after the daemon is gone (it may come back), and
+// every attempt advances the publication epoch, which revokes whatever is
+// still queued - a queued daemon-gone resync included, when the listener is
+// busy. The resync is the one thing that must survive that: it is published
+// outside the revocable epoch.
+func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.T) {
+	var listingMu sync.Mutex
+	listed := []rendezvous.Entry{relayEntry("thread-1")}
+	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
+	})
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
+	session := relaySessionFor(t, source)
+
+	// A delivery the listener has not acknowledged holds the publisher, so
+	// the resync queued behind it is still waiting when the epoch moves.
+	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
+	barrier := <-deliveries
+	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
+		t.Fatalf("barrier delivery = %q, want barrier", got)
+	}
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The roster announces the daemon gone while the publisher is still held,
+	// then a reconnect attempt does what it does: advance the epoch, revoking
+	// the current publication fence.
+	source.AnnounceDaemonGone(relayEntry("thread-1"), "thread-1")
+	session.mu.Lock()
+	session.advanceEpochLocked()
+	session.mu.Unlock()
+	barrier.Acknowledge()
+
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the daemon-gone resync was revoked with the epoch and never re-sent")
+	}
+}
+
+// openCommittedRelay subscribes to threadID through source: it acquires the
+// relay lease, listens, answers the daemon's read with a snapshot and commits
+// the handoff, and returns the lease, the listener's deliveries and the
+// daemon-side call whose transport the test can close to end the connection.
+func openCommittedRelay(t *testing.T, source *LocalDaemonSource, daemon *relayTestDaemon, threadID string) (*relaySessionLease, <-chan RelayDelivery, relayReadCall) {
+	t.Helper()
+	params := appwire.ThreadReadParams{Ref: "local:" + threadID, Subscribe: true}
+	leaseValue, err := source.acquireRelaySession(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := leaseValue.(*relaySessionLease)
+	t.Cleanup(lease.Close)
+	deliveries, err := lease.Listen(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := readRelayAsync(context.Background(), lease, params)
+	call := <-daemon.reads
+	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot(threadID, "snapshot"))
+	result := <-read
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.result.Handoff.Commit() {
+		t.Fatal("initial handoff did not commit")
+	}
+	return lease, deliveries, call
+}
+
+// A legacy rendezvous entry names no session; the probe resolved one, and the
+// relay session was keyed by it. The departure announcement must use that
+// resolved id, or it never finds the relay session to tell.
+func TestRelaySessionDaemonGoneReachesALegacyEntryThroughItsResolvedSession(t *testing.T) {
+	legacy := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://thread-1", SourceID: "local", ThreadID: "thread-1"}
+	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}}
+	}, nil)
+	source.dial = relayTestDial(daemon)
+	_, deliveries, call := openCommittedRelay(t, source, daemon, "resolved")
+	if err := call.transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source.AnnounceDaemonGone(legacy, "resolved")
+	select {
+	case delivery := <-deliveries:
+		expectDaemonGoneResync(t, delivery)
+		delivery.Acknowledge()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the legacy entry's subscriber was never told the daemon is gone")
 	}
 }

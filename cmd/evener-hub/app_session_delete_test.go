@@ -621,7 +621,7 @@ func TestSessionDeletePreservesUnconfirmedDaemonState(t *testing.T) {
 				entry.ThreadID = ""
 			}
 			writeRendezvous(t, runDir, entry)
-			roster := hubcore.NewRoster(runDir, &fakeProber{shouldFail: true})
+			roster := liveClaimRoster(runDir, &fakeProber{shouldFail: true})
 			roster.Refresh()
 			if len(roster.UnconfirmedEntries()) != 1 {
 				t.Fatal("missing unconfirmed claim")
@@ -736,7 +736,7 @@ func TestSessionDeletePreservesDaemonOwnedDelegates(t *testing.T) {
 					defer peer.Close()
 					runDir := t.TempDir()
 					writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: rootID, ThreadID: rootID, Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http")})
-					roster = hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+					roster = liveClaimRoster(runDir, &hubcore.StatusProber{})
 					roster.Refresh()
 					if !unconfirmedDaemonForThread(roster, rootID) {
 						t.Fatal("fixture has no unresolved owner")

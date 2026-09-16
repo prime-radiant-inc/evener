@@ -1,7 +1,7 @@
 # @evener/appwire-client
 
-The framework independent TypeScript client for Evener's AppWire protocol. It
-has no runtime dependencies and exports the client, the connection seam
+The framework independent TypeScript client for Evener's AppWire protocol.
+It has no runtime dependencies and exports the client, the connection seam
 applications program against, the transport contract, generated protocol
 types, wire errors with their session classifiers, the rejection classifier
 and the user-facing message helpers every failure display goes through, the
@@ -9,24 +9,29 @@ pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
 answer's questions frozen while late ones arrive, the attachment count, size
-and type limits every composer rejects a staged file against, the translation
-that turns a composer's `[image N]` attachment markers into prose at send and
-the composer input assembly that applies that translation and stages the
-attached images beside the text, the thread view model and its notification
-reducer, the activity tree parser, merge and disclosure rules, the job log
-tail parser, the send/queue availability table, the send/steer/queue/drain
-routing decisions a composer makes off it, the stable delegate status rule,
+and type limits every composer rejects a staged file against, the
+translation that turns a composer's `[image N]` attachment markers into
+prose at send and the composer input assembly that applies that translation
+and stages the attached images beside the text, the thread view model and
+its notification reducer, the activity tree parser, merge and disclosure
+rules, the job log tail parser, the send/queue availability table, the
+send/steer/queue/drain routing decisions a composer makes off it, the stable
+delegate status rule,
 the slash invocation and catalog visibility rules the palette and composer
-share, the inline slash-completion token parser, menu merge, filter and splice
-the composer's own menu is built from, the display formatters both apps render
-counts, durations and clock times with, the text and argument helpers a tool
-call's rendering is built from, the one-word session state gloss a session
-row's second line leads with, and the doc-pane URL builders, which hang their
-hrefs off a base origin the host supplies (empty for a same-origin web page).
-The doc-pane data layer is published at the `./docContent` subpath as well,
-where `readDocFile` takes the host's `DocPort` - that base origin paired with
-a fetch: the package issues no request of its own and names neither an origin
-nor a credentials policy.
+share, the inline slash-completion token parser, menu merge, filter and
+splice the composer's own menu is built from, the reasoning-effort labels
+and picker ladders every effort chip and select share, the display
+formatters both apps render counts, durations and clock times with, the
+text and argument helpers a tool call's rendering is built from, the
+marketplace source label both apps show beside a registered marketplace,
+the short lowercase session-state gloss a session row's second line leads
+with, the credential labels both apps describe a provider instance's active
+credential source, shadowed layers and test outcome with, and the doc-pane
+URL builders, which hang their hrefs off a base origin the host supplies
+(empty for a same-origin web page). The doc-pane data layer is published at
+the `./docContent` subpath as well, where `readDocFile` takes the host's
+`DocPort` - that base origin paired with a fetch: the package issues no
+request of its own and names neither an origin nor a credentials policy.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

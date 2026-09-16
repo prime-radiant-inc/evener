@@ -10,7 +10,13 @@
 // for a fire-and-report action - never a silent swallow.
 
 import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes, slashCommandInvocation, visibleCatalogCommands } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  effortLabel,
+  effortOptionLevels,
+  slashCommandInvocation,
+  visibleCatalogCommands,
+} from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";
@@ -21,7 +27,6 @@ import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
-import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";

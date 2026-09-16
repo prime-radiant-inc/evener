@@ -179,6 +179,7 @@ func TestExtractEmbeddedSkills(t *testing.T) {
 // embedded content is identical for every session, so re-extracting it per
 // session is pure overhead.
 func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
+	pointEmbeddedSkillsAtBase(t, t.TempDir())
 	first, err := EmbeddedSkillsDir()
 	if err != nil {
 		t.Fatalf("EmbeddedSkillsDir: %v", err)
@@ -199,6 +200,7 @@ func TestEmbeddedSkillsDir_CachesAcrossCalls(t *testing.T) {
 }
 
 func TestEmbeddedSkills_CachesFilesystemBackedMetadata(t *testing.T) {
+	pointEmbeddedSkillsAtBase(t, t.TempDir())
 	first, err := EmbeddedSkills()
 	if err != nil {
 		t.Fatalf("EmbeddedSkills: %v", err)
