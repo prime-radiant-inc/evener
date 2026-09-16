@@ -1295,15 +1295,20 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			}
 		}
 
-		// Project placement: a project is archived when manually archived or when
-		// it has no non-archived (Current/Recent) sessions.
+		// Project placement: a project is archived when every source that owns
+		// it archived it, or when it has no non-archived (Current/Recent)
+		// sessions. The vote is taken per owning source to match the Live-tier
+		// filter below: a source-qualified decision clears only that source's
+		// own rows, so one host archiving a shared canonical ID/path must not
+		// move the merged row — and the other host's still-live rows under it —
+		// into the archived catalog.
 		projectKey := acc.project.ID
 		if projectKey == "" {
 			projectKey = "no-project"
 			acc.workingDir = ""
 		}
 		projectSources := sortedDecisionSources(acc.sources)
-		isArchived := projectArchivedDecision(decisions, projectKey, projectSources) ||
+		isArchived := projectArchivedByEverySource(decisions, projectKey, projectSources) ||
 			(len(current) == 0 && len(recent) == 0)
 
 		// Cap each tier so a project with hundreds of runs can't bloat the
@@ -1639,6 +1644,31 @@ func projectArchivedDecision(decisions map[ArchiveKey]bool, projectID string, so
 		}
 	}
 	return false
+}
+
+// projectArchivedByEverySource reports whether every source that owns the
+// project archived it. Project row placement uses this shape, not the
+// any-source shape above, so placement agrees with the per-entry Live filter:
+// a source-qualified decision only clears that source's own rows, so a merged
+// project (the same canonical ID and path on two hosts) must not move to
+// ArchivedProjects — carrying a source that never archived it, live rows
+// included — on one source's decision. A single-source project is unaffected:
+// its one owner is the only vote, so manual archive still moves the row. An
+// empty source list is treated as the controller source, the same legacy shape
+// projectArchivedDecision keeps.
+func projectArchivedByEverySource(decisions map[ArchiveKey]bool, projectID string, sources []string) bool {
+	if projectID == "" {
+		return false
+	}
+	if len(sources) == 0 {
+		sources = []string{""}
+	}
+	for _, source := range sources {
+		if v, ok := decisions[ArchiveKey{Kind: "project", ID: projectID, Source: source}]; !ok || !v {
+			return false
+		}
+	}
+	return true
 }
 
 // sessionSourceFromID extracts the owning source from a canonical session

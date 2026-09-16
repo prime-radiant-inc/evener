@@ -28,8 +28,12 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 	// The owning source qualifies a project decision: two hosts' projects share
 	// a project ID (and often a path), so keying by (source, id) keeps their
 	// archive decisions distinct. A session's ID is already its host-qualified
-	// ref, so it stays unqualified.
+	// ref, so it stays unqualified — but it is normalized to the identity its
+	// row is read under: a remote row's canonical ref is kept as sent, while a
+	// "local:thread" ref collapses to the bare session ID the controller's rows
+	// (and every existing local decision) use.
 	projectSource := ""
+	decisionID := params.ID
 	if params.Kind == appwire.ArchiveTargetProject {
 		if params.ID == "no-project" {
 			return appwire.ArchiveResponse{}, appwire.InvalidParams("no-project is not a local project")
@@ -55,17 +59,20 @@ func archiveSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navigati
 		} else if err := validateHostProjectArchive(cfg, projectSource, params.ID, params.WorkingDir); err != nil {
 			return appwire.ArchiveResponse{}, err
 		}
-	} else if sessionSource := hubcore.NormalizeDecisionSource(params.Source); sessionSource != "" {
+	} else {
 		// A session's ID is already its host-qualified ref, so the session
 		// decision is keyed on the controller source. A non-local source here
 		// would address a row no read path consults; reject it instead of
 		// silently persisting an inert decision.
-		return appwire.ArchiveResponse{}, appwire.InvalidParams("source is not supported for session archive")
+		if sessionSource := hubcore.NormalizeDecisionSource(params.Source); sessionSource != "" {
+			return appwire.ArchiveResponse{}, appwire.InvalidParams("source is not supported for session archive")
+		}
+		decisionID = hubcore.NormalizeDecisionSessionID(params.ID)
 	}
 	if cfg.Archive == nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store not configured")
 	}
-	if err := cfg.Archive.Set(projectSource, string(params.Kind), params.ID, params.Archived, time.Now()); err != nil {
+	if err := cfg.Archive.Set(projectSource, string(params.Kind), decisionID, params.Archived, time.Now()); err != nil {
 		return appwire.ArchiveResponse{}, appwire.InternalError("archive store error: " + err.Error())
 	}
 

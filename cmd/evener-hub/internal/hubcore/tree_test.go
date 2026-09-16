@@ -200,6 +200,31 @@ func TestBuildTreeLiveFilterUsesEntrySourceForMergedProject(t *testing.T) {
 	if len(tree.Live) != 1 || tree.Live[0].ID != "host-b:t1" {
 		t.Fatalf("live = %#v, want only host-b's session: host-a archived its own project and must not hide host-b's", tree.Live)
 	}
+	// Placement must agree with that filter. host-b still owns a current
+	// session here, so host-a's own decision cannot move the shared row (and
+	// host-b's session under it) into the archived catalog: the reviewer's
+	// "any owning source" union left the same session live in one section and
+	// archived in the other.
+	if len(tree.Projects) != 1 || tree.Projects[0].Key != "proj-alpha" {
+		t.Fatalf("projects = %#v, want the merged row in the active catalog: one source's decision must not archive a row another source still owns", tree.Projects)
+	}
+	if len(tree.ArchivedProjects) != 0 {
+		t.Fatalf("archived projects = %#v, want none: host-b never archived the shared project", tree.ArchivedProjects)
+	}
+
+	// With every owning source archived, the shared row does move — and its
+	// sessions leave the Live tier with it.
+	both := map[ArchiveKey]bool{
+		{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true,
+		{Kind: "project", ID: "proj-alpha", Source: "host-b"}: true,
+	}
+	tree = BuildTreeAtWithProjects(metas, live, both, now, projects)
+	if len(tree.Live) != 0 {
+		t.Fatalf("live = %#v, want none once every owning source archived the project", tree.Live)
+	}
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 || tree.ArchivedProjects[0].Key != "proj-alpha" {
+		t.Fatalf("projects = %#v, archived = %#v, want the merged row archived once every owning source archived it", tree.Projects, tree.ArchivedProjects)
+	}
 }
 
 // Snapshot promises a deep immutable copy, so the private Sources slice must be

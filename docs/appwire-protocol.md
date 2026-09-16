@@ -1361,6 +1361,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `key` | `string` |  |  |
 | `workingDir` | `string` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ProjectDeleteResponse`

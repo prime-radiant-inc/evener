@@ -62,6 +62,31 @@ func TestNormalizeDecisionSourceTrimsWhitespace(t *testing.T) {
 	}
 }
 
+// A session decision is keyed by the identity its row is read under: the
+// canonical ref for a remote row, the bare session ID for the controller's
+// own. A "local:thread" spelling therefore collapses onto the bare ID instead
+// of minting a key no read path consults, and a remote ref survives trimmed
+// and canonical.
+func TestNormalizeDecisionSessionID(t *testing.T) {
+	cases := map[string]string{
+		"session-1":        "session-1",
+		"  session-1  ":    "session-1",
+		"\tsession-1\n":    "session-1",
+		"local:session-1":  "session-1",
+		" local:session-1": "session-1",
+		"host-a:t1":        "host-a:t1",
+		" host-a:t1 ":      "host-a:t1",
+		"local":            "local",
+		"host-a:":          "host-a:",
+		"":                 "",
+	}
+	for id, want := range cases {
+		if got := NormalizeDecisionSessionID(id); got != want {
+			t.Fatalf("NormalizeDecisionSessionID(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
 // A pre-federation index.db keys decisions on (kind, id) alone; opening it must
 // migrate the table to the (source, kind, id) key with legacy rows landing on
 // the controller source, after which a remote sibling of the same ID fits.
