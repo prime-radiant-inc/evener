@@ -56,14 +56,6 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	storageUnavailable: false,
 });
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isRevision(value: unknown): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
 const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
 
 const KEYBINDINGS_LOAD_ERROR_MESSAGE =
