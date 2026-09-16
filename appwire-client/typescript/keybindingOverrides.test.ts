@@ -1,12 +1,13 @@
+import { parseKeybinding } from "tinykeys";
 import { describe, expect, test } from "vitest";
-import { ACTIONS } from "./actions";
-import { serializeChord } from "./chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "./defaults";
-import { rebindAction, restoreDefaultBinding } from "./overrides";
-import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+import { ACTIONS } from "./keybindingActions";
+import { serializeChord } from "./keybindingChord";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "./keybindingDefaults";
+import { rebindAction, restoreDefaultBinding } from "./keybindingOverrides";
+import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 function withDefaults(): KeybindingsRegistry {
-  const registry = createKeybindingsRegistry();
+  const registry = createKeybindingsRegistry(parseKeybinding);
   registerDefaultBindings(registry);
   return registry;
 }

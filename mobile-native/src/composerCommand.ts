@@ -7,6 +7,7 @@ import {
   mergeSlashCommands,
 } from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
+import { sessionControls } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,
@@ -35,24 +36,56 @@ const commands = [
   { id: "shutdown", capability: "shutdown", label: "Shut down" },
   { id: "model", args: true, capability: "changeModel", label: "Set model" },
   { id: "reasoning-effort", args: true, capability: null, label: "Set effort" },
-  { id: "interrupt", capability: "interrupt", label: "Interrupt" },
-  { id: "steer", args: true, capability: "steer", label: "Steer" },
-  { id: "queue", args: true, capability: "queue", label: "Queue" },
-  { id: "drain-as-steer", capability: "steer", label: "Drain queue" },
+  // Stop is sessionControls' stop: an active status and the interrupt
+  // capability (the hub folds the status into that flag; the client applies
+  // it too, so the rule is one and the transcript's turn id never enters).
+  { id: "interrupt", capability: "interrupt", control: "stop", label: "Interrupt" },
+  // Steering commands read the session's controls (@evener/appwire-client's
+  // sessionControls): the hub advertises steer as harness
+  // support alone, so the status -- and, for a drain, the queue a Stop parked
+  // -- is applied here, the same rule the web's composer and palette use.
+  { id: "steer", args: true, capability: "steer", control: "steer", label: "Steer" },
+  { id: "queue", args: true, capability: "queue", control: "queue", label: "Queue" },
+  // Argless: it sends the queue and nothing else, so its control is drainQueue
+  // (the drain rule plus a queue to drain).
+  { id: "drain-as-steer", capability: "steer", control: "drainQueue", label: "Drain queue" },
   { id: "aside", capability: "forkFromTurn", label: "Aside" },
   { id: "clear", capability: "clear", label: "Clear" },
 ] as const;
 
+/** What the completion registry and submission both read off the session. */
+export interface ComposerCommandSession {
+  status: string;
+  capabilities: Partial<MobileConversation["capabilities"]>;
+  queue: { revision: number; depth: number };
+}
+
+function controlsFor(session: ComposerCommandSession) {
+  return sessionControls(
+    session.status,
+    session.capabilities,
+    session.queue.depth,
+  );
+}
+
+export type ComposerCommandSpec = (typeof commands)[number];
+
+/** Whether a registry command may run against the session right now. */
+export function composerCommandAvailable(
+  command: ComposerCommandSpec,
+  session: ComposerCommandSession,
+): boolean {
+  if ("control" in command) return controlsFor(session)[command.control];
+  return (
+    command.capability === null || !!session.capabilities[command.capability]
+  );
+}
+
 /** Completion and submission share one supported-command registry. */
-export function builtinComposerItems(
-  capabilities: Partial<MobileConversation["capabilities"]>,
-) {
+export function builtinComposerItems(session: ComposerCommandSession) {
   return mergeSlashCommands(
     commands
-      .filter(
-        (command) =>
-          command.capability === null || capabilities[command.capability],
-      )
+      .filter((command) => composerCommandAvailable(command, session))
       .map((command) => ({ id: command.id, hint: command.label })),
     [],
   );
@@ -65,7 +98,7 @@ interface CommandContext {
   local(command: LocalComposerCommand): Promise<void>;
   openAside(ref: string, title: string): void;
   cleared(response: ThreadClearResponse): void;
-  turn(): { activeTurnId?: string; queue: { revision: number } } | null;
+  turn(): ComposerCommandSession | null;
   reasoning(): Pick<
     MobileConversation,
     "supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -114,6 +147,19 @@ export async function submitComposerCommand(
     if (document.getSnapshot().record === record) document.edit("");
     return id;
   }
+  // A command with a control (steer, queue, drain, stop) runs only when the
+  // session's controls admit it: the same rule that offered it in completion,
+  // applied at submission. The v3 mutations name no turn, so no turn id enters.
+  const requireControl = (): void => {
+    if (!("control" in match.command)) return;
+    const turn = context.turn();
+    const controls = turn ? controlsFor(turn) : null;
+    const control = match.command.control;
+    if (!controls || !controls[control])
+      throw new CommandArgumentError(
+        `/${id}: ${controls?.reason[control] ?? "no active turn"}`,
+      );
+  };
   const invalid = () =>
     new CommandArgumentError(
       match.argsText.trim()
@@ -135,9 +181,11 @@ export async function submitComposerCommand(
         );
     };
   } else if (id === "steer" || id === "queue" || id === "drain-as-steer") {
+    requireControl();
     const turn = context.turn();
-    if (!turn?.activeTurnId)
-      throw new CommandArgumentError(`/${id}: no active turn`);
+    // requireControl refused a missing session above; this narrows for the
+    // revision read below.
+    if (!turn) throw new CommandArgumentError(`/${id}: no active turn`);
     const input = buildComposerInput(match.argsText);
     // The explicit /steer command preserves waiting queue entries. Draining
     // uses its own command and the observed queue revision, as on web.
@@ -182,6 +230,7 @@ export async function submitComposerCommand(
   } else if (id === "goal") {
     operation = () => service.setGoal(match.argsText.trim());
   } else {
+    requireControl();
     operation = () => service[id]();
   }
   let completed: typeof match.command.id | null = null;

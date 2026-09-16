@@ -17,12 +17,11 @@
 // this project has no cross-test-file test-utils module; see that file's
 // header note on the convention).
 
+import { ACTIONS, registerDefaultBindings } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { ACTIONS } from "../../keybindings/actions";
-import { registerDefaultBindings } from "../../keybindings/defaults";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { resetNotificationsForTests } from "../../notifications";
 import { connectionStore } from "../../stores/connection";
 import { resetKeybindingsStoreForTests } from "../../stores/keybindings";

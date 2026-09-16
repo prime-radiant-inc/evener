@@ -308,10 +308,14 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// sandbox-approval prompt); re-surface it so a still-pending escalation
 				// stays visible and answerable after a reload.
 				m.surfaceEscalationsOnEntry()
+				// Refresh queue preview from the authoritative read response
+				// (kata r80p) so reloads resync state.
+				m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
+			} else {
+				// A status refresh's snapshot may predate a queueChanged already
+				// folded; the queue revision never moves backwards from it.
+				m.applyQueueRefresh(msg.detail.Ref, msg.detail.Queue)
 			}
-			// Refresh queue preview from the authoritative read response
-			// (kata r80p) so reloads / status refreshes resync state.
-			m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 			if m.sessionDetailsRequested {
 				panel := hubSessionPanel{Body: m.renderSessionDetails()}
 				m.sessionPanel = &panel
@@ -549,7 +553,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					preview = "[image]"
 				}
 				if preview != "" && len(m.sessionQueue) <= msg.preQueueDepth {
+					// The optimistic row is one more queued message until the
+					// wire's queueChanged replaces both: the depth is what drain
+					// availability and the next drain's preQueueDepth read.
 					m.sessionQueue = append(m.sessionQueue, preview)
+					m.detail.Queue.Depth++
+					m.queueRevisionAtDrain = m.detail.Queue.Revision
+					m.queueRevisionStale = true
 					m.session.refreshViewport()
 				}
 				m.addHubErrorNotice("Force-steer failed after queueing", "appwire", msg.err, "The composer payload was queued already. Retry force-steer without resubmitting the same draft.")

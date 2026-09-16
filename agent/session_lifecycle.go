@@ -2218,6 +2218,9 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	if writeErr != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
 	}
+	// A buffered write whose whole line landed but did not sync returns nil and
+	// queues its diagnostic; this path owns surfacing it, outside the lock.
+	s.surfaceTranscriptWarnings()
 	return nil
 }
 

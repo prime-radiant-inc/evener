@@ -1,4 +1,9 @@
-import type { LaunchConfigLayer, PluginPreviewResponse, PluginSelectionError } from "@evener/appwire-client";
+// The new-session form's plugin selection: which plugins a launch enables,
+// held as either the server's default set or an explicit allow-list. The pure
+// derivations both apps' plugin pickers share live here - the effective names
+// for a preview, the launchOverrides merge, the stale-name issues a preview
+// cannot enumerate, and the toggle/select-all/select-none transitions.
+import type { LaunchConfigLayer, PluginPreviewResponse, PluginSelectionError } from "./types.gen";
 
 export type PluginSelectionState = { mode: "default" } | { mode: "explicit"; names: string[] };
 

@@ -5,7 +5,12 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import {
+  CONNECTION_REPLACED_ERROR,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -294,6 +299,186 @@ test.each(["save", "refresh", "check", "result"])(
   // debounce, so these cases need more than the 5s default.
   20000,
 );
+
+test("a listing refresh in the repair view does not take keyboard focus out of it", async () => {
+  const h = guidedRepair();
+  await h.select();
+  await h.leave();
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+
+  // A refresh in flight: the row the keyboard is on has to stay mounted, or
+  // the focused button leaves the document and focus falls to <body>, where
+  // nothing brings it back - the dialog's focus scope focuses on mount only.
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+});
+
+test("a failed listing refresh keeps the rows and the keyboard with the error banner", async () => {
+  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
+  const fake = connectFakeClient({ instances: [row], availableProviders: [] });
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+  const setKey = await screen.findByRole("button", { name: "Set API key" });
+  setKey.focus();
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+
+  // readListing keeps the listing it already had when a refresh fails, so the
+  // rows it kept are still on screen - the keyboard's own row among them. The
+  // banner explains them; it does not replace them.
+  fake.on("evener/instance/list", () => {
+    throw new WireError("listing unavailable", -32000);
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  expect(screen.getByRole("alert").textContent).toContain("Failed to load providers");
+  expect(screen.getByRole("button", { name: "Set API key" })).toBe(document.activeElement);
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+});
+
+// Keeping the rows mounted through a load covers the focused row surviving a
+// refresh; a listing that no longer CARRIES the row is the other half. React
+// unmounts the focused control, the browser drops focus to <body>, and the
+// scope focuses on mount only - so nothing brought it back and the user's next
+// Tab started over at the top of the document.
+test("a listing that removes the focused row hands the keyboard to the dialog's first control", async () => {
+  const first = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
+  const second = instance({ name: "openai", providerId: "openai", authModes: ["apiKey"] });
+  connectFakeClient({ instances: [first, second], availableProviders: [] });
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+
+  const rows = await screen.findAllByRole("listitem");
+  const focusedRow = rows.find((row) => row.textContent?.includes("anthropic"));
+  expect(focusedRow).toBeTruthy();
+  const setKey = within(focusedRow as HTMLElement).getByRole("button", { name: "Set API key" });
+  setKey.focus();
+  expect(document.activeElement).toBe(setKey);
+
+  // Another client removes the instance the keyboard is on.
+  await act(async () => {
+    credentialsStore.setState({ instances: [second] });
+  });
+
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.contains(focusedRow as HTMLElement)).toBe(false); // the row really did go
+  expect(document.activeElement).not.toBe(document.body);
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+test("row actions wait for the replacement connection's own listing", async () => {
+  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
+  const listing: InstanceListResponse = {
+    instances: [row],
+    availableProviders: [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        protocol: row.protocol,
+        auth: row.auth,
+        implicit: true,
+        authModes: ["apiKey"],
+        setup: row,
+      },
+    ],
+    diagnostics: ['providers.toml: unexpected key "type"'],
+  };
+  const fake = connectFakeClient(listing);
+  const user = userEvent.setup();
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+  const setKey = await screen.findByRole("button", { name: "Set API key" });
+  const testConnection = screen.getByRole("button", { name: "Test connection" });
+  const add = screen.getByRole("button", { name: "Add provider instance" });
+  const settings = screen.getByRole("button", { name: "Full provider settings" });
+  for (const control of [setKey, testConnection, add, settings]) {
+    expect(control.getAttribute("aria-disabled")).toBe("false");
+  }
+  expect(screen.getByRole("list", { name: "Provider warnings" })).toBeTruthy();
+
+  // The client is replaced: the rows still on screen name instances and
+  // endpoints of the connection that went away, so nothing that would act on
+  // that listing responds until this connection's own read lands - the row
+  // controls, the add flow it would feed, and the settings surface whose sheet
+  // edits the same rows. The replacement is ready and answers auth calls, so a
+  // control that wrongly ran its handler would leave a recorded call behind;
+  // only its own listing read is held open, which is what keeps the mark on.
+  const restored = deferred<InstanceListResponse>();
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => restored.promise);
+  replacement.on("evener/auth/apiKey/set", () => ({
+    provider: "anthropic",
+    supported: true,
+    signedIn: true,
+    activeSource: "store",
+    hasStoredOAuth: false,
+    hasStoredFile: true,
+  }));
+  replacement.on("evener/auth/test", () => ({ provider: "openai", status: "success", message: "" }));
+  setKey.focus();
+  await act(async () => {
+    connectionStore.getState().connect(replacement);
+  });
+  for (const control of [setKey, testConnection, add, settings]) {
+    expect(control.getAttribute("aria-disabled")).toBe("true");
+  }
+  // ...and the refusal says so on screen. aria-disabled keeps the keyboard where
+  // it is, which is why these controls are not natively disabled, but a click
+  // that runs nothing must not be silent: every other credential surface reports
+  // the refusal, and silence reads as a broken button.
+  expect(screen.getByText(CONNECTION_REPLACED_ERROR)).toBeTruthy();
+  // A diagnostic describes the listing that produced it, so the replacement
+  // connection's own read has to land before warnings are shown again.
+  expect(screen.queryByRole("list", { name: "Provider warnings" })).toBeNull();
+  // The refusal is aria-disabled, not a native disabled attribute, because the
+  // keyboard's row is still mounted: a native disabled control holding focus
+  // drops focus to <body>, and the stale transition would then lose the
+  // keyboard exactly the way unmounting the row used to.
+  expect(setKey).toBe(document.activeElement);
+  // ...and refused means refused: the handlers run nothing.
+  await user.click(setKey);
+  await user.click(testConnection);
+  await user.click(add);
+  expect(screen.queryByLabelText("API key")).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
+  expect(replacement.calls.filter((call) => call.method.startsWith("evener/auth/"))).toHaveLength(0);
+
+  await act(async () => {
+    fake.emitStateChange("ready");
+  });
+  // The restore read is in flight, so the rows are still the old connection's.
+  expect(setKey.getAttribute("aria-disabled")).toBe("true");
+
+  await act(async () => {
+    restored.resolve(listing);
+    await restored.promise;
+  });
+  await waitFor(() => expect(setKey.getAttribute("aria-disabled")).toBe("false"));
+  for (const control of [testConnection, add, settings]) {
+    expect(control.getAttribute("aria-disabled")).toBe("false");
+  }
+  expect(screen.queryByText(CONNECTION_REPLACED_ERROR)).toBeNull();
+  expect(screen.getByRole("list", { name: "Provider warnings" })).toBeTruthy();
+});
+
+// The gate means "there are rows on screen that a connection that is gone read".
+// A connection holding no listing at all - a cold load, or a first read that
+// failed - has nothing stale to act on: the store would allow the action, so the
+// dialog must not refuse it, and must not claim a connection was replaced when
+// none was. The store's own refusal and this gate share one predicate
+// (stores/credentials.ts's staleListingHeld) so the two cannot drift.
+test("a failed first listing read does not gate the dialog's actions", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => {
+    throw new WireError("listing unavailable", -32000);
+  });
+  connectionStore.getState().connect(fake);
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+
+  await screen.findByRole("alert");
+  expect(screen.queryByText(CONNECTION_REPLACED_ERROR)).toBeNull();
+  expect(screen.getByRole("button", { name: "Full provider settings" }).getAttribute("aria-disabled")).toBe("false");
+});
 
 test("a refresh superseded by the credential notification's own refetch is not reported as a failure", async () => {
   const h = guidedRepair();
@@ -1199,6 +1384,37 @@ describe("ConnectProviderDialog", () => {
       expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
     },
   );
+
+  test("a pending test connection is marked, not natively disabled, and keeps the focus it was clicked with", async () => {
+    const response = deferred<AuthTestResponse>();
+    const fake = connectFakeClient({
+      instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
+      availableProviders: [],
+    });
+    fake.on("evener/auth/test", () => response.promise);
+    const onConnected = vi.fn();
+    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
+
+    // Pending is a mark, not a native disabled attribute. The click that
+    // started the test is the click that focused the button, and a native
+    // disabled control drops focus to <body> the moment it becomes disabled -
+    // the same hazard this row's other controls answer with aria-disabled.
+    const pendingButton = screen.getByRole("button", { name: "Testing connection…" });
+    expect(pendingButton.hasAttribute("disabled")).toBe(false);
+    expect(pendingButton.getAttribute("aria-disabled")).toBe("true");
+    expect(pendingButton).toBe(document.activeElement);
+    // ...and refused means refused: a click while the test is in flight runs
+    // nothing, so one test cannot be started on top of another.
+    await act(async () => fireEvent.click(pendingButton));
+    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+
+    await act(async () => {
+      response.resolve({ provider: "work", status: "success", message: "" });
+      await response.promise;
+    });
+    expect(onConnected).toHaveBeenCalledTimes(1);
+  });
 
   test("a reconnect invalidates a pending OAuth start before the registry refresh", async () => {
     const start = deferred<{

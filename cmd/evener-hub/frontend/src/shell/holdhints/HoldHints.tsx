@@ -4,7 +4,7 @@
 // that affordance triggers. Release - or any of the cleanup paths in
 // holdHintsController.ts - hides them.
 //
-// The chords are registry-sourced through keybindings/display.ts's
+// The chords are registry-sourced through keybindingDisplay.ts's
 // displayBindingFor - the same read the cheatsheet overlay and the Settings
 // section make - so a hub-synced override (or an unbound action, whose chip
 // then does not render) shows truthfully, and no hand-maintained copy can go
@@ -20,13 +20,11 @@
 // an affordance that is not mounted (the rail's toggle exists in exactly one
 // of its two states) simply renders no chip.
 
+import { ACTIONS, chordDisplayKeys, displayBindingFor, type KeySequence, serializeChord } from "@evener/appwire-client";
 import { Fragment, type ReactNode, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "zustand";
-import { ACTIONS } from "../../keybindings/actions";
-import { chordDisplayKeys, type KeySequence, serializeChord } from "../../keybindings/chord";
-import { displayBindingFor } from "../../keybindings/display";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { workspaceStore } from "../workspace";

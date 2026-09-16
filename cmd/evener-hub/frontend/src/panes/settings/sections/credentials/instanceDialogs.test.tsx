@@ -753,6 +753,63 @@ describe("AddInstanceDialog", () => {
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
+  // The store refuses a write issued from the previous connection's listing
+  // (stores/credentials.ts's requireWritableClient): the providers and names
+  // this form was filled from were read on a connection that is gone. For a
+  // create that is not a failed create - nothing was sent - and the raw store
+  // message names the store's internals rather than what the user can do.
+  test("a create from the previous connection's listing is refused with the change and keeps the draft", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [instance({ name: "work", providerId: "anthropic" })],
+      availableProviders: [ANTHROPIC],
+    }));
+    await credentialsStore.getState().fetch();
+
+    const replacement = new FakeClient("ready");
+    // This connection's own read is held open: its rows are the ones the
+    // create would be authored against, and until they arrive the form's
+    // providers and names belong to the connection that is gone. Once released
+    // it stays resolved, so the read the retry waits on is the same listing.
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const restore = new Promise<InstanceListResponse>((resolve) => {
+      finishRestore = resolve;
+    });
+    replacement.on("evener/instance/list", () => restore);
+    replacement.on("evener/instance/create", () => ({ instances: [], availableProviders: [] }));
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    resetToastStoreForTests();
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <>
+        <AddInstanceDialog availableProviders={[ANTHROPIC]} onCancel={() => {}} onSuccess={onSuccess} />
+        <Toast />
+      </>,
+    );
+    await user.selectOptions(screen.getByLabelText("Base provider"), "anthropic");
+    await user.type(screen.getByLabelText("Name"), "fresh");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // Nothing was authored on the replacement connection...
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
+    // ...the dialog names the change instead of the store's internals, and
+    // reports no create failure...
+    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
+    expect(screen.queryByText(/Create failed/)).toBeNull();
+    expect(onSuccess).not.toHaveBeenCalled();
+    // ...the draft survives, so the retry the message asks for is the same
+    // create the user filled in...
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("fresh");
+    // ...and this connection's own listing read is what sets that retry up.
+    await vi.waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
+    await act(async () => finishRestore({ instances: [], availableProviders: [ANTHROPIC] }));
+    await vi.waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+  });
+
   test("Protocol and Surface default to inherit and are sent only when chosen", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
@@ -1281,6 +1338,96 @@ describe("ApiKeyDialog", () => {
       originClientId: "test-tab",
     });
     expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  // The store's own refusal of a write from the previous connection's listing
+  // (stores/credentials.ts's requireWritableClient) is the same change the
+  // hub's conflict reports: the endpoint fingerprint this dialog captured, and
+  // the value typed against it, belong to a connection that is gone. It gets
+  // the same recovery, and the user never sees the store's internal words or a
+  // "Save failed" toast for a save that was deliberately not sent.
+  test("a save from the previous connection's listing is refused, re-reads, and re-anchors to the row now on screen", async () => {
+    const fake = connectFakeClient();
+    const MOVED = instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-changed" });
+    fake.on("evener/instance/list", () => ({ instances: [MOVED], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+
+    // A replacement whose own listing read is held open: everything on screen
+    // still names the connection that is gone. Once released it stays resolved,
+    // so the reads the recovery and the retry wait on see one listing.
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const restore = new Promise<InstanceListResponse>((resolve) => {
+      finishRestore = resolve;
+    });
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => restore);
+    replacement.on("evener/auth/apiKey/set", () => ({
+      provider: "work",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    connectionStore.getState().connect(replacement);
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+
+    resetToastStoreForTests();
+    const onSuccess = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <>
+        <ApiKeyDialog
+          instance={instance({ name: "work", providerId: "anthropic", endpointFingerprint: "fp-original" })}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The write was refused before any RPC reached the replacement connection.
+    expect(replacement.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+    // The recovery waits on this connection's own listing read; answer it with
+    // the row the re-anchor adopts.
+    await vi.waitFor(() => expect(replacement.calls.some((call) => call.method === "evener/instance/list")).toBe(true));
+    await act(async () => finishRestore({ instances: [MOVED], availableProviders: [] }));
+    await vi.waitFor(() => expect(screen.getByRole("alert").textContent).toContain("connection was replaced"));
+    expect(screen.getByRole("alert").textContent).not.toContain("credentials store");
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // The value was typed for the listing that is gone.
+    expect((screen.getByLabelText(/api key/i, { selector: "input" }) as HTMLInputElement).value).toBe("");
+
+    // The parent renders this dialog's row from the listing, so the refreshed
+    // row is what the dialog now shows.
+    rerender(
+      <>
+        <ApiKeyDialog
+          instance={MOVED}
+          expectedEndpointFingerprint="fp-original"
+          onCancel={() => {}}
+          onSuccess={onSuccess}
+        />
+        <Toast />
+      </>,
+    );
+
+    // The re-typed value asserts the endpoint the re-anchor adopted, so the
+    // retry the message asks for saves against the destination the user can
+    // review instead of being refused against one that is gone.
+    await user.type(screen.getByLabelText(/api key/i, { selector: "input" }), "sk-secret-again");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(replacement.calls.filter((call) => call.method === "evener/auth/apiKey/set")[0]?.params).toEqual({
+        provider: "work",
+        value: "sk-secret-again",
+        expectedEndpointFingerprint: "fp-changed",
+        originClientId: "test-tab",
+      }),
+    );
+    expect(onSuccess).toHaveBeenCalled();
   });
 
   test("a saved key whose listing read is lost is still reported as saved", async () => {

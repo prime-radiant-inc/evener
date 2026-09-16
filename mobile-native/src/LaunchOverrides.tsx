@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, TextInput, View } from "react-native";
-import { inactivePromptDependent } from "@evener/appwire-client";
-import { perLaunchEvenerOptions } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
+import { inactivePromptDependent, perLaunchEvenerOptions } from "@evener/appwire-client";
 import type {
   LaunchConfigLayer,
   LaunchConfigResolved,

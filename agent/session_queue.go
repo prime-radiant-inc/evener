@@ -1315,13 +1315,12 @@ func (s *Session) activeTurnOwner() string {
 	return s.clientMutations.snapshot().ActiveTurnID
 }
 
-// appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
-// the one direct-append site that must fsync before continuing: job
-// notifications, where the durable write is what lets a crash mid-delivery
-// re-token the notification instead of dropping it (spec §4.3). Returns the
-// write error, so the caller can requeue rather than emit SteeringInjectedData
-// for a turn that never made it to disk. The durable write happens before the
-// in-memory history append, preserving the crash-window ordering.
+// appendSteeringTurnDurably records a daemon steering turn through the synced
+// door for the current active-turn owner: job notifications commit their
+// delivery (markJobNotificationsDelivered) on the strength of this record, so
+// it must be durable, not merely recorded, before that commit (spec §4.3). It
+// therefore refuses a pre-attach held turn; its production caller
+// (acceptNotificationInput) always runs after attach.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
 }
@@ -1336,7 +1335,7 @@ func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID str
 	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() error { return s.writeTranscriptSyncedLocked(t) },
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {

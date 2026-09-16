@@ -1425,7 +1425,7 @@ func (s *Session) recordClientMutationFailure(
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
-			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() error { return s.writeTranscriptSyncedLocked(turn) },
 			func() {
 				s.clientMutationAppendedTurn = true
 				s.history = append(s.history, turn)
@@ -1448,7 +1448,7 @@ func (s *Session) recordClientMutationFailure(
 		turn.Error = info
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
-			func() error { return s.writeTranscriptDurableLocked(turn) },
+			func() error { return s.writeTranscriptSyncedLocked(turn) },
 			func() {
 				s.clientMutationAppendedTurn = true
 				s.history = append(s.history, turn)
@@ -1708,5 +1708,8 @@ func (s *Session) appendClientMutationTranscriptLocked(turn schema.Turn) error {
 	if s.clientMutationTranscriptAppend != nil {
 		return s.clientMutationTranscriptAppend(turn)
 	}
-	return s.writeTranscriptDurableLocked(turn)
+	// Durability owner: the client-mutation journal and the steering/user-input
+	// claim consumers advance on this record, so it must be synced, not merely
+	// recorded, before they do (H1).
+	return s.writeTranscriptSyncedLocked(turn)
 }

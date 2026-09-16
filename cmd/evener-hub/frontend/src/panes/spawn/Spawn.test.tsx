@@ -1772,7 +1772,7 @@ test("mobile-only spawn hierarchy and row scale stay gated from desktop", () => 
 // Harness moves into Advanced options: most installs have exactly one, so a
 // field whose answer is always "evener" shouldn't lead the page. It stays fully
 // functional there - the switch still blanks a non-evener model (see the harness
-// tests in harnessModels.test.ts for that rule's own coverage).
+// tests in spawnHarnessModels.test.ts for that rule's own coverage).
 test("harness moved into Advanced options, and still works there", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient());
@@ -3492,7 +3492,7 @@ test("preselects the first launchable model when the resolved default's provider
 });
 
 // An Advanced-options model override wins over the top-level chip at submit
-// (floor §1.11, schema.ts's resolveScalars), so while one is set the chip is
+// (floor §1.11, spawnSchema's resolveScalars), so while one is set the chip is
 // not what launches: rewriting it in the fallback's name would display a
 // model that does not launch. Here the override's provider is launchable
 // while the user configures it and drops out of model/list afterwards - the

@@ -31,9 +31,9 @@
 // document dismisses it on any scroll (the transcript pane, a nested
 // scroller, anywhere) rather than leaving it floating over content it no
 // longer points at.
+import { ACTIONS } from "@evener/appwire-client";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ACTIONS } from "../../../keybindings/actions";
-import { keybindingsRegistry } from "../../../keybindings/registry";
+import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../shell/installKeybindings";
 import { Button } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

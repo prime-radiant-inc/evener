@@ -26,9 +26,9 @@
 //
 // A stuck visible state must be impossible.
 
+import { currentKeybindingsPlatform } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { currentKeybindingsPlatform } from "../../keybindings/validation";
 
 /** How long the modifier must be held alone before the chips appear. */
 export const HOLD_THRESHOLD_MS = 400;
