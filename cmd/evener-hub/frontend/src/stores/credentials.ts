@@ -35,16 +35,13 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // client or connection-state transition to the core - see stores/extensions.ts's
 // identical wiring for the full "why react to the store instead of reading it
 // once" rationale (a mount-order race between this module and AppShell's own
-// connect() effect). Only those two fields are forwarded: the core treats each
-// call as a transition, and a serverInfo or features update is not one.
+// connect() effect).
 function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
   credentialsStore.connectionChanged(state.client, state.state);
 }
 
-connectionStore.subscribe((state, previous) => {
-  if (state.client !== previous.client || state.state !== previous.state) syncConnection(state);
-});
-if (connectionStore.getState().client) syncConnection(connectionStore.getState());
+connectionStore.subscribe(syncConnection);
+syncConnection(connectionStore.getState());
 
 // resetCredentialsStoreForTests resets this singleton store between tests,
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production

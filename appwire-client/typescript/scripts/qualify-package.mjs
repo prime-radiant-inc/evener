@@ -367,11 +367,11 @@ assert.throws(
     // to it: no request is issued, so the smoke proves the factory, the
     // pure helpers and the refusal type resolve and behave.
     "./state/credentials": {
-      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore();
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore({ ownClientId: () => "qualification" });
 const held: boolean = staleListingHeld(store.getState());
 const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
       cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
-      smoke: `const credentialStore = client.createCredentialInstancesStore();
+      smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
 assert.equal(typeof credentialStore.getState().setApiKey, "function");

@@ -11,6 +11,7 @@ import {
   type CredentialInstancesState,
   type CredentialListing,
   createCredentialInstancesStore,
+  listingChanged,
   listingOf,
 } from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -30,14 +31,10 @@ interface ProviderState {
   error: string | null;
 }
 
-const LISTING_FIELDS = ["instances", "availableProviders", "diagnostics", "userLayer", "writesRefused"] as const;
-
-// listingMoved reports whether a core transition replaced the listing: every
-// applied read or write installs fresh rows, while a loading or error patch
-// leaves the same arrays in place.
-function listingMoved(state: CredentialInstancesState, previous: CredentialInstancesState): boolean {
-  return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
-}
+// This app's identity on the auth mutations it issues: the hub echoes it in
+// evener/auth/updated so every client attributes the change to its origin.
+// One per process is enough - nothing durable compares it later.
+const nativeClientId = `native-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
 
 /** Provider data and operations owned by one connected hub's screen lifetime:
  * the package's credential instances store core, driven for one client and
@@ -47,7 +44,7 @@ function listingMoved(state: CredentialInstancesState, previous: CredentialInsta
  * (`busy`), a reconciling read after a write whose reply was lost, and a
  * credential test that never echoes the wire. */
 export class ProviderInstances {
-  private core = createCredentialInstancesStore();
+  private core = createCredentialInstancesStore({ ownClientId: () => nativeClientId });
   private state: ProviderState = {
     credentialTest: null,
     data: null,
@@ -56,12 +53,17 @@ export class ProviderInstances {
     error: null,
   };
   private listeners = new Set<() => void>();
-  private stopProjecting: () => void;
+  private stopProjecting?: () => void;
   private disposed = false;
   private started = false;
   private testRevision = 0;
-  constructor(client: ConversationClientLike) {
-    this.core.connectionChanged(client, "ready");
+  constructor(private client: ConversationClientLike) {}
+  // The core is wired on first use, not in the constructor: an instance a
+  // render built and discarded without start() must not leave a store
+  // listening for evener/auth/updated on a client it will never read for.
+  private connect() {
+    if (this.stopProjecting || this.disposed) return;
+    this.core.connectionChanged(this.client, "ready");
     this.stopProjecting = this.core.subscribe((state, previous) => this.project(state, previous));
   }
   getSnapshot = () => this.state;
@@ -78,7 +80,7 @@ export class ProviderInstances {
   }
   private project(state: CredentialInstancesState, previous: CredentialInstancesState) {
     const change: Partial<ProviderState> = {};
-    if (listingMoved(state, previous)) change.data = listingOf(state);
+    if (listingChanged(state, previous)) change.data = listingOf(state);
     if (state.loading !== previous.loading) change.loading = state.loading;
     if (state.error !== previous.error)
       change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
@@ -89,21 +91,20 @@ export class ProviderInstances {
     this.started = true;
     void this.refresh();
   }
-  refresh = (): Promise<void> => {
-    if (this.disposed) return Promise.resolve();
+  refresh = async (): Promise<void> => {
+    if (this.disposed) return;
+    this.connect();
     this.testRevision += 1;
     this.publish({ credentialTest: null });
-    if (this.state.busy) return Promise.resolve();
-    return this.core
-      .getState()
-      .fetch()
-      .then(() => undefined);
+    if (this.state.busy) return;
+    await this.core.getState().fetch();
   };
   private async mutate(action: () => Promise<unknown>, configuration: boolean) {
     if (this.disposed) throw new Error("Provider screen is closed");
     if (this.state.busy) throw new Error("A provider operation is in progress");
     if (configuration && (!this.state.data || this.state.data.writesRefused))
       throw new Error("Provider configuration is unavailable for editing");
+    this.connect();
     this.testRevision += 1;
     this.publish({ busy: true, credentialTest: null });
     try {
@@ -141,6 +142,7 @@ export class ProviderInstances {
       this.state.credentialTest?.pending
     )
       return;
+    this.connect();
     const revision = ++this.testRevision;
     this.publish({ credentialTest: { provider, pending: true } });
     let result: AuthTestResponse;
@@ -161,7 +163,7 @@ export class ProviderInstances {
   };
   dispose() {
     this.disposed = true;
-    this.stopProjecting();
+    this.stopProjecting?.();
     this.listeners.clear();
     // Nothing more may go out on this client for a screen that is gone: this
     // detaches the core's evener/auth/updated listener, cancels its pending

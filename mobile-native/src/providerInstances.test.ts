@@ -130,7 +130,7 @@ it("blocks overlapping writes and never retains the API key in its snapshot", as
   await write;
   expect(
     requests.find((r) => r.method === "evener/auth/apiKey/set")?.params,
-  ).toEqual({ provider: "test", value: "fixture-key" });
+  ).toEqual({ provider: "test", value: "fixture-key", originClientId: expect.stringMatching(/^native-/) });
   expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-key");
 });
 it("does not let a pre-mutation read replace the reconciled provider configuration", async () => {
@@ -210,7 +210,10 @@ it("stores credential JSON once, reconciles a lost reply and never publishes its
   };
   await expect(model.setCredentialJson("vertex", credential)).rejects.toThrow();
   expect(requests.filter((request) => request.method === "evener/auth/credentialJson/set")).toEqual([
-    { method: "evener/auth/credentialJson/set", params: { provider: "vertex", value: credential } },
+    {
+      method: "evener/auth/credentialJson/set",
+      params: { provider: "vertex", value: credential, originClientId: expect.stringMatching(/^native-/) },
+    },
   ]);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-sensitive");

@@ -43,8 +43,8 @@ afterEach(() => {
 
 describe("two stores share nothing", () => {
   test("a listing read and a connection change in one store leave the other untouched", async () => {
-    const first = createCredentialInstancesStore();
-    const second = createCredentialInstancesStore();
+    const first = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const second = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     first.connectionChanged(readyClient(), "ready");
 
     expect(await first.getState().fetch()).toBe(true);
@@ -63,8 +63,8 @@ describe("two stores share nothing", () => {
   });
 
   test("a landed write's per-instance bookkeeping is the store's own", async () => {
-    const first = createCredentialInstancesStore();
-    const second = createCredentialInstancesStore();
+    const first = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const second = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const firstClient = readyClient();
     firstClient.on("evener/instance/setDefault", () => LISTING);
     const secondClient = readyClient();
@@ -89,7 +89,7 @@ describe("two stores share nothing", () => {
 
 describe("listing reads and writes", () => {
   test("only the most recently started request replaces the listing", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     const oldAnswer = deferred<InstanceListResponse>();
     fake.on("evener/instance/list", () => (listReads(fake) === 1 ? oldAnswer.promise : LISTING));
@@ -104,7 +104,7 @@ describe("listing reads and writes", () => {
   });
 
   test("a failed read lands its message in error and resolves false", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     fake.on("evener/instance/list", () => {
       throw new Error("offline");
@@ -116,7 +116,7 @@ describe("listing reads and writes", () => {
   });
 
   test("a write applies the listing it answers with and clears the replaced-connection mark", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     const renamed = { ...LISTING, instances: [{ ...WORK, isDefault: false }] };
     fake.on("evener/instance/setDefault", () => renamed);
@@ -129,7 +129,7 @@ describe("listing reads and writes", () => {
   });
 
   test("a write from a replaced connection's listing is refused with the shared words until this connection reads", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     store.connectionChanged(readyClient(), "ready");
     await store.getState().fetch();
 
@@ -157,7 +157,7 @@ describe("listing reads and writes", () => {
   });
 
   test("a same-client state transition keeps the rows this client's", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
@@ -170,7 +170,7 @@ describe("listing reads and writes", () => {
 
 describe("connection changes", () => {
   test("once a view has read the listing, a client becoming ready again restores it", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
@@ -181,7 +181,7 @@ describe("connection changes", () => {
   });
 
   test("a store that never read does not fetch on ready", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     store.connectionChanged(fake, "ready");
     store.connectionChanged(fake, "reconnecting");
@@ -192,7 +192,7 @@ describe("connection changes", () => {
 
   test("a connection change cancels a pending refetch", async () => {
     vi.useFakeTimers();
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     store.connectionChanged(fake, "ready");
 
@@ -205,7 +205,7 @@ describe("connection changes", () => {
 
 describe("resetForTests", () => {
   test("returns the listing to empty and drops the connection", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     store.connectionChanged(readyClient(), "ready");
     await store.getState().fetch();
     store.resetForTests();
@@ -227,8 +227,10 @@ const SIGNED_IN: AuthStatusResponse = {
   hasStoredFile: true,
 };
 
-function nowhere(haystack: string, sentinels: string[] = [API_KEY, CREDENTIAL_JSON, "REFRESH-SECRET", "SECRET-KEY"]) {
-  for (const secret of sentinels) expect(haystack).not.toContain(secret);
+const SENTINELS = [API_KEY, CREDENTIAL_JSON, "REFRESH-SECRET", "SECRET-KEY"];
+
+function nowhere(haystack: string) {
+  for (const secret of SENTINELS) expect(haystack).not.toContain(secret);
 }
 
 function consoleText(spies: ReturnType<typeof vi.spyOn>[]): string {
@@ -324,7 +326,7 @@ describe("never echo a secret", () => {
 
 describe("credential mutations", () => {
   test("a listing read in flight when a credential write is issued cannot publish after it", async () => {
-    const store = createCredentialInstancesStore();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     const preWrite = deferred<InstanceListResponse>();
     let reads = 0;
@@ -377,8 +379,8 @@ describe("credential mutations", () => {
 
   test("a notification on one store's client never refetches another store", async () => {
     vi.useFakeTimers();
-    const first = createCredentialInstancesStore();
-    const second = createCredentialInstancesStore();
+    const first = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const second = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const firstClient = readyClient();
     const secondClient = readyClient();
     first.connectionChanged(firstClient, "ready");
@@ -400,17 +402,5 @@ describe("credential mutations", () => {
     });
     await vi.advanceTimersByTimeAsync(300);
     expect(listReads(firstClient)).toBe(1);
-  });
-
-  test("without a client identity the mutation carries no originClientId", async () => {
-    const store = createCredentialInstancesStore();
-    const fake = readyClient();
-    fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
-    store.connectionChanged(fake, "ready");
-    await store.getState().setApiKey("work", API_KEY);
-    expect(fake.calls.at(-1)).toEqual({
-      method: "evener/auth/apiKey/set",
-      params: { provider: "work", value: API_KEY },
-    });
   });
 });

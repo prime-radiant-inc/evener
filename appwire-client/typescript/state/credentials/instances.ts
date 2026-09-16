@@ -179,7 +179,8 @@ export interface CredentialInstancesState {
 
 export interface CredentialInstancesStore extends FrameworkFreeStore<CredentialInstancesState> {
   // connectionChanged tells the store which connection the rows belong to
-  // now. A different client marks the held listing as a replaced connection's,
+  // now; a call that names the connection it already holds changes nothing.
+  // A different client marks the held listing as a replaced connection's,
   // drops the bookkeeping written under the old one and moves the
   // evener/auth/updated listener; any transition retires in-flight requests,
   // a pending refetch and the own-echo markers; a client becoming ready
@@ -191,19 +192,17 @@ export interface CredentialInstancesStore extends FrameworkFreeStore<CredentialI
 }
 
 export interface CredentialInstancesDeps {
-  // The identity this client stamps on its auth mutations as originClientId,
-  // which the hub echoes into evener/auth/updated so the store attributes its
-  // own echo by identity rather than provider plus timing. Left out, the
-  // mutation carries no id and the echo is matched by provider and time alone.
-  ownClientId?: () => string;
+  // The identity this client stamps on its auth mutations as originClientId.
+  // The hub echoes it into evener/auth/updated, so every client - this one and
+  // the others - attributes the change to its origin by identity rather than
+  // by provider plus timing.
+  ownClientId: () => string;
 }
 
 /** The listing half of the state: InstanceListResponse with every optional
  * field present. */
-export type CredentialListing = Pick<
-  CredentialInstancesState,
-  "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
->;
+const LISTING_FIELDS = ["instances", "availableProviders", "diagnostics", "userLayer", "writesRefused"] as const;
+export type CredentialListing = Pick<CredentialInstancesState, (typeof LISTING_FIELDS)[number]>;
 
 // listState normalizes one instance/list answer into the store's own always-
 // present shape. Every reader of the listing goes through it, so a field
@@ -221,8 +220,14 @@ function listState(resp: InstanceListResponse): CredentialListing {
 /** listingOf picks the listing out of a store snapshot, for a consumer that
  * hands the rows on as one value rather than selecting fields. */
 export function listingOf(state: CredentialListing): CredentialListing {
-  const { instances, availableProviders, diagnostics, userLayer, writesRefused } = state;
-  return { instances, availableProviders, diagnostics, userLayer, writesRefused };
+  return Object.fromEntries(LISTING_FIELDS.map((field) => [field, state[field]])) as CredentialListing;
+}
+
+/** listingChanged reports whether a store transition replaced the listing:
+ * every applied read or write installs fresh rows, while a loading or error
+ * patch leaves the same arrays in place. */
+export function listingChanged(state: CredentialListing, previous: CredentialListing): boolean {
+  return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
 }
 
 // MutationReconcile tells applyMutation how to place its answer among newer
@@ -267,7 +272,7 @@ interface LocalAuthMutationMarker {
   issuedAt: number;
 }
 
-export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {}): CredentialInstancesStore {
+export function createCredentialInstancesStore(deps: CredentialInstancesDeps): CredentialInstancesStore {
   // Replaced whole on every transition, so its identity is the generation a
   // mutation was issued under: a callback that lands after the connection it
   // was issued on is replaced or reconnects compares against it (see
@@ -606,16 +611,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
   // cmd/evener-hub/app_rpc.go) matching the generated EvenerAuthUpdatedParams.
   //
   // The originator is in that audience too, and it must keep receiving the
-  // notification - other consumers (the model-list cache's epoch guard) depend
-  // on the originating client's own echo to refresh after its own save. But the
+  // notification - other consumers of the broadcast depend on the originating
+  // client's own echo to refresh after its own save. But the
   // LISTING refetch is redundant for the originator: the STORE schedules its own
   // refresh the moment a local auth mutation succeeds - a refresh owned by the
   // store survives the issuing dialog being canceled, hidden, or unmounted
   // before the RPC resolves, which a caller-scoped refresh does not. Worse, the
-  // echo's refetch is misread by a save/check in flight: a guided flow's
-  // subscription treats the echo-driven listing change as an unrelated change
-  // and invalidates the fresh result ("Connection or configuration changed") or
-  // cancels the check. So the originator's own echo schedules a self-marked
+  // echo's refetch is misread by a save/check in flight: a subscriber comparing
+  // selfRefresh across the transition reads the echo-driven listing change as
+  // someone else's and invalidates the fresh result or cancels the check. So
+  // the originator's own echo schedules a self-marked
   // refresh rather than a foreign one: it coalesces with the store's own
   // post-save refresh, and the mark is what keeps the flow from invalidating on
   // the read that follows. It is correlated narrowly:
@@ -667,24 +672,6 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
     else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
   }
 
-  // Confirms a local auth mutation whose RPC response landed: the hub accepted
-  // the write, so its broadcast is (or was) on its way. Re-stamping the
-  // provider's marker moves the echo window to this moment, which covers the
-  // order the issue-time stamp alone misses - a hub whose mutation and broadcast
-  // outlast the window (a loaded host, a network-mounted state root) answers
-  // later than SELF_ECHO_WINDOW_MS after the issue, and its own echo would then
-  // be read as a foreign change. A marker an early echo already consumed is
-  // gone, so re-stamping it is a no-op; a marker with no echo still ages out,
-  // now from the later stamp. Also schedules the store's own refresh, which the
-  // echo coalesces with instead of duplicating.
-  function completeLocalAuthMutation(provider: string): void {
-    const existing = localAuthMutations.get(provider);
-    if (existing !== undefined) {
-      localAuthMutations.set(provider, { count: existing.count, issuedAt: Date.now() });
-    }
-    scheduleRefetch(true);
-  }
-
   // True exactly when this notification is this client's own echo of a
   // just-issued auth mutation; consumes one outstanding marker, so a stale
   // entry cannot suppress a later notification. A stale entry (its latest
@@ -702,9 +689,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
     if (provider === undefined) return false;
     const marker = localAuthMutations.get(provider);
     if (marker === undefined) return false;
-    const echoedId = originClientId ?? "";
-    if (echoedId !== "") {
-      if (echoedId !== deps.ownClientId?.()) return false;
+    if (originClientId) {
+      if (originClientId !== deps.ownClientId()) return false;
     } else if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
       localAuthMutations.delete(provider); // stale: no marker, no echo of ours left
       return false;
@@ -730,11 +716,10 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
     unsubscribeNotifications = client?.onNotification(handleNotification);
   }
 
-  // The origin id rides along so the hub's echo names this client as its
-  // originator; a client without an identity sends none.
-  function origin(): { originClientId?: string } {
-    const id = deps.ownClientId?.();
-    return id === undefined ? {} : { originClientId: id };
+  // withFingerprint adds the endpoint the caller showed the user only when it
+  // captured one: the hub reads the key's presence as the request to check it.
+  function withFingerprint(expectedEndpointFingerprint: string | undefined): { expectedEndpointFingerprint?: string } {
+    return expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {};
   }
 
   // authMutation runs one credential write that the hub may echo: it takes the
@@ -743,7 +728,18 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
   // retires the marker instead. `landed` lets a device poll report that only
   // an authorized tick is a write the hub broadcasts. Issuing the write bumps
   // the request ordering, so a listing read still in flight cannot publish
-  // rows that predate it; the store's own refresh lands the post-write rows.
+  // rows that predate it; the store's own refresh lands the post-write rows,
+  // and the flag such a retired read left behind is dropped once the write
+  // settles as the latest request.
+  //
+  // Re-stamping the marker when the response lands moves the echo window to
+  // that moment, which covers the order the issue-time stamp alone misses - a
+  // hub whose mutation and broadcast outlast the window (a loaded host, a
+  // network-mounted state root) answers later than SELF_ECHO_WINDOW_MS after
+  // the issue, and its own echo would then be read as a foreign change. A
+  // marker an early echo already consumed is gone, so re-stamping it is a
+  // no-op; a marker with no echo still ages out, now from the later stamp.
+  //
   // A response from a connection since replaced or reconnected is ignored
   // whole: its marker went with that connection, and the read it would
   // schedule would carry the new connection's `self` mark - the reconnect's
@@ -761,7 +757,9 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       const result = await request(client);
       if (connection !== issued) return result;
       if (landed(result)) {
-        completeLocalAuthMutation(provider);
+        const marker = localAuthMutations.get(provider);
+        if (marker !== undefined) localAuthMutations.set(provider, { count: marker.count, issuedAt: Date.now() });
+        scheduleRefetch(true);
         // A write landed: count it against the instance it named so only that
         // instance's in-flight refreshModels is retired (see landedMutations).
         noteLandedMutation(provider);
@@ -771,7 +769,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       if (connection === issued) retireLocalAuthMutation(provider); // refused: no echo will follow
       throw err;
     } finally {
-      if (version === requestVersion) store.setState({ loading: false });
+      if (version === requestVersion && store.getState().loading) store.setState({ loading: false });
     }
   }
 
@@ -845,8 +843,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
         client.request("evener/auth/apiKey/set", {
           provider,
           value,
-          ...origin(),
-          ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+          ...withFingerprint(expectedEndpointFingerprint),
+          originClientId: deps.ownClientId(),
         }),
       );
     },
@@ -856,8 +854,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
         client.request("evener/auth/credentialJson/set", {
           provider,
           value,
-          ...origin(),
-          ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+          ...withFingerprint(expectedEndpointFingerprint),
+          originClientId: deps.ownClientId(),
         }),
       );
     },
@@ -866,8 +864,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       return authMutation(provider, (client) =>
         client.request("evener/auth/apiKey/clear", {
           provider,
-          ...origin(),
-          ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+          ...withFingerprint(expectedEndpointFingerprint),
+          originClientId: deps.ownClientId(),
         }),
       );
     },
@@ -876,8 +874,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       return authMutation(provider, (client) =>
         client.request("evener/auth/logout", {
           provider,
-          ...origin(),
-          ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+          ...withFingerprint(expectedEndpointFingerprint),
+          originClientId: deps.ownClientId(),
         }),
       );
     },
@@ -888,7 +886,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
 
     loginComplete(provider, flowId, redirectUrl) {
       return authMutation(provider, (client) =>
-        client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin() }),
+        client.request("evener/auth/login/complete", {
+          provider,
+          flowId,
+          redirectUrl,
+          originClientId: deps.ownClientId(),
+        }),
       );
     },
 
@@ -904,7 +907,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       // polling dialog may already be closed by the time authorization lands.
       return authMutation(
         provider,
-        (client) => client.request("evener/auth/device/poll", { provider, flowId, ...origin() }),
+        (client) => client.request("evener/auth/device/poll", { provider, flowId, originClientId: deps.ownClientId() }),
         (resp) => resp.state === "authorized",
       );
     },
@@ -915,37 +918,38 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps = {
       // this connection never read.
       return requireWritableClient().request("evener/auth/test", {
         provider,
-        ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
+        ...withFingerprint(expectedEndpointFingerprint),
       });
     },
   }));
 
   function connectionChanged(client: CredentialInstancesClient | null, state: ConnectionState): void {
     const previous = connection;
-    connection = { client, state };
     const clientChanged = client !== previous.client;
-    if (clientChanged || state !== previous.state) {
-      requestVersion += 1;
-      store.setState({ loading: false });
-      cancelRefetch();
-      // A marker belongs to the connection its mutation was issued on: the echo
-      // cannot arrive on a different one, so a marker left over from a replaced
-      // or reconnected client is pure suppression risk for whatever
-      // same-provider notification comes next on the new connection.
-      localAuthMutations.clear();
-      // Whatever listing state holds was read through the connection that just
-      // went away (or through the client being replaced); the rows stay on
-      // screen until this connection's own read lands, but nothing may act on
-      // them in the meantime. Keyed on the CLIENT alone: a transition on the same
-      // client - a transport flap to reconnecting, a failed read's error state -
-      // leaves the rows as much this client's as they were, and the actions on
-      // them stay the user's to retry once it is ready again. Marking those stale
-      // refused them with a message claiming a replacement that never happened.
-      if (clientChanged) {
-        store.setState({ listingFromPreviousConnection: true });
-        clearClientBookkeeping();
-        listenTo(client);
-      }
+    // Not a transition: the connection object, and with it the generation of
+    // every mutation in flight, stays exactly what it was.
+    if (!clientChanged && state === previous.state) return;
+    connection = { client, state };
+    requestVersion += 1;
+    store.setState({ loading: false });
+    cancelRefetch();
+    // A marker belongs to the connection its mutation was issued on: the echo
+    // cannot arrive on a different one, so a marker left over from a replaced
+    // or reconnected client is pure suppression risk for whatever
+    // same-provider notification comes next on the new connection.
+    localAuthMutations.clear();
+    // Whatever listing state holds was read through the connection that just
+    // went away (or through the client being replaced); the rows stay on
+    // screen until this connection's own read lands, but nothing may act on
+    // them in the meantime. Keyed on the CLIENT alone: a transition on the same
+    // client - a transport flap to reconnecting, a failed read's error state -
+    // leaves the rows as much this client's as they were, and the actions on
+    // them stay the user's to retry once it is ready again. Marking those stale
+    // refused them with a message claiming a replacement that never happened.
+    if (clientChanged) {
+      store.setState({ listingFromPreviousConnection: true });
+      clearClientBookkeeping();
+      listenTo(client);
     }
     // Once a view has requested the listing, reconnects must restore it even
     // if its one-shot mount loader was interrupted.
