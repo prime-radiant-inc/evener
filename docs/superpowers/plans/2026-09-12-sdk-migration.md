@@ -432,6 +432,7 @@ before acting on it.
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C14 | #1401 | open — `shell/rail/sessionState.ts` → `appwire-client/typescript/railSessionState.ts` (renamed: a bare `sessionState` beside `sessionErrors` in the package root is ambiguous); `humanizeState` gets its first test, both importers move to the package name, no stub at the old path |
+| C21 | #1413 | open — `widgets/modelCatalog/{types,catalogView,pickerRows}.ts` → `appwire-client/typescript/modelCatalog{Types,View,PickerRows}.ts` with both tests (renamed: the old names were bound to their directory; every exported symbol keeps its name); `catalogClient.ts` and `scopedCatalog.ts` stay with the fetch; the web widget and native's `hubModels.ts`/`LaunchModelPicker.tsx` import the package name, four scenario cards repointed, no stub at the old paths |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
