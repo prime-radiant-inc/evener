@@ -20,7 +20,7 @@ import (
 // The lf_ prefix marks helpers owned by this refactor/fuzz lane.
 
 var lf_entryKinds = []EntryKind{
-	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention, EntrySteeringCarrier,
+	EntryUserInput, EntryContinuation, EntryNotification, EntryDelegateAttention,
 }
 
 // lf_buildContent turns a byte mask into content parts, setting a non-empty Phase
