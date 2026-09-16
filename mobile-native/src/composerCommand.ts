@@ -1,14 +1,12 @@
 import {
   buildComposerInput,
+  effortLabel,
+  effortOptionLevels,
   findBuiltinArgument,
   matchBuiltinInvocation,
   mergeSlashCommands,
 } from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
-import {
-  effortLabel,
-  effortOptionLevels,
-} from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,

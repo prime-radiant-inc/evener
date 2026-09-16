@@ -25,15 +25,15 @@ export function findBuiltinArgument<T extends { id: string; label: string }>(
 const INVOCATION_RE = /^\/(\S+)(?:[ \t]+([\s\S]*))?$/;
 
 // matchBuiltinInvocation: does `text` parse as a known BUILT-IN session
-// command? `builtins` is expected to be the FULL unfiltered resolved list
-// (the web's sessionBuiltinCommands) - unlike the inline
-// menu's own merge (which drops an unavailable command so there is nothing
-// to pick), matching here still finds an unavailable command so
-// the host's command runner can answer with its real reason instead of the
-// draft silently being sent as a literal chat message. A command with no
-// `args` only matches when nothing follows the name - "/compact extra text"
-// is not a known invocation of the argless /compact, so it falls through to
-// being sent as an ordinary message instead of ignoring the trailing text.
+// command? `builtins` must be the FULL resolved built-in list, not the
+// availability-filtered one the inline menu shows (which drops an unavailable
+// command so there is nothing to pick): matching here still finds an
+// unavailable command, so the host's command runner can answer with its real
+// reason instead of the draft silently being sent as a literal chat message.
+// A command with no `args` only matches when nothing follows the name -
+// "/compact extra text" is not a known invocation of the argless /compact, so
+// it falls through to being sent as an ordinary message instead of ignoring
+// the trailing text.
 export function matchBuiltinInvocation<T extends { id: string; args?: unknown }>(
   text: string,
   builtins: readonly T[],

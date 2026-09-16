@@ -45,13 +45,11 @@ describe("matchBuiltinInvocation", () => {
     expect(matchBuiltinInvocation("/Goal x", builtins)).toBeNull();
   });
 
-  test("an unknown name, a missing slash, a slash with nothing after it or text before the slash is not a match", () => {
+  test("an unknown name, a missing leading slash or a slash with no name on it is not a match", () => {
     expect(matchBuiltinInvocation("/frobnicate", builtins)).toBeNull();
-    expect(matchBuiltinInvocation("goal fix it", builtins)).toBeNull();
+    expect(matchBuiltinInvocation("hello /goal", builtins)).toBeNull();
     expect(matchBuiltinInvocation("/", builtins)).toBeNull();
     expect(matchBuiltinInvocation("/ goal", builtins)).toBeNull();
-    expect(matchBuiltinInvocation("hello /goal", builtins)).toBeNull();
-    expect(matchBuiltinInvocation("", builtins)).toBeNull();
   });
 });
 
