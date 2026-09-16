@@ -1984,3 +1984,26 @@ test("an expanded summary whose anchor ends at an entity id glues the trailing c
   expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
   expect(summaryEl.textContent).toBe(summary);
 });
+
+// The summaryLink URL must survive entity segmentation WHOLE (roborev r5's
+// followup finding): a hub URL can embed one of the session's own entity
+// ids (".../jobs/job_<id>/log"), and an id-shaped substring inside the URL
+// would otherwise split it across segments - no single segment would hold
+// the whole URL, linkifySummary's first-occurrence match would find nothing
+// in any fragment, and the link would silently drop.
+test("a summaryLink URL embedding an entity id renders whole as one link, never split by id detection", () => {
+  const url = `https://internal.example/jobs/${SUMMARY_ENTITY_JOB}/log`;
+  const summary = `Fetched ${url} · 200`;
+  renderWithEntities(
+    <ToolRow summary={summary} summaryLink={url} failed={false} expandable={false} expanded={false} />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const anchor = summaryEl.querySelector("a");
+  // The whole URL is one link over exactly the URL text...
+  expect(anchor?.getAttribute("href")).toBe(url);
+  expect(anchor?.textContent).toBe(url);
+  // ...no id-shaped fragment of it became a card trigger mid-URL...
+  expect(summaryEl.querySelector('[data-testid="entity-trigger"]')).toBeNull();
+  // ...and every character of the summary still renders exactly once.
+  expect(summaryEl.textContent).toBe(summary);
+});
