@@ -3,7 +3,7 @@
 // conflict restore, and no auto-retry.
 
 import { describe, expect, it } from "vitest";
-import { sessionControls, WireError } from "@evener/appwire-client";
+import { QUEUE_UNAVAILABLE, SEND_UNAVAILABLE, sessionControls, TURN_RUNNING, WireError } from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
@@ -124,9 +124,10 @@ function makeConversation(
     sessionId: "session-1",
     preview: "hello",
     modelProvider: "anthropic",
-    // The wire's vocabulary: a running turn, which is what the steering
-    // submissions below need. Idle and failed cases set their own.
-    status: "active",
+    // The wire's vocabulary. Idle is the shape the hub publishes when it
+    // advertises Send (Send folds !active at the source); the steering
+    // submissions name a running turn themselves.
+    status: "idle",
     items: [],
     capabilities: ALL_TRUE_CAPS,
     queue: { revision: 0, depth: 0, preview: [] },
@@ -482,9 +483,16 @@ describe("ConversationStore", () => {
       },
     ];
 
+    // Send is offered at rest; the steering mutations need a running turn.
+    function serviceFor(kind: MutationKind): FakeConversationService {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: kind === "send" ? "idle" : "active" });
+      return service;
+    }
+
     for (const { kind, call, callCountField } of mutationCases) {
       it(`${kind}: calls the service ${kind} method`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const store = createConversationStore();
         await store.getState().open(service, "ref-1");
         if (kind === "interrupt") {
@@ -496,7 +504,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: sets pending mutation state while in-flight`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         // Make the service hang so we can inspect the in-flight state.
         let resolveFn: (() => void) | null = null as (() => void) | null;
         service.receipt = makeReceipt();
@@ -538,7 +546,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: records exact draft snapshot in mutation state`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         let resolveFn: (() => void) | null = null as (() => void) | null;
         const hangPromise = new Promise<MutationReceipt>((resolve) => {
           resolveFn = () => resolve(makeReceipt());
@@ -569,7 +577,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: clears pending and error on success`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const store = createConversationStore();
         await store.getState().open(service, "ref-1");
         await call(store, service, textInput("test"));
@@ -578,7 +586,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: restores draft and sets failed state on failure`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const rejectErr = new Error(`${kind} conflict`);
         if (kind === "send") {
           service.sendShouldReject = rejectErr;
@@ -613,7 +621,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: records generation in mutation state`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         let resolveFn: (() => void) | null = null as (() => void) | null;
         const hangPromise = new Promise<MutationReceipt>((resolve) => {
           resolveFn = () => resolve(makeReceipt());
@@ -643,16 +651,19 @@ describe("ConversationStore", () => {
     it("send has an independent capability gate from steer", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      // Only send is disabled
+      // Only send is disabled, in the state that offers it.
       service.openConv = makeConversation({
         capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
       });
       await store.getState().open(service, "ref-1");
-      // send should fail, steer should succeed
       await expect(
         store.getState().send(service, textInput("x")),
-      ).rejects.toThrow();
-      // steer should work since steer capability is true
+      ).rejects.toThrow(SEND_UNAVAILABLE);
+      // steer should work since steer capability is true, once a turn runs
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+      } as AnyNotification);
       await store.getState().steer(service, textInput("x"));
       expect(store.getState().error).toBeNull();
     });
@@ -660,14 +671,20 @@ describe("ConversationStore", () => {
     it("queue has an independent capability gate from send", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
+      // Only queue is disabled, in the state that offers it.
       service.openConv = makeConversation({
+        status: "active",
         capabilities: { ...ALL_TRUE_CAPS, queue: false } as MobileCapabilities,
       });
       await store.getState().open(service, "ref-1");
       await expect(
         store.getState().queue(service, textInput("x")),
-      ).rejects.toThrow();
-      // send should work since send capability is true
+      ).rejects.toThrow(QUEUE_UNAVAILABLE);
+      // send should work since send capability is true, once the turn ends
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
       await store.getState().send(service, textInput("x"));
       expect(store.getState().error).toBeNull();
     });
@@ -843,6 +860,7 @@ describe("ConversationStore", () => {
 
     it("leaves the status to the status frame on turn/completed", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active" });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -969,6 +987,19 @@ describe("ConversationStore", () => {
       expect(service.steerCallCount).toBe(0);
     });
 
+    // Send is a control like the others: while a turn runs the session queues,
+    // it does not send. The store refuses with the control's reason so the
+    // fake service (which gates on nothing) cannot accept what the hub would
+    // not.
+    it("refuses a send while a turn is running, with the control's reason", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      await expect(store.getState().send(service, textInput("x"))).rejects.toThrow(TURN_RUNNING);
+      expect(service.sendCallCount).toBe(0);
+    });
+
     it("does not merge a completed turn's usage into the cumulative conversation usage", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({
@@ -1048,7 +1079,7 @@ describe("ConversationStore", () => {
       // Reset (back to idle)
       store.getState().reset();
       // Open ref-2 (gen 2)
-      service.openConv = makeConversation({ id: "thread-2" });
+      service.openConv = makeConversation({ id: "thread-2", status: "active" });
       await store.getState().open(service, "ref-2");
       expect(store.getState().conversation?.id).toBe("thread-2");
       // A stale notification for ref-1 should be dropped: ref-2 keeps the
@@ -2913,6 +2944,7 @@ describe("ConversationStore", () => {
 
     it("interrupt snapshot is null and does not clear draft", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active" });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my draft text");
@@ -13047,6 +13079,7 @@ describe("ConversationStore", () => {
     for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
       it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
         const serviceA = new FakeConversationService();
+        serviceA.openConv = makeConversation({ status: kind === "send" ? "idle" : "active" });
         const store = createConversationStore();
         await store
           .getState()
@@ -13476,7 +13509,7 @@ describe("ConversationStore", () => {
       it(`mutation: controlled A->B then late A ${kind} failure => entire state unchanged`, async () => {
         const serviceA = new FakeConversationService();
         serviceA.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-A" }),
+          conversation: makeConversation({ id: "thread-A", status: kind === "send" ? "idle" : "active" }),
           activity: {
             tasks: [],
             work: [],
@@ -13556,7 +13589,7 @@ describe("ConversationStore", () => {
       it(`mutation: controlled A->B then late A ${kind} success => entire state unchanged`, async () => {
         const serviceA = new FakeConversationService();
         serviceA.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-A" }),
+          conversation: makeConversation({ id: "thread-A", status: kind === "send" ? "idle" : "active" }),
           activity: {
             tasks: [],
             work: [],

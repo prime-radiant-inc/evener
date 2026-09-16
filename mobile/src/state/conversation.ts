@@ -732,27 +732,16 @@ function isActionUnavailableError(err: unknown): boolean {
   );
 }
 
-// Check a capability on the current conversation and throw if false. This
-// mirrors the service's requireCap but runs in the store so the fake
-// service (which has no capability gating) still respects capabilities.
-function requireCap(
-  conv: MobileConversation,
-  cap: keyof MobileCapabilities,
-  action: string,
-): void {
-  if (!conv.capabilities[cap]) {
-    throw new Error(`Action "${action}" is not available for this thread`);
-  }
-}
-
-// The steering actions' precondition, re-evaluated at the mutation boundary
-// rather than trusted from the render that offered the control: the session's
-// controls (the SDK's sessionControls over the wire's status, the harness's
+// A mutation's precondition, re-evaluated at the mutation boundary rather than
+// trusted from the render that offered the control: the session's controls
+// (the SDK's sessionControls over the wire's status, the harness's
 // capabilities and the queue depth). A status that flipped between the render
 // and the submit refuses the mutation here, with the control's own reason.
+// Runs in the store so the fake service (which gates on nothing) still
+// respects what the hub would refuse.
 function requireControl(
   conv: MobileConversation,
-  control: "stop" | "steer" | "drain" | "queue",
+  control: "stop" | "steer" | "drain" | "queue" | "send",
   action: string,
 ): void {
   const controls = sessionControls(
@@ -2310,7 +2299,7 @@ export function createConversationStore() {
       async send(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "send", "send");
+        requireControl(state.conversation, "send", "send");
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), zero request/state change.
         const opBinding = captureOperationBinding(service);
