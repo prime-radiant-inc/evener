@@ -26,7 +26,7 @@ import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { NavigationPages } from "./navigationPages";
+import { NavigationPages, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
 import { navigationTree } from "./navigationTree";
 import {
@@ -315,7 +315,7 @@ export function PageList<T>({
 					</Action>
 				</View>
 			) : null}
-			{state.stale ? (
+			{updating(state) ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 					<Copy muted>Updating…</Copy>
 				</View>

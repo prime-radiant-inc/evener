@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -27,6 +28,16 @@ type remoteHubCall struct {
 // server whose replies the caller scripts, recording every request. No SSH, no
 // network, no host.
 func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
+	t.Helper()
+	client, calls, _ := newPushableScriptedRemoteHub(t, handle)
+	return client, calls
+}
+
+// newPushableScriptedRemoteHub is newScriptedRemoteHub plus the remote hub's side
+// of a subscription fan-out: the returned push writes an unsolicited notification
+// onto the same transport the scripted replies answer on. StreamTransport.Send is
+// mutex-guarded, so a test push and the responder loop interleave safely.
+func newPushableScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall, func(method string, params any) error) {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	server := appwire.NewStreamTransport(serverConn)
@@ -70,13 +81,17 @@ func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.R
 		_ = client.Close()
 		<-done
 	})
-	return client, func() []remoteHubCall {
+	recordedCalls := func() []remoteHubCall {
 		mu.Lock()
 		defer mu.Unlock()
 		out := make([]remoteHubCall, len(calls))
 		copy(out, calls)
 		return out
 	}
+	push := func(method string, params any) error {
+		return server.Send(ctx, appwire.NotificationMessage(method, params))
+	}
+	return client, recordedCalls, push
 }
 
 // remoteHubPageCursor mints the kind of opaque cursor a real remote hub
@@ -187,10 +202,11 @@ func newScriptedRemoteClient(t *testing.T) *appwire.Client {
 	return client
 }
 
-// A plain thread/read against a remote hub source must succeed: the source does
-// not implement SubscribeThread until 05b, so the hub must not start a relay on
-// read. An item-mode page carrying the remote hub's own cursor must also pack
-// into a controller-owned continuation instead of failing the response.
+// A plain thread/read against a remote hub source must succeed and start a relay
+// (the source reports the hub's default relay policy and 05b implements
+// SubscribeThread, so the attach is a real subscription). An item-mode page
+// carrying the remote hub's own cursor must also pack into a controller-owned
+// continuation instead of failing the response.
 func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 	remote := newScriptedRemoteClient(t)
 	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -234,11 +250,16 @@ func TestHubRPCThreadReadServesRemoteHubSource(t *testing.T) {
 	}
 }
 
-// The web client hydrates a thread with subscribe:true. Remote subscription
-// fan-out is staged until 05b, so that read must still return its snapshot (the
-// hub must not start a relay whose SubscribeThread is unimplemented) and the
-// subscribe intent must not reach the remote hub, where it would register a
-// subscription the controller can never retire.
+// The web client hydrates a thread with subscribe:true. The read must still serve
+// its translated snapshot, and the plain read behind it must still carry no
+// controller subscription intent of its own: a forwarded Subscribe would
+// register a remote subscription nothing on this side owns or can retire. What
+// changed in 05b is the other half — the relay now runs for a remote source and
+// attaches through SubscribeThread, which
+// TestHubRPCThreadReadSubscribeStartsRemoteRelay pins. The controller-level
+// ReplaceSubscription must never reach the wire at all: it is connection-scoped
+// on the shared per-host client, so it would drop every other thread's remote
+// subscription while their local routing entries stayed live.
 func TestHubRPCThreadReadSubscribeServesRemoteSnapshot(t *testing.T) {
 	remoteOlder := remoteHubPageCursor(t, 10)
 	remote, calls := newScriptedRemoteHub(t, func(method string, _ json.RawMessage) any {
@@ -290,6 +311,7 @@ func TestHubRPCThreadReadSubscribeServesRemoteSnapshot(t *testing.T) {
 	if resp.OlderCursor == "" {
 		t.Fatalf("read response = %+v, want a controller-owned continuation cursor", resp)
 	}
+	plainReads := 0
 	for _, call := range calls() {
 		if call.method != appwire.MethodThreadRead {
 			continue
@@ -298,9 +320,185 @@ func TestHubRPCThreadReadSubscribeServesRemoteSnapshot(t *testing.T) {
 		if err := json.Unmarshal(call.params, &remoteParams); err != nil {
 			t.Fatalf("decode remote read params: %v", err)
 		}
-		if remoteParams.Subscribe || remoteParams.ReplaceSubscription {
-			t.Fatalf("remote read received subscription intent: %+v", remoteParams)
+		if remoteParams.ReplaceSubscription {
+			t.Fatalf("remote read received replacement intent: %+v", remoteParams)
 		}
+		if remoteParams.Subscribe {
+			// The relay's own attach (SubscribeThread), pinned by
+			// TestHubRPCThreadReadSubscribeStartsRemoteRelay.
+			continue
+		}
+		plainReads++
+	}
+	if plainReads != 1 {
+		t.Fatalf("plain remote reads = %d, want the one snapshot this read served", plainReads)
+	}
+}
+
+// A browser subscribes to a remote thread with subscribe:true. The controller
+// relay must run for a remote source: startRelay attaches through the source's
+// own SubscribeThread, which is the thread/read{subscribe:true} the remote hub
+// answers by attaching its relay. The plain read that produced the response still
+// carries no controller subscription intent of its own — the relay owns the
+// subscription and retires it, so the read must not register a second one.
+func TestHubRPCThreadReadSubscribeStartsRemoteRelay(t *testing.T) {
+	remote, calls, _ := newPushableScriptedRemoteHub(t, scriptedRemoteThreadT1)
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       "h1:t1",
+		Subscribe: true,
+	})
+	if err != nil {
+		t.Fatalf("subscribed ThreadRead: %v", err)
+	}
+	if resp.Thread.Source != "h1" || resp.Thread.Evener.Ref != "h1:t1" {
+		t.Fatalf("thread = %+v, want source h1 ref h1:t1", resp.Thread)
+	}
+
+	// startRelay issues the subscribe synchronously and only answers the read
+	// once the attach is registered, so both calls are on the wire by now.
+	snapshots, attaches := 0, 0
+	var attach appwire.ThreadReadParams
+	for _, call := range calls() {
+		if call.method != appwire.MethodThreadRead {
+			continue
+		}
+		var params appwire.ThreadReadParams
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode remote read params: %v", err)
+		}
+		// A controller-level replacement would scope the whole shared remote
+		// connection to this thread and drop every other thread's subscription.
+		if params.ReplaceSubscription {
+			t.Errorf("remote read received replacement intent: %+v", params)
+		}
+		if params.Subscribe {
+			attaches++
+			attach = params
+			continue
+		}
+		snapshots++
+	}
+	if snapshots != 1 {
+		t.Fatalf("plain remote reads = %d, want the one snapshot this read served", snapshots)
+	}
+	if attaches != 1 {
+		t.Fatalf("relay attach reads = %d, want exactly 1: a subscribed remote read must start the relay and reach SubscribeThread", attaches)
+	}
+	if attach.Ref != "local:t1" {
+		t.Fatalf("relay attach ref = %q, want the remote hub's own local:t1", attach.Ref)
+	}
+}
+
+// The relay must not only attach: a status frame the remote hub pushes has to
+// reach the subscribed browser with the capability set the read path answers
+// with, not the remote daemon's own. A daemon stamps its real set on every status
+// frame, and a client that re-enabled Send/Steer/Interrupt from one would hit an
+// internal error the moment it used it.
+func TestHubRPCThreadReadSubscribeDeliversMaskedRemoteStatus(t *testing.T) {
+	remote, _, push := newPushableScriptedRemoteHub(t, scriptedRemoteThreadT1)
+	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
+		return remote, nil
+	})
+
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       "h1:t1",
+		Subscribe: true,
+	}); err != nil {
+		t.Fatalf("subscribed ThreadRead: %v", err)
+	}
+
+	daemonSet := appwire.ThreadCapabilities{
+		Send:         true,
+		Steer:        true,
+		Interrupt:    true,
+		Queue:        true,
+		ForkFromTurn: true,
+		SkillInput:   true,
+	}
+	if err := push(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID:     "t1",
+		Ref:          "local:t1",
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Capabilities: &daemonSet,
+	}); err != nil {
+		t.Fatalf("push status: %v", err)
+	}
+
+	// The relay's own leading resync rides the same stream, so skip every frame
+	// that is not the status transition under test.
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case notification, ok := <-client.Notifications():
+			if !ok {
+				t.Fatal("client notification stream closed before the status frame")
+			}
+			if notification.Method != appwire.NotifyThreadStatusChanged {
+				continue
+			}
+			var status appwire.ThreadStatusChangedParams
+			if err := json.Unmarshal(notification.Params, &status); err != nil {
+				t.Fatalf("decode relayed status params %s: %v", notification.Params, err)
+			}
+			if status.Ref != "h1:t1" {
+				t.Fatalf("relayed status ref = %q, want h1:t1", status.Ref)
+			}
+			if status.Capabilities == nil {
+				t.Fatal("relayed status capabilities = nil, want the read path's masked set")
+			}
+			if *status.Capabilities != (appwire.ThreadCapabilities{}) {
+				t.Fatalf("relayed status capabilities = %+v, want every unforwarded action masked like the read path", *status.Capabilities)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for the relayed status frame: the subscription delivered no live update")
+		}
+	}
+}
+
+// scriptedRemoteThreadT1 answers a remote hub's attach-bridge requests for one
+// thread named "t1" in the remote hub's own local namespace.
+func scriptedRemoteThreadT1(method string, _ json.RawMessage) any {
+	switch method {
+	case appwire.MethodInitialize:
+		return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+	case appwire.MethodThreadRead:
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t1",
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:t1"},
+		}}
+	default:
+		return appwire.EmptyResponse{}
 	}
 }
 

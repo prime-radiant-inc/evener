@@ -1844,3 +1844,31 @@ func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 		t.Fatalf("watch fires = %d, want %d unchanged: the terminal boundary reached job-tree projection after all", watched.conditionFires, firesBefore)
 	}
 }
+
+// TestSelectDrainNextActionRunsASkillOnlyQueuedEntry: a queued entry that
+// carries only skill selections -- no text, no images -- is queued input like
+// any other. popQueueHead has already claimed it durably, so a ladder that
+// read it as "nothing queued" would fall through to the goal gate or idle and
+// strand an entry no wake will ever run again. It runs, awaiting or not, and
+// outranks a pending notification the way a text entry does.
+func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
+	cases := []struct {
+		name string
+		in   drainInputs
+		want drainAction
+		skip bool
+	}{
+		{"skill-only entry runs", drainInputs{QueuedSkills: 1}, runQueued, false},
+		{"skill-only entry runs while awaiting", drainInputs{Awaiting: true, QueuedSkills: 1}, runQueued, true},
+		{"skill-only entry outranks a notification", drainInputs{NotificationsPending: true, QueuedSkills: 2}, runQueued, false},
+		{"a follow-up still outranks it", drainInputs{FollowUp: "follow", QueuedSkills: 1}, runFollowUp, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, skip := selectDrainNextAction(tc.in)
+			if got != tc.want || skip != tc.skip {
+				t.Fatalf("selectDrainNextAction(%+v) = (%v,%v), want (%v,%v)", tc.in, got, skip, tc.want, tc.skip)
+			}
+		})
+	}
+}

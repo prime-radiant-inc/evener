@@ -8,7 +8,9 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
-answer's questions frozen while late ones arrive, the attachment count, size
+answer's questions frozen while late ones arrive, the ask-dock store that
+reconciliation feeds (`createAskDockStore({ send })`, a framework-free store
+each app points at its thread source with `followThreads`), the attachment count, size
 and type limits every composer rejects a staged file against, the `[image N]`
 marker splicing that anchors a staged image in the composer text and removes
 it again, the translation that turns those markers into prose at send and
@@ -23,7 +25,11 @@ share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
-tasks panel and native tasks sheet render from, the display formatters
+tasks panel and native tasks sheet render from, and the tasks-panel store
+both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
+coalescing `refresh` and a notification-following `watch`, over a
+`TasksListRead` port so the web's reconnect-waiting read and native's direct
+one both fit), the display formatters
 both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
@@ -63,7 +69,10 @@ their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy.
+origin nor a credentials policy. The hub overview store,
+`createHubOverviewStore(client)`, is the same framework-free triple over a
+`request`-only client port; it holds the fetch-once settings-overview read
+both apps' hub settings render from.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

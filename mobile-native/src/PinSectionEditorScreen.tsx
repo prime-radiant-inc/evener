@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { sectionDrafts } from "./nativeOrganization";
+import { updating } from "./navigationPages";
 import { pinSectionAsShown } from "./pinNavigation";
 import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
@@ -61,6 +62,10 @@ export function PinSectionEditorScreen({
 		!pin.action?.pending &&
 		!pin.action?.uncertain;
 	const fresh = settled && !pin.page?.stale;
+	const message = changedUnderAlert
+		? "This section changed while you were deciding. Check it and delete again."
+		: (selected?.error ?? pin.action?.error ?? pin.page?.error ?? null);
+	const isUpdating = !!pin.page && updating({ ...pin.page, error: message });
 	const blocked =
 		!settled ||
 		!section ||
@@ -162,16 +167,7 @@ export function PinSectionEditorScreen({
 					>
 						<Copy>{section?.name ?? title}</Copy>
 						<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
-						<ErrorMessage
-							message={
-								changedUnderAlert
-									? "This section changed while you were deciding. Check it and delete again."
-									: (selected?.error ??
-										pin.action?.error ??
-										pin.page?.error ??
-										null)
-							}
-						/>
+						<ErrorMessage message={message} />
 						{!pin.ready ||
 						pin.action?.uncertain ||
 						pin.page?.error ||
@@ -185,7 +181,7 @@ export function PinSectionEditorScreen({
 						) : null}
 						{pin.action?.pending ? (
 							<Copy muted>Checking the section…</Copy>
-						) : pin.page?.stale ? (
+						) : isUpdating ? (
 							<Copy muted>Updating…</Copy>
 						) : null}
 						{pin.confirmed && !section ? (

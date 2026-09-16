@@ -1,5 +1,6 @@
 import { ActivityIndicator, FlatList, View } from "react-native";
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
+import { updating } from "./navigationPages";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function PinCatalogList({
@@ -32,6 +33,7 @@ export function PinCatalogList({
 	open(section: NavigationPinSectionDescriptor): void;
 }) {
 	const colors = useColors();
+	const isUpdating = updating({ loading, error, stale, remaining });
 	const showEmpty =
 		connected &&
 		loaded &&
@@ -55,7 +57,7 @@ export function PinCatalogList({
 						<Copy muted>Reconnect to view pinned sections.</Copy>
 					) : uncertain ? (
 						<Copy muted>Refresh to confirm the previous pin change.</Copy>
-					) : stale ? (
+					) : isUpdating ? (
 						<Copy muted>Updating…</Copy>
 					) : null}
 					<ErrorMessage message={error} />

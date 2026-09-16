@@ -7,7 +7,7 @@ import type {
 } from "@evener/appwire-client";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { NavigationPages } from "./navigationPages";
+import { NavigationPages, pageStatus, updating } from "./navigationPages";
 
 it("reconciles a restarted hub without carrying a prior generation's receipt floor", async () => {
 	const { pages, requests } = boundary();
@@ -966,4 +966,62 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 	await pages.more();
 	expect(requests.map((p) => p.offset)).toEqual([0, 1, 0, 0]);
 	expect(pages.getSnapshot().stale).toBe(true);
+});
+
+describe("page status", () => {
+	const page = (overrides: Partial<Parameters<typeof pageStatus>[0]>) => ({
+		loading: false,
+		error: null,
+		stale: false,
+		remaining: 0,
+		...overrides,
+	});
+	it("shows the error, with its retry, even while the page is stale", () => {
+		// Follow-up to #1462: a failed automatic re-read leaves stale and error
+		// set together on every list; "Updating…" must never hide the retry.
+		expect(pageStatus(page({ stale: true, error: "offline" }))).toBe("error");
+	});
+	it("lets an error shown beside the page win over its stale status", () => {
+		// Screens that merge an action's error into the message they show pass
+		// that merged error in, so any error on screen suppresses "Updating…".
+		expect(pageStatus(page({ stale: true, error: "pin change failed" }))).toBe(
+			"error",
+		);
+	});
+	it.each([
+		["loading", page({ loading: true, stale: true, error: "offline" }), "loading"],
+		["stale", page({ stale: true }), "stale"],
+		["more", page({ remaining: 3 }), "more"],
+		["settled", page({}), null],
+	])("reports %s", (_case, state, expected) => {
+		expect(pageStatus(state)).toBe(expected);
+	});
+});
+
+describe("updating copy", () => {
+	const page = (overrides: Partial<Parameters<typeof updating>[0]>) => ({
+		loading: false,
+		error: null,
+		stale: false,
+		remaining: 0,
+		...overrides,
+	});
+	it("stays visible while a stale re-read is in flight", () => {
+		// Follow-up to #1484: a stale re-read publishes stale, then loading,
+		// without clearing stale; screens with no loading cue must keep saying so.
+		expect(updating(page({ stale: true, loading: true }))).toBe(true);
+	});
+	it("shows for a stale page waiting on its next trigger", () => {
+		expect(updating(page({ stale: true }))).toBe(true);
+	});
+	it("gives way to an error on screen", () => {
+		expect(updating(page({ stale: true, error: "offline" }))).toBe(false);
+		expect(
+			updating(page({ stale: true, loading: true, error: "offline" })),
+		).toBe(false);
+	});
+	it("says nothing about a fresh page, loading or not", () => {
+		expect(updating(page({ loading: true }))).toBe(false);
+		expect(updating(page({}))).toBe(false);
+	});
 });
