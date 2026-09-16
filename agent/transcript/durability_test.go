@@ -159,3 +159,48 @@ func decodeMemEntries(t *testing.T, fs afero.Fs, path string) []Entry {
 	}
 	return entries
 }
+
+// AppendSynced reports durability through its return, not the shared warning
+// queue, so it must not drop a diagnostic another append left there. A buffered
+// append whose sync failed queues its retained warning (ops Write 4, Sync 5);
+// a following clean AppendSynced must leave that warning for the session to
+// drain.
+func TestAppendSyncedDoesNotDropAnotherAppendsQueuedWarning(t *testing.T) {
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(faultPlan(5))), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	// Buffered append: whole line lands, its fsync (op 5) fails → retained,
+	// warning queued, writer usable.
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("buffered retained"))); err != nil {
+		t.Fatalf("buffered Append error = %v, want nil", err)
+	}
+	// A following AppendSynced (clean, past the single faulted op) must not
+	// touch the queued warning.
+	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("synced clean"))); err != nil {
+		t.Fatalf("AppendSynced error = %v, want nil", err)
+	}
+	warnings := w.DrainWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("queued warnings after AppendSynced = %d, want the buffered append's one, undropped", len(warnings))
+	}
+}
+
+// AppendSynced raises its recovery barrier only for a retained append; a clean
+// durable append is already synced and needs no second fsync. Durable append
+// ops after the header: Seek 4, Write 5, Sync 6. If AppendSynced fsynced again
+// it would be op 7 — faulting op 7 must not reach it, so the call succeeds.
+func TestAppendSyncedDoesNotDoubleFsyncACleanAppend(t *testing.T) {
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(faultPlan(7))), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("clean and synced"))); err != nil {
+		t.Fatalf("AppendSynced error = %v, want nil: a clean append needs no second barrier fsync", err)
+	}
+	if entries := faultTestEntries(t, base); len(entries) != 1 {
+		t.Fatalf("entries = %d, want the one durable record", len(entries))
+	}
+}

@@ -340,7 +340,7 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			persisted.SkillState = persisted.SkillState.Clone()
 			if err := s.appendTurnAfterTranscriptWrite(
 				persisted,
-				func() error { return s.writeTranscriptDurableLocked(persisted) },
+				func() error { return s.writeTranscriptSyncedLocked(persisted) },
 				func() { s.history = append(s.history, live) },
 			); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("recording the post-compaction skill reminder failed", err))

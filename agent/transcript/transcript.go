@@ -43,12 +43,14 @@ var ErrInvalidRecordBoundary = errors.New("invalid transcript record boundary")
 // configured framing limit.
 var ErrLineTooLong = errors.New("transcript line too long")
 
-// ErrRollbackFailed marks a durable append that failed and could not be taken
-// back out of the file. The entry's line may still be there, so the append's
-// outcome is unknown: a caller that simply retries can record the same turn
-// twice under two identities. Reconcile the entry against the transcript —
-// EstablishDurability makes what a reader can see authoritative — before
-// deciding whether to write it again.
+// ErrRollbackFailed marks a durable append whose sync failed and whose rollback
+// could not take the bytes back out. It is an internal detail of how the writer
+// classifies such a failure, not a signal callers act on: the writer settles
+// the outcome itself. A whole line left behind is a retained record — the
+// append returns nil (recorded) and the debt is surfaced as a warning — while a
+// partial line poisons the writer. Callers of Append/AppendDurable see
+// recorded-or-error and never reconcile; a caller that needs durability uses
+// AppendSynced.
 var ErrRollbackFailed = errors.New("rollback failed")
 
 // ErrWriterPoisoned marks a writer that refuses further appends. An append
@@ -440,7 +442,7 @@ func (w *Writer) Header() Header {
 // the delegate-attention side-writes — uses AppendSynced, which returns an
 // error unless the line is both.
 func (w *Writer) Append(turn schema.Turn) error {
-	_, err := w.appendBatch([]schema.Turn{turn}, false)
+	_, _, err := w.appendBatch([]schema.Turn{turn}, false, true)
 	return err
 }
 
@@ -450,29 +452,36 @@ func (w *Writer) Append(turn schema.Turn) error {
 // receiver is nil — see Append for why that makes a write into a not-yet-open
 // writer silently succeed.
 func (w *Writer) AppendDurable(turn schema.Turn) error {
-	_, err := w.appendBatch([]schema.Turn{turn}, true)
+	_, _, err := w.appendBatch([]schema.Turn{turn}, true, true)
 	return err
 }
 
 // AppendSynced records a turn AND establishes its durability, returning an
 // error unless the line is both a record and synced. It is the door for the
 // durability owners that raise their own barrier; ordinary producers use
-// AppendDurable and never inspect durability. No caller needs a warning from
-// this door — the return value carries the outcome — so any queued retained
-// diagnostic is discarded.
+// AppendDurable and never inspect durability.
+//
+// It reports through its return, never the warning channel: the append does not
+// queue its retained diagnostic (queueRetained=false), so this door cannot
+// steal another append's queued warning, and it raises the recovery barrier
+// ONLY when the append's own fsync was the one that failed (retained != nil).
+// A clean durable append needs no second fsync.
 func (w *Writer) AppendSynced(turn schema.Turn) error {
 	if w == nil || w.closed.Load() {
 		return nil // no-op, like the other doors — see Append
 	}
-	if _, err := w.appendBatch([]schema.Turn{turn}, true); err != nil {
+	_, retained, err := w.appendBatch([]schema.Turn{turn}, true, false)
+	if err != nil {
 		return err // not recorded
 	}
-	barrierErr := w.EstablishDurability()
-	// The record is durable when the barrier succeeds, and either way this
-	// door reports through its return, not the warning channel.
-	w.DrainWarnings()
-	if barrierErr != nil {
-		return fmt.Errorf("establish durability: %w", barrierErr)
+	if retained == nil {
+		return nil // recorded and its own fsync succeeded: durable
+	}
+	// Recorded but unsynced: the record is in the file, so a barrier that
+	// fsyncs the whole file settles it. If even that fails, the entry is not
+	// durable — report both the retained cause and the barrier failure.
+	if barrierErr := w.EstablishDurability(); barrierErr != nil {
+		return errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr))
 	}
 	return nil
 }
@@ -486,40 +495,47 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 // entry to the one write primitive. No-op returning (0, nil) for a nil or
 // closed writer, matching Append.
 func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
-	return w.appendBatch(turns, true)
+	firstSeq, _, err := w.appendBatch(turns, true, true)
+	return firstSeq, err
 }
 
 // appendBatch is the locked entry to the sole write primitive. append() is a
-// batch of one through it.
-func (w *Writer) appendBatch(turns []schema.Turn, forceSync bool) (int, error) {
+// batch of one through it. queueRetained puts a retained record's sync-failure
+// diagnostic on the warning queue for the session to surface (the ordinary
+// doors); AppendSynced passes false and takes the diagnostic through the
+// returned error instead, so it neither queues nor drains the shared channel.
+func (w *Writer) appendBatch(turns []schema.Turn, forceSync, queueRetained bool) (firstSeq int, retained, err error) {
 	if w == nil || w.closed.Load() {
-		return 0, nil
+		return 0, nil, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed.Load() {
-		return 0, nil
+		return 0, nil, nil
 	}
-	return w.appendBatchLocked(turns, forceSync)
+	return w.appendBatchLocked(turns, forceSync, queueRetained)
 }
 
 // appendBatchLocked encodes every turn into one buffer, seeks to the end once,
 // writes once, optionally fsyncs once, and rolls back to the start offset on
 // any failure. Every failure is classified in one place, settleFailedWriteLocked.
-func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync bool) (int, error) {
+// It returns retained — the sync-failure diagnostic of a whole line left
+// unsynced in the file — separately from err, a hard failure that recorded
+// nothing.
+func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync, queueRetained bool) (firstSeq int, retained, err error) {
 	if w.poisoned {
-		return 0, ErrWriterPoisoned
+		return 0, nil, ErrWriterPoisoned
 	}
-	firstSeq := w.seq
+	firstSeq = w.seq
 	if len(turns) == 0 {
-		return firstSeq, nil
+		return firstSeq, nil, nil
 	}
 	if w.positionUnknown {
 		// Write nothing until the end is known again. A seek that fails here
 		// leaves the flag set, so the next attempt re-establishes it rather
 		// than writing into the gap.
-		if _, err := w.file.Seek(0, io.SeekEnd); err != nil {
-			return firstSeq, fmt.Errorf("seek transcript append position: %w", err)
+		if _, seekErr := w.file.Seek(0, io.SeekEnd); seekErr != nil {
+			return firstSeq, nil, fmt.Errorf("seek transcript append position: %w", seekErr)
 		}
 		w.positionUnknown = false
 	}
@@ -527,8 +543,8 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync bool) (int, er
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf) // Encode writes the trailing newline per entry
 	for i, turn := range turns {
-		if err := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn}); err != nil {
-			return firstSeq, fmt.Errorf("marshal transcript entry: %w", err)
+		if encErr := enc.Encode(Entry{Kind: "entry", Seq: firstSeq + i, Turn: turn}); encErr != nil {
+			return firstSeq, nil, fmt.Errorf("marshal transcript entry: %w", encErr)
 		}
 	}
 	data := buf.Bytes()
@@ -539,68 +555,76 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, forceSync bool) (int, er
 	// before this became the one primitive.
 	var startOffset int64
 	if forceSync {
-		var err error
-		if startOffset, err = w.file.Seek(0, io.SeekEnd); err != nil {
-			return firstSeq, fmt.Errorf("seek transcript append start: %w", err)
+		var seekErr error
+		if startOffset, seekErr = w.file.Seek(0, io.SeekEnd); seekErr != nil {
+			return firstSeq, nil, fmt.Errorf("seek transcript append start: %w", seekErr)
 		}
 	}
 
 	previousDirty := w.dirty
 	if written, writeErr := w.writeLineLocked(data); writeErr != nil {
-		return firstSeq, w.settleFailedWriteLocked("write transcript entry", writeErr, startOffset, turns, written, len(data), forceSync, previousDirty)
+		retained, hard := w.settleFailedWriteLocked("write transcript entry", writeErr, startOffset, turns, written, len(data), forceSync, previousDirty, queueRetained)
+		return firstSeq, retained, hard
 	}
 	w.dirty = true
 	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
 		if syncErr := w.file.Sync(); syncErr != nil {
-			return firstSeq, w.settleFailedWriteLocked("sync transcript entry", syncErr, startOffset, turns, len(data), len(data), forceSync, previousDirty)
+			retained, hard := w.settleFailedWriteLocked("sync transcript entry", syncErr, startOffset, turns, len(data), len(data), forceSync, previousDirty, queueRetained)
+			return firstSeq, retained, hard
 		}
 		w.lastSync = time.Now()
 		w.dirty = false
 	}
 	w.commitBatchLocked(turns)
-	return firstSeq, nil
+	return firstSeq, nil, nil
 }
 
 // settleFailedWriteLocked is the single classification of a batch whose write
 // or sync failed. attemptRollback (the durable door) tries to take the bytes
-// back out first. The outcome turns on what is left in the file:
-//   - a clean rollback removed the batch: nothing is recorded, the error stands;
+// back out first. It returns (retained, hard): retained is the sync-failure
+// diagnostic of a whole line left in the file — a record — with hard nil; hard
+// is a failure that recorded nothing (a clean rollback, or a partial line). The
+// outcomes:
+//   - a clean rollback removed the batch: nothing recorded, hard = the error;
 //   - the whole buffer is in the file (a run of records): count the turns, keep
-//     the dirty debt, queue the sync failure for DrainWarnings, and return nil —
-//     the writer stays usable, per the contract on Append;
+//     the dirty debt, and return it as retained — queued for DrainWarnings when
+//     queueRetained, else handed to the caller — the writer stays usable;
 //   - only part of the buffer is in the file (a partial line): the writer is
-//     poisoned permanently and the error stands.
-func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOffset int64, turns []schema.Turn, written, bufLen int, attemptRollback, previousDirty bool) error {
+//     poisoned permanently, hard = the error.
+func (w *Writer) settleFailedWriteLocked(operation string, cause error, startOffset int64, turns []schema.Turn, written, bufLen int, attemptRollback, previousDirty, queueRetained bool) (retained, hard error) {
 	if attemptRollback {
 		removed, rollbackErr := w.rollbackAppendLocked(startOffset)
 		if rollbackErr == nil {
 			w.dirty = previousDirty
-			return fmt.Errorf("%s: %w", operation, cause)
+			return nil, fmt.Errorf("%s: %w", operation, cause)
 		}
 		if removed {
 			// The bytes are gone; a later rollback step failed, but nothing is
 			// recorded and the file's end is what rollbackAppendLocked settled.
-			return fmt.Errorf("%s: %w; %w: %w", operation, cause, ErrRollbackFailed, rollbackErr)
+			return nil, fmt.Errorf("%s: %w; %w: %w", operation, cause, ErrRollbackFailed, rollbackErr)
 		}
 		cause = fmt.Errorf("%w; %w: %w", cause, ErrRollbackFailed, rollbackErr)
 	}
 	if written == 0 {
 		// Nothing landed: the file and the position are as they were, so the
 		// writer stays usable and a retry still lands.
-		return fmt.Errorf("%s: %w", operation, cause)
+		return nil, fmt.Errorf("%s: %w", operation, cause)
 	}
 	w.dirty = true // Close flushes only what it is told is dirty.
 	if written != bufLen {
 		// A partial line is the remains of a record, not a record. No fsync
 		// makes it whole, and an append onto it would be unreadable.
 		w.poisoned = true
-		return fmt.Errorf("%s: %w", operation, cause)
+		return nil, fmt.Errorf("%s: %w", operation, cause)
 	}
 	// The whole buffer is a record every reader will find: count it, keep it as
 	// unsynced debt the next fsync settles, and report the failure as a warning.
 	w.commitBatchLocked(turns)
-	w.queueWarningLocked(fmt.Errorf("%s: %w", operation, cause))
-	return nil
+	retained = fmt.Errorf("%s: %w", operation, cause)
+	if queueRetained {
+		w.queueWarningLocked(retained)
+	}
+	return retained, nil
 }
 
 // commitBatchLocked spends each turn's sequence number and counts the failures

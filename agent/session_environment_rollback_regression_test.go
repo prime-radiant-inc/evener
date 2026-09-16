@@ -465,14 +465,14 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 	}
 }
 
-// TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry: a durable environment
-// append whose sync fails and whose rollback also fails leaves the entry's
-// line in the transcript. Rewinding the tracker there — the plain
-// durability-failure response — makes the next turn render the same
-// observation again under a fresh identity, so the transcript carries the
-// environment twice and every reader projecting it shows duplicate context.
-// The append's outcome is unknown, so it has to be reconciled against the
-// transcript by the entry's stable ID before any retry.
+// TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry: an environment append
+// whose own fsync fails leaves the entry's line in the transcript, and
+// AppendSynced's barrier (a second fsync, past the one-shot injected failure)
+// then makes it durable — so the write succeeds and commits once. Rewinding the
+// tracker there would make the next turn render the same observation again
+// under a fresh identity, so the transcript would carry the environment twice
+// and every reader projecting it show duplicate context; the barrier confirming
+// the entry is what keeps it to one.
 func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
@@ -1461,5 +1461,56 @@ func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("model requests = %d, want 2 (the first turn and the poisoning round): no round may run behind a transcript that refuses its records", got)
+	}
+}
+
+// A buffered write whose whole line landed but whose fsync failed is a retained
+// record: the append returns nil (recorded) and queues the sync failure for the
+// session to surface. This pins that the diagnostic reaches the event sink —
+// the buffered path owns draining it after the write, outside the lock — rather
+// than sitting on the writer's queue unsurfaced.
+func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
+	sess := newTestSessionForEnvctx(t)
+	fs := attachEnvironmentFailureFS(t, sess)
+	syncFailure := errors.New("buffered sync failure diagnostic")
+	seen, mu, done := collectEvents(sess)
+
+	fs.mu.Lock()
+	fs.failure = syncFailure // one buffered fsync fails; the whole line still lands
+	fs.mu.Unlock()
+
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("buffered input whose sync fails"))
+	if err := sess.appendUserInputTurnRefusingPoison(turn); err != nil {
+		t.Fatalf("appendUserInputTurnRefusingPoison error = %v, want nil: the whole line is a record", err)
+	}
+
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	surfaced := false
+	for _, ev := range *seen {
+		if ev.Kind != events.EventWarning {
+			continue
+		}
+		if w, ok := ev.Data.(events.WarningData); ok && strings.Contains(w.Message, syncFailure.Error()) {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Fatal("the buffered retained write's sync-failure diagnostic never reached the event sink")
+	}
+}
+
+// A synced write must not report a held pre-attach turn as durable: holding
+// buffers the turn for a later buffered flush, which is neither recorded nor
+// synced, so an owner that read nil as "committed" would advance state a crash
+// before attach would lose. writeTranscriptSyncedLocked returns an error there
+// instead (M3).
+func TestSyncedWriteRefusesAHeldPreAttachTurn(t *testing.T) {
+	s := &Session{id: "sess-not-ready", stateDir: t.TempDir()}
+	// transcriptReady is false: attachTranscript has not run.
+	if err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {
+		t.Fatal("writeTranscriptSyncedLocked returned nil for a held pre-attach turn; an owner would read that as durable")
 	}
 }

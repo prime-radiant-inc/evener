@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1907,12 +1908,28 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptDurableLocked)
+}
+
+// appendTurnWithSyncedTranscriptMessage records a turn a durability owner
+// depends on being both recorded AND synced before it commits state recovery
+// trusts. Its sole production caller is the delegate seed input (preseedInput):
+// the child is adopted and runs on the strength of that seed, and reads it back
+// from a transcript where a retained (unsynced) line is already visible — so
+// the record must be synced, not merely landed (H1). AppendDurable's
+// recorded-or-nil is the wrong door here for the same reason recordTurn's is
+// the wrong door for a skill carrier.
+func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
+	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
+}
+
+func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
-		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() error { return write(persistedTurn) },
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
@@ -2013,12 +2030,24 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 
 // writeTranscriptSyncedLocked is the durability owner's write: it records AND
 // establishes durability, returning an error unless the entry is both a record
-// and synced. Only the environment producer uses it, through the pair helper;
-// ordinary producers use writeTranscriptDurableLocked and never inspect
-// durability.
+// and synced. Durability owners (the environment producer, skill carriers,
+// delivery-commit records, client-mutation recovery, steering, the delegate
+// seed) use it through the pair helper; ordinary producers use
+// writeTranscriptDurableLocked and never inspect durability.
+//
+// Unlike the other doors it does NOT hold a turn before the transcript is
+// attached: a held turn is neither recorded nor synced, and the flush at attach
+// is a buffered append, so returning nil would tell an owner a turn is durable
+// that a crash before attach would lose. A pre-attach synced write is an error
+// the owner keeps its obligation pending on. (No production owner runs before
+// attach — the tracker guard and the delegate seed's read-back both preclude it
+// — so this is a fail-closed guard, not a live path.)
 func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
-	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+	s.mu.Lock()
+	ready := s.transcriptReady
+	s.mu.Unlock()
+	if !ready {
+		return errors.New("transcript not ready: a synced write cannot be held before attach")
 	}
 	return s.attachedTranscript().AppendSynced(t)
 }

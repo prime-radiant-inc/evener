@@ -228,8 +228,8 @@ func TestAppendDurable_PartialLineRollbackFailurePoisonsWriter(t *testing.T) {
 // A write that transferred the whole line before failing leaves a record a
 // reader will see, so the append returns nil and the failure surfaces as a
 // warning. Its sequence number is spent and the failure it settles is counted,
-// exactly as the retained-entry path does — and the writer still stops, because
-// a write that reported failure says nothing dependable about the tail.
+// exactly as the retained-entry path does — and the writer stays USABLE: a
+// whole line is dirty debt the next fsync settles, not a partial-line poison.
 func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	w, fs := armPartialWriteFailure(t, math.MaxInt32)
 
