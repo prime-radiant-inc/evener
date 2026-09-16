@@ -475,6 +475,69 @@ func TestAppendUserInputRefusingPoison_MarksFailedWriteNoEntry(t *testing.T) {
 	}
 }
 
+// foldRecordWriteFailFS fails exactly the fold-record write (its line carries
+// the fold_record field) with a clean rollback (0 bytes, writer stays usable),
+// so the markers land but the record does not.
+type foldRecordWriteFailFS struct{ afero.Fs }
+
+func (fs *foldRecordWriteFailFS) Create(name string) (afero.File, error) {
+	f, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &foldRecordWriteFailFile{File: f}, nil
+}
+
+type foldRecordWriteFailFile struct{ afero.File }
+
+func (f *foldRecordWriteFailFile) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("fold_record")) {
+		return 0, errors.New("injected fold record write failure")
+	}
+	return f.File.Write(p)
+}
+
+// M: the fold record's write outcome must not be discarded. When the markers
+// land but the record's write fails (clean rollback, nothing recorded), a
+// restart silently falls back to the last-marker anchor and drops the retained
+// tail — the #1200 bug. The failure must be surfaced.
+func TestFold_RecordWriteFailureIsSurfaced(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "record-write-fail", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 10 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("t%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	// Swap in a transcript whose fold-record write fails cleanly.
+	fw, err := transcript.NewWriterWithFS(&foldRecordWriteFailFS{Fs: afero.NewMemMapFs()}, "/t.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = fw.Close() })
+	s.mu.Lock()
+	s.transcript = fw
+	s.mu.Unlock()
+	drainPendingEvents(s)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	surfaced := false
+	for _, ev := range drainPendingEvents(s) {
+		if ev.Kind != events.EventWarning {
+			continue
+		}
+		if wd, ok := ev.Data.(events.WarningData); ok && strings.Contains(wd.Message, "fold record write failed") {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Fatal("the fold record write failure was never surfaced as a warning; a restart would silently drop the retained tail")
+	}
+}
+
 // TestFoldPublication_RetainedTailSurvivesRestart is the #1200 regression in
 // production form: the recent turns a checkpoint preserves verbatim are
 // recorded as ordinary transcript entries BEFORE the fold's marker, so the old

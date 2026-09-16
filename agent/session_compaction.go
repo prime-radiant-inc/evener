@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -600,6 +601,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit := &foldCommit{}
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
+	var foldRecordWriteErr error
 	commitTranscriptsLocked := func(published []schema.Turn) {
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
@@ -626,7 +628,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if commit.receipt != nil && commit.receipt.Operation.PublicationID != "" {
 			foldID = commit.receipt.Operation.PublicationID
 		}
-		s.writeFoldRecordLocked(published, commit.mergeBackCount, pendingCompactionTurns, markerSeqs, steeringSeqs, foldID)
+		foldRecordWriteErr = s.writeFoldRecordLocked(published, commit.mergeBackCount, pendingCompactionTurns, markerSeqs, steeringSeqs, foldID)
 		// Resolve the live history copies of the turns this fold just wrote —
 		// its head marker and its injected steering — to the real Seqs they
 		// spent. Without this the next fold would see them still carrying their
@@ -665,6 +667,15 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			s.handleCompactionTurnEffects(turn, compactionTurnWriteErrs[i], superseded, commit.publishedRevision)
 		}
 		s.emitSteeringTurnRecords(pendingSteering, steeringWriteErrs)
+		if foldRecordWriteErr != nil {
+			// The fold's markers landed but its record did not (a hard write
+			// failure; a whole-line-unsynced record is queued on the writer and
+			// surfaced separately). Without the record a restart falls back to
+			// the last-marker anchor and drops the retained tail — the #1200
+			// bug — so this must never be silent, even though the in-memory
+			// publish already stands.
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fold record write failed; retained tail will not survive restart: %v", foldRecordWriteErr)})
+		}
 		if artifactProduced && !superseded {
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
 		}
@@ -872,7 +883,11 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) (
 	for i, record := range records {
 		if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
 			errs[i] = appendTurn(record.turn)
-			seqs[i] = recordedSeq(0, errs[i])
+			// The seam intercepts the write, so it produces no real transcript
+			// entry regardless of whether it injected a failure: mark it
+			// no-entry so the fold record never names its (absent) entry — a
+			// zero here would read as entry 0.
+			seqs[i] = schema.NoTranscriptEntrySeq
 			continue
 		}
 		seq, err := s.writeTranscriptLocked(record.turn)
@@ -882,28 +897,6 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) (
 	return seqs, errs
 }
 
-// writeFoldRecordLocked appends the fold's durable manifest — the transcript
-// entries its published history is made of, named by Seq — so a restart
-// rebuilds exactly this history rather than anchoring on the last marker and
-// dropping the retained tail (#1200). It runs inside the publication
-// transaction's transcript-commit phase (attentionMu held), AFTER the fold's
-// markers and injected steering turns are written and their Seqs learned, so
-// the record is the last entry the fold writes and everything after it is live
-// post-fold history.
-//
-// published is the folded history: [head marker, ...strategy-kept tail...,
-// ...merge-back...]. mergeBackCount is how many of its trailing turns
-// publishFoldedHistory merged back (recorded concurrently during the fold).
-// The head marker's Seq comes from markers/markerSeqs, and is used only when
-// the marker's own write recorded it (otherwise no record is written). Each
-// remaining turn is classified purely by its Seq marker, so a real entry Seq of
-// 0 is never load-bearing: seqFoldInjectedSteering names a steering turn this
-// fold injected (its durable entry is the next steering write's, from
-// steeringSeqs in order); any other negative marker (NoTranscriptEntrySeq for a
-// repair synthetic, strategy injection or failed write; seqHeldPreAttach for a
-// held turn) is omitted; a Seq >= 0 is a durable entry named directly. A fold
-// that produced no marker writes no record — there is no pre-marker tail for
-// the anchor to drop.
 // headMarkerSeq returns the durable Seq of the marker that heads the published
 // folded history — the summary, or the checkpoint when summarization did not
 // run — taken from the last written marker of that kind. found is false when
@@ -957,9 +950,38 @@ func (s *Session) stampFoldWrittenSeqsLocked(published, markers []schema.Turn, m
 	}
 }
 
-func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount int, markers []schema.Turn, markerSeqs, steeringSeqs []int, foldID string) {
+// writeFoldRecordLocked appends the fold's durable manifest — the transcript
+// entries its published history is made of, named by Seq — so a restart
+// rebuilds exactly this history rather than anchoring on the last marker and
+// dropping the retained tail (#1200). It runs inside the publication
+// transaction's transcript-commit phase (attentionMu held), AFTER the fold's
+// markers and injected steering turns are written and their Seqs learned, so
+// the record is the last entry the fold writes and everything after it is live
+// post-fold history.
+//
+// published is the folded history: [head marker, ...strategy-kept tail...,
+// ...merge-back...]. mergeBackCount is how many of its trailing turns
+// publishFoldedHistory merged back (recorded concurrently during the fold).
+// The head marker's Seq comes from markers/markerSeqs, and is used only when
+// the marker's own write recorded it (otherwise no record is written). Each
+// remaining turn is classified purely by its Seq marker, so a real entry Seq of
+// 0 is never load-bearing: seqFoldInjectedSteering names a steering turn this
+// fold injected (its durable entry is the next steering write's, from
+// steeringSeqs in order); any other negative marker (NoTranscriptEntrySeq for a
+// repair synthetic, strategy injection or failed write; seqHeldPreAttach for a
+// held turn) is omitted; a Seq >= 0 is a durable entry named directly. A fold
+// that produced no marker writes no record — there is no pre-marker tail for
+// the anchor to drop.
+//
+// It returns the record write's hard failure (nothing recorded, clean
+// rollback) so the transaction surfaces it: the markers landed but the record
+// did not, so a restart would silently fall back to the last-marker anchor and
+// drop the retained tail. A whole-line-unsynced record IS a record (queued on
+// the writer and surfaced separately), so it returns nil; so does a fold with
+// no durable marker to anchor.
+func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount int, markers []schema.Turn, markerSeqs, steeringSeqs []int, foldID string) error {
 	if len(published) == 0 || len(markers) == 0 {
-		return
+		return nil
 	}
 	headSeq, found := headMarkerSeq(published, markers, markerSeqs)
 	if !found || headSeq < 0 {
@@ -969,7 +991,8 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 		// durable marker to anchor a restart on, so write no record — resume
 		// falls back to the pre-fold history rather than naming a phantom
 		// entry (which the unspent-seq reuse would resolve to this very record).
-		return
+		// The marker's own write failure is surfaced by handleCompactionTurnEffects.
+		return nil
 	}
 	keptTail := published[1 : len(published)-mergeBackCount]
 	mergeBack := published[len(published)-mergeBackCount:]
@@ -1005,7 +1028,10 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 	}
 	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
 	record.Fold = &schema.FoldRecord{FoldID: foldID, Layers: []int{headSeq}, RetainedSeqs: retained}
-	_, _ = s.writeTranscriptDurableLocked(record)
+	if _, err := s.writeTranscriptDurableLocked(record); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
+		return err
+	}
+	return nil
 }
 
 // emitSteeringTurnRecords reports the records' transcript-write outcomes and
