@@ -45,7 +45,7 @@ export function rebindAction(registry: KeybindingsRegistry, actionId: string, ch
     removeActionBindings(registry, actionId);
     return;
   }
-  const sequence = parseChord(chord);
+  const sequence = parseChord(registry.parseKeybinding, chord);
   const serialized = serializeChord(sequence);
   const scope = defaultInput.scope ?? GLOBAL_SCOPE;
   for (const existing of registry.getState().bindings) {

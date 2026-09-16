@@ -1,3 +1,4 @@
+import { parseKeybinding } from "tinykeys";
 import { afterEach, describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
 import { formatSequence, parseChord, serializeChord } from "./chord";
@@ -75,13 +76,17 @@ describe("default binding map", () => {
   ])("%s is bound to %s", (actionId, chord) => {
     const binding = DEFAULT_BINDINGS.find((b) => b.actionId === actionId);
     expect(binding).toBeDefined();
-    expect(serializeChord(parseChord(String(binding?.chord)))).toBe(serializeChord(parseChord(chord)));
+    expect(serializeChord(parseChord(parseKeybinding, String(binding?.chord)))).toBe(
+      serializeChord(parseChord(parseKeybinding, chord)),
+    );
   });
 
   test('the "?" trigger lists Shift as OPTIONAL (every common layout types ? with Shift held; a bare binding would never fire)', () => {
     const binding = DEFAULT_BINDINGS.find((b) => b.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
     expect(binding?.actionId).toBe(ACTIONS.cheatsheetToggle);
-    expect(serializeChord(parseChord(String(binding?.chord)))).toBe(serializeChord(parseChord("[Shift]+?")));
+    expect(serializeChord(parseChord(parseKeybinding, String(binding?.chord)))).toBe(
+      serializeChord(parseChord(parseKeybinding, "[Shift]+?")),
+    );
   });
 
   test("editable-target policy matches today's per-chord behavior", () => {
@@ -135,7 +140,7 @@ describe("default binding map", () => {
 
   test("display formatting renders every default chord (optional modifiers are dropped from display - parked L22 minor, but it must not crash)", () => {
     for (const binding of DEFAULT_BINDINGS) {
-      const rendered = formatSequence(parseChord(String(binding.chord)));
+      const rendered = formatSequence(parseChord(parseKeybinding, String(binding.chord)));
       expect(rendered.length).toBeGreaterThan(0);
     }
   });
@@ -188,7 +193,7 @@ describe("default bindings through the dispatcher", () => {
   });
 
   function setup() {
-    registry = createKeybindingsRegistry();
+    registry = createKeybindingsRegistry(parseKeybinding);
     calls = [];
     for (const actionId of Object.values(ACTIONS)) {
       registry.getState().registerAction(actionId, () => {
@@ -394,11 +399,11 @@ describe("register vs shapes agreement", () => {
   // restore that then throws, or reject one that would succeed.
   test("both paths include or exclude the ? trigger for the SAME pref value", () => {
     for (const pref of [true, false]) {
-      const registry = createKeybindingsRegistry();
+      const registry = createKeybindingsRegistry(parseKeybinding);
       const registered = registerDefaultBindingsForAction(registry, ACTIONS.cheatsheetToggle, {
         characterKeyTriggers: pref,
       }).map((b) => b.id);
-      const shaped = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+      const shaped = defaultBindingShapesForAction(parseKeybinding, ACTIONS.cheatsheetToggle, {
         characterKeyTriggers: pref,
       }).map((s) => s.id);
       expect(registered).toEqual(shaped);

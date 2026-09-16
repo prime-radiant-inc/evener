@@ -340,7 +340,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   }, [editable, capturing]);
 
   const binding = displayBindingFor(bindings, actionId);
-  const customized = isActionCustomized(bindings, actionId, characterKeyTriggers);
+  const customized = isActionCustomized(keybindingsRegistry.parseKeybinding, bindings, actionId, characterKeyTriggers);
   // Extra default entries beyond the platform base entry - in practice
   // exactly cheatsheet.toggle's conditional "?" trigger. The overrides model
   // owns an action's whole chord set, so these are the setting's to manage,

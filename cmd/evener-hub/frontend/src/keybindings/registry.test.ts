@@ -1,9 +1,21 @@
+import { parseKeybinding } from "tinykeys";
 import { describe, expect, test, vi } from "vitest";
+import type { KeybindingParser } from "./chord";
 import { createKeybindingsRegistry, GLOBAL_SCOPE } from "./registry";
+
+describe("the parser port", () => {
+  test("string chords parse through the parser the registry was created with", () => {
+    const parse: KeybindingParser = () => [[["Meta"], [], "z"]];
+    const registry = createKeybindingsRegistry(parse);
+    const binding = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "ignored" });
+    expect(binding.chord).toEqual([{ modifiers: ["Meta"], optionalModifiers: [], key: "z" }]);
+    expect(registry.parseKeybinding).toBe(parse);
+  });
+});
 
 describe("action registration", () => {
   test("registers and unregisters an action", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const run = vi.fn();
     const unregister = registry.getState().registerAction("palette.open", run);
     expect(registry.getState().actions.get("palette.open")).toEqual([run]);
@@ -16,7 +28,7 @@ describe("action registration", () => {
     // selection.quote - the multi-instance equivalent of the old per-instance
     // document listeners. Overwriting or clobbering across instances breaks
     // ⌘' in multi-pane workspaces.
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const first = vi.fn();
     const second = vi.fn();
     registry.getState().registerAction("a", first);
@@ -26,7 +38,7 @@ describe("action registration", () => {
   });
 
   test("a stale disposer cannot remove a later registration of the same id", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const first = vi.fn();
     const second = vi.fn();
     const unregisterFirst = registry.getState().registerAction("a", first);
@@ -39,7 +51,7 @@ describe("action registration", () => {
 
 describe("binding registration", () => {
   test("applies defaults: global scope, editable targets suppressed", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const binding = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     expect(binding.scope).toBe(GLOBAL_SCOPE);
     expect(binding.allowInEditable).toBe(false);
@@ -47,7 +59,7 @@ describe("binding registration", () => {
   });
 
   test("allowInModal defaults to false and is stored verbatim when set", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const plain = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     expect(plain.allowInModal).toBe(false);
     const exempt = registry
@@ -57,14 +69,14 @@ describe("binding registration", () => {
   });
 
   test("accepts a pre-parsed chord sequence", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const parsed = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     const fromAst = registry.getState().registerBinding({ id: "b2", actionId: "a1", chord: parsed.chord, scope: "s" });
     expect(fromAst.chord).toEqual(parsed.chord);
   });
 
   test("rejects the same chord twice in the same scope", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     expect(() => registry.getState().registerBinding({ id: "b2", actionId: "a2", chord: "$mod+K" })).toThrow(
       /conflict/i,
@@ -73,7 +85,7 @@ describe("binding registration", () => {
   });
 
   test("allows the same chord in different scopes (stack order shadows)", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "Escape" });
     expect(() =>
       registry.getState().registerBinding({ id: "b2", actionId: "a2", chord: "Escape", scope: "settings" }),
@@ -81,7 +93,7 @@ describe("binding registration", () => {
   });
 
   test("rejects a duplicate binding id even across scopes", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     expect(() =>
       registry.getState().registerBinding({ id: "b1", actionId: "a2", chord: "$mod+J", scope: "settings" }),
@@ -89,7 +101,7 @@ describe("binding registration", () => {
   });
 
   test("unregisterBinding removes the entry", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K" });
     expect(registry.getState().unregisterBinding("b1")).toBe(true);
     expect(registry.getState().bindings).toHaveLength(0);
@@ -97,7 +109,7 @@ describe("binding registration", () => {
   });
 
   test("carries an optional structured when clause without evaluating it", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const binding = registry
       .getState()
       .registerBinding({ id: "b1", actionId: "a1", chord: "$mod+K", when: { pane: "settings" } });
@@ -107,7 +119,7 @@ describe("binding registration", () => {
 
 describe("scope stack", () => {
   test("push appends, pop removes the topmost matching scope", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().pushScope("a");
     registry.getState().pushScope("b");
     registry.getState().pushScope("a");
@@ -119,7 +131,7 @@ describe("scope stack", () => {
   });
 
   test("the pushScope disposer removes its own entry and is idempotent", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     registry.getState().pushScope("a");
     const dispose = registry.getState().pushScope("b");
     dispose();

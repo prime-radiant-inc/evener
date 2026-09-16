@@ -1,3 +1,4 @@
+import { parseKeybinding } from "tinykeys";
 import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./actions";
 import { serializeChord } from "./chord";
@@ -6,7 +7,7 @@ import { rebindAction, restoreDefaultBinding } from "./overrides";
 import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
 
 function withDefaults(): KeybindingsRegistry {
-  const registry = createKeybindingsRegistry();
+  const registry = createKeybindingsRegistry(parseKeybinding);
   registerDefaultBindings(registry);
   return registry;
 }

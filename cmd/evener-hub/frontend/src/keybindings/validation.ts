@@ -16,6 +16,7 @@
 import { ACTIONS } from "./actions";
 import {
   chordsOverlap,
+  type KeybindingParser,
   type KeySequence,
   keyComparisonIdentity,
   parseChord,
@@ -106,23 +107,6 @@ function canonicalPress(sequence: KeySequence): string | null {
   return `${press.modifiers.join("+")}+${keyComparisonIdentity(press.key)}`;
 }
 
-const RESERVED_BY_PLATFORM: Record<KeybindingsPlatform, ReadonlySet<string>> = {
-  apple: new Set(
-    [...COMMON_RESERVED, ...APPLE_RESERVED].map((chord) => {
-      const canonical = canonicalPress(parseChord(chord));
-      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
-      return canonical;
-    }),
-  ),
-  other: new Set(
-    [...COMMON_RESERVED, ...OTHER_RESERVED].map((chord) => {
-      const canonical = canonicalPress(parseChord(chord));
-      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
-      return canonical;
-    }),
-  ),
-};
-
 // The same reserved chords as modifier-set + key-value pairs, for the REGEX
 // path: a regex chord like Control+(W) never string-matches the canonical
 // set, but it matches the reserved event, so it must be flagged the same way
@@ -132,17 +116,42 @@ interface ReservedPress {
   modifiers: string;
   keyValue: string;
 }
-function reservedPresses(chords: string[]): ReservedPress[] {
-  return chords.map((chord) => {
-    const press = parseChord(chord)[0];
+interface ReservedChords {
+  canonical: ReadonlySet<string>;
+  presses: readonly ReservedPress[];
+}
+
+function reservedChords(parse: KeybindingParser, chords: readonly string[]): ReservedChords {
+  const presses = chords.map((chord) => {
+    const press = parseChord(parse, chord)[0];
     if (press === undefined || press.key instanceof RegExp) throw new Error(`bad reserved chord "${chord}"`);
     return { modifiers: press.modifiers.join("+"), keyValue: keyComparisonIdentity(press.key) };
   });
+  const canonical = new Set(
+    chords.map((chord) => {
+      const canonical = canonicalPress(parseChord(parse, chord));
+      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
+      return canonical;
+    }),
+  );
+  return { canonical, presses };
 }
-const RESERVED_PRESSES_BY_PLATFORM: Record<KeybindingsPlatform, readonly ReservedPress[]> = {
-  apple: reservedPresses([...COMMON_RESERVED, ...APPLE_RESERVED]),
-  other: reservedPresses([...COMMON_RESERVED, ...OTHER_RESERVED]),
-};
+
+// The reserved lists are fixed strings, but they are parsed through the
+// host's parser like every other chord, so they are built once per parser on
+// first use rather than at module load (the package has no parser of its own).
+const reservedByParser = new WeakMap<KeybindingParser, Record<KeybindingsPlatform, ReservedChords>>();
+function reservedFor(parse: KeybindingParser): Record<KeybindingsPlatform, ReservedChords> {
+  let tables = reservedByParser.get(parse);
+  if (tables === undefined) {
+    tables = {
+      apple: reservedChords(parse, [...COMMON_RESERVED, ...APPLE_RESERVED]),
+      other: reservedChords(parse, [...COMMON_RESERVED, ...OTHER_RESERVED]),
+    };
+    reservedByParser.set(parse, tables);
+  }
+  return tables;
+}
 
 export interface OverrideRule {
   action: string;
@@ -214,7 +223,8 @@ export function validateOverrideRules(
   characterKeyTriggers = true,
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
-  const reserved = RESERVED_BY_PLATFORM[platform];
+  const parse = registry.parseKeybinding;
+  const reserved = reservedFor(parse)[platform];
 
   interface Candidate {
     rule: OverrideRule;
@@ -245,7 +255,7 @@ export function validateOverrideRules(
     }
     let sequence: KeySequence;
     try {
-      sequence = parseChord(rule.chord);
+      sequence = parseChord(parse, rule.chord);
     } catch (error) {
       warnings.push({
         rule,
@@ -255,7 +265,7 @@ export function validateOverrideRules(
       continue;
     }
     const canonical = canonicalPress(sequence);
-    if (canonical !== null && reserved.has(canonical)) {
+    if (canonical !== null && reserved.canonical.has(canonical)) {
       warnings.push({
         rule,
         reason: "reserved-chord",
@@ -270,7 +280,7 @@ export function validateOverrideRules(
     if (onlyPress !== undefined && onlyPress.key instanceof RegExp) {
       const modifiers = onlyPress.modifiers.join("+");
       const regex = onlyPress.key;
-      const reservedHit = RESERVED_PRESSES_BY_PLATFORM[platform].some(
+      const reservedHit = reserved.presses.some(
         (entry) => entry.modifiers === modifiers && regexMatchesKeyValue(regex, entry.keyValue),
       );
       if (reservedHit) {
@@ -301,7 +311,7 @@ export function validateOverrideRules(
   // already mirrors the pref) is untouched. Only the default-map shape is
   // adjusted: a cheatsheet.toggle override candidate or a dropped restore
   // overwrites the action's whole final entry below anyway.
-  const questionShape = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+  const questionShape = defaultBindingShapesForAction(parse, ACTIONS.cheatsheetToggle, {
     characterKeyTriggers: true,
   }).find((shape) => shape.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
   if (questionShape !== undefined) {
@@ -340,7 +350,7 @@ export function validateOverrideRules(
     for (const action of dropped) {
       final.set(
         action,
-        defaultBindingShapesForAction(action, { characterKeyTriggers }).map((shape) => ({
+        defaultBindingShapesForAction(parse, action, { characterKeyTriggers }).map((shape) => ({
           scope: shape.scope,
           sequence: shape.sequence,
         })),

@@ -5,11 +5,11 @@
 // hand-maintained copies - the survey's stale-HELP_ROWS lesson, named as a
 // binding constraint in docs/superpowers/plans/2026-09-04-webui-keybindings-p4-plan.md.
 //
-// Deliberately React-free and store-free like the rest of src/keybindings/:
-// the registry's bindings array and the characterKeyTriggers pref value are
-// passed in by the caller.
+// Deliberately React-free and store-free like the rest of the keybinding
+// group: the registry's bindings array, its parser and the
+// characterKeyTriggers pref value are passed in by the caller.
 
-import { serializeChord } from "./chord";
+import { type KeybindingParser, serializeChord } from "./chord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingChordsForAction } from "./defaults";
 import type { Binding } from "./registry";
 
@@ -60,6 +60,7 @@ export function displayBindingFor(bindings: readonly Binding[], actionId: string
  * default map only while characterKeyTriggers is on, so turning the pref off
  * (which unregisters that binding) is not itself a customization. */
 export function isActionCustomized(
+  parse: KeybindingParser,
   bindings: readonly Binding[],
   actionId: string,
   characterKeyTriggers: boolean,
@@ -68,7 +69,7 @@ export function isActionCustomized(
     .filter((b) => b.actionId === actionId)
     .map((b) => `${b.scope} ${serializeChord(b.chord)}`)
     .sort();
-  const defaults = defaultBindingChordsForAction(actionId)
+  const defaults = defaultBindingChordsForAction(parse, actionId)
     .filter((info) => characterKeyTriggers || info.id !== CHARACTER_KEY_TRIGGER_BINDING_ID)
     .map((info) => `${info.scope} ${info.serialized}`)
     .sort();

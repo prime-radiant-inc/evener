@@ -2,6 +2,7 @@ import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-clie
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { parseKeybinding } from "tinykeys";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ACTIONS } from "../../../keybindings/actions";
 import { parseChord, serializeChord } from "../../../keybindings/chord";
@@ -625,7 +626,7 @@ test("capturing Space records the canonical name and the chord round-trips throu
     config: { version: 1, rules: [{ action: ACTIONS.composerFocus, chord: "Space" }] },
   });
   // The saved chord parses back to the same press (it would throw on " ").
-  expect(serializeChord(parseChord("Space"))).toBe("Space");
+  expect(serializeChord(parseChord(parseKeybinding, "Space"))).toBe("Space");
   // The confirmed payload reconciled onto the registry with the same chord.
   await waitFor(() => expect(within(rowFor("Focus the composer")).getByText("Space")).toBeTruthy());
 });
@@ -848,8 +849,8 @@ test("capturing + saves a chord that round-trips and fires on a real + keydown",
       });
       // The serialized chord parses back to itself (a delimiter collision
       // would throw or misparse the key).
-      expect(serializeChord(parseChord("Shift++"))).toBe("Shift++");
-      expect(serializeChord(parseChord("Control++"))).toBe("Control++");
+      expect(serializeChord(parseChord(parseKeybinding, "Shift++"))).toBe("Shift++");
+      expect(serializeChord(parseChord(parseKeybinding, "Control++"))).toBe("Control++");
 
       // The confirmed payload reconciled, and the REAL dispatcher's matcher
       // fires the action on the + keydown.

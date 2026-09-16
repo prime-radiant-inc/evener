@@ -107,7 +107,8 @@ export function reconcileCharacterKeyTrigger(): void {
   // optionals as allowed on both sides, so this one predicate covers both
   // the bare "?" and the Shift+"?" forms. Only bindings of OTHER actions
   // count - cheatsheet.toggle's own base chord never overlaps "?".
-  const sequence = typeof input.chord === "string" ? parseChord(input.chord) : input.chord;
+  const sequence =
+    typeof input.chord === "string" ? parseChord(keybindingsRegistry.parseKeybinding, input.chord) : input.chord;
   const scope = input.scope ?? GLOBAL_SCOPE;
   const overlapping = registry.bindings.find(
     (binding) =>

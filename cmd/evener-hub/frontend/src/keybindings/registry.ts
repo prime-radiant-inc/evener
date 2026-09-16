@@ -3,8 +3,9 @@
 // -> run function), the binding entries, and the scope stack the dispatcher
 // evaluates top-down. Pure logic - no DOM, no React.
 
+import { parseKeybinding } from "tinykeys";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { type KeySequence, parseChord, serializeChord } from "./chord";
+import { type KeybindingParser, type KeySequence, parseChord, serializeChord } from "./chord";
 
 /** The implicit bottom of every scope stack: bindings with no `scope` land here. */
 export const GLOBAL_SCOPE = "global";
@@ -79,10 +80,17 @@ export interface KeybindingsState {
   popScope(scope: string): boolean;
 }
 
-export type KeybindingsRegistry = StoreApi<KeybindingsState>;
+export type KeybindingsRegistry = StoreApi<KeybindingsState> & {
+  /** The parser every string chord registered here goes through; the
+   * parse-taking helpers (defaults, display, validation) borrow it so one
+   * registry parses consistently everywhere. */
+  readonly parseKeybinding: KeybindingParser;
+};
 
-export function createKeybindingsRegistry(): KeybindingsRegistry {
-  return createStore<KeybindingsState>()((set, get) => ({
+/** Builds an empty registry whose string chords parse through `parse`
+ * (tinykeys' parseKeybinding on both apps). */
+export function createKeybindingsRegistry(parse: KeybindingParser): KeybindingsRegistry {
+  const store = createStore<KeybindingsState>()((set, get) => ({
     actions: new Map(),
     bindings: [],
     scopeStack: [],
@@ -112,7 +120,7 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
     },
 
     registerBinding(input) {
-      const chord = typeof input.chord === "string" ? parseChord(input.chord) : input.chord;
+      const chord = typeof input.chord === "string" ? parseChord(parse, input.chord) : input.chord;
       const binding: Binding = {
         id: input.id,
         actionId: input.actionId,
@@ -162,8 +170,9 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
       return true;
     },
   }));
+  return Object.assign(store, { parseKeybinding: parse });
 }
 
-/** The app-wide registry. Task 2 wires it to AppShell; tests build their own
- * with createKeybindingsRegistry(). */
-export const keybindingsRegistry = createKeybindingsRegistry();
+/** The app-wide registry, bound to tinykeys' parser; tests build their own
+ * with createKeybindingsRegistry(parseKeybinding). */
+export const keybindingsRegistry = createKeybindingsRegistry(parseKeybinding);

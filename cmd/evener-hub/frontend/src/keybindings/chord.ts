@@ -1,15 +1,28 @@
 // Canonical chord AST for the keybinding module: a Chord is one key press
 // (required modifiers + optional modifiers + key), a KeySequence is a list of
 // presses (tinykeys' space-separated multi-press bindings). Parsing delegates
-// to tinykeys' parseKeybinding, which also resolves the "$mod" alias to "Meta"
-// on Apple platforms and "Control" everywhere else at parse time - so an AST
-// captured at runtime is already platform-resolved.
+// to a KeybindingParser the host injects - tinykeys' parseKeybinding on both
+// apps - which also resolves the "$mod" alias to "Meta" on Apple platforms and
+// "Control" everywhere else at parse time, so an AST captured at runtime is
+// already platform-resolved. The package itself names no parser: it is a
+// port, so the package stays free of runtime dependencies.
 //
 // This module is deliberately React-free: the Mod ⌘/Ctrl platform-split
-// CONCEPT comes from widgets/keyhint (see keyhint/index.tsx:24-37), but no
-// widget code is imported here.
+// CONCEPT is shared with the web's keyhint widget, but no widget code is
+// imported here.
 
-import { parseKeybinding } from "tinykeys";
+/** One parsed press in tinykeys' shape: required modifiers, optional
+ * modifiers, then the key (a KeyboardEvent.key/code string or a regex). */
+export type KeybindingPress = readonly [
+  requiredModifiers: readonly string[],
+  optionalModifiers: readonly string[],
+  key: string | RegExp,
+];
+
+/** The parser port: a tinykeys keybinding string ("$mod+K", "Shift+A b") to
+ * its presses. tinykeys' own parseKeybinding satisfies it directly; the host
+ * passes it to createKeybindingsRegistry and to the parse-taking helpers. */
+export type KeybindingParser = (keybinding: string) => readonly KeybindingPress[];
 
 export interface Chord {
   /** Required modifiers, canonical KeyboardEvent modifier names, in canonical order. */
@@ -30,10 +43,11 @@ function byCanonicalOrder(a: string, b: string): number {
   return MODIFIER_ORDER.indexOf(a) - MODIFIER_ORDER.indexOf(b);
 }
 
-/** Parses a tinykeys keybinding string ("$mod+K", "Shift+A b") into the canonical AST. */
-export function parseChord(input: string): KeySequence {
+/** Parses a tinykeys keybinding string ("$mod+K", "Shift+A b") into the
+ * canonical AST through the injected parser. */
+export function parseChord(parse: KeybindingParser, input: string): KeySequence {
   if (input.trim() === "") throw new Error("cannot parse an empty keybinding");
-  return parseKeybinding(input).map(([required, optional, key]) => {
+  return parse(input).map(([required, optional, key]) => {
     if (key === "") throw new Error("cannot parse a keybinding with an empty key");
     return {
       modifiers: [...required].sort(byCanonicalOrder),
