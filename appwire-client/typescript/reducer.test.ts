@@ -2472,6 +2472,166 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
   expect(result.olderCursor).toBe("cursor_0");
 });
 
+// An explicitly empty image list is a value the model must be able to hold:
+// "this item has no images any more" is what a live item/completed says when
+// the user's images were removed, and an older page replaying the same item
+// with its original attachment must not put them back. `undefined` is
+// reserved for a frame that carries no images field at all, where the page's
+// own list is the only one anybody has.
+test("mergeOlderItemPage keeps a live removal's empty image list over an older page's stale one", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "user-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+
+  // The live frame removes the images.
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "shared-turn",
+        item: {
+          id: "user-item",
+          transcriptKey: "shared-key",
+          position: { entry: 4, item: 0 },
+          turnId: "shared-turn",
+          type: "userMessage",
+          text: "look",
+          status: "completed",
+          images: [],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+
+  // An older page replays the item as it first arrived, images and all.
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "user-item",
+            transcriptKey: "shared-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  });
+  expect(itemAt(turnAt(merged, 0), 0).images).toEqual([]);
+});
+
+// The same rule for a tool call's output images.
+test("mergeOlderItemPage keeps a live removal's empty output-image list over an older page's stale one", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "tool-item",
+            transcriptKey: "tool-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "commandExecution",
+            toolName: "screenshot",
+            callId: "call-1",
+            status: "completed",
+            outputImages: [{ source: "fixture", url: "/s/sess/images/shot", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "shared-turn",
+        item: {
+          id: "tool-item",
+          transcriptKey: "tool-key",
+          position: { entry: 4, item: 0 },
+          turnId: "shared-turn",
+          type: "commandExecution",
+          toolName: "screenshot",
+          callId: "call-1",
+          status: "completed",
+          outputImages: [],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "shared-turn",
+        status: "completed",
+        itemsView: "fragment",
+        items: [
+          {
+            id: "tool-item",
+            transcriptKey: "tool-key",
+            position: { entry: 4, item: 0 },
+            turnId: "shared-turn",
+            type: "commandExecution",
+            toolName: "screenshot",
+            callId: "call-1",
+            status: "completed",
+            outputImages: [{ source: "fixture", url: "/s/sess/images/shot", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+    nextCursor: undefined,
+  });
+  expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([]);
+});
+
 test("mergeOlderItemPage preserves older settled payload and usage when the current same-key fragment omits them", () => {
   const thread = testThread({
     turns: [

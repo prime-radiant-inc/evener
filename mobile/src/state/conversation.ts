@@ -342,21 +342,18 @@ export function truncateText(text: string, maxBytes: number): string {
   return truncated + marker;
 }
 
-// Apply truncation to an activity detail's text-bearing fields (arguments,
+// One text field, cut to the display bound.
+type BoundText = (text: string) => string;
+
+// Apply the bound to an activity detail's text-bearing fields (arguments,
 // output, error). Shared by an activity's own top-level detail and each of
 // its clustered members' details, so both are bounded the same way.
-function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
+function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
   return {
     ...detail,
-    arguments: detail.arguments
-      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
-      : detail.arguments,
-    output: detail.output
-      ? truncateText(detail.output, MAX_ITEM_BYTES)
-      : detail.output,
-    error: detail.error
-      ? truncateText(detail.error, MAX_ITEM_BYTES)
-      : detail.error,
+    arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
+    output: detail.output ? bound(detail.output) : detail.output,
+    error: detail.error ? bound(detail.error) : detail.error,
   };
 }
 
@@ -365,19 +362,19 @@ function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
 // projection expands a clustered activity's members directly, so each
 // member's own detail is truncated too — not just the cluster's top-level
 // detail (the first member's).
-function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
+function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
+      return { ...item, markdown: bound(item.markdown) };
     case "activity":
       return {
         ...item,
-        detail: truncateActivityDetail(item.detail),
+        detail: truncateActivityDetail(item.detail, bound),
         ...(item.members
           ? {
               members: item.members.map((member) => ({
                 ...member,
-                detail: truncateActivityDetail(member.detail),
+                detail: truncateActivityDetail(member.detail, bound),
               })),
             }
           : {}),
@@ -392,19 +389,6 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
 function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
   return items.slice(items.length - RETAINED_ITEM_CAP);
-}
-
-// The phone's two display bounds, as one pure pass over projected rows: the
-// newest RETAINED_ITEM_CAP rows, each text-bearing field cut to
-// MAX_ITEM_BYTES with the marker. Every path that publishes a conversation
-// runs it, so the bound is a property of what is displayed rather than of
-// the sequence of frames that produced it. The model behind the rows keeps
-// its full text (#1535 asks whether the package should bound that).
-function capAndTruncate(conversation: MobileConversation): MobileConversation {
-  return {
-    ...conversation,
-    items: capItems(conversation.items).map((item) => truncateItem(item)),
-  };
 }
 
 export interface ConversationState {
@@ -568,6 +552,37 @@ export function createConversationStore() {
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
   }
+  // The phone's two display bounds, as one pass over the projected rows: the
+  // newest RETAINED_ITEM_CAP rows, each text-bearing field cut to
+  // MAX_ITEM_BYTES with the marker. Every path that publishes a conversation
+  // runs it, so the bound is a property of what is displayed rather than of
+  // the sequence of frames that produced it. The model behind the rows keeps
+  // its full text (#1535 asks whether the package should bound that).
+  //
+  // The rows are rebuilt from the model on every frame, but the model hands
+  // back the SAME string reference for text no frame touched, so each bound
+  // string is cached under the source string it came from and reused until
+  // that reference changes: a transcript of settled rows is not re-encoded
+  // per delta. The cache is rebuilt from the rows of each publish (the
+  // previous one is read through, then dropped), so it holds only what is on
+  // screen and needs no invalidation of its own. The one item a delta is
+  // streaming into does re-encode once per frame, because its text really is
+  // new each time — #1535 is where that stops growing.
+  let boundedText = new Map<string, string>();
+  function capAndTruncate(conversation: MobileConversation): MobileConversation {
+    const previous = boundedText;
+    const next = new Map<string, string>();
+    const bound: BoundText = (text) => {
+      const cached = next.get(text) ?? previous.get(text);
+      const bounded = cached ?? truncateText(text, MAX_ITEM_BYTES);
+      next.set(text, bounded);
+      return bounded;
+    };
+    const items = capItems(conversation.items).map((item) => truncateItem(item, bound));
+    boundedText = next;
+    return { ...conversation, items };
+  }
+
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not

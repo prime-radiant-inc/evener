@@ -6843,6 +6843,15 @@ describe("ConversationStore", () => {
       return row?.kind === "activity" ? row.detail.output : undefined;
     };
 
+    // These frames are unconstructable at the hub: every family keeps its own
+    // item id. An agentMessage delta carries p.assistantItem and a reasoning
+    // delta p.reasoningItem (internal/appprojector/appwire_projection.go:474-479
+    // and :497-503), each set only by that family's own ensure* helper
+    // (:2277-2301) through one monotonic minter (nextItemID, :2304-2307), and a
+    // tool delta's id comes from the callId map (:2309-2316). An id minted for
+    // one family is never handed to another. The rows below pin what the model
+    // does anyway, so a producer that ever crossed them could not make the
+    // phone show one family's text on another's row.
     it.each([
       // A reasoning delta writes summary chunks; only a reasoning row reads
       // them, so the tool and unknown rows are untouched.
@@ -9156,6 +9165,48 @@ describe("ConversationStore", () => {
       expect(
         store.getState().conversation?.items.some((i) => i.id === "old"),
       ).toBe(true);
+    });
+  });
+
+  // The display bound runs over every retained row on every publish. The model
+  // hands back the same string reference for an item no frame touched, so only
+  // the rows whose text actually changed are re-encoded; a transcript of
+  // settled rows costs nothing per delta.
+  describe("the display bound re-encodes only what changed", () => {
+    it("re-encodes one streaming row per delta, not the whole transcript", async () => {
+      const settled = Array.from({ length: 10, }, (_, i) =>
+        agentMessageItem(`settled-${i}`, `settled text ${i}`.repeat(50), "completed"),
+      );
+      const { store } = await openRunningTurn([
+        ...settled,
+        agentMessageItem("streaming", "start", "inProgress"),
+      ]);
+      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      try {
+        for (let i = 0; i < 5; i++) {
+          encode.mockClear();
+          store.getState().applyNotification({
+            method: "item/agentMessage/delta",
+            params: {
+              threadId: "thread-1",
+              ref: "ref-1",
+              turnId: "t1",
+              itemId: "streaming",
+              delta: `chunk ${i} `,
+            },
+          } as AnyNotification);
+          // One encode for the row that changed. The ten settled rows carry
+          // the same strings as the frame before, so they are not re-encoded.
+          expect(encode.mock.calls.length).toBeLessThanOrEqual(2);
+        }
+      } finally {
+        encode.mockRestore();
+      }
+      expect(rowById(store, "streaming")).toMatchObject({
+        kind: "assistant",
+        markdown: "startchunk 0 chunk 1 chunk 2 chunk 3 chunk 4 ",
+      });
+      expect(rows(store)).toHaveLength(11);
     });
   });
 
