@@ -284,22 +284,31 @@ func (s *Session) acceptAutomaticSkillCompaction(ctx context.Context, capturedNo
 	return true, nil
 }
 
+// pendingHandoffIndexLocked locates the pending handoff for publicationID, or
+// -1. Each publication keeps exactly one handoff, and the newer receipt for it
+// always wins: a later record replaces the entry, and a restore of an older
+// receipt yields to the entry already there. Receipts without a publication
+// identity (terminal cancellations) never coalesce — each retired generation
+// keeps its own record — so an empty id matches nothing. Callers hold s.mu.
+func (s *Session) pendingHandoffIndexLocked(publicationID string) int {
+	if publicationID == "" {
+		return -1
+	}
+	return slices.IndexFunc(s.skillLifecycle.PendingHandoffs, func(handoff schema.SkillCompactionReceipt) bool {
+		return handoff.Operation.PublicationID == publicationID
+	})
+}
+
 // recordSkillCompactionHandoffLocked appends receipt to the lifecycle's
 // pending handoffs, coalescing by publication identity rather than list
 // position: a later receipt for the same winning publication (the summary
 // phase following its checkpoint phase, say) replaces that publication's
-// earlier entry, so each publication keeps exactly one final handoff.
-// Receipts without a publication identity (terminal cancellations) never
-// coalesce — each retired generation keeps its own record. Callers hold s.mu.
+// earlier entry. Callers hold s.mu.
 func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompactionReceipt) {
 	receipt.Operation.Selection.Names = slices.Clone(receipt.Operation.Selection.Names)
-	if id := receipt.Operation.PublicationID; id != "" {
-		for i := range s.skillLifecycle.PendingHandoffs {
-			if s.skillLifecycle.PendingHandoffs[i].Operation.PublicationID == id {
-				s.skillLifecycle.PendingHandoffs[i] = receipt
-				return
-			}
-		}
+	if i := s.pendingHandoffIndexLocked(receipt.Operation.PublicationID); i >= 0 {
+		s.skillLifecycle.PendingHandoffs[i] = receipt
+		return
 	}
 	s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
 }
@@ -331,16 +340,11 @@ func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bo
 }
 
 // restoreSkillCompactionHandoffsLocked puts back receipts a consumption
-// removed and whose durability step then failed. It disturbs nothing that
-// arrived while that step ran: a publication already represented keeps the
-// entry it has — a newer receipt for it supersedes the one coming back — and
-// every other receipt is appended. Callers hold s.mu.
+// removed and whose durability step then failed, disturbing nothing that
+// arrived while that step ran. Callers hold s.mu.
 func (s *Session) restoreSkillCompactionHandoffsLocked(receipts []schema.SkillCompactionReceipt) {
 	for _, receipt := range receipts {
-		if id := receipt.Operation.PublicationID; id != "" && slices.ContainsFunc(
-			s.skillLifecycle.PendingHandoffs,
-			func(handoff schema.SkillCompactionReceipt) bool { return handoff.Operation.PublicationID == id },
-		) {
+		if s.pendingHandoffIndexLocked(receipt.Operation.PublicationID) >= 0 {
 			continue
 		}
 		s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
@@ -436,10 +440,8 @@ func (s *Session) commitSkillCompactionPublication(commit *foldCommit) {
 			// slot reopens.
 			s.skillLifecycle.PendingCompaction = nil
 			receipt.Phase = skillCompactionReceiptDelivered
-			for i := range s.skillLifecycle.PendingHandoffs {
-				if s.skillLifecycle.PendingHandoffs[i].Operation.PublicationID == receipt.Operation.PublicationID {
-					s.skillLifecycle.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
-				}
+			if i := s.pendingHandoffIndexLocked(receipt.Operation.PublicationID); i >= 0 {
+				s.skillLifecycle.PendingHandoffs[i].Phase = skillCompactionReceiptDelivered
 			}
 		}
 	}
