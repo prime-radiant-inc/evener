@@ -29,7 +29,6 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
-  ThreadCapabilities,
   ThreadItem,
 } from "@evener/appwire-client";
 import type {
@@ -630,6 +629,10 @@ export interface ConversationState {
   readonly pendingMutation?: ConversationMutationState | null;
   readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
+  // The non-projected compatibility surface, kept for screen test mocks; no
+  // production screen calls it (they open through openProjected /
+  // resumeProjected). It binds no activity sink, so it does not self-recover:
+  // a refused mutation surfaces its error and issues no reread.
   open(service: ConversationService, ref: string): Promise<void>;
   loadOlder(service: ConversationService): Promise<LoadOlderResult>;
   setDraft(text: string): void;
@@ -691,20 +694,6 @@ export interface LiveConversationState extends ConversationState {
     expectedRef: string | null,
     expectedGeneration: number,
   ): void;
-}
-
-// Extract threadId/ref from a notification's params, returning null if the
-// notification has neither (some global notifications don't).
-function notificationRef(
-  n: AnyNotification,
-): { threadId?: string; ref?: string } | null {
-  const params = n.params as Record<string, unknown> | undefined;
-  if (params === undefined || params === null) return null;
-  const threadId =
-    typeof params.threadId === "string" ? params.threadId : undefined;
-  const ref = typeof params.ref === "string" ? params.ref : undefined;
-  if (threadId === undefined && ref === undefined) return null;
-  return { threadId, ref };
 }
 
 // Check if an error is a WireError carrying the actionUnavailable
@@ -2178,9 +2167,7 @@ export function createConversationStore() {
           if (!isBindingCurrent(opBinding)) return;
           handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2256,9 +2243,7 @@ export function createConversationStore() {
           if (!isBindingCurrent(opBinding)) return;
           handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2333,9 +2318,7 @@ export function createConversationStore() {
           if (!isBindingCurrent(opBinding)) return;
           handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2416,9 +2399,7 @@ export function createConversationStore() {
           if (!isBindingCurrent(opBinding)) return;
           handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             null,
@@ -2938,9 +2919,7 @@ export function createConversationStore() {
 // mutation's error.
 function handleMutationError(
   err: unknown,
-  service: ConversationService,
   ref: string | null,
-  gen: number,
   mutationId: number,
   mutation: ConversationMutationState,
   draftSnapshot: string | null,
