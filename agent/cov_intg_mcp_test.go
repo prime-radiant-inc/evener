@@ -284,7 +284,7 @@ func TestIntg_InitMCP_GlobalConfigParseErrorSurvives(t *testing.T) {
 	}
 
 	client := llm.NewClient()
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession must survive a malformed global MCP config, got: %v", err)
 	}
