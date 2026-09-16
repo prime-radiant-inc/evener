@@ -503,8 +503,10 @@ const outboxStorage: MutationOutboxStorage = {
 const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
+const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void outbox; void reason;`,
+void outbox; void reason; void dispatcher;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
 const channel: client.MutationOutboxChannel = {
   postMessage: () => undefined,
@@ -582,6 +584,31 @@ memoryOutbox
       ["startup", "enqueue"],
     );
     assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .then(() => {
+    // The dispatcher over the same memory port, with no client wired: a
+    // dispatch for a ref whose record is waiting resolves without sending
+    // anything, which is the whole of what qualification can prove about it
+    // (a real attempt needs a transport; the unit suite drives that).
+    const dispatcher = new client.MutationDispatcher(
+      {
+        enqueueIntent: () => Promise.reject(new Error("not used")),
+        listTargetRefs: () => Promise.resolve(["local:thread-1"]),
+        getOutbox: () => Promise.resolve(undefined),
+        getOptimistic: () => Promise.resolve(undefined),
+        listOptimistic: () => Promise.resolve([]),
+        getRecovery: () => Promise.resolve(undefined),
+        nextDispatchable: () => Promise.resolve(undefined),
+        markAttempted: () => Promise.resolve(false),
+        markUnknown: () => Promise.resolve(false),
+        settleReceipt: () => Promise.resolve(false),
+        settleApplied: () => Promise.resolve(false),
+        restoreProvenAbsent: () => Promise.resolve([]),
+        transferToRecovery: () => Promise.resolve(undefined),
+      },
+      { getClient: () => null },
+    );
+    return dispatcher.dispatchTargets(["local:thread-1"]);
   })
   .catch((err) => {
     console.error(err);

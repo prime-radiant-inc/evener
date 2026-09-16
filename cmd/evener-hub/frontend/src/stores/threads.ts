@@ -620,7 +620,8 @@ const wireSubscribedRefs = new Set<string>();
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
-  dispatcher: MutationDispatcher;
+  // Bound to the attachment shape this host stages, like the outbox above.
+  dispatcher: MutationDispatcher<MutationAttachment>;
   // The web's attachments carry bytes, so its outbox is the shared class bound
   // to the record shape with a Blob in it.
   outbox: MutationOutbox<MutationAttachment>;

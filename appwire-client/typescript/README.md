@@ -145,7 +145,14 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   scan is worth doing. Every host-shaped capability is an option - the channel,
   the lifecycle and visibility targets, the timer - and none defaults to a
   browser global, so no storage adapter, scheduling policy or DOM type lives
-  here. Resolves to `state/mutation/index.ts`, a barrel.
+  here. It carries `MutationDispatcher` too: one attempt at a time per target
+  ref over the same port, a receipt reconciled into storage before the next
+  attempt, a refusal turned into a recovery record with the daemon's own
+  reason, and an outcome nobody can vouch for left `blockedUnknown` rather than
+  replayed - the rule a client must not break after a lost connection. Every
+  reaction to an outcome (a blocked mutation, a clear's response, a shared
+  note's authority) is a callback the app supplies. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
