@@ -8459,3 +8459,97 @@ test("a remote directory picker does not start from the controller's last workin
   await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
   expect(routedHostCalls(fake, "evener/path/validate")[0]?.params).toMatchObject({ path: "~" });
 });
+
+// --- round six -------------------------------------------------------------
+
+// A host's two catalogs answer and fail independently. Round five separated
+// "the request settled" from "the answer arrived", but stamped one shared "host
+// settled" value and only when BOTH answered - so a host that answered one
+// catalog and refused the other reconciled NEITHER half, and the draft's
+// harness rode thread/start to a host whose own harness list omits it
+// (component 07b review, round six). Here buildbox answers
+// evener/harnesses/list (with only "evener") and refuses evener/launch/schema:
+// the answered harness half must drop "external", while the half whose request
+// never answered leaves the Advanced-options maps alone (the round-five rule).
+test("a host that answers its harness list reconciles the draft even when its schema rejects", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      // buildbox's own evener/harnesses/list answers with only "evener"; its
+      // evener/launch/schema never answers at all.
+      fail: ["evener/launch/schema"],
+      // A credentialed registry, so nothing but the catalog gate can hold Start.
+      overrides: { "evener/instance/list": { instances: [REMOTE_CREDENTIALED_INSTANCE], availableProviders: [] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/partial-harness");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "harness", "external");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  setDraftField(draft, "advancedOverrides", { agent: "controller-agent" });
+  setDraftField(draft, "advancedValues", { agent: { value: "controller-agent" } });
+  window.history.pushState({}, "", "/new?dir=/srv/partial-harness");
+  renderSpawn(fake);
+  await settled();
+
+  // The answered catalog does not offer "external", so the draft drops it...
+  await waitFor(() => expect(draft.fields.getState().harness).toBe(""));
+  // ...while the half whose request never answered is untouched.
+  expect(draft.fields.getState().advancedOverrides).toEqual({ agent: "controller-agent" });
+  expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "controller-agent" } });
+
+  // Start is released by the settlement (round five), and the launch now
+  // carries no harness that only the controller offers.
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const started = fake.calls.find((entry) => entry.method === "thread/start");
+  expect(started?.params).toMatchObject({ source: "buildbox" });
+  expect(started?.params).not.toHaveProperty("harness");
+});
+
+// The mirror case: the schema answers without the draft's Advanced-options
+// field while the harness list refuses. The answered schema half reconciles
+// (dropping "agent"), and the unanswered harness half keeps the draft's
+// harness - a request that never answered is still not evidence about what the
+// host offers.
+test("a host that answers its schema reconciles the advanced options even when its harness list rejects", async () => {
+  seedSources(REMOTE_SOURCES);
+  const keptOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "text",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      // buildbox's own schema offers maxRounds but not agent; its harness list
+      // never answers.
+      fail: ["evener/harnesses/list"],
+      overrides: { "evener/launch/schema": { options: [keptOption] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/partial-schema");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "harness", "external");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  setDraftField(draft, "advancedOverrides", { agent: "controller-agent", maxRounds: 7 });
+  setDraftField(draft, "advancedValues", {
+    agent: { value: "controller-agent" },
+    maxRounds: { value: "7" },
+  });
+  window.history.pushState({}, "", "/new?dir=/srv/partial-schema");
+  renderSpawn(fake);
+  await settled();
+
+  // The answered schema omits "agent", so its override and value drop...
+  await waitFor(() => expect(draft.fields.getState().advancedOverrides).toEqual({ maxRounds: 7 }));
+  expect(draft.fields.getState().advancedValues).toEqual({ maxRounds: { value: "7" } });
+  // ...while the harness whose request never answered stays put.
+  expect(draft.fields.getState().harness).toBe("external");
+});

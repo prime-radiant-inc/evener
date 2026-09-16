@@ -1063,12 +1063,16 @@ function SpawnForm({
   // switch clears them) nor after it fails, when a retained catalog would let
   // the user pick a harness the selected host does not have.
   const catalogHostRef = useRef(submittedSource);
-  // The host whose harness/schema answers are the ones in hand (null until the
-  // current host's first load ANSWERS - a failed load settles without being an
-  // answer). The reconciliation below must not read a catalog that has not
-  // answered yet, or an empty one would read as "the host offers nothing" and
-  // wipe a perfectly valid draft.
-  const [catalogHostSettled, setCatalogHostSettled] = useState<string | null>(null);
+  // The host whose harness catalog and launch schema are the answers in hand
+  // (null until the current host's first load ANSWERS - a failed load settles
+  // without being an answer). The reconciliation below must not read a catalog
+  // that has not answered yet, or an empty one would read as "the host offers
+  // nothing" and wipe a perfectly valid draft. Tracked PER CATALOG because the
+  // two loads answer and fail independently: a host that answers one and
+  // refuses the other still owns the half it answered, and only that half may
+  // be reconciled against it (component 07b review, round six).
+  const [harnessesHostSettled, setHarnessesHostSettled] = useState<string | null>(null);
+  const [schemaHostSettled, setSchemaHostSettled] = useState<string | null>(null);
   // True while the CURRENT host's answers are outstanding. A switch is pending
   // because the catalogs have just been cleared and the draft's host-derived
   // launch config has not been reconciled against the new host's, so a submit in
@@ -1090,12 +1094,13 @@ function SpawnForm({
       setHarnesses([]);
       setSchemaOptions([]);
       setHostCatalogPending(true);
-      // The cleared catalogs make the "settled" stamp a lie: without this, a
+      // The cleared catalogs make the "settled" stamps a lie: without this, a
       // rapid A→B→A switch keeps reading settled === A while harnesses/
       // schemaOptions hold the just-cleared EMPTY arrays, and the reconciliation
       // below wipes the draft's harness and every Advanced-options value against
-      // them. Only answers that land for the CURRENT host re-stamp it.
-      setCatalogHostSettled(null);
+      // them. Only answers that land for the CURRENT host re-stamp them.
+      setHarnessesHostSettled(null);
+      setSchemaHostSettled(null);
       // A plugin selection is a list of names resolved against the SELECTED
       // host's own preview, and a preview that fails for the new host never
       // reconciles it: pluginSelectionBlocked goes false again (no host that
@@ -1111,37 +1116,42 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
-    // Each load resolves to whether it ANSWERED. A rejection is a settlement but
-    // not an answer: it must release Start (a host that refuses a catalog can
-    // never hold the submit hostage) and must NOT be reconciled against - an
-    // empty list read as "this host offers nothing" wiped the draft's harness
-    // and every Advanced-options override on one transient hub error, with
-    // nothing left for a later successful load to restore (component 07b review,
-    // round five; the rejection handlers deliberately leave the catalogs as they
-    // were, as they did before that round). `active` is false once this host is
+    // An answer stamps its OWN catalog as settled for this host, and is the
+    // only thing that may reconcile that half of the draft: an empty list read
+    // as "this host offers nothing" wiped the draft's harness and every
+    // Advanced-options override on one transient hub error, with nothing left
+    // for a later successful load to restore (component 07b review, round five;
+    // the rejection handlers deliberately leave the catalogs as they were, as
+    // they did before that round). A rejection is a settlement but not an
+    // answer: it must release Start (a host that refuses a catalog can never
+    // hold the submit hostage) and must NOT be reconciled against. The stamps
+    // are per catalog so one host's refusal does not suppress reconciliation of
+    // the catalog it DID answer (round six). `active` is false once this host is
     // superseded, so a previous host's late answer never certifies the current
     // one.
     const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
       (r) => {
-        if (!active) return false;
+        if (!active) return;
         setHarnesses(r.data);
-        return true;
+        setHarnessesHostSettled(submittedSource);
       },
-      () => false,
+      () => {},
     );
     const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
       (r) => {
-        if (!active) return false;
+        if (!active) return;
         setSchemaOptions(perLaunchEvenerOptions(r));
-        return true;
+        setSchemaHostSettled(submittedSource);
       },
-      () => false,
+      () => {},
     );
-    void Promise.all([harnessesLoad, schemaLoad]).then(([harnessesAnswered, schemaAnswered]) => {
+    void Promise.all([harnessesLoad, schemaLoad]).then(() => {
+      // Settlement alone releases Start, even when one or both loads never
+      // answered: the host refuses what it cannot serve at launch rather than
+      // leaving the submit disabled forever. What the user can submit has been
+      // reconciled against every answer that did land.
       if (!active) return;
       setHostCatalogPending(false);
-      // Only an ANSWER may reconcile the draft against the catalogs.
-      if (harnessesAnswered && schemaAnswered) setCatalogHostSettled(submittedSource);
     });
     return () => {
       active = false;
@@ -1154,20 +1164,29 @@ function SpawnForm({
   // on the host that produced it still rides thread/start - and the mismatch is
   // invisible in the form, because an empty harness catalog falls back to the
   // "evener" label and an empty schema renders no Advanced fields at all. So
-  // reconcile both against the answers that just landed for the CURRENT host:
-  // anything that host does not offer drops back to the host's own default. The
-  // values are read from the store rather than from the rendered state so this
-  // effect does not re-run on its own writes.
+  // reconcile each half against the answers that just landed for the CURRENT
+  // host: anything that host does not offer drops back to the host's own
+  // default. Each half is gated by its OWN answer stamp, so a host that
+  // answered one catalog and refused the other reconciles the half it answered
+  // - and only that half, because the refusal remains no evidence about the
+  // other catalog (component 07b review, rounds five and six). The values are
+  // read from the store rather than from the rendered state so this effect does
+  // not re-run on its own writes.
   useEffect(() => {
-    if (catalogHostSettled !== submittedSource) return;
-    const currentHarness = draft.fields.getState().harness;
-    if (currentHarness !== "" && !harnesses.some((candidate) => candidate.id === currentHarness)) {
-      // The cleared id is the host's own default ("" reads as evener), which
-      // supports plugin selection, so this is not a harness transition
-      // handleHarnessChange's plugin-selection reset would fire on - and the
-      // model is revalidated against the host's own catalog separately.
-      setHarness("");
+    if (harnessesHostSettled === submittedSource) {
+      const currentHarness = draft.fields.getState().harness;
+      if (currentHarness !== "" && !harnesses.some((candidate) => candidate.id === currentHarness)) {
+        // The cleared id is the host's own default ("" reads as evener), which
+        // supports plugin selection, so this is not a harness transition
+        // handleHarnessChange's plugin-selection reset would fire on - and the
+        // model is revalidated against the host's own catalog separately.
+        setHarness("");
+      }
     }
+    // The Advanced-options maps are chosen from the launch schema alone, so
+    // without a schema answer for this host there is no authority to filter
+    // them.
+    if (schemaHostSettled !== submittedSource) return;
     const offered = new Set(schemaOptions.map((option) => option.wireField));
     const overrides = draft.fields.getState().advancedOverrides;
     const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => offered.has(field)));
@@ -1190,7 +1209,8 @@ function SpawnForm({
       setAdvancedErrors(keptErrors);
     }
   }, [
-    catalogHostSettled,
+    harnessesHostSettled,
+    schemaHostSettled,
     submittedSource,
     harnesses,
     schemaOptions,
