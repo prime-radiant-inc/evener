@@ -4,7 +4,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
-import { QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
+import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -607,6 +607,9 @@ test.each([
 test.each([
   ["active", 0, { steer: false }, STEER_UNAVAILABLE],
   ["idle", 0, {}, "drain failed: no active turn"],
+  // Argless: with nothing queued there is nothing to drain, and the daemon
+  // would refuse it after the fact ("queue is empty").
+  ["active", 0, {}, QUEUE_EMPTY],
 ] as const)(
   "/drain-as-steer at %s with depth %d and %o is blocked with the shared reason",
   (statusType, depth, missing, message) => {
@@ -632,7 +635,8 @@ test.each([
 test.each([
   ["idle", 0, UNAVAILABLE_REASON, UNAVAILABLE_REASON],
   ["idle", 1, UNAVAILABLE_REASON, undefined],
-  ["active", 0, undefined, undefined],
+  ["active", 0, undefined, UNAVAILABLE_REASON],
+  ["active", 1, undefined, undefined],
 ] as const)(
   "at status %s with queue depth %d the menu marks /steer %s and /drain-as-steer %s",
   (statusType, depth, steer, drain) => {

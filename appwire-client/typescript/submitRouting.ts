@@ -98,13 +98,19 @@ export const STEER_UNAVAILABLE = "Steer is not available for this session";
 export const STOP_UNAVAILABLE = "Stop is not available for this session";
 export const QUEUE_UNAVAILABLE = "Queue is not available for this session";
 export const SEND_UNAVAILABLE = "Send is not available for this session";
+export const QUEUE_EMPTY = "queue is empty";
 
-export type SessionControlName = "stop" | "steer" | "drain" | "queue" | "send";
+export type SessionControlName = "stop" | "steer" | "drain" | "drainQueue" | "queue" | "send";
 
 export interface SessionControls {
   stop: boolean;
   steer: boolean;
+  // drain: the composer's drain, which appends what is typed before draining,
+  // so it has something to send even with the queue empty. drainQueue: the
+  // argless /drain-as-steer commands, which send the queue and nothing else and
+  // are refused by the daemon ("queue is empty") when there is none.
   drain: boolean;
+  drainQueue: boolean;
   queue: boolean;
   send: boolean;
   reason: Partial<Record<SessionControlName, string>>;
@@ -126,6 +132,7 @@ export function sessionControls(
     stop: active && capabilities.interrupt === true,
     steer: canSteer(statusType, capabilities),
     drain: canDrainQueue(statusType, capabilities, queueDepth),
+    drainQueue: canDrainQueue(statusType, capabilities, queueDepth) && queueDepth > 0,
     queue: active && capabilities.queue === true,
     send: !active && capabilities.send === true,
     reason: {},
@@ -135,6 +142,7 @@ export function sessionControls(
   if (!controls.drain) {
     controls.reason.drain = capabilities.steer === true && !active && !parked ? NO_ACTIVE_TURN : STEER_UNAVAILABLE;
   }
+  if (!controls.drainQueue) controls.reason.drainQueue = controls.reason.drain ?? QUEUE_EMPTY;
   if (!controls.queue) controls.reason.queue = capabilities.queue === true ? NO_ACTIVE_TURN : QUEUE_UNAVAILABLE;
   if (!controls.send) controls.reason.send = capabilities.send === true ? TURN_RUNNING : SEND_UNAVAILABLE;
   return controls;

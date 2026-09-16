@@ -51,7 +51,9 @@ function ids(items: ReturnType<typeof builtinComposerItems>) {
 it.each([
   ["idle", 0, false, false],
   ["idle", 1, false, true],
-  ["active", 0, true, true],
+  // Argless /drain-as-steer sends the queue alone: nothing queued, nothing offered.
+  ["active", 0, true, false],
+  ["active", 1, true, true],
 ])("at status %s with queue depth %d offers /steer=%s and /drain-as-steer=%s", (status, depth, steer, drain) => {
   const offered = ids(builtinComposerItems(conversation({ steer: true, queue: true }, status, depth)));
   expect(offered.includes("/steer")).toBe(steer);

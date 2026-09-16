@@ -588,11 +588,11 @@ it.each([
 				...commandContext,
 				// Every steering command and Stop read the session's controls
 				// (sessionControls): a running turn on a harness that advertises
-				// the action.
+				// the action; the argless drain also needs a queue to drain.
 				turn: () => ({
 					status: "active",
 					capabilities: { steer: true, queue: true, interrupt: true },
-					queue: { revision: 7, depth: 0 },
+					queue: { revision: 7, depth: method === "turn/drainAsSteer" ? 1 : 0 },
 				}),
 			});
 			expect(received).toBe(1);

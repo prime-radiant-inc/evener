@@ -159,7 +159,9 @@ export const UNAVAILABLE_REASON = "not available right now";
 const stopAvailable = (model: ThreadModel) => controlsFor(model).reason.stop;
 const steerAvailable = (model: ThreadModel) => controlsFor(model).reason.steer;
 const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;
-const drainAvailable = (model: ThreadModel) => controlsFor(model).reason.drain;
+// The palette's drain is argless (it submits no text of its own), so its rule
+// is drainQueue: the drain rule plus a queue to drain.
+const drainQueueAvailable = (model: ThreadModel) => controlsFor(model).reason.drainQueue;
 
 // runWhenAvailable is the shared run guard for commands with an `available`
 // rule: it refuses with the command's own reason -- the status floor message,
@@ -579,9 +581,9 @@ export function buildCommands(): Command[] {
       keywords: ["force-steer", "drain"],
       scope: "session",
       capability: "steer",
-      available: drainAvailable,
+      available: drainQueueAvailable,
       run: (ctx) =>
-        runWhenAvailable(ctx, "drain", drainAvailable, (ref) => threadsStore.getState().drainAsSteer(ref, "")),
+        runWhenAvailable(ctx, "drain", drainQueueAvailable, (ref) => threadsStore.getState().drainAsSteer(ref, "")),
     },
 
     // --- session: read-only, no capability to gate on ---

@@ -8,6 +8,7 @@ import {
   decideSubmitRoute,
   isTurnActive,
   NO_ACTIVE_TURN,
+  QUEUE_EMPTY,
   STEER_UNAVAILABLE,
   sessionControls,
 } from "./submitRouting";
@@ -163,11 +164,12 @@ test("a running turn on a fully capable harness offers stop, steer, drain and qu
 
 test("an idle session offers send only, with 'no active turn' as every other reason", () => {
   const c = sessionControls("idle", ALL, 0);
-  expect(c).toMatchObject({ stop: false, steer: false, drain: false, queue: false, send: true });
+  expect(c).toMatchObject({ stop: false, steer: false, drain: false, drainQueue: false, queue: false, send: true });
   expect(c.reason).toEqual({
     stop: NO_ACTIVE_TURN,
     steer: NO_ACTIVE_TURN,
     drain: NO_ACTIVE_TURN,
+    drainQueue: NO_ACTIVE_TURN,
     queue: NO_ACTIVE_TURN,
   });
 });
@@ -188,4 +190,21 @@ test("awaiting with a queue is the ask boundary: no drain, and the reason is the
   const c = sessionControls("awaiting", ALL, 1);
   expect(c.drain).toBe(false);
   expect(c.reason.drain).toBe(NO_ACTIVE_TURN);
+});
+
+// The argless drain (/drain-as-steer with nothing typed) has only the queue to
+// send: with the queue empty it is offered and then refused by the daemon
+// ("queue is empty"). drainQueue is that variant's control; the with-input
+// drain keeps canDrainQueue.
+test("drainQueue needs a queue to drain on top of the drain rule", () => {
+  const caps = { steer: true, interrupt: true, queue: true, send: true };
+  const emptyActive = sessionControls("active", caps, 0);
+  expect(emptyActive.drain).toBe(true);
+  expect(emptyActive.drainQueue).toBe(false);
+  expect(emptyActive.reason.drainQueue).toBe(QUEUE_EMPTY);
+  expect(sessionControls("active", caps, 1).drainQueue).toBe(true);
+  expect(sessionControls("idle", caps, 2).drainQueue).toBe(true);
+  // Where the drain itself is refused, drainQueue carries the drain's reason.
+  expect(sessionControls("idle", caps, 0).reason.drainQueue).toBe(NO_ACTIVE_TURN);
+  expect(sessionControls("active", { ...caps, steer: false }, 1).reason.drainQueue).toBe(STEER_UNAVAILABLE);
 });

@@ -47,7 +47,9 @@ const commands = [
   // -- is applied here, the same rule the web's composer and palette use.
   { id: "steer", args: true, capability: "steer", control: "steer", label: "Steer" },
   { id: "queue", args: true, capability: "queue", control: "queue", label: "Queue" },
-  { id: "drain-as-steer", capability: "steer", control: "drain", label: "Drain queue" },
+  // Argless: it sends the queue and nothing else, so its control is drainQueue
+  // (the drain rule plus a queue to drain).
+  { id: "drain-as-steer", capability: "steer", control: "drainQueue", label: "Drain queue" },
   { id: "aside", capability: "forkFromTurn", label: "Aside" },
   { id: "clear", capability: "clear", label: "Clear" },
 ] as const;
