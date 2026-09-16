@@ -1529,9 +1529,12 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 		t.Fatalf("queue-ready status missing:\n%s", got)
 	}
 
+	// Send is not offered while a turn runs (the status is applied to it, as the
+	// SDK's sessionControls does), so a running source without queue reads
+	// read-only whether or not it advertises send.
 	m.detail.Capabilities.Queue = false
-	if got := m.sessionView(); !strings.Contains(got, "send: ready") {
-		t.Fatalf("send-ready active status missing:\n%s", got)
+	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
+		t.Fatalf("read-only active status missing:\n%s", got)
 	}
 
 	m.detail.Capabilities.Send = false
@@ -2127,15 +2130,345 @@ func TestHubModelNotificationClosedIsNotError(t *testing.T) {
 	}
 }
 
+// parkedQueueModel is a session after a Stop parked its queue: idle, queued
+// work (only a held queue reports that way), the harness advertising steer or
+// not. The composer stays in send mode either way; Ctrl+S is the difference.
+func parkedQueueModel(t *testing.T, client *appwire.Client, steer bool) hubModel {
+	t.Helper()
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Queue = false
+	m.detail.Capabilities.Steer = steer
+	m.session.processing = false
+	// The wire's depth is what the queue holds; the preview is display rows
+	// and can lag or be empty (a daemon that sends depth without previews).
+	m.detail.Queue = appwire.QueueState{Depth: 3}
+	m.sessionQueue = nil
+	// A harness label makes the composer render its production footer (the
+	// mode-aware hint bar) rather than the bare Keys fallback.
+	m.detail.SourceLabel = "evener"
+	if got := m.sessionComposerMode(); got != hubComposerModeSend {
+		t.Fatalf("composer mode=%v, want send", got)
+	}
+	return m
+}
+
+// A turn/drainAsSteer sent while idle is one of the runs that releases a
+// parked queue, so Ctrl+S drains it (sessionCanDrainQueue).
+func TestHubModelParkedQueueCtrlSDrainsAsSteer(t *testing.T) {
+	var drained []appwire.TurnDrainAsSteerParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			drained = append(drained, params)
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := parkedQueueModel(t, client, true)
+	// Another client edited the queue: thread/queueChanged carries revision 7,
+	// and the drain must swap against that revision, not the one from hydrate.
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 3, Revision: 7},
+	})
+	m.applyHubNotification(*queueChanged.Notification)
+	view := m.sessionView()
+	for _, want := range []string{"ctrl+s", "steer", "QUEUE 3"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("parked-queue composer missing %q:\n%s", want, view)
+		}
+	}
+
+	_, cmd := m.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s on a parked queue produced no command")
+	}
+	cmd()
+	if len(drained) != 1 {
+		t.Fatalf("turn/drainAsSteer calls = %d, want 1", len(drained))
+	}
+	if drained[0].Ref != "local:01SEND" || len(drained[0].Input) != 0 {
+		t.Fatalf("drain params = %+v, want the parked queue of 01SEND with no composer text", drained[0])
+	}
+	if drained[0].ExpectedQueueRevision != 7 {
+		t.Fatalf("drain expectedQueueRevision = %d, want 7 (the revision thread/queueChanged carried)", drained[0].ExpectedQueueRevision)
+	}
+}
+
+// The same parked queue on a harness that advertises no steer: no Ctrl+S
+// hint, and the binding is a silent no-op.
+func TestHubModelParkedQueueWithoutSteerOffersNoDrain(t *testing.T) {
+	m := parkedQueueModel(t, nil, false)
+	if view := m.sessionView(); strings.Contains(view, "ctrl+s") {
+		t.Fatalf("composer without steer offered ctrl+s:\n%s", view)
+	}
+	if _, cmd := m.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s without steer produced a command; it must be a silent no-op")
+	}
+}
+
+// The drain rule is the status alone, exactly as the SDK's: awaiting is the
+// ask boundary and never drains, whatever the optimistic processing flag says;
+// a running turn drains without any turn id.
+func TestHubModelDrainFollowsTheStatusAlone(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 1
+	m.detail.State = appwire.ThreadStatusAwaiting
+	m.session.processing = true
+	if m.sessionCanDrainQueue() {
+		t.Fatal("awaiting + processing reported drainable; the status alone decides")
+	}
+	if _, cmd := m.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s while awaiting produced a command")
+	}
+	m.detail.State = appwire.ThreadStatusActive
+	m.session.processing = false
+	m.detail.ActiveTurnID = ""
+	if !m.sessionCanDrainQueue() {
+		t.Fatal("active status without a turn id was not drainable")
+	}
+}
+
+// A force-steer that the daemon queued instead of steering leaves an
+// optimistic row in the local queue; the depth follows it, so the next drain
+// counts and sends it.
+func TestHubModelOptimisticQueuedRowRaisesTheDepth(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 0
+
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", queued: true, preQueueDepth: 0, err: errors.New("steer rejected after queueing")})
+	got := updated.(hubModel)
+	if len(got.sessionQueue) != 1 || got.detail.Queue.Depth != 1 {
+		t.Fatalf("optimistic row: preview=%v depth=%d, want one row and depth 1", got.sessionQueue, got.detail.Queue.Depth)
+	}
+	// The wire's queueChanged reconciles the revision the daemon moved when it
+	// queued the payload (TestHubModelPartialDrainWaitsForTheQueueRevision pins
+	// the wait); the depth it carries is the one the next drain counts.
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 1, Revision: 1, Preview: []string{"later"}},
+	})
+	got.applyHubNotification(*queueChanged.Notification)
+
+	_, cmd := got.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s with an optimistic queued row produced no command")
+	}
+	msg, ok := cmd().(hubDrainAsSteerMsg)
+	if !ok {
+		t.Fatalf("drain result = %T, want hubDrainAsSteerMsg", cmd())
+	}
+	if msg.preQueueDepth != 1 {
+		t.Fatalf("drain preQueueDepth = %d, want 1 (the optimistic row counted)", msg.preQueueDepth)
+	}
+}
+
+// A force-steer the daemon queued but could not steer (a partial drain) moved
+// the daemon's queue revision; the TUI's copy is stale until the wire's
+// queueChanged arrives. Another drain must wait for that reconciliation and
+// then carry the current revision, never the stale one ("queue revision
+// changed").
+func TestHubModelPartialDrainWaitsForTheQueueRevision(t *testing.T) {
+	var drained []appwire.TurnDrainAsSteerParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+			drained = append(drained, params)
+			if params.ExpectedQueueRevision != 9 {
+				return appwire.TurnDrainAsSteerResponse{}, appwire.Conflict("queue revision changed")
+			}
+			return appwire.TurnDrainAsSteerResponse{Receipt: appwire.MutationReceipt{ClientMutationID: params.ClientMutationID, Disposition: appwire.MutationDispositionApplied}}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+	if got.detail.Queue.Depth != 1 {
+		t.Fatalf("depth after the partial drain = %d, want 1", got.detail.Queue.Depth)
+	}
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s right after a partial drain produced a command; the queue revision is stale until queueChanged reconciles it")
+	}
+	// A thread/read snapshot cut before the daemon moved the revision (the
+	// same revision 8 the drain was sent against) must not re-enable Ctrl+S:
+	// only a newer revision reconciles the optimistic row.
+	got.applyQueueState("local:01SEND", appwire.QueueState{Depth: 1, Revision: 8, Preview: []string{"later"}})
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s after an older thread/read snapshot produced a command; its revision is not newer than the one the drain expected")
+	}
+
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      "local:01SEND",
+		Queue:    appwire.QueueState{Depth: 1, Revision: 9, Preview: []string{"later"}},
+	})
+	got.applyHubNotification(*queueChanged.Notification)
+	_, cmd := got.handleSessionForceSteer()
+	if cmd == nil {
+		t.Fatal("ctrl+s after the queue reconciled produced no command")
+	}
+	msg, ok := cmd().(hubDrainAsSteerMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("drain result = %#v, want an accepted drain", cmd())
+	}
+	if len(drained) != 1 || drained[0].ExpectedQueueRevision != 9 {
+		t.Fatalf("drain calls = %+v, want one carrying revision 9", drained)
+	}
+}
+
+// When the status, not the harness, refuses a drain (awaiting with a queue is
+// the ask boundary; that queue runs next on its own), Ctrl+S says so: the
+// banner carries the twin's drain reason, never "does not advertise steer".
+func TestHubModelForceSteerBannerNamesTheStatusReason(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusAwaiting
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue.Depth = 1
+	m.session.processing = true
+
+	updated, cmd := m.handleSessionForceSteer()
+	if cmd != nil {
+		t.Fatal("ctrl+s while awaiting produced a command")
+	}
+	after := updated.(hubModel)
+	view := after.sessionView()
+	if strings.Contains(view, "does not advertise steer") {
+		t.Fatalf("banner blamed the harness for a status refusal:\n%s", view)
+	}
+	if !strings.Contains(view, "no active turn") {
+		t.Fatalf("banner missing the status reason:\n%s", view)
+	}
+}
+
+// The TUI's #1330: the projector emits turn/completed, turn/started and
+// thread/status/changed(active) for a turn that runs inline behind the one that
+// ended, one WebSocket message each, and the status never leaves active. The
+// session's status follows the wire's thread/status/changed, never the
+// closing turn/completed, so Stop, Steer and Ctrl+S stay available across the
+// boundary; a real idle status frame still lands idle.
+func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = "turn_1"
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Interrupt = true
+	m.detail.Capabilities.Queue = true
+	m.session.processing = true
+
+	frames := []struct {
+		name         string
+		notification appwire.Notification
+	}{
+		{"turn/completed of the previous turn", *appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusCompleted}}).Notification},
+		{"turn/started of the next turn", *appwire.NotificationMessage(appwire.NotifyTurnStarted, appwire.TurnStartedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_2", Status: appwire.TurnStatusInProgress}}).Notification},
+		{"the status frame", *appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}).Notification},
+	}
+	for _, frame := range frames {
+		m.applyHubNotification(frame.notification)
+		c := m.sessionControls()
+		if !c.stop || !c.steer || !c.drain {
+			t.Fatalf("after %s: stop=%v steer=%v drain=%v state=%q, want all available while the status stays active", frame.name, c.stop, c.steer, c.drain, m.detail.State)
+		}
+	}
+
+	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{ThreadID: "01SEND", Ref: "local:01SEND", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}})
+	m.applyHubNotification(*idle.Notification)
+	if c := m.sessionControls(); m.detail.State != appwire.ThreadStatusIdle || c.stop || c.steer {
+		t.Fatalf("after a real idle status: state=%q stop=%v steer=%v, want idle with no controls", m.detail.State, c.stop, c.steer)
+	}
+}
+
+// The stale gate a partial drain sets belongs to the session it happened in:
+// entering another session (clearSessionQueue) must not carry it over, or a
+// session whose queue revision is below the earlier drain's stays un-drainable.
+func TestHubModelStaleQueueGateDoesNotSurviveSessionSwitch(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+	if got.sessionCanDrainQueue() {
+		t.Fatal("precondition: the partial drain should have gated Ctrl+S")
+	}
+
+	// Enter another session whose parked queue sits at a lower revision.
+	got.clearSessionQueue()
+	got.detail.Ref = "local:02OTHER"
+	got.detail.State = appwire.ThreadStatusIdle
+	got.applyQueueState("local:02OTHER", appwire.QueueState{Depth: 1, Revision: 3, Preview: []string{"parked"}})
+	if !got.sessionCanDrainQueue() {
+		t.Fatal("the other session's parked queue is not drainable: the previous session's stale gate survived clearSessionQueue")
+	}
+}
+
+// The status is authoritative and the transcript's turn id can be empty while
+// the session is active (a thread/read cut between turns, or the gap after
+// turn/completed at an inline boundary). A failed completion arriving then
+// still settles the session idle; one for a superseded turn is left alone.
+func TestHubModelFailedTurnWithoutAnIdSettlesIdle(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = ""
+	m.session.processing = true
+	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
+	m.applyHubNotification(*failed.Notification)
+	if m.detail.State != appwire.ThreadStatusIdle || m.session.processing {
+		t.Fatalf("after a failed completion with no active turn id: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+	}
+
+	m = newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = "turn_2"
+	late := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}})
+	m.applyHubNotification(*late.Notification)
+	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
+		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			if params.Ref != "local:01SEND" {
 				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
 			}
-			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{
+			thread := appwireThread(hubTreeNode{
 				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
-			}, "/tmp/evener")}, nil
+			}, "/tmp/evener")
+			// The hub's idle set: send on, queue off, and steer on, because the
+			// hub advertises steer as harness support rather than "a turn is
+			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363).
+			thread.Evener.Capabilities.Send = true
+			thread.Evener.Capabilities.Queue = false
+			thread.Evener.Capabilities.Steer = true
+			return appwire.ThreadReadResponse{Thread: thread}, nil
 		})
 	})
 	defer cleanup()
@@ -2143,6 +2476,7 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	m := newSessionHubModel(client)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = false
 	m.session.processing = true
 	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID: "01SEND",
@@ -2165,8 +2499,20 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if got.session.processing {
 		t.Fatal("session stayed processing after idle status refresh")
 	}
-	if view := got.sessionView(); !strings.Contains(view, "send: ready") {
+	view := got.sessionView()
+	if !strings.Contains(view, "send: ready") {
 		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
+	}
+	// Steer stays advertised at idle; with nothing queued there is nothing to
+	// drain, so no ctrl+s hint and the binding is a silent no-op.
+	if !got.detail.Capabilities.Steer {
+		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
+	}
+	if strings.Contains(view, "ctrl+s") {
+		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
+	}
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s at idle with nothing queued produced a command; it must be a silent no-op")
 	}
 }
 
@@ -3813,6 +4159,10 @@ func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
+	// The active turn is the wire's status; the transcript's turn id is
+	// bookkeeping the interrupt never reads (it is cleared between the
+	// turn/completed and turn/started of an inline turn boundary).
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = "turn_busy"
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})

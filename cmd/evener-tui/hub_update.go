@@ -549,7 +549,13 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					preview = "[image]"
 				}
 				if preview != "" && len(m.sessionQueue) <= msg.preQueueDepth {
+					// The optimistic row is one more queued message until the
+					// wire's queueChanged replaces both: the depth is what drain
+					// availability and the next drain's preQueueDepth read.
 					m.sessionQueue = append(m.sessionQueue, preview)
+					m.detail.Queue.Depth++
+					m.queueRevisionAtDrain = m.detail.Queue.Revision
+					m.queueRevisionStale = true
 					m.session.refreshViewport()
 				}
 				m.addHubErrorNotice("Force-steer failed after queueing", "appwire", msg.err, "The composer payload was queued already. Retry force-steer without resubmitting the same draft.")

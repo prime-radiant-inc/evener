@@ -9,7 +9,13 @@
 // integration merge (T6), not here.
 
 import type { InputItem } from "@evener/appwire-client";
-import { canonicalSkillNames, errorText, sessionActionError } from "@evener/appwire-client";
+import {
+  canonicalSkillNames,
+  errorText,
+  STEER_UNAVAILABLE,
+  sessionActionError,
+  sessionControls,
+} from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
@@ -193,6 +199,10 @@ export function QueueStrip({
 
   if (!model || !visible) return null;
 
+  // Drain and promote read the session's controls (submitRouting.ts
+  // sessionControls: harness steer, and a running turn or a queue a Stop parked).
+  const controls = sessionControls(model.status.type, model.capabilities, depth);
+
   const ids = queue?.ids;
   const texts = queue?.texts;
   const preview = queue?.preview;
@@ -210,6 +220,10 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
+    if (!controls.drain) {
+      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
@@ -265,6 +279,10 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    if (!controls.drain) {
+      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
+      return;
+    }
     const { text, attachments, hasPending, skillNames } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -362,7 +380,7 @@ export function QueueStrip({
     <section className={CLASS.strip}>
       <div className={CLASS.header}>
         <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
-        {hasQueuedWork && (
+        {hasQueuedWork && controls.drain && (
           <Tooltip label="Send your message and everything queued into the current turn">
             <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
               Steer queue now
@@ -410,8 +428,14 @@ export function QueueStrip({
                   label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
-                  disabled={!actionsAvailable || busy}
-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
+                  disabled={!actionsAvailable || !controls.drain || busy}
+                  disabledReason={
+                    !actionsAvailable
+                      ? ACTIONS_UNAVAILABLE_REASON
+                      : controls.drain
+                        ? undefined
+                        : (controls.reason.drain ?? STEER_UNAVAILABLE)
+                  }
                   onClick={() => {
                     if (entryId !== undefined) void handlePromote(index, entryId);
                   }}

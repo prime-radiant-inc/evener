@@ -20,6 +20,7 @@
 import { create } from "zustand";
 import {
   isStaleCursorError,
+  sessionControls,
   WireError,
 } from "@evener/appwire-client";
 import type {
@@ -741,6 +742,29 @@ function requireCap(
 ): void {
   if (!conv.capabilities[cap]) {
     throw new Error(`Action "${action}" is not available for this thread`);
+  }
+}
+
+// The steering actions' precondition, re-evaluated at the mutation boundary
+// rather than trusted from the render that offered the control: the session's
+// controls (the SDK's sessionControls over the wire's status, the harness's
+// capabilities and the queue depth). A status that flipped between the render
+// and the submit refuses the mutation here, with the control's own reason.
+function requireControl(
+  conv: MobileConversation,
+  control: "stop" | "steer" | "drain" | "queue",
+  action: string,
+): void {
+  const controls = sessionControls(
+    conv.status,
+    conv.capabilities,
+    conv.queue.depth,
+  );
+  if (!controls[control]) {
+    throw new Error(
+      controls.reason[control] ??
+        `Action "${action}" is not available for this thread`,
+    );
   }
 }
 
@@ -2377,7 +2401,7 @@ export function createConversationStore() {
       async steer(service, input, expectedQueueRevision) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "steer", "steer");
+        requireControl(state.conversation, "steer", "steer");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2455,7 +2479,7 @@ export function createConversationStore() {
       async queue(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "queue", "queue");
+        requireControl(state.conversation, "queue", "queue");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2532,7 +2556,7 @@ export function createConversationStore() {
       async interrupt(service) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "interrupt", "interrupt");
+        requireControl(state.conversation, "stop", "interrupt");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2793,10 +2817,14 @@ export function createConversationStore() {
 
           case "turn/started": {
             turnOwnerRev++;
+            // The status is thread/status/changed's, never this frame's: a
+            // turn that opens inline behind the one that ended is announced
+            // as turn/completed, turn/started, then status(active), one
+            // message each, and a status written here would blink between
+            // them (the web's and TUI's #1330).
             set({
               conversation: {
                 ...conv,
-                status: "running",
                 activeTurnId: n.params.turn.id,
               },
             });
@@ -2814,15 +2842,25 @@ export function createConversationStore() {
             // params.turn.usage is this one turn's totals, not the session's
             // cumulative usage — publish completion state only and leave
             // usage as whatever the last authoritative projection set.
+            // The status stays thread/status/changed's, with one exception:
+            // a genuine failure ends as turn/completed{status: "failed"} with
+            // no status frame behind it (the projector's EventError branch;
+            // the agent returns before EventSessionEnd, kata s8x8), so the
+            // failed active turn settles the session idle here, as the web
+            // reducer does.
+            // The transcript's id is not required: it can be absent while the
+            // session is active (a read cut between turns), and the failure is
+            // still this session's; a failed completion naming a turn another
+            // turn has superseded leaves the status alone.
+            const failedActive =
+              params.turn.status === "failed" &&
+              conv.status === "active" &&
+              (completedActive || conv.activeTurnId === undefined);
             set({
               conversation: {
                 ...conv,
                 activeTurnId: completedActive ? undefined : conv.activeTurnId,
-                status:
-                  conv.status === "running" &&
-                  (!conv.activeTurnId || completedActive)
-                    ? "ready"
-                    : conv.status,
+                status: failedActive ? "idle" : conv.status,
               },
             });
             break;

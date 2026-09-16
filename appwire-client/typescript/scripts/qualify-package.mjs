@@ -114,7 +114,19 @@ assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
-assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.isTurnActive("active"), true);
+assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.canSteer("active", { steer: true }), true);
+assert.equal(client.canSteer("idle", { steer: true }), false);
+assert.equal(client.canSteer("active", { steer: false }), false);
+assert.equal(client.canDrainQueue("active", { steer: true }, 0), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 1), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 0), false);
+assert.equal(client.canDrainQueue("idle", { steer: false }, 1), false);
+assert.deepEqual(
+  client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
+  { stop: false, steer: false, drain: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
+);
 assert.equal(client.formatTokenCount(41200), "41k");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5k chars");

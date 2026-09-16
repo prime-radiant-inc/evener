@@ -54,13 +54,27 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
+// steer=1 advertises the steer capability, so the busy fixture draws Stop +
+// Send + Steer (every busy session on a harness that can steer); without it
+// the cluster is Stop + Send, the one the status row's narrow-pane budget was
+// measured against (statusrow.module.css). The guard sweeps both.
+const steerMode = params.get("steer") === "1";
+
+// The width a container query or a flex line resolves against: the element's
+// content box, which clientWidth includes padding in.
+function contentBoxWidth(element: Element): number {
+  const style = getComputedStyle(element);
+  return (
+    element.clientWidth - (Number.parseFloat(style.paddingLeft) || 0) - (Number.parseFloat(style.paddingRight) || 0)
+  );
+}
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
-  steer: true,
+  steer: steerMode,
   interrupt: true,
   compact: true,
   clear: true,
@@ -748,12 +762,7 @@ function measureCanvas(canvas: HTMLElement): PreviewCanvasMeasurement {
   const card = canvas.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
   const cardId = card?.dataset.testid ?? "";
   const section = card?.querySelector<HTMLElement>(`section[aria-labelledby="${cardId}-example-heading"]`);
-  const sectionStyle = section ? getComputedStyle(section) : null;
-  const availableWidth = section
-    ? section.clientWidth -
-      (Number.parseFloat(sectionStyle?.paddingLeft ?? "0") || 0) -
-      (Number.parseFloat(sectionStyle?.paddingRight ?? "0") || 0)
-    : 0;
+  const availableWidth = section ? contentBoxWidth(section) : 0;
   return {
     layout,
     testId,
@@ -1019,11 +1028,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   ];
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
-  const editorStyle = getComputedStyle(editor);
-  const editorContainerWidth =
-    editor.clientWidth -
-    (Number.parseFloat(editorStyle.paddingLeft) || 0) -
-    (Number.parseFloat(editorStyle.paddingRight) || 0);
+  const editorContainerWidth = contentBoxWidth(editor);
   const columnLefts: number[] = [];
   for (const box of fieldsetBoxes) {
     if (!columnLefts.some((left) => Math.abs(left - box.left) <= 0.5)) columnLefts.push(box.left);
@@ -1144,9 +1149,7 @@ function disclosureContract(target: DisclosureTarget): DisclosureContract | null
 
   const summaryBox = summary.getBoundingClientRect();
   const bodyBox = body.getBoundingClientRect();
-  const detailsStyle = getComputedStyle(details);
-  const expectedWidth =
-    details.clientWidth - Number.parseFloat(detailsStyle.paddingLeft) - Number.parseFloat(detailsStyle.paddingRight);
+  const expectedWidth = contentBoxWidth(details);
   const result = {
     kind,
     originalOpen,
@@ -1456,13 +1459,17 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // The fixture has active status and interrupt capability, but no active turn
-  // ID, so Composer correctly renders Stop but not the busy-only Steer. These
-  // are the actual controls it must render at every width. The card alone is
-  // not a controls check: each control is measured below.
-  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit"];
+  // The fixture is active with the interrupt capability, and with the steer
+  // capability only in steer mode (see CAPABILITIES), so Composer renders
+  // Stop and Send, plus Steer in that mode. These are the actual controls it
+  // must render at every width. The card alone is not a controls check: each
+  // control is measured below. Steer is measured in both modes and expected
+  // only in steer mode, so a Steer drawn for a harness that advertises no
+  // steer fails the guard the same way a missing Stop does.
+  const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
+    expected: testId !== "composer-steer" || steerMode,
     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
   }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
@@ -1494,10 +1501,11 @@ function measure() {
     box.right <= composerCardBox.right + 1 &&
     box.top >= composerCardBox.top - 1 &&
     box.bottom <= composerCardBox.bottom + 1;
-  const controls = composeControls.map(({ testId, element }) => {
+  const controls = composeControls.map(({ testId, expected, element }) => {
     const box = element?.getBoundingClientRect();
     return {
       testId,
+      expected,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1506,6 +1514,7 @@ function measure() {
   });
   const controlsDoNotOverlap = controls.every((control, index) =>
     controls.slice(index + 1).every((other) => {
+      if (!control.expected || !other.expected) return true;
       if (!control.box || !other.box) return false;
       return (
         control.box.right <= other.box.left + 1 ||
@@ -1528,6 +1537,7 @@ function measure() {
       overflow: style.overflow,
     };
   }
+  const statusBox = statusGeometry(status);
   return {
     width,
     scrollers,
@@ -1562,7 +1572,7 @@ function measure() {
       statusScrollWidth: status?.scrollWidth ?? 0,
       modelClientWidth: model?.clientWidth ?? 0,
       geometry: {
-        status: statusGeometry(status),
+        status: statusBox,
         identity: statusGeometry(pane.querySelector<HTMLElement>('[data-testid="status-row-identity"]')),
         model: statusGeometry(model),
         effort: statusGeometry(effort),
@@ -1573,10 +1583,39 @@ function measure() {
     currentWork: {
       found: visible(currentWork),
       composerCardFound: visible(composerCard),
-      controlsFound: controls.every((control) => control.present),
-      controlsContained: controls.every((control) => control.containedInCard && control.containedInPane),
+      controlsFound: controls.every((control) => control.present === control.expected),
+      controlsContained: controls.every(
+        (control) => !control.expected || (control.containedInCard && control.containedInPane),
+      ),
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
+      // The verb cluster (Stop, Send, Steer) against the status row it shares
+      // the control row with: promptcard.module.css drops a three-verb cluster
+      // below the row at phone width, and the guard asserts that geometry
+      // (wrapped exactly when three verbs meet a phone-width card, inline
+      // otherwise) rather than only that each verb is present and contained.
+      verbCluster: (() => {
+        const verbs = controls.filter(
+          (control) => control.testId !== "composer-attach" && control.present && control.box,
+        );
+        // The width the card's @container query resolves against: the content
+        // box of the nearest ancestor with inline-size containment (the
+        // composer root), which the pane's footer padding leaves narrower than
+        // the pane itself.
+        let container = composerCard?.parentElement ?? null;
+        while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
+          container = container.parentElement;
+        }
+        return {
+          controls: verbs.length,
+          // The verbs this fixture draws while active: Send always, Stop with
+          // the interrupt capability, Steer with the steer capability.
+          expectedVerbs: 1 + (CAPABILITIES.interrupt ? 1 : 0) + (CAPABILITIES.steer ? 1 : 0),
+          top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
+          statusRowBottom: statusBox?.bottom ?? null,
+          containerWidth: container ? contentBoxWidth(container) : null,
+        };
+      })(),
       sharedPaneWithoutOverflow:
         !!currentWork &&
         !!composerCard &&

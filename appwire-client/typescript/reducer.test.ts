@@ -5875,3 +5875,117 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
   expect(spy.mock.calls[0]?.[0]).toMatch(/turn\/completed.*turn_2.*2 turns/i);
   spy.mockRestore();
 });
+
+// A genuine turn failure is the one turn end with no status frame behind it:
+// the projector's EventError branch emits turn/completed{status: "failed",
+// error} and nothing else, and the agent's processInputKindWithProvenance
+// returns the failure before the EventSessionEnd that only the clean
+// completion and the interrupt reach (kata s8x8, which the TUI reconciles the
+// same way). Left alone, the model stays active forever: Stop and Steer shown,
+// Send disabled. A completed turn is different: the status frame that follows
+// it (idle at session end, active at an inline boundary) is the authority.
+test("a failed active turn with no status frame behind it settles the session idle", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const failed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error: { message: "rate limited" } },
+      },
+    },
+    2000,
+  );
+  expect(failed.status.type).toBe("idle");
+  expect(failed.activeTurnId).toBeUndefined();
+});
+
+test("a completed active turn leaves the status to the frame that follows it (inline boundary)", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_1" },
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const completed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    },
+    2000,
+  );
+  expect(completed.status.type).toBe("active");
+});
+
+// The status is authoritative and the transcript's id can be absent while the
+// session is active (a hydrate cut between turns, or the gap after
+// turn/completed at an inline boundary). A failed completion arriving then
+// must still settle the session idle: the projector emits nothing after it.
+test("a failed turn/completed with no active turn id still settles an active session idle", () => {
+  const initial = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "ref_t", 1000);
+  expect(initial.activeTurnId).toBeUndefined();
+  const failed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_x", status: "failed", itemsView: "", error: { message: "boom" } },
+      },
+    },
+    2000,
+  );
+  expect(failed.status.type).toBe("idle");
+});
+
+// A failed completion for a turn that another turn has since superseded is
+// stale bookkeeping about the past, not the session's state.
+test("a failed turn/completed for a superseded turn leaves the active session alone", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_2" },
+        turns: [
+          { id: "turn_1", status: "completed", itemsView: "full", items: [] },
+          { id: "turn_2", status: "inProgress", itemsView: "full", items: [] },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const folded = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error: { message: "late" } },
+      },
+    },
+    2000,
+  );
+  expect(folded.status.type).toBe("active");
+  expect(folded.activeTurnId).toBe("turn_2");
+});

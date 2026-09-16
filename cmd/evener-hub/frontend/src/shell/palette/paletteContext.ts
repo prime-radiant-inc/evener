@@ -66,19 +66,3 @@ export function buildPaletteContext(): PaletteContext {
 export function focusedModel(sessionRef: string | null): ThreadModel | undefined {
   return sessionRef ? threadsStore.getState().threads.get(sessionRef) : undefined;
 }
-
-// hasActiveTurn is the palette's ONE model-derived predicate, and it answers
-// exactly one question: is there a turn to act on right now. It belongs to
-// /interrupt, /steer, /queue and /drain, which are meaningless without one
-// (the legacy's plain `!activeTurnId()` check).
-//
-// It is deliberately the only one left. A "session is busy" and a "session has
-// ended" predicate used to live here too, gating /model and the whole
-// session scope respectively - both session-scoped decisions made from
-// turn-scoped information (kata cjzc). Whether the NEXT turn can be
-// configured is the hub's answer, not this module's: it advertises a
-// per-action capability for every thread, cold ones included, and resumes
-// behind the call. commands.ts reads those flags instead.
-export function hasActiveTurn(model: ThreadModel): boolean {
-  return !!model.activeTurnId;
-}

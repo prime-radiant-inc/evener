@@ -92,10 +92,10 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
    ```json
    {"id":3,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
    ```
-   **Expected:** `result.thread.status.type` is `active` with a non-empty
-   `result.thread.evener.activeTurnId` (both must be present —
-   `submitRouting.ts:48-50`'s `isTurnActive` requires the pair, and this card's
-   browser steps key off the same condition), and
+   **Expected:** `result.thread.status.type` is `active` (the status alone is
+   what `appwire-client/typescript/submitRouting.ts`'s `isTurnActive` and this
+   card's browser steps key off; `result.thread.evener.activeTurnId` names the
+   open transcript row and is normally non-empty here too), and
    `result.thread.evener.capabilities.sharedNotes` is `true`. Note it is the
    **appwire** `ThreadCapabilities` that carries the bit (which the hub's
    `shared-notes` pre-flight gate reads,

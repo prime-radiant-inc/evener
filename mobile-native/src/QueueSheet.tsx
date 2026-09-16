@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { queueActionRefusal, queueSheetPresentation } from "./conversationControls";
 import {
   ActivityIndicator,
   Modal,
@@ -14,12 +15,16 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function QueueSheet({
   conversation,
+  latest,
   service,
   ready,
   refresh,
   close,
 }: {
   conversation: MobileConversation;
+  /** The live conversation at press time; the render's `conversation` may be
+   * a status behind it. */
+  latest: () => MobileConversation | null;
   service: QueueConversationService;
   ready: boolean;
   refresh: () => Promise<void>;
@@ -38,17 +43,21 @@ export function QueueSheet({
   }, []);
   const queue = conversation.queue;
   const instanceId = conversation.instanceId;
-  const canRun =
-    conversation.capabilities.steer || conversation.capabilities.send;
-  const runLabel = conversation.capabilities.steer
-    ? "Use as steering"
-    : "Resume with this";
-  const runAllLabel = conversation.capabilities.steer
-    ? "Use all as steering"
-    : "Run all together";
+  // Promote and drain follow the conversation's controls
+  // (conversationControls.ts): the harness steers, and a turn is running or the
+  // queue is one a Stop parked.
+  const { canRun, runLabel, runAllLabel, explanation } =
+    queueSheetPresentation(conversation);
   const disabled = !ready || pending || !!error || !instanceId;
   async function act(operation: () => Promise<unknown>) {
     if (disabled || busy.current) return;
+    // Re-check the control against the live conversation: the status may
+    // have flipped since the render that offered this action.
+    const refusal = queueActionRefusal(latest() ?? conversation);
+    if (refusal !== null) {
+      setError(refusal);
+      return;
+    }
     busy.current = true;
     setPending(true);
     let failure: string | null = null;
@@ -99,11 +108,7 @@ export function QueueSheet({
           <Action onPress={close}>Done</Action>
         </View>
         <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
-          <Copy muted>
-            {conversation.capabilities.steer
-              ? "Messages run in order. Use steering to bring one into the current turn."
-              : "Resuming releases the remaining queue too. Use a selected message as steering, or combine all waiting messages into one input."}
-          </Copy>
+          <Copy muted>{explanation}</Copy>
           <ErrorMessage message={error} />
           {error ? (
             <Action

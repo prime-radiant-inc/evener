@@ -26,12 +26,13 @@ import {
   decideSubmitRoute,
   deriveSendQueueAvailability,
   filterSlashMenuItems,
-  isTurnActive,
   mergeSlashCommands,
+  NO_ACTIVE_TURN,
   parseSlashToken,
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
+  sessionControls,
   spliceSlashCommand,
 } from "@evener/appwire-client";
 import {
@@ -811,7 +812,12 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Read here rather than inside the handlers below, which close over `model`
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
-  const canSendWhenEnded = model.capabilities.send;
+  const queueDepth = model.queue?.depth ?? 0;
+  // What this session may be asked to do now: one derivation for every control
+  // surface, with the rationale (status alone, never activeTurnId; capability
+  // is the harness's) in @evener/appwire-client's submitRouting module.
+  const controls = sessionControls(model.status.type, model.capabilities, queueDepth);
+  const canSendWhenEnded = controls.send;
   // The target's skillInput capability, same narrowing rule: submission is
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
@@ -860,35 +866,11 @@ export function Composer({ ref, focused }: ComposerProps) {
     ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
       : tableAvailability;
-  const busy = isTurnActive(model.status.type, activeTurnId);
-  const queueDepth = model.queue?.depth ?? 0;
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
-
-  // Stop is SESSION-scoped and Steer is not, so they do not share a gate.
-  //
-  // Stop asks the session to stop working. turn/interrupt names no turn
-  // (appwire v3 dropped expectedTurnId from every control mutation) and the
-  // daemon answers on the session's own quiescence, so the only question the
-  // composer has to answer is "is this session working" -- which is the status
-  // alone. It deliberately does NOT use `busy`: isTurnActive additionally
-  // requires activeTurnId, and gating the BUTTON on an id the REQUEST does not
-  // carry can only ever withhold a Stop the daemon would have accepted.
-  //
-  // Active-with-no-id is a state the wire really reaches -- a session holding
-  // queued work reports active with no turn running, for one. (An earlier
-  // version of this comment attributed it to a turn reservation the daemon
-  // takes at turn/start; that reservation has no production callers and is not
-  // the cause. The gate is wrong for the reason above, which does not depend on
-  // how the state is reached.)
-  //
-  // Steer keeps `busy`. It redirects a turn in flight, and with none running
-  // Send already covers "say something now" -- a presentation choice rather
-  // than a precondition, since an idle session would accept a steer and land
-  // it in the next turn.
-  const showStop = model.status.type === "active" && model.capabilities.interrupt;
-  const showSteer = busy && model.capabilities.steer;
+  const showStop = controls.stop;
+  const showSteer = controls.steer;
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -1327,12 +1309,13 @@ export function Composer({ ref, focused }: ComposerProps) {
       textareaRef.current?.focus();
       return;
     }
-    // Both routes steer the ACTIVE turn; without one the daemon rejects them
-    // ("no active turn to steer"). Drain needs this guard as much as steer:
-    // unguarded, a Steer-click routing to drain (non-empty queue or staged
-    // attachments) minted a durable intent the hub rejects forever (kata wr3s).
-    if ((route === "steer" || route === "drain") && !activeTurnId) {
-      toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
+    // Readiness is sessionControls' (submitRouting.ts); it is checked here as
+    // well as on the button because Shift+Enter reaches this handler with no
+    // button on screen.
+    const reason = route === "drain" ? controls.reason.drain : controls.reason.steer;
+    if (reason !== undefined) {
+      const verb = route === "drain" ? "Drain" : "Steer";
+      toasts.push("error", reason === NO_ACTIVE_TURN ? `${verb} failed: ${reason}` : reason);
       return;
     }
     void submitAction(route);
@@ -1589,6 +1572,7 @@ export function Composer({ ref, focused }: ComposerProps) {
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
+                verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
                   <Textarea
                     ref={textareaRef}

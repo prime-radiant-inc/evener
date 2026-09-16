@@ -178,21 +178,28 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer := m.sessionTranscriptReducer()
 			reducer.FinalizeReasoning()
 			m.applySessionTranscriptReducer(reducer)
-			if turnID != "" && turnID == m.detail.ActiveTurnID {
+			completedActive := turnID != "" && turnID == m.detail.ActiveTurnID
+			if completedActive {
 				m.detail.ActiveTurnID = ""
-				// The turn sessionTurnRunning() was told is active just ended, so
-				// the two signals it reads must be reconciled here rather than
-				// waiting on thread/status/changed (kata s8x8). A genuine turn
-				// failure never gets one: session_lifecycle.go's
-				// processInputKindWithProvenance returns on a non-cancelled error
-				// before reaching the EventSessionEnd emit that only the
-				// clean-completion tail and the interrupt branch reach, so the
-				// projector never has a trigger to re-announce status and the
-				// composer would offer queue/steer indefinitely with no turn id to
-				// name. A successful multi-turn drain (more queued work) proves this
-				// wrong within the same notification batch — turn/started and
-				// thread/status/changed(active) ride right behind turn/completed —
-				// so clearing here costs nothing on that path.
+			}
+			// The session's status follows the wire's thread/status/changed, not
+			// the closing turn/completed: when the daemon runs the next turn
+			// inline behind this one, turn/started and thread/status/changed(active)
+			// ride right behind it as separate messages and the status never
+			// leaves active, so flipping idle here took Stop, Steer and Ctrl+S
+			// away at every inline turn boundary (the TUI's #1330). The one turn
+			// that never gets a status frame is a genuine failure (kata s8x8):
+			// session_lifecycle.go's processInputKindWithProvenance returns on a
+			// non-cancelled error before the EventSessionEnd emit that only the
+			// clean-completion tail and the interrupt branch reach, so for a
+			// failed turn the status and the optimistic processing flag are
+			// reconciled here. The transcript's id is not required: it can be
+			// empty while the session is active (a thread/read cut between turns,
+			// the gap after turn/completed at a boundary), and the failure is
+			// still this session's. A failed completion naming a turn another
+			// turn has superseded is bookkeeping about the past and leaves the
+			// status alone.
+			if params.Turn.Status == appwire.TurnStatusFailed && (completedActive || m.detail.ActiveTurnID == "") {
 				m.session.processing = false
 				if m.detail.State == appwire.ThreadStatusActive {
 					m.detail.State = appwire.ThreadStatusIdle
@@ -420,6 +427,17 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 		return
 	}
 	m.sessionQueueRef = ref
+	// The wire's queue state is stored whole, revision included: a drain swaps
+	// against the revision the client last saw, and a queue another client
+	// edited since hydrate would otherwise be refused as a conflict.
+	m.detail.Queue = queue
+	// The stale gate set by a partial drain lifts only for a revision newer
+	// than the one that drain was sent against: a thread/read snapshot cut
+	// before the daemon moved the revision would otherwise re-enable Ctrl+S
+	// with the same stale revision.
+	if m.queueRevisionStale && queue.Revision > m.queueRevisionAtDrain {
+		m.queueRevisionStale = false
+	}
 	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
 		return
@@ -456,6 +474,10 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 func (m *hubModel) clearSessionQueue() {
 	m.sessionQueue = nil
 	m.sessionQueueRef = ""
+	// The stale gate a partial drain set belongs to the session it happened
+	// in; a session entered afterwards starts with its own queue state.
+	m.queueRevisionStale = false
+	m.queueRevisionAtDrain = 0
 }
 
 func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {

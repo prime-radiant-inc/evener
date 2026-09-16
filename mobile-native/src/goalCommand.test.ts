@@ -586,10 +586,14 @@ it.each([
 			document.edit(text);
 			await submitComposerCommand(document, service, {
 				...commandContext,
-				turn: () =>
-					method === "turn/interrupt"
-						? null
-						: { activeTurnId: "turn", queue: { revision: 7 } },
+				// Every steering command and Stop read the session's controls
+				// (sessionControls): a running turn on a harness that advertises
+				// the action.
+				turn: () => ({
+					status: "active",
+					capabilities: { steer: true, queue: true, interrupt: true },
+					queue: { revision: 7, depth: 0 },
+				}),
 			});
 			expect(received).toBe(1);
 			expect(document.getSnapshot().record).toMatchObject({

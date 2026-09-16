@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
@@ -56,15 +57,63 @@ const (
 	hubComposerModeReadOnly
 )
 
+// sessionControls is the Go twin of the SDK's sessionControls
+// (appwire-client/typescript/submitRouting.ts, which keeps the rationale):
+// what this session may be asked to do now, from the wire's status, the
+// harness's capabilities and the queue depth. Every affordance and key in the
+// TUI reads a field of it; none reads a raw capability. The status is the
+// wire's alone -- the optimistic processing flag routes Enter (sessionTurnRunning)
+// but never a control, and the transcript's turn id never enters.
+//
+//	stop   active && interrupt
+//	steer  active && steer   (the hub advertises steer as harness support)
+//	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
+//	       and not while the queue revision is stale after a partial drain
+//	queue  active && queue
+//	send   !active && send   (the status is applied here as the SDK does, on top
+//	                          of the hub folding it into the flag: a source that
+//	                          advertises send while a turn runs is not composed
+//	                          into, since turn/start would be refused)
+type sessionControls struct {
+	stop, steer, drain, queue, send bool
+	// drainReason says why drain is false: the harness, the status, or the
+	// queue revision still syncing after a partial drain. Empty when true.
+	drainReason string
+}
+
+func (m hubModel) sessionControls() sessionControls {
+	active := m.detail.State == appwire.ThreadStatusActive
+	parked := m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth > 0
+	caps := m.detail.Capabilities
+	c := sessionControls{
+		stop:  active && caps.Interrupt,
+		steer: active && caps.Steer,
+		drain: caps.Steer && (active || parked) && !m.queueRevisionStale,
+		queue: active && caps.Queue,
+		send:  !active && caps.Send,
+	}
+	switch {
+	case c.drain:
+	case !caps.Steer:
+		c.drainReason = "source does not advertise steer"
+	case m.queueRevisionStale:
+		c.drainReason = "the queue is syncing after the last force-steer; retry in a moment"
+	default:
+		c.drainReason = "no active turn"
+	}
+	return c
+}
+
 func (m hubModel) sessionComposerMode() hubComposerMode {
 	if m.forkDraft != nil {
 		return hubComposerModeFork
 	}
+	controls := m.sessionControls()
 	if m.sessionTurnRunning() {
-		if m.detail.Capabilities.Queue {
+		if controls.queue {
 			return hubComposerModeQueue
 		}
-		if m.detail.Capabilities.Send {
+		if controls.send {
 			return hubComposerModeSend
 		}
 		return hubComposerModeReadOnly
@@ -75,10 +124,18 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 	return hubComposerModeReadOnly
 }
 
+// sessionCanDrainQueue: Ctrl+S may drain the queue as steering. It is
+// sessionControls' drain, independent of the composer mode (which decides only
+// Enter's route) and of the optimistic processing flag: the status alone.
+func (m hubModel) sessionCanDrainQueue() bool {
+	return m.sessionControls().drain
+}
+
 func (m hubModel) sessionComposerReadOnlyReason() string {
+	controls := m.sessionControls()
 	if m.sessionTurnActionState() {
-		if !m.detail.Capabilities.Queue {
-			if m.detail.Capabilities.Send {
+		if !controls.queue {
+			if controls.send {
 				return ""
 			}
 			return "source does not advertise queue"
@@ -91,7 +148,7 @@ func (m hubModel) sessionComposerReadOnlyReason() string {
 }
 
 func (m hubModel) sessionCanStartTurn() bool {
-	if m.detail.Capabilities.Send {
+	if m.sessionControls().send {
 		return true
 	}
 	return !m.detail.Live && m.detail.Capabilities.Resume
@@ -156,15 +213,17 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 	case hubComposerModeQueue:
 		panel.Label = "queue"
 		queueHints := []string{"enter: queue"}
-		// Only advertise force-steer when the source also has steer; some
-		// sources may someday advertise queue without steer.
-		if m.detail.Capabilities.Steer {
+		// Only advertise force-steer when it would be accepted: some sources
+		// may someday advertise queue without steer.
+		if m.sessionCanDrainQueue() {
 			queueHints = append(queueHints, "ctrl+s: send as steer")
 			panel.CanSteer = true
 		}
 		queueHints = append(queueHints, keys...)
 		panel.Keys = queueHints
-		queueDepth := len(m.sessionQueue)
+		// The wire's depth, not the preview's length: the preview only renders
+		// rows and may lag or be absent.
+		queueDepth := m.detail.Queue.Depth
 		if queueDepth > 0 {
 			panel.ChipContext.Mode = "QUEUE " + itoa(queueDepth)
 		} else {
@@ -178,7 +237,17 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		// already carries all the live context; an extra "message" line
 		// is redundant chrome.
 		if m.sessionCanStartTurn() {
-			panel.Keys = append([]string{"enter: send"}, keys...)
+			sendKeys := []string{"enter: send"}
+			// A queue a Stop parked: Ctrl+S runs it as steering now.
+			if m.sessionCanDrainQueue() {
+				sendKeys = append(sendKeys, "ctrl+s: run queue as steer")
+				panel.CanSteer = true
+			}
+			sendKeys = append(sendKeys, keys...)
+			panel.Keys = sendKeys
+		}
+		if depth := m.detail.Queue.Depth; depth > 0 {
+			panel.ChipContext.Mode = "QUEUE " + itoa(depth)
 		}
 	}
 	return panel
