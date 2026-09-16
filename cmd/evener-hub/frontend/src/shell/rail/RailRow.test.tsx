@@ -121,6 +121,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
 });
 
