@@ -16,13 +16,12 @@
 
 /* The path is machine text, so it takes the mono face. It shrinks first: the
  * repo reference beside it is the line's actionable fact. `title` carries the
- * full path (RepoLocation.tsx). */
+ * full path (RepoLocation.tsx). The row lays out the middle-truncation pair -
+ * the head clamps, the tail keeps the path's ending on screen. */
 .path {
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  display: flex;
   font-family: var(--font-mono);
 }
 
@@ -35,14 +34,38 @@
 
 /* `owner/repo#branch`, beside the forge's mark. It may shrink as a last resort,
  * after the path has given up all of its room, and ellipsizes rather than
- * pushing the line out of the pane. */
+ * pushing the line out of the pane. The row lays out the middle-truncation
+ * pair: the head clamps, the tail keeps the branch on screen. */
 .ref {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  color: var(--ink-mid);
+}
+
+/* The middle-truncation pair (RepoLocation.tsx's MiddleTruncated), the same
+ * grammar toolcallitem.module.css's .clampedHead/.clampedTail pair set: the
+ * head yields under pressure and ellipsizes, so the cut lands wherever the
+ * width puts it; the tail never shrinks, so the string's ENDING - the project
+ * directory, the branch - is what stays on screen. The tail's 60% cap is the
+ * same ceiling .clampedTail carries: a tail long enough to crowd out its own
+ * head ellipsizes rather than clipping glyph-less at the container edge. An
+ * unpressured line renders head then tail as one unbroken string. */
+.head {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--ink-mid);
+}
+
+.tail {
+  flex: none;
+  max-width: 60%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .link {
@@ -64,4 +87,30 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);
+}
+
+/* On the phone the footer's bottom padding is a wide home-indicator band
+ * (12px of breathing room plus the inset), and this caption line sat at the
+ * top of it, hugging the card, leaving a strip of dead padding under itself
+ * taller than the line. The line spends up to one of its own line-heights of
+ * that band instead: it translates down, the strip below shrinks, and the gap
+ * above grows by the same amount - the card and every control above it stay
+ * exactly where they were, because a transform moves paint, not layout.
+ *
+ * The bound is the footer's own published padding
+ * (panescaffold.module.css's .footer publishes --pane-footer-pad-bottom), so
+ * the drop never exceeds the room that actually exists: capped at one
+ * caption line, never closer than --space-2 to the pane's bottom edge (the
+ * .pane clips at its edge), and nothing at all when the band is too small to
+ * hold it - the keyboard open, or a desktop window squeezed to phone width,
+ * where env() is 0 and the band is plain --space-3. Desktop keeps the base
+ * rule: no transform, no drop. */
+@media (max-width: 899px) {
+  .line {
+    --repo-line-drop: min(
+      var(--font-size-caption) * var(--line-height-body),
+      max(0px, var(--pane-footer-pad-bottom, 0px) - var(--space-2))
+    );
+    transform: translateY(var(--repo-line-drop));
+  }
 }

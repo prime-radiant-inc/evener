@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
@@ -5,6 +8,13 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { RepoLocation } from "./RepoLocation";
 
 afterEach(cleanup);
+
+function locationCss(): string {
+  const cssPath = join(dirname(fileURLToPath(import.meta.url)), "repoLocation.module.css");
+  // Comments stripped: the rules' own comments name the classes (testing.md's
+  // "a stylesheet assertion that matches its own comment" trap).
+  return readFileSync(cssPath, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
 
 function renderLocation(cwd: string, client: FakeClient, local = true) {
   return render(
@@ -172,4 +182,98 @@ test("drops the previous client's branch after the client is replaced", async ()
   expect(screen.queryByTestId("composer-repo-ref")).toBeNull();
   expect(screen.queryByTestId("composer-repo-link")).toBeNull();
   expect(screen.getByTestId("composer-repo-path").textContent).toBe("/repo");
+});
+
+// --- Middle truncation ------------------------------------------------------
+//
+// The working dir and the repo reference middle-truncate under pressure, not
+// end-truncate: an end-truncation hid the line's endings - the project
+// directory, the branch - which are exactly the parts a person scanning the
+// line needs (the same call ToolRow.tsx's collapsed summary already made).
+// The split is DOM the CSS acts on: the head span ellipsis-clamps under
+// pressure while the tail never shrinks, so the ending stays on screen.
+
+test("a long working dir renders head-then-tail spans that concatenate to the path", () => {
+  const client = new FakeClient();
+  const cwd = "/home/jesse/git/prime-radiant-inc/evener";
+  renderLocation(cwd, client, false);
+
+  const path = screen.getByTestId("composer-repo-path");
+  expect(path.children).toHaveLength(2);
+  const head = path.children[0]?.textContent ?? "";
+  const tail = path.children[1]?.textContent ?? "";
+  expect(head + tail).toBe(cwd);
+  // The tail is what an end-truncation used to hide: the path's ending.
+  expect(tail.endsWith("evener")).toBe(true);
+  expect(head.startsWith("/home/jesse")).toBe(true);
+});
+
+test("the repo reference splits at its branch marker so the branch rides the never-shrinking tail", async () => {
+  const client = clientReporting({ head: "feature/x", originUrl: "git@github.com:owner/repo.git" });
+  renderLocation("/repo", client);
+
+  const ref = await screen.findByTestId("composer-repo-ref");
+  expect(ref.children).toHaveLength(2);
+  expect(ref.children[0]?.textContent).toBe("owner/repo");
+  expect(ref.children[1]?.textContent).toBe("#feature/x");
+});
+
+// The cut walks off boundary whitespace before splitting: head and tail render
+// as separate spans, and CSS white-space processing drops a space at a span
+// edge, so every space must stay interior to one of the two.
+test("a cut beside whitespace moves off it, keeping the space interior to one span", () => {
+  const client = new FakeClient();
+  // ceil(8 × 0.6) = 5 lands directly after the string's only space.
+  renderLocation("aaaa bbb", client, false);
+
+  const path = screen.getByTestId("composer-repo-path");
+  const head = path.children[0]?.textContent ?? "";
+  const tail = path.children[1]?.textContent ?? "";
+  expect(head).toBe("aaa");
+  expect(tail).toBe("a bbb");
+  expect(head + tail).toBe("aaaa bbb");
+});
+
+// A string with no room for both sides is not middle-truncated: it renders as
+// one head span, which under pressure end-truncates exactly as the whole line
+// did before the split existed.
+test("a string too short to split renders as a single span", () => {
+  const client = new FakeClient();
+  renderLocation("/", client, false);
+
+  const path = screen.getByTestId("composer-repo-path");
+  expect(path.children).toHaveLength(1);
+  expect(path.textContent).toBe("/");
+});
+
+// The pressure grammar itself (ToolRow's .clamped pair in
+// toolcallitem.module.css): the path and the reference lay their spans out as
+// flex rows, the head yields and ellipsizes, and the tail never shrinks -
+// capped at 60% of the line the same way .clampedTail is capped.
+test("the head and tail spans carry the middle-truncation grammar", () => {
+  const css = locationCss();
+  expect(css).toMatch(/\.path \{[^}]*display: flex;/);
+  expect(css).toMatch(/\.ref \{[^}]*display: flex;/);
+  expect(css).toMatch(/\.head \{[^}]*flex: 0 1 auto;[^}]*text-overflow: ellipsis;/);
+  expect(css).toMatch(/\.tail \{[^}]*flex: none;[^}]*max-width: 60%;[^}]*text-overflow: ellipsis;/);
+});
+
+// On the phone the footer's bottom padding is the home-indicator band
+// (PaneScaffold publishes it as --pane-footer-pad-bottom). The line spends up
+// to one of its own line-heights of that band so the strip under it stops
+// reading as dead padding - bounded so its text never comes closer than
+// --space-2 to the pane's bottom edge, and never drops at all when the band is
+// too small to hold it (keyboard open, or a desktop window squeezed to phone
+// width where env() is 0). Desktop is untouched.
+test("the line translates down into the footer's padding band on the phone only", () => {
+  const css = locationCss();
+  expect(css).toMatch(
+    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*--repo-line-drop: min\(\s*var\(--font-size-caption\) \* var\(--line-height-body\),\s*max\(0px, var\(--pane-footer-pad-bottom, 0px\) - var\(--space-2\)\)/,
+  );
+  expect(css).toMatch(
+    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*transform: translateY\(var\(--repo-line-drop\)\)/,
+  );
+  const baseLine = css.match(/^\.line \{([^}]*)\}/m)?.[1] ?? "";
+  expect(baseLine).not.toContain("transform");
+  expect(baseLine).not.toContain("--repo-line-drop");
 });
