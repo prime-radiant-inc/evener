@@ -9,7 +9,7 @@ import {
   type ResourceListener,
   type ResourceState,
   targetBase,
-} from "./types";
+} from "@evener/appwire-client/state/navigation";
 
 interface Entry {
   state: ResourceState;

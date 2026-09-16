@@ -5,13 +5,13 @@ import type {
   NavigationReadResponse,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
+import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { capability, manifest } from "../stores/navigation/testing";
-import { navigationRootContainerKey, type ResourceKey } from "../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
@@ -662,7 +662,7 @@ describe("reconnect re-baselines silently", () => {
     // The hub's transition-only watcher emits to nobody, so the client learns
     // the post-gap truth from its reloaded section rows, not from a delta.
     const sectionKey = (section: "live" | "needs_you") => ({ kind: "section", section, offset: 0, limit: 50 }) as const;
-    const { keyID } = await import("../stores/navigation/types");
+    const { keyID } = await import("@evener/appwire-client/state/navigation");
     navigationStore.setState({
       resources: new Map([
         [

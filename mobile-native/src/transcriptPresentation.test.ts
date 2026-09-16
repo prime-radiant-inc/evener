@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
 	makeTranscriptDisplayConfig,
 	presetContent,
-} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+} from "@evener/appwire-client";
 import type {
 	MobileConversation,
 	MobileTimelineItem,

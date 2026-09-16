@@ -14,13 +14,13 @@
 // Both live and read-only panes now hand their hydrated model to the shared
 // TranscriptBody. The read-only surface injects only its older-row affordance
 // and deliberately omits live flow-overlay/new-content-pill machinery.
+import { resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";

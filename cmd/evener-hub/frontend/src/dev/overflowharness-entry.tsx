@@ -26,17 +26,16 @@ import type {
   ThreadTurnsListParams,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
-import { hydrateThread } from "@evener/appwire-client";
+import { hydrateThread, makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { navigationStore } from "../stores/navigation/store";
-import { keyID } from "../stores/navigation/types";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import "../styles/tokens.css";
 import "../styles/global.css";
 

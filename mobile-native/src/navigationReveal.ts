@@ -6,8 +6,8 @@ import {
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	normalizedGraphFromSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
-import type { ResourceKey } from "../../cmd/evener-hub/frontend/src/stores/navigation/types";
+	type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationPages } from "./navigationPages";
 

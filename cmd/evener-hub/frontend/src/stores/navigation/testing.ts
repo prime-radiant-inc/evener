@@ -5,8 +5,13 @@ import type {
   NavigationReadResponse,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
-import type { NavigationResponse, ResourceKey } from "./types";
-import { navigationOwnedContainerKey, navigationRootContainerKey, navigationViewScope } from "./types";
+import {
+  type NavigationResponse,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
   version,
   generationId,

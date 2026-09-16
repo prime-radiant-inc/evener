@@ -7,9 +7,11 @@ import {
   basename,
   effortLabel,
   filterSlashMenuItems,
+  findBuiltinArgument,
   friendlyLaunchErrorMessage,
   harnessSupportsPluginSelection,
   harnessUsesEvenerModels,
+  matchBuiltinInvocation,
   mergeSlashCommands,
   type PluginSelectionState,
   parseSlashToken,
@@ -63,7 +65,6 @@ import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
-import { findBuiltinArgument, matchBuiltinInvocation } from "../session/composer/builtinInvocation";
 import { SlashCompletionMenu, optionId as slashOptionId } from "../session/composer/SlashCompletionMenu";
 import {
   ConnectProviderDialogBoundary,

@@ -18,17 +18,27 @@ import type {
   NavigationSectionResource,
   NavigationSessionLocation,
 } from "@evener/appwire-client";
+import {
+  applyDelta,
+  canonicalResourceKey,
+  type DecodedNavigationResponse,
+  decodeNavigationResponse,
+  isNavigationUnavailable,
+  isSettledGone,
+  keyID,
+  materializeNavigationResource,
+  NavigationBaseInvalidError,
+  type NavigationRequest,
+  type NormalizedResource,
+  nextNavigationOffset,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+  reconcileSnapshot,
+} from "@evener/appwire-client/state/navigation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
-import {
-  type DecodedNavigationResponse,
-  decodeNavigationResponse,
-  materializeNavigationResource,
-  type NormalizedResource,
-  normalizedGraphFromSnapshot,
-} from "./codec";
-import { applyDelta, reconcileSnapshot } from "./merge";
 import {
   isGenerationMismatch,
   isNavigationNotInitialized,
@@ -36,17 +46,6 @@ import {
   type NavigationInvalidationWaiter,
   NavigationRevalidator,
 } from "./revalidator";
-import {
-  canonicalResourceKey,
-  isNavigationUnavailable,
-  isSettledGone,
-  keyID,
-  NavigationBaseInvalidError,
-  type NavigationRequest,
-  nextNavigationOffset,
-  type ResourceKey,
-  type ResourceState,
-} from "./types";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
 

@@ -133,7 +133,7 @@ func ReadPersistedHumanNote(stateDir, sessionID string) (note string, present bo
 	// character the key is made of and only then fall through to the token walk.
 	// Escapes for quotes, newlines and the HTML-sensitive characters (\u0022,
 	// \u003c, \u003e, \u0026) are not probes, so an ordinary journal keeps the
-	// fast path (roborev's eleventh round).
+	// fast path.
 	if !bytes.Contains(data, []byte(notesHumanNoteFieldKey)) && !containsEscapedNotesKey(data) {
 		return "", false, nil
 	}
