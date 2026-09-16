@@ -34,7 +34,8 @@ export async function confirmListingState(matches: (instances: InstanceEntry[]) 
  * This is deliberately not a confirmation gate, and its outcome is
  * deliberately not reported: the mutation's own success is already
  * established by its RPC, the store schedules its own post-mutation refresh
- * (see stores/credentials.ts's scheduleRefetch), and a caller that must
+ * (the credential store core's scheduleRefetch, in
+ * @evener/appwire-client/state/credentials), and a caller that must
  * confirm the listing actually moved before advancing uses
  * confirmListingState (or the guided flow's own refreshAndCheck). A read that
  * is superseded is that newer listing arriving, and a read that rejects (the
