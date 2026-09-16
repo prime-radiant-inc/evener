@@ -2832,7 +2832,7 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
-    it("projects a completed ask_user as a question row with askPending, without a reread", async () => {
+    it("projects a completed ask_user as a question row with the pending flag, without a reread", async () => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
@@ -2854,7 +2854,7 @@ describe("ConversationStore", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(rowById(store, "ask-1")).toMatchObject({ kind: "question" });
-      expect(store.getState().conversation?.askPending).toBe(true);
+      expect(store.getState().conversation?.questionsPending).toBe(true);
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
@@ -5079,7 +5079,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       const conv = store.getState().conversation;
-      expect(conv?.askPending).toBe(true);
+      expect(conv?.questionsPending).toBe(true);
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeDefined();
       if (questionItem?.kind === "question") {
@@ -5090,28 +5090,36 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
-    // The projection derives askPending from the model every time, so the
-    // flag follows the questions rather than latching on: a wire snapshot
-    // that said "pending" does not keep the phone pending once the ask is
-    // answered.
-    it("clears askPending when the question is answered", async () => {
-      const askThread = makeThread({
-        evener: evenerWith({ askPending: true, activeTurnId: "t2" }),
-        turns: [
-          makeTurn({
-            id: "t1",
-            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
-            status: "completed",
-          }),
-          makeTurn({ id: "t2", items: [], status: "inProgress" }),
-        ],
-      });
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(askThread);
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    // The wire's askPending is the hub's own thread-level signal and stays
+    // exactly as the snapshot set it (the reducer's invariant); what the phone
+    // asks — "is there a question waiting on me right now" — is derived beside
+    // it on every publish, from the hub's flag OR the package's live-ask rule.
+    // Neither is written into the other, so nothing latches.
+    it("reports a pending ask the hub knows about but this window does not hold", async () => {
+      // The ask's item is outside the loaded window: no question row can be
+      // projected for it, and the wire flag is the only evidence there is.
+      const store = await openProjectedThread(
+        makeThread({
+          evener: evenerWith({ askPending: true }),
+          turns: [makeTurn({ id: "t1", items: [userMessageItem("u1", "hi")] })],
+        }),
+      );
+      expect(rows(store).some((row) => row.kind === "question")).toBe(false);
       expect(store.getState().conversation?.askPending).toBe(true);
+      expect(store.getState().conversation?.questionsPending).toBe(true);
+    });
 
+    it("reports no pending ask once the question is answered, whatever the last snapshot said", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          evener: evenerWith({ askPending: false, activeTurnId: "t2" }),
+          turns: [
+            makeTurn({ id: "t1", items: [askUserItem("ask-1", VALID_ASK_ARGS)] }),
+            makeTurn({ id: "t2", items: [], status: "inProgress" }),
+          ],
+        }),
+      );
+      expect(store.getState().conversation?.questionsPending).toBe(true);
       store.getState().applyNotification({
         method: "item/started",
         params: {
@@ -5121,10 +5129,9 @@ describe("ConversationStore", () => {
           item: userMessageItem("answer-1", "I choose A"),
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.askPending).toBe(false);
-
-      // And it stays false as later frames fold: the flag is re-derived, not
-      // carried forward from the model the projection wrote.
+      expect(store.getState().conversation?.questionsPending).toBe(false);
+      // And it stays false as later frames fold: the flag is re-derived every
+      // publish, never carried forward from the model the projection wrote.
       store.getState().applyNotification({
         method: "item/completed",
         params: {
@@ -5134,6 +5141,26 @@ describe("ConversationStore", () => {
           item: userMessageItem("answer-1", "I choose A"),
         },
       } as AnyNotification);
+      expect(store.getState().conversation?.questionsPending).toBe(false);
+      // The wire's own flag is untouched by any of it.
+      expect(store.getState().conversation?.askPending).toBe(false);
+    });
+
+    it("reports a live ask as pending before any snapshot says so", async () => {
+      const { store } = await openRunningTurn();
+      expect(store.getState().conversation?.askPending).toBe(false);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: askUserItem("ask-live", VALID_ASK_ARGS),
+        },
+      } as AnyNotification);
+      expect(rowById(store, "ask-live")).toMatchObject({ kind: "question" });
+      expect(store.getState().conversation?.questionsPending).toBe(true);
+      // The hub has said nothing yet; its flag is not this client's to write.
       expect(store.getState().conversation?.askPending).toBe(false);
     });
 

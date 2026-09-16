@@ -44,6 +44,13 @@ import {
 // them into the model too.
 export type MobileConversation = ThreadModel & {
   items: MobileTimelineItem[];
+  // Whether a question is waiting on the user right now. Derived on every
+  // publish and kept BESIDE the model's own askPending, never written into
+  // it: the wire field is the hub's thread-level signal and snapshot
+  // authoritative (the reducer never recomputes it), while this projection's
+  // output is the model the next frame folds into — writing a derived value
+  // there would latch it on. The reducer never reads this field.
+  questionsPending: boolean;
 };
 
 export function projectConversation(model: ThreadModel): MobileConversation {
@@ -53,14 +60,12 @@ export function projectConversation(model: ThreadModel): MobileConversation {
   return {
     ...model,
     items: projectTimeline(model, asks),
-    // What the phone means by askPending is "there is a question on this
-    // screen to answer", and that is exactly the package's liveAskQuestions
-    // rule — the same rule that produced the question rows above. It is
-    // derived fresh from the model every time rather than OR'd with the
-    // hub's own thread-level flag: this projection's output is the model the
-    // next frame folds into, so an OR would latch the flag on forever, and
-    // the wire's value is never written back over the model's own field.
-    askPending: asks.size > 0,
+    // Two facts, neither standing in for the other: the hub's own askPending
+    // (carried through untouched) covers an ask whose item this window does
+    // not hold, and the package's live-ask rule — the same one that produced
+    // the question rows above — covers an ask that settled between snapshots
+    // and is answerable now. The phone asks for either.
+    questionsPending: model.askPending || asks.size > 0,
   };
 }
 
