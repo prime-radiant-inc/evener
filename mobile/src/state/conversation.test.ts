@@ -1318,7 +1318,7 @@ describe("ConversationStore", () => {
       expect(service.sendCallCount).toBe(0);
     });
 
-    it("preserves completed older-page history across a resumed latest read", async () => {
+    it("takes the resumed read's own window over the page history it predates", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const sink = createFakeSink();
@@ -1371,16 +1371,20 @@ describe("ConversationStore", () => {
         olderCursor: null,
       });
       await resume;
+      // The resumed read is a fresh snapshot of the window the hub serves.
+      // The older page this client had merged in lies outside that window and
+      // goes with the model it replaces; the snapshot's own cursor is where
+      // paging back starts again.
       expect(
         store.getState().conversation?.items.map((item) => item.id),
-      ).toEqual(["old", "new"]);
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      ).toEqual(["new"]);
+      expect(store.getState().olderCursor).toBeNull();
 
       await store.getState().rehydrate(service, sink);
       expect(
         store.getState().conversation?.items.map((item) => item.id),
-      ).toEqual(["old", "new"]);
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      ).toEqual(["new"]);
+      expect(store.getState().olderCursor).toBeNull();
 
       const replacement = makeConversation({
         threadId: "thread-1",
@@ -1696,7 +1700,7 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBeGreaterThan(0);
     });
 
-    it.each([false, true])("commits the reread's own members, page history first, with page history %s", async (withPageHistory) => {
+    it.each([false, true])("commits the reread's own members, with a page loaded during the read %s", async (withPageHistory) => {
       const { store, service, release, rehydratePromise } = await beginHeldClusterRehydrate();
       if (withPageHistory) {
         service.olderPage = olderPage([userMessageItem("older", "older")]);
@@ -1720,7 +1724,9 @@ describe("ConversationStore", () => {
       expect(activities[0]).toMatchObject({ state: "completed", detail: { output: "authoritative first" } });
       expect(activities[1]).toMatchObject({ state: "failed", detail: { output: "failed" } });
       expect(activities.every((item) => !item.members)).toBe(true);
-      if (withPageHistory) expect(rows(store)[0]?.id).toBe("older");
+      // The page lies outside the window the snapshot read, so it goes with
+      // the model the snapshot replaces (D23d: the pages live in the model).
+      if (withPageHistory) expect(rows(store).map((row) => row.id)).not.toContain("older");
     });
 
     it("does not resurrect a removed image when an attachment wire ID changes", async () => {
@@ -4675,7 +4681,7 @@ describe("ConversationStore", () => {
   }
 
   describe("I1: rehydrate commit-time ownership — page/mutation/error owner capture", () => {
-    it("R pending→L success: R cannot delete page items or regress cursor after L owns page", async () => {
+    it("R pending→L success: the reread's snapshot commits, page and cursor with it", async () => {
       // Rehydrate (R) is pending. A loadOlder (L) succeeds during the await,
       // prepending older items and advancing the cursor. When R completes, it
       // must NOT replace the conversation (deleting L's items) or regress the
@@ -4710,23 +4716,24 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       // While R is in-flight, a loadOlder (L) succeeds — prepends items,
       // advances cursor.
-      service.olderItems = {
-        items: [{ kind: "user", id: "old-page-item", text: "older" }],
+      service.olderPage = olderPage([userMessageItem("old-page-item", "older")], {
         nextCursor: "cursor-2",
-      };
+      });
       await store.getState().loadOlder(service);
       const itemsAfterL = store.getState().conversation?.items ?? [];
       const cursorAfterL = store.getState().olderCursor;
       expect(itemsAfterL.some((i) => i.id === "old-page-item")).toBe(true);
       expect(cursorAfterL).toBe("cursor-2");
-      // Now release R — it must NOT replace the conversation or regress cursor.
+      // Release R — its snapshot is the conversation, page and all: the
+      // window it read is what the thread is, and the page the user pulled in
+      // before it lies outside that window.
       ctrl.release();
       await ctrl.completed(1);
-      // R's stale domain write (replacing conversation) is discarded — L's
-      // page items survive, cursor is NOT regressed.
+      await yieldMicrotask();
       const itemsAfterR = store.getState().conversation?.items ?? [];
-      expect(itemsAfterR.some((i) => i.id === "old-page-item")).toBe(true);
-      expect(store.getState().olderCursor).toBe(cursorAfterL);
+      expect(itemsAfterR.some((i) => i.id === "old-page-item")).toBe(false);
+      // The cursor is the snapshot's own: paging back starts from what it read.
+      expect(store.getState().olderCursor).toBeNull();
     });
 
     it("R→L failure: R success preserves page error set by L failure", async () => {
@@ -4872,10 +4879,9 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-B");
       store.setState({ olderCursor: "cursor-B" });
       // Start and complete a B page operation.
-      service.olderItems = {
-        items: [{ kind: "user", id: "B-item", text: "B page" }],
+      service.olderPage = olderPage([userMessageItem("B-item", "B page")], {
         nextCursor: "cursor-B2",
-      };
+      });
       await store.getState().loadOlder(service);
       expect(store.getState().conversation?.threadId).toBe("thread-B");
       // Clear tracked calls — from this point, only A's stale resolution
@@ -5383,7 +5389,7 @@ describe("ConversationStore", () => {
   // --- Residual: R2 — page-race must not drop authoritative outcome ---
 
   describe("R2: page-race preserves authoritative outcome", () => {
-    it("ask reread racing page success: authoritative question appears, page items/cursor preserved", async () => {
+    it("ask reread racing a page: the snapshot's question and the snapshot's rows", async () => {
       // A rehydrate (R) is triggered by an ask_user notification. While R
       // is in-flight, a loadOlder (L) succeeds, prepending page items and
       // advancing the cursor. R's projection contains a question. When R
@@ -5421,29 +5427,29 @@ describe("ConversationStore", () => {
       await ctrl.started(1);
       await yieldMicrotask();
       // While R is in-flight, L succeeds — prepends page items, advances cursor.
-      service.olderItems = {
-        items: [{ kind: "user", id: "old-page-item", text: "older" }],
+      service.olderPage = olderPage([userMessageItem("old-page-item", "older")], {
         nextCursor: "cursor-2",
-      };
+      });
       await store.getState().loadOlder(service);
       const itemsAfterL = store.getState().conversation?.items ?? [];
       const cursorAfterL = store.getState().olderCursor;
       expect(itemsAfterL.some((i) => i.id === "old-page-item")).toBe(true);
       expect(cursorAfterL).toBe("cursor-2");
-      // Release R — the question must appear AND page items/cursor preserved.
+      // Release R — the question appears with the snapshot, which is also
+      // what the rows and the cursor now come from.
       ctrl.release();
       await ctrl.completed(1);
       await yieldMicrotask();
       const items = store.getState().conversation?.items ?? [];
       // Question row from R's projection appears.
       expect(items.some((i) => i.kind === "question")).toBe(true);
-      // Page items from L are preserved (not dropped).
-      expect(items.some((i) => i.id === "old-page-item")).toBe(true);
-      // Cursor from L is preserved.
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      // The page the user pulled in before the response lies outside the
+      // window the snapshot read; hasEarlierItems keeps offering it.
+      expect(items.some((i) => i.id === "old-page-item")).toBe(false);
+      expect(store.getState().olderCursor).toBeNull();
     });
 
-    it("preserves page-owned history when wire id differs from transcript key", async () => {
+    it("takes the reread's snapshot over a page that arrived while it was in flight", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = makeReadProjectionResult(
@@ -5471,30 +5477,32 @@ describe("ConversationStore", () => {
       await ctrl.started(1);
       await yieldMicrotask();
 
-      service.olderItems = {
-        items: [
+      service.olderPage = olderPage(
+        [
           {
-            kind: "user",
+            type: "userMessage",
             id: "wire-page",
             transcriptKey: "stable-page",
             text: "older page",
-          },
+          } as ThreadItem,
         ],
-        nextCursor: "cursor-2",
-      };
+        { nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
+      // The page is on screen at once, merged into the model.
+      expect(
+        rows(store).filter((item) => item.transcriptKey === "stable-page"),
+      ).toHaveLength(1);
 
       ctrl.release();
       await ctrl.completed(1);
       await yieldMicrotask();
-      const items = store.getState().conversation?.items ?? [];
-      expect(
-        items.filter((item) => item.transcriptKey === "stable-page"),
-      ).toHaveLength(1);
-      expect(
-        items.find((item) => item.transcriptKey === "stable-page")?.id,
-      ).toBe("wire-page");
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      // Then the snapshot commits: the window it read is the conversation, and
+      // its cursor is where paging back starts again.
+      const items = rows(store);
+      expect(items.filter((item) => item.transcriptKey === "stable-page")).toHaveLength(0);
+      expect(items.map((item) => item.id)).toEqual(["base"]);
+      expect(store.getState().olderCursor).toBeNull();
     });
 
     it("dedupes page and reread items by transcript key when wire ids differ", async () => {
@@ -5523,17 +5531,17 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
       await ctrl.started(1);
-      service.olderItems = {
-        items: [
+      service.olderPage = olderPage(
+        [
           {
-            kind: "user",
+            type: "userMessage",
             id: "wire-page",
             transcriptKey: "stable-page",
             text: "older",
-          },
+          } as ThreadItem,
         ],
-        nextCursor: "cursor-2",
-      };
+        { nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
       ctrl.release();
       await ctrl.completed(1);
@@ -6419,7 +6427,7 @@ describe("ConversationStore", () => {
   // everything else is gone — including a row a live frame inserted before
   // the response, which the snapshot has already accounted for.
   describe("page history in front of the snapshot's rows", () => {
-    it("keeps the paged rows, commits the snapshot's, drops the rest", async () => {
+    it("shows the page at once, then commits the snapshot's own rows", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
@@ -6477,8 +6485,10 @@ describe("ConversationStore", () => {
       ctrl.release();
       await ctrl.completed(1);
       await yieldMicrotask();
-      expect(rows(store).map((item) => item.id)).toEqual(["P", "B", "C"]);
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      // The snapshot is the conversation: the page lies outside the window it
+      // read, and its cursor is where paging back starts again.
+      expect(rows(store).map((item) => item.id)).toEqual(["B", "C"]);
+      expect(store.getState().olderCursor).toBeNull();
     });
 
     it("carries no page history across a reread when the cap already trimmed it", async () => {
@@ -6509,10 +6519,8 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await ctrl.started(1);
       await yieldMicrotask();
-      // A page smaller than the cap, so some of it survives the trim in
-      // front of the snapshot's rows.
-      const pageItems: MobileConversation["items"] = [];
-      for (let i = 0; i < 100; i++) pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
+      const pageItems: ThreadItem[] = [];
+      for (let i = 0; i < 100; i++) pageItems.push(userMessageItem(`P-${i}`, ""));
       service.olderPage = olderPage(pageItems, { nextCursor: "cursor-2" });
       await store.getState().loadOlder(service);
       store.getState().applyNotification({
@@ -6597,7 +6605,7 @@ describe("ConversationStore", () => {
       initialX: ThreadItem,
       rereadItems: ThreadItem[],
       frame: AnyNotification,
-      options: { pageItems?: MobileConversation["items"] } = {},
+      options: { pageItems?: ThreadItem[] } = {},
     ) {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
@@ -6718,7 +6726,7 @@ describe("ConversationStore", () => {
 
     // The page history the snapshot cannot know about is prepended, keeps the
     // page's own cursor, and the cap still trims from the oldest end.
-    it("keeps page history and its cursor in front of the snapshot's rows", async () => {
+    it("commits the snapshot's rows and cursor over a page loaded during the read", async () => {
       const { store } = await raceReread(
         agentMessageItem("X", "original", "inProgress"),
         [userMessageItem("B", "base"), userMessageItem("C", "fresh-authoritative")],
@@ -6726,15 +6734,15 @@ describe("ConversationStore", () => {
           method: "item/agentMessage/delta",
           params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-updated" },
         } as AnyNotification,
-        { pageItems: [{ kind: "user", id: "P", text: "page-old" }] },
+        { pageItems: [userMessageItem("P", "page-old")] },
       );
-      expect(rows(store).map((item) => item.id)).toEqual(["P", "B", "C"]);
-      expect(store.getState().olderCursor).toBe("cursor-2");
+      expect(rows(store).map((item) => item.id)).toEqual(["B", "C"]);
+      expect(store.getState().olderCursor).toBeNull();
     });
 
-    it("trims the oldest rows when page history and the snapshot exceed the cap", async () => {
-      const pageItems: MobileConversation["items"] = [];
-      for (let i = 0; i < 600; i++) pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
+    it("keeps the snapshot's rows inside the cap after a page during the read", async () => {
+      const pageItems: ThreadItem[] = [];
+      for (let i = 0; i < 600; i++) pageItems.push(userMessageItem(`P-${i}`, ""));
       const { store } = await raceReread(
         agentMessageItem("X", "original", "inProgress"),
         [userMessageItem("B", "base"), userMessageItem("C", "fresh-authoritative")],
@@ -6746,11 +6754,7 @@ describe("ConversationStore", () => {
       );
       const ids = rows(store).map((item) => item.id);
       expect(ids.length).toBeLessThanOrEqual(500);
-      // The newest rows survive: the snapshot's own, at the end, with the
-      // page history that still fits in front of them.
-      expect(ids.slice(-2)).toEqual(["B", "C"]);
-      expect(ids[0]).toMatch(/^P-/);
-      expect(ids).not.toContain("X");
+      expect(ids).toEqual(["B", "C"]);
     });
 
     it("replaces an oversized row with the reread's short version", async () => {
@@ -7090,7 +7094,13 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "opaque-cursor" });
       service.olderPage = olderPage(
         [
-          userMessageItem("older", "older"),
+          {
+            type: "userMessage",
+            id: "older",
+            transcriptKey: "older-item",
+            position: { entry: 1, item: 0 },
+            text: "older",
+          } as ThreadItem,
           {
             type: "userMessage",
             id: "wire-overlap",
@@ -7496,22 +7506,19 @@ describe("ConversationStore", () => {
         userMessageItem("base", "base"),
       ]);
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [
+      service.olderPage = olderPage(
+        [
           {
-            kind: "activity",
+            type: "commandExecution",
             id: "page-tool",
-            label: "shell",
-            family: "tool",
-            state: "completed",
-            detail: {
-              output: "x".repeat(MAX_ITEM_BYTES + 100),
-              callId: "call-A",
-            },
-          },
+            toolName: "shell",
+            callId: "call-A",
+            status: "completed",
+            output: "x".repeat(MAX_ITEM_BYTES + 100),
+          } as ThreadItem,
         ],
-        nextCursor: "cursor-2",
-      };
+        { nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
       const item = store
         .getState()
@@ -7908,10 +7915,9 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
 
       // Load a small page item — reconciliation must NOT unfreeze X.
-      service.olderItems = {
-        items: [{ kind: "user", id: "page-A", text: "page" }],
+      service.olderPage = olderPage([userMessageItem("page-A", "page")], {
         nextCursor: "cursor-2",
-      };
+      });
       await store.getState().loadOlder(service);
 
       // X is still present and still frozen (marker once).
@@ -7955,22 +7961,19 @@ describe("ConversationStore", () => {
         agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
       ]);
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [
+      service.olderPage = olderPage(
+        [
           {
-            kind: "activity",
+            type: "commandExecution",
             id: "page-tool",
-            label: "shell",
-            family: "tool",
-            state: "completed",
-            detail: {
-              output: "x".repeat(MAX_ITEM_BYTES + 100),
-              callId: "call-A",
-            },
-          },
+            toolName: "shell",
+            callId: "call-A",
+            status: "completed",
+            output: "x".repeat(MAX_ITEM_BYTES + 100),
+          } as ThreadItem,
         ],
-        nextCursor: "cursor-2",
-      };
+        { nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
 
       // Both X (from the model) and page-tool (from the page) are bounded.
@@ -8066,10 +8069,7 @@ describe("ConversationStore", () => {
 
       // Load a page bringing X back with SHORT content — must NOT be frozen.
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "user", id: "X", text: "short-page" }],
-        nextCursor: undefined,
-      };
+      service.olderPage = olderPage([userMessageItem("X", "short-page")]);
       await store.getState().loadOlder(service);
       const reintroduced = store
         .getState()
@@ -8293,10 +8293,7 @@ describe("ConversationStore", () => {
 
       // Load a page bringing X back with SHORT content — must NOT be frozen.
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "user", id: "X", text: "short-page" }],
-        nextCursor: undefined,
-      };
+      service.olderPage = olderPage([userMessageItem("X", "short-page")]);
       await store.getState().loadOlder(service);
       const reintroduced = store
         .getState()
@@ -8389,10 +8386,7 @@ describe("ConversationStore", () => {
       expect(rowById(store, "X")).toBeUndefined();
 
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "assistant", id: "X", markdown: "short-page", streaming: false }],
-        nextCursor: undefined,
-      };
+      service.olderPage = olderPage([agentMessageItem("X", "short-page", "completed")]);
       await store.getState().loadOlder(service);
       expect(rowById(store, "X")).toMatchObject({ kind: "assistant", markdown: "short-page" });
 
@@ -8450,24 +8444,22 @@ describe("ConversationStore", () => {
       if (newId !== undefined) expect(items2[items2.length - 1]?.id).toBe(newId);
       expect(items2[0]?.id).toBe("u-1");
 
-      // A page brings X back, short, with no bound carried over from the
-      // oversized row the cap dropped. (The window is shrunk first so the
-      // prepended page row is not itself trimmed by the cap.)
-      const currentConv = store.getState().conversation;
-      if (currentConv !== null) {
-        store.setState({
-          conversation: { ...currentConv, items: currentConv.items.slice(0, 10) },
-        });
-      }
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "assistant", id: "X", markdown: "short-page", streaming: false }],
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      const xPage = rowById(store, "X");
-      expect(xPage).toMatchObject({ kind: "assistant", markdown: "short-page" });
-      expect(xPage?.kind === "assistant" && xPage.markdown.endsWith(TRUNCATION_MARKER)).toBe(false);
+      // A snapshot that carries X short shows it short: nothing about the
+      // oversized row the cap dropped is carried over.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [agentMessageItem("X", "short-page", "completed")],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      const xAfter = rowById(store, "X");
+      expect(xAfter).toMatchObject({ kind: "assistant", markdown: "short-page" });
+      expect(xAfter?.kind === "assistant" && xAfter.markdown.endsWith(TRUNCATION_MARKER)).toBe(false);
     });
   });
 
@@ -9061,97 +9053,80 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Cluster: paging dedupe spans every incoming identity", () => {
-    function member(id: string, transcriptKey: string): ActivityMember {
+  // A page of clustered tool calls merges by item identity like any other:
+  // a member the model already holds arrives once, however the page names its
+  // cluster, and a page item's own images come with it.
+  describe("Task 2A-Cluster: a page of clustered calls merges by identity", () => {
+    function toolItem(id: string, transcriptKey: string, over: Partial<ThreadItem> = {}): ThreadItem {
       return {
+        type: "commandExecution",
         id,
         transcriptKey,
-        label: "shell",
-        family: "tool",
-        state: "completed",
-        detail: { output: transcriptKey, callId: `call-${transcriptKey}` },
-      };
-    }
-
-    function cluster(
-      id: string,
-      transcriptKey: string,
-      members: ActivityMember[],
-    ): MobileTimelineItem {
-      return {
-        kind: "activity",
-        id,
-        transcriptKey,
-        label: "shell",
-        family: "tool",
-        state: "completed",
-        detail: { output: transcriptKey, callId: `call-${transcriptKey}` },
-        members,
-      };
+        toolName: "shell",
+        status: "completed",
+        callId: `call-${transcriptKey}`,
+        output: transcriptKey,
+        ...over,
+      } as ThreadItem;
     }
 
     function memberIdentities(items: MobileTimelineItem[]): string[] {
       return items.flatMap((item) =>
         item.kind === "activity"
-          ? (item.members ?? []).map((m) => m.transcriptKey ?? m.id)
+          ? (item.members ?? [item]).map((m) => m.transcriptKey ?? m.id)
           : [],
       );
     }
 
-    async function pagedStore(
-      current: MobileTimelineItem[],
-      older: MobileTimelineItem[],
-    ): Promise<ReturnType<typeof createConversationStore>> {
+    async function pagedStore(current: ThreadItem[], older: ThreadItem[]) {
       const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t-current", items: current })] }),
+      );
       const store = createConversationStore();
-      service.openConv = makeConversation({ items: current });
-      await store.getState().open(service, "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       service.olderPage = olderPage(older, { nextCursor: "next" });
       await store.getState().loadOlder(service);
       return store;
     }
 
-    it("skips an incoming cluster whose member identity is already present under a new top-level id", async () => {
+    it("brings a member the model already holds exactly once", async () => {
       const store = await pagedStore(
-        [cluster("wire-X", "key-X", [member("wire-X", "key-X"), member("wire-A", "key-A")])],
+        [toolItem("wire-X", "key-X"), toolItem("wire-A", "key-A")],
         [
-          cluster("wire-old", "key-old", [
-            member("wire-old", "key-old"),
-            member("wire-A2", "key-A"),
-          ]),
-          { kind: "user", id: "older", text: "older" },
+          toolItem("wire-old", "key-old"),
+          // The page names the same call under a new wire id.
+          toolItem("wire-A2", "key-A"),
+          userMessageItem("older", "older"),
         ],
       );
 
-      const items = store.getState().conversation?.items ?? [];
-      expect(items.map((i) => i.id)).not.toContain("wire-old");
-      // The member is not duplicated across rows.
-      expect(memberIdentities(items).filter((id) => id === "key-A")).toEqual([
-        "key-A",
-      ]);
-      // A genuinely new row from the same page is still admitted.
+      const items = rows(store);
+      expect(memberIdentities(items).filter((id) => id === "key-A")).toEqual(["key-A"]);
+      // The page's own rows are admitted.
       expect(items.map((i) => i.id)).toContain("older");
+      expect(memberIdentities(items)).toContain("key-old");
     });
 
-    it("admits an older attachment whose source row arrives in the same page", async () => {
+    it("brings an older item's images with it", async () => {
       const store = await pagedStore(
-        [{ kind: "user", id: "current", text: "current" }],
+        [userMessageItem("current", "current")],
         [
-          { kind: "user", id: "wire-src", transcriptKey: "key-src", text: "older" },
           {
-            kind: "attachments",
-            id: "wire-src:attachments",
-            sourceTranscriptKey: "key-src",
-            items: [{ id: "att-1", src: "https://example.com/new.png" }],
-          },
+            type: "userMessage",
+            id: "wire-src",
+            transcriptKey: "key-src",
+            text: "older",
+            images: [{ type: "image", url: "https://example.com/new.png" }],
+          } as ThreadItem,
         ],
       );
 
-      const items = store.getState().conversation?.items ?? [];
-      expect(items.map((i) => i.id)).toContain("wire-src:attachments");
+      expect(rows(store).map((i) => i.id)).toContain("wire-src:attachments");
     });
   });
+
   // --- C1: Service-specific operation binding ---------------------------------------
 
   describe("C1: wrong service at entry => zero request/state change", () => {
@@ -9583,7 +9558,7 @@ describe("ConversationStore", () => {
       const resolveOlderHolder: { fn?: () => void } = {};
       const hangOlder = new Promise<ThreadTurnsListResponse>((r) => {
         resolveOlderHolder.fn = () =>
-          r({ items: [{ kind: "user", id: "old-A", text: "old" }] });
+          r(olderPage([userMessageItem("old-A", "old")]));
       });
       serviceA.olderPage = hangOlder as never;
       const olderP = store.getState().loadOlder(serviceA);
@@ -9880,55 +9855,77 @@ describe("ConversationStore", () => {
 
   // --- I3: Defense-in-depth question filter at state boundary -----------------------
 
-  describe("I3: state loadOlder filters question rows (defense-in-depth)", () => {
-    it("inject question row into page items => omitted, other items/order/cursor retained, askPending unchanged", async () => {
+  // An older page's ask_user answers to the whole model, not to a filter on
+  // the page: merged into the conversation it belongs to, the package's rule
+  // (deriveAskQuestions — only calls acked after the LAST user message are
+  // live) decides it. The page cannot resurrect a settled call, and an ask
+  // nothing has answered is still the pending one.
+  describe("an older page's ask_user answers to the whole model", () => {
+    const askArgs =
+      '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+
+    it("brings no question row for an ask the conversation has already answered", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({ threadId: "thread-1", askPending: false }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: "cursor-1",
-      };
+      // The conversation continues past the page: the user's answer is in it.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-current",
+              items: [userMessageItem("u-answer", "A")],
+            }),
+          ],
+        }),
+      );
+      service.readProjectionResult.olderCursor = "cursor-1";
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(false);
 
-      // Inject a question row directly into olderItems — simulates a scenario
-      // where the service filter missed it. The state boundary must filter it.
-      service.olderItems = {
-        items: [
-          {
-            kind: "question",
-            id: "q-old",
-            batch: { callId: "c1", questions: [] },
-          } as never,
-          {
-            kind: "assistant",
-            id: "msg-old",
-            markdown: "old message",
-            streaming: false,
-          },
+      service.olderPage = olderPage(
+        [
+          askUserItem("ask-old", askArgs),
+          agentMessageItem("msg-old", "old message", "completed"),
         ],
-        nextCursor: "cursor-2",
-      };
+        { turnId: "t-old", nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
 
-      // askPending must remain false.
       expect(store.getState().conversation?.askPending).toBe(false);
-      // No question items in the conversation.
-      const items = store.getState().conversation?.items ?? [];
+      const items = rows(store);
       expect(items.some((i) => i.kind === "question")).toBe(false);
-      // Other content retained.
+      // The rest of the page is retained, and the page's cursor is the one to
+      // page back with.
       expect(items.some((i) => i.id === "msg-old")).toBe(true);
-      // Cursor retained.
       expect(store.getState().olderCursor).toBe("cursor-2");
     });
-  });
 
+    it("brings the question row for an ask nothing has answered", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-current",
+              items: [agentMessageItem("msg-current", "still waiting", "completed")],
+            }),
+          ],
+        }),
+      );
+      service.readProjectionResult.olderCursor = "cursor-1";
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      service.olderPage = olderPage([askUserItem("ask-open", askArgs)], {
+        turnId: "t-old",
+        nextCursor: "cursor-2",
+      });
+      await store.getState().loadOlder(service);
+
+      expect(rowById(store, "ask-open")).toMatchObject({ kind: "question" });
+      expect(store.getState().conversation?.askPending).toBe(true);
+    });
+  });
 
   // The activity view's capabilities follow the reread's snapshot through
   // setLiveView — the same commit that carries the conversation's. There is
