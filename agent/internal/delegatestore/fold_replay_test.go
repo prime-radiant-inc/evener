@@ -1,63 +1,25 @@
 package delegatestore
 
 import (
-	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"strconv"
 	"testing"
 )
 
-// referenceTransactionalApply freezes the pre-optimization Apply algorithm.
-// In particular it does not call the replay helper under test. Repeated calls
-// are the independent reference for complete state, revisions, and errors.
-func referenceTransactionalApply(state State, event Event) error {
-	if state == nil {
-		return errors.New("delegate state is nil")
-	}
-	if err := validateEventEnvelope(event); err != nil {
-		return err
-	}
-	next, err := cloneState(state)
-	if err != nil {
-		return err
-	}
-	before := make(map[string]publicProjection, len(state))
-	for id, aggregate := range state {
-		if aggregate == nil {
-			return fmt.Errorf("delegate %q aggregate is nil", id)
-		}
-		before[id] = aggregate.publicProjection()
-	}
-	if err := applyEvent(next, event); err != nil {
-		return err
-	}
-	for id, aggregate := range next {
-		previous, existed := state[id]
-		if !existed {
-			aggregate.ProjectionRevision = 1
-			continue
-		}
-		aggregate.ProjectionRevision = previous.ProjectionRevision
-		if !reflect.DeepEqual(before[id], aggregate.publicProjection()) {
-			aggregate.ProjectionRevision++
-		}
-	}
-	for id := range state {
-		delete(state, id)
-	}
-	maps.Copy(state, next)
-	return nil
-}
-
+// replayReference is the semantic contract Fold must match: a replay that
+// repeatedly applies the shipped public Apply. Apply is now touched-only — it
+// clones, diffs and, on a rejected event, restores exactly the aggregates an
+// event can reach — so this reference is the real contract, not the full-clone
+// strawman the branch first compared against. Fold may only differ in mutating
+// its own unpublished state in place instead of through that transaction copy.
 func replayReference(events []Event) (State, error) {
 	state := make(State)
 	for i, event := range events {
 		if event.Seq != uint64(i+1) {
 			return nil, fmt.Errorf("delegate event sequence %d, want %d", event.Seq, i+1)
 		}
-		if err := referenceTransactionalApply(state, event); err != nil {
+		if err := Apply(state, event); err != nil {
 			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
@@ -165,7 +127,11 @@ func TestApplyLateFailureStillAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := cloneState(state)
+	// cloneState is not a faithful snapshot for this comparison: it normalizes a
+	// nil PendingDeliveries slice to an empty one, while the Apply reference
+	// (correctly) leaves untouched aggregates' slices nil. An independent replay
+	// of the same events is a nil-faithful value copy to diff against.
+	before, err := replayReference(events[:10])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +157,7 @@ func TestFoldReplayAvoidsTransactionalCopies(t *testing.T) {
 	reference := run(replayReference)
 	got := run(Fold)
 	if got >= reference {
-		t.Fatalf("replay allocations=%g; unchanged transactional reference=%g; unpublished replay should avoid transaction copies", got, reference)
+		t.Fatalf("replay allocations=%g; Apply replay=%g; unpublished replay should avoid the per-event transaction copies Apply makes", got, reference)
 	}
 }
 
@@ -212,7 +178,7 @@ func TestApplyProjectionRevisionUsesOriginalState(t *testing.T) {
 	want["dlg_target"].Descriptor.FrozenSkillNames = []string{}
 	beforeRevision := want["dlg_target"].ProjectionRevision
 	event := Event{Seq: 2, Kind: EventDelegateAttentionChanged, DelegateID: "dlg_target", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: false}}
-	if err := referenceTransactionalApply(want, event); err != nil {
+	if err := Apply(want, event); err != nil {
 		t.Fatal(err)
 	}
 	if err := Apply(got, event); err != nil {

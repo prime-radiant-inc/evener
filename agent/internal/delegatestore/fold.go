@@ -23,7 +23,7 @@ func Fold(events []Event) (State, error) {
 		}
 		// This state is unpublished; any failure discards it instead of rolling
 		// back a transaction by cloning every aggregate for every event.
-		if err := applyWithProjectionRevisions(state, state, event); err != nil {
+		if err := applyWithProjectionRevisions(state, event); err != nil {
 			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
@@ -85,25 +85,36 @@ func Apply(state State, event Event) error {
 
 // applyWithProjectionRevisions mutates privately owned state after envelope
 // validation. Apply owns a transaction copy; Fold owns its unpublished result.
-// Previous projections come from the original state: cloning may normalize
-// caller-supplied empty descriptor slices, which itself changes the projection.
-func applyWithProjectionRevisions(state, previousState State, event Event) error {
-	before := make(map[string]publicProjection, len(previousState))
-	for id, aggregate := range previousState {
+// Only the aggregates the event can reach are projected, normalized and
+// revisioned, exactly as Apply's touched-only transaction touches them; every
+// other aggregate keeps its pointer, projection and revision untouched.
+// Previous projections come from the state before the event: cloning may
+// normalize caller-supplied empty descriptor slices, which itself changes the
+// projection.
+func applyWithProjectionRevisions(state State, event Event) error {
+	touched := touchedDelegates(state, event)
+	before := make(map[string]publicProjection, len(touched))
+	for _, id := range touched {
+		aggregate, existed := state[id]
+		if !existed {
+			continue
+		}
 		if aggregate == nil {
 			return fmt.Errorf("delegate %q aggregate is nil", id)
 		}
 		before[id] = aggregate.publicProjection()
-		// Preserve the empty-slice representation of transactional cloneState
-		// for existing aggregates, including after the first creation event.
-		if state[id].PendingDeliveries == nil {
-			state[id].PendingDeliveries = make([]PendingDelivery, 0)
+		// Preserve the empty-slice representation Apply's transaction copy gives
+		// every aggregate it clones: pending_deliveries is omitempty, so nil and
+		// empty serialize identically, but they differ under reflect.DeepEqual.
+		if aggregate.PendingDeliveries == nil {
+			aggregate.PendingDeliveries = make([]PendingDelivery, 0)
 		}
 	}
 	if err := applyEvent(state, event); err != nil {
 		return err
 	}
-	for id, aggregate := range state {
+	for _, id := range touched {
+		aggregate := state[id]
 		previous, existed := before[id]
 		if !existed {
 			aggregate.ProjectionRevision = 1
