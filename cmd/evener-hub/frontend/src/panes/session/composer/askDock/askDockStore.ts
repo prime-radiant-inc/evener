@@ -7,7 +7,7 @@
 // in-progress answers and in-flight-send state live here, not in component
 // state, so they survive a dockview pane remount. The store's rules - batch
 // reconciliation, answer drafts, the visible tab, the greeting, the send - are
-// the package's (appwire-client/typescript/askDock.ts).
+// the package's askDock module.
 import { type AskDockState, createAskDockStore } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { threadsStore } from "../../../../stores/threads";
