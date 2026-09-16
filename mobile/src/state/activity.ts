@@ -65,7 +65,7 @@ export type NotificationOutcome = "applied" | "rehydrate" | "ignored";
 
 // Strict live state: the ONLY surface createActivityStore exposes. No
 // unbound mode — setLiveView and applyLiveNotification always carry an
-// ActivityIdentity. setLiveCapabilities always carries an ActivityIdentity.
+// ActivityIdentity.
 // No identity-free fail-open methods exist.
 export interface LiveActivityState {
   readonly view: ActivityView | null;
@@ -77,16 +77,6 @@ export interface LiveActivityState {
     n: AnyNotification,
     identity: ActivityIdentity,
   ): NotificationOutcome;
-
-  // Narrow strict sink for a capabilities-only refresh. Updates only
-  // view.capabilities for the exact current identity and an open view; returns
-  // false on stale/missing/wrong identity and preserves tasks/work/usage/
-  // reasoning. This is the seam the conversation cap-refresh writer calls
-  // independently of the notification stream.
-  setLiveCapabilities(
-    capabilities: ThreadCapabilities,
-    identity: ActivityIdentity,
-  ): boolean;
 
   reset(): void;
 
@@ -459,18 +449,6 @@ export function createActivityStore() {
       // Validate payload threadId/ref (when present) against supplied identity.
       if (!payloadMatches(n, id)) return "ignored";
       return patchLive(n, state.view, set);
-    },
-
-    setLiveCapabilities(capabilities, id) {
-      // Narrow strict sink: update ONLY view.capabilities for the exact current
-      // identity and an open view. Return false (without mutation) on
-      // stale/missing/wrong identity or a null view. Preserve tasks/work/usage/
-      // reasoning.
-      if (!matchesCurrent(id)) return false;
-      const state = get();
-      if (state.view === null) return false;
-      set({ view: { ...state.view, capabilities: { ...capabilities } } });
-      return true;
     },
 
     reset() {

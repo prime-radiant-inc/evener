@@ -1041,10 +1041,6 @@ describe("ConversationService", () => {
         evener: { ...thread.evener, instanceId: "instance-b" },
       });
       client.on("thread/read", () => makeReadResponse(replacement));
-      await service.refreshCapabilities("ref-1");
-      expect((await service.send(textInput("still pinned"))).instanceId).toBe(
-        "instance-a",
-      );
       await service.readProjection("ref-1");
       thread.evener.instanceId = "instance-b";
       expect((await service.send(textInput("replacement"))).instanceId).toBe(
@@ -1066,38 +1062,6 @@ describe("ConversationService", () => {
   });
 
   describe("pushed capability transitions", () => {
-    it("keeps a pushed capability set when an older metadata read finishes", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      service.subscribeNotifications(() => {});
-      let resolve!: (response: ThreadReadResponse) => void;
-      client.on(
-        "thread/read",
-        () =>
-          new Promise<ThreadReadResponse>((done) => {
-            resolve = done;
-          }),
-      );
-      const refresh = service.refreshCapabilities("ref-1");
-      await Promise.resolve();
-      client.emitNotification({
-        method: "thread/status/changed",
-        params: {
-          ref: "ref-1",
-          threadId: "thread-1",
-          status: { type: "active" },
-          capabilities: { ...ALL_TRUE_CAPS, send: false },
-        },
-      });
-      resolve(makeReadResponse(makeThread()));
-      expect(await refresh).toBeNull();
-      await expect(
-        service.send([{ type: "text", text: "not idle" }]),
-      ).rejects.toThrow();
-      expect(
-        client.calls.filter((c) => c.method === "turn/start"),
-      ).toHaveLength(0);
-    });
 
     it("preserves a same-thread capability push received during rehydration", async () => {
       const { client, service } = setup();
@@ -1354,7 +1318,7 @@ describe("ConversationService", () => {
 
   describe("server action-unavailable refreshes capabilities", () => {
     it("does NOT auto-refresh on actionUnavailable — store owns the single read", async () => {
-      // F2: The service must NOT call refreshCapabilities itself on
+      // F2: The service must NOT read capabilities itself on
       // actionUnavailable. Exactly one non-subscribing thread/read occurs,
       // and it is driven by the store, not the service. The service just
       // throws so the store can handle recovery.
@@ -1373,7 +1337,7 @@ describe("ConversationService", () => {
       const initialReadCount = readCount;
       await expect(service.send(textInput("hello"))).rejects.toThrow();
       // The service must NOT have triggered an extra thread/read — only the
-      // store will call refreshCapabilities.
+      // store requests its coalesced reread of the snapshot.
       expect(readCount).toBe(initialReadCount);
     });
   });
@@ -1469,282 +1433,6 @@ describe("ConversationService", () => {
     });
   });
 
-  describe("refreshCapabilities (non-subscribing)", () => {
-    it("reads thread metadata without subscribing or loading turns", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      client.calls.length = 0;
-      const caps = await service.refreshCapabilities("ref-1");
-      expect(caps).not.toBeNull();
-      expect(caps?.send).toBe(true);
-      const call = client.calls.find((c) => c.method === "thread/read");
-      expect(call).toBeDefined();
-      const params = call?.params as Record<string, unknown>;
-      expect(params.includeTurns).toBe(false);
-      expect(params.subscribe).toBe(false);
-      expect(params).not.toHaveProperty("replaceSubscription");
-      // M2: exactly one refresh thread/read occurs.
-      const readCalls = client.calls.filter((c) => c.method === "thread/read");
-      expect(readCalls).toHaveLength(1);
-    });
-
-    it("returns null when no thread is open", async () => {
-      const { service } = setup();
-      // With explicit ref, refreshCapabilities always reads the wire.
-      // The null return is no longer based on internal ref state.
-      const caps = await service.refreshCapabilities("ref-1");
-      expect(caps).not.toBeNull();
-      expect(caps?.send).toBe(true);
-    });
-    it("late refresh for A after opening B does not overwrite B's cached capabilities", async () => {
-      // Deferred-promise test: start refreshCapabilities("ref-A") with a
-      // pending thread/read, then open("ref-B") while A's refresh is in
-      // flight, then resolve A. The returned A capabilities must remain
-      // available to the caller, but B's mutation-gating cache must stay
-      // B's — A's late resolution must neither overwrite B's capabilities
-      // nor gate B with A's values.
-      const { client, service } = setup();
-      const capsA: ThreadCapabilities = {
-        ...ALL_TRUE_CAPS,
-        send: false,
-        rename: false,
-      };
-      const capsB: ThreadCapabilities = { ...ALL_TRUE_CAPS };
-      const threadA = makeThread({
-        id: "thread-A",
-        evener: { ref: "ref-A", capabilities: capsA, queue: { revision: 0 } },
-      });
-      const threadB = makeThread({
-        id: "thread-B",
-        evener: { ref: "ref-B", capabilities: capsB, queue: { revision: 0 } },
-      });
-
-      let resolveARead = (_resp: ThreadReadResponse) => {};
-      const aReadPromise = new Promise<ThreadReadResponse>((r) => {
-        resolveARead = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        // refresh: subscribe=false -> defer A; open: subscribe=true -> immediate
-        if (p.ref === "ref-A" && p.subscribe === false) {
-          return aReadPromise;
-        }
-        if (p.ref === "ref-A") return makeReadResponse(threadA);
-        return makeReadResponse(threadB);
-      });
-
-      // Open A: ref=ref-A, capabilities=capsA.
-      await service.open("ref-A");
-      // Start A's refresh — pending on aReadPromise (not awaited yet).
-      const refreshPromise = service.refreshCapabilities("ref-A");
-      // Open B while A's refresh is in flight: ref=ref-B, capabilities=capsB.
-      await service.open("ref-B");
-      // Resolve A's late refresh now that B is the current ref.
-      resolveARead(makeReadResponse(threadA));
-      const aCaps = await refreshPromise;
-      // Returned A capabilities remain available to the generation-safe store.
-      expect(aCaps).toEqual(capsA);
-
-      // B's service mutation gates remain B's. If A's caps (send=false) had
-      // leaked into the cache, send would throw before reaching the wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
-    });
-    it("refresh updates cache when threadRef is still the current ref", async () => {
-      // Converse/current-ref case: when the refresh resolves and threadRef
-      // is still the currently open ref, the mutation-gating cache IS
-      // updated. This guards against over-correcting into never updating.
-      const { client, service } = setup();
-      const capsBefore = ALL_TRUE_CAPS;
-      const capsAfter: ThreadCapabilities = { ...ALL_TRUE_CAPS, send: false };
-      const threadBefore = makeThread({
-        evener: {
-          ref: "ref-1",
-          capabilities: capsBefore,
-          queue: { revision: 0 },
-        },
-      });
-      const threadAfter = makeThread({
-        evener: {
-          ref: "ref-1",
-          capabilities: capsAfter,
-          queue: { revision: 0 },
-        },
-      });
-
-      client.on("thread/read", () => makeReadResponse(threadBefore));
-      await service.open("ref-1");
-      // ref=ref-1, capabilities=capsBefore (send=true).
-
-      let resolveRead = (_resp: ThreadReadResponse) => {};
-      const readPromise = new Promise<ThreadReadResponse>((r) => {
-        resolveRead = r;
-      });
-      client.on("thread/read", () => readPromise);
-      const refreshPromise = service.refreshCapabilities("ref-1");
-      // ref is still ref-1 — no switch occurred.
-      resolveRead(makeReadResponse(threadAfter));
-      const caps = await refreshPromise;
-      expect(caps).toEqual(capsAfter);
-
-      // Cache was updated (threadRef === ref), so send is now gated by
-      // capsAfter.send=false and must throw before reaching the wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      await expect(service.send(textInput("hello"))).rejects.toThrow();
-      expect(
-        client.calls.find((c) => c.method === "turn/start"),
-      ).toBeUndefined();
-    });
-    it("late refresh A does not overwrite close→reopen same A (epoch bump)", async () => {
-      // I2: close increments the epoch and clears the pair. A refresh that
-      // was in flight before the close→reopen must not publish its stale
-      // caps into the reopened-A cache even though the ref string matches.
-      const { client, service } = setup();
-      const capsOld: ThreadCapabilities = {
-        ...ALL_TRUE_CAPS,
-        send: false,
-        rename: false,
-      };
-      const capsNew: ThreadCapabilities = { ...ALL_TRUE_CAPS };
-      const threadOld = makeThread({
-        evener: {
-          ref: "ref-A",
-          capabilities: capsOld,
-          queue: { revision: 0 },
-        },
-      });
-      const threadNew = makeThread({
-        evener: {
-          ref: "ref-A",
-          capabilities: capsNew,
-          queue: { revision: 0 },
-        },
-      });
-
-      let resolveOldRead = (_resp: ThreadReadResponse) => {};
-      const oldReadPromise = new Promise<ThreadReadResponse>((r) => {
-        resolveOldRead = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe !== false) return makeReadResponse(threadOld);
-        return oldReadPromise;
-      });
-
-      await service.open("ref-A");
-      // Start a refresh of the OLD epoch — pending on oldReadPromise.
-      const refreshPromise = service.refreshCapabilities("ref-A");
-      // Close increments the epoch and clears ref+capabilities.
-      service.close();
-      // Reopen A-new: new epoch, immediate read with capsNew.
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe !== false) return makeReadResponse(threadNew);
-        return oldReadPromise;
-      });
-      await service.open("ref-A");
-
-      // Now resolve the OLD refresh. Its epoch is stale, so it must NOT
-      // publish capsOld into the reopened-A cache (which holds capsNew).
-      resolveOldRead(makeReadResponse(threadOld));
-      const staleCaps = await refreshPromise;
-      // Returned requested capabilities are preserved even when stale.
-      expect(staleCaps).toEqual(capsOld);
-
-      // The cache must still hold capsNew (send=true), so send reaches wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-A" });
-    });
-    it("late refresh A does not overwrite same-ref readProjection replacement (epoch bump)", async () => {
-      // I2: readProjection starting a new open-style read for the SAME ref
-      // bumps the epoch, invalidating a refresh that was in flight before it.
-      // The stale refresh must not publish caps into the replaced cache.
-      const { client, service } = setup();
-      const capsOld: ThreadCapabilities = { ...ALL_TRUE_CAPS, send: false };
-      const capsNew: ThreadCapabilities = { ...ALL_TRUE_CAPS };
-      const threadOld = makeThread({
-        evener: {
-          ref: "ref-1",
-          capabilities: capsOld,
-          queue: { revision: 0 },
-        },
-      });
-      const threadNew = makeThread({
-        evener: {
-          ref: "ref-1",
-          capabilities: capsNew,
-          queue: { revision: 0 },
-        },
-      });
-
-      let resolveRefresh = (_resp: ThreadReadResponse) => {};
-      const refreshPromise0 = new Promise<ThreadReadResponse>((r) => {
-        resolveRefresh = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe === false) return refreshPromise0;
-        return makeReadResponse(threadOld);
-      });
-
-      await service.open("ref-1");
-      // Start a refresh (OLD epoch) — pending.
-      const refreshPromise = service.refreshCapabilities("ref-1");
-      // readProjection bumps the epoch (new open-style read, same ref).
-      client.on("thread/read", () => makeReadResponse(threadNew));
-      await service.readProjection("ref-1");
-
-      // Resolve the stale OLD refresh. It must not publish capsOld.
-      resolveRefresh(makeReadResponse(threadOld));
-      const staleCaps = await refreshPromise;
-      // Returned requested capabilities are preserved even when stale.
-      expect(staleCaps).toEqual(capsOld);
-
-      // Cache holds capsNew (send=true) -> send reaches wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
-    });
-  });
 
   describe("loadOlder with explicit limit", () => {
     it("passes opaque cursor and itemLimit to thread/turns/list", async () => {
@@ -1779,38 +1467,20 @@ describe("ConversationService", () => {
       } as AnyNotification);
       expect(received).toHaveLength(0);
     });
-    it("increments epoch and clears ref+capabilities so refresh cannot republish", async () => {
-      // I2: close increments epoch and clears the pair. A refresh started
-      // before close resolving after close must not republish into a closed
-      // service (and must not leave a dangling ref/caps).
+    it("increments epoch and clears ref+capabilities so a later mutation fails closed", async () => {
+      // I2: close increments epoch and clears the pair, leaving no dangling
+      // ref/caps for a mutation to send under.
       const { client, service } = setup();
-      const capsA: ThreadCapabilities = { ...ALL_TRUE_CAPS, send: false };
       const threadA = makeThread({
         evener: {
           ref: "ref-A",
-          capabilities: capsA,
+          capabilities: { ...ALL_TRUE_CAPS },
           queue: { revision: 0 },
         },
       });
-
-      let resolveRefresh = (_resp: ThreadReadResponse) => {};
-      const refreshPromise0 = new Promise<ThreadReadResponse>((r) => {
-        resolveRefresh = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe === false) return refreshPromise0;
-        return makeReadResponse(threadA);
-      });
-
+      client.on("thread/read", () => makeReadResponse(threadA));
       await service.open("ref-A");
-      const refreshPromise = service.refreshCapabilities("ref-A");
       service.close();
-      // Resolve the stale refresh after close.
-      resolveRefresh(makeReadResponse(threadA));
-      const staleCaps = await refreshPromise;
-      // Returned requested capabilities are preserved even when stale.
-      expect(staleCaps).toEqual(capsA);
 
       // After close, the service is fail-closed: send throws before wire.
       client.on(
@@ -1965,9 +1635,8 @@ describe("ConversationService", () => {
   describe("LiveConversationService interface (F1)", () => {
     it("createConversationService returns LiveConversationService", () => {
       const { service } = setup();
-      // Must have readProjection and refreshCapabilities as required methods
+      // Must have readProjection as a required method
       expect(typeof service.readProjection).toBe("function");
-      expect(typeof service.refreshCapabilities).toBe("function");
       // Must also have all base ConversationService methods
       expect(typeof service.open).toBe("function");
       expect(typeof service.send).toBe("function");
@@ -2259,142 +1928,6 @@ describe("ConversationService", () => {
     });
   });
 
-  describe("refresh during pending/after failure never activates pending/failed ref (R3)", () => {
-    it("refresh B resolving during pending A-open does not publish to cache", async () => {
-      // A refresh started while A's open is pending (ref=null) may never
-      // activate the pending ref. The returned caps are available to the
-      // caller, but the mutation-gating cache stays null/fail-closed until
-      // the successful open installs the pair.
-      const { client, service } = setup();
-      // Refresh response caps have send=false; open response caps have
-      // send=true. If the refresh leaked into the cache, send would throw
-      // even after the open succeeds.
-      const capsRefresh: ThreadCapabilities = {
-        ...ALL_TRUE_CAPS,
-        send: false,
-      };
-      const threadRefresh = makeThread({
-        id: "thread-B",
-        evener: {
-          ref: "ref-B",
-          capabilities: capsRefresh,
-          queue: { revision: 0 },
-        },
-      });
-      const threadOpen = makeThread({
-        id: "thread-B",
-        evener: {
-          ref: "ref-B",
-          capabilities: ALL_TRUE_CAPS,
-          queue: { revision: 0 },
-        },
-      });
-
-      let resolveOpenB = (_resp: ThreadReadResponse) => {};
-      const openBPromise = new Promise<ThreadReadResponse>((r) => {
-        resolveOpenB = r;
-      });
-      let resolveRefreshB = (_resp: ThreadReadResponse) => {};
-      const refreshBPromise0 = new Promise<ThreadReadResponse>((r) => {
-        resolveRefreshB = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.ref === "ref-B" && p.subscribe === false) return refreshBPromise0;
-        if (p.ref === "ref-B") return openBPromise;
-        return makeReadResponse(makeThread());
-      });
-
-      // Start open("ref-B") — ref=null, caps=null during pending.
-      const openPromise = service.open("ref-B");
-      // Start a refresh of B while B's open is still pending.
-      const refreshPromise = service.refreshCapabilities("ref-B");
-      // Resolve the refresh first (it should NOT publish since ref was null
-      // at refresh START).
-      resolveRefreshB(makeReadResponse(threadRefresh));
-      const refreshCaps = await refreshPromise;
-      // Returned caps are available to the caller.
-      expect(refreshCaps).toEqual(capsRefresh);
-
-      // The cache must still be fail-closed (ref=null): send throws before wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      await expect(service.send(textInput("hello"))).rejects.toThrow();
-      expect(
-        client.calls.find((c) => c.method === "turn/start"),
-      ).toBeUndefined();
-
-      // Now complete B's open — the pair installs and send reaches wire.
-      resolveOpenB(makeReadResponse(threadOpen));
-      await openPromise;
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCalls = client.calls.filter((c) => c.method === "turn/start");
-      expect(startCalls.length).toBeGreaterThan(0);
-      expect(startCalls[startCalls.length - 1]?.params).toMatchObject({
-        ref: "ref-B",
-      });
-    });
-
-    it("refresh B resolving after failed open does not publish to cache", async () => {
-      // After a failed open, ref=null. A refresh resolving after the failure
-      // must not publish its caps into the fail-closed cache.
-      const { client, service } = setup();
-      const capsRefresh: ThreadCapabilities = {
-        ...ALL_TRUE_CAPS,
-        send: false,
-      };
-      const threadRefresh = makeThread({
-        id: "thread-B",
-        evener: {
-          ref: "ref-B",
-          capabilities: capsRefresh,
-          queue: { revision: 0 },
-        },
-      });
-
-      let resolveRefresh = (_resp: ThreadReadResponse) => {};
-      const refreshPromise0 = new Promise<ThreadReadResponse>((r) => {
-        resolveRefresh = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        // open("ref-B") fails synchronously.
-        if (p.ref === "ref-B" && p.subscribe !== false) {
-          throw new WireError("boom", -32603, {});
-        }
-        return refreshPromise0;
-      });
-
-      // Start open("ref-B") — it will fail. ref stays null.
-      await expect(service.open("ref-B")).rejects.toThrow();
-      // Start a refresh of B while ref is null (after failure).
-      const refreshPromise = service.refreshCapabilities("ref-B");
-      resolveRefresh(makeReadResponse(threadRefresh));
-      const refreshCaps = await refreshPromise;
-      expect(refreshCaps).toEqual(capsRefresh);
-
-      // Cache must still be fail-closed: send throws before wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      await expect(service.send(textInput("hello"))).rejects.toThrow();
-      expect(
-        client.calls.find((c) => c.method === "turn/start"),
-      ).toBeUndefined();
-    });
-  });
 
   // R4-Important: open/readProjection must not commit ref/capabilities until ALL
   // response-derived projection work succeeds. After await, compute/validate
@@ -2707,77 +2240,6 @@ describe("ConversationService", () => {
   // refresh(B) while open(B) is pending (startRef=null), allow open(B) to
   // succeed/commit B, only then resolve refresh(B); fetched stale caps must
   // return but not overwrite newly committed B caps.
-  describe("pending refresh startRef guard (R4-Minor)", () => {
-    it("refresh(B) started while open(B) pending — stale caps return but do not overwrite committed B caps", async () => {
-      const { client, service } = setup();
-      // Refresh caps have send=false; open caps have send=true. If the stale
-      // refresh overwrites the committed B caps, send would throw.
-      const capsRefresh: ThreadCapabilities = {
-        ...ALL_TRUE_CAPS,
-        send: false,
-      };
-      const threadRefresh = makeThread({
-        id: "thread-B",
-        evener: {
-          ref: "ref-B",
-          capabilities: capsRefresh,
-          queue: { revision: 0 },
-        },
-      });
-      const threadOpen = makeThread({
-        id: "thread-B",
-        evener: {
-          ref: "ref-B",
-          capabilities: ALL_TRUE_CAPS,
-          queue: { revision: 0 },
-        },
-      });
-
-      let resolveOpenB = (_resp: ThreadReadResponse) => {};
-      const openBPromise = new Promise<ThreadReadResponse>((r) => {
-        resolveOpenB = r;
-      });
-      let resolveRefreshB = (_resp: ThreadReadResponse) => {};
-      const refreshBPromise0 = new Promise<ThreadReadResponse>((r) => {
-        resolveRefreshB = r;
-      });
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.ref === "ref-B" && p.subscribe === false) return refreshBPromise0;
-        if (p.ref === "ref-B") return openBPromise;
-        return makeReadResponse(makeThread());
-      });
-
-      // Start open("ref-B") — ref=null during pending.
-      const openPromise = service.open("ref-B");
-      // Start refresh(B) while open(B) is pending — startRef=null.
-      const refreshPromise = service.refreshCapabilities("ref-B");
-      // Allow open(B) to succeed and commit B (ref=ref-B, caps=ALL_TRUE).
-      resolveOpenB(makeReadResponse(threadOpen));
-      await openPromise;
-      // NOW resolve the stale refresh — startRef was null, so it must NOT
-      // overwrite the committed B caps.
-      resolveRefreshB(makeReadResponse(threadRefresh));
-      const refreshCaps = await refreshPromise;
-      // Fetched stale caps are returned to the caller.
-      expect(refreshCaps).toEqual(capsRefresh);
-
-      // Committed B caps (send=true) must be intact — send reaches wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
-    });
-  });
 
   // R5: Before ANY ref/capability state write in open/readProjection/refresh,
   // extract and runtime-validate response.thread.evener.capabilities into a
@@ -2944,10 +2406,19 @@ describe("ConversationService", () => {
       // payload and failed every capability-gated action for the session.
       const { sharedNotes: _omitted, ...legacyCaps } = ALL_TRUE_CAPS;
       const thread = makeThreadWithCaps(legacyCaps);
-      const { service } = setup({ thread });
+      const { client, service } = setup({ thread });
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
       await service.open("ref-1");
-      const caps = await service.refreshCapabilities("ref-1");
-      expect(caps?.sharedNotes).toBe(false);
+      // A capability-gated action still reaches the wire.
+      await service.send(textInput("hello"));
+      expect(client.calls.filter((c) => c.method === "turn/start")).toHaveLength(1);
     });
 
     it("open: throwing getter on a capability field rejects before commit, pair stays null", async () => {
@@ -3075,113 +2546,8 @@ describe("ConversationService", () => {
 
     // --- refresh: malformed capabilities ---
 
-    it("refresh: null capabilities returns rejection and does not corrupt current pair", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      // Set up a refresh handler that returns null capabilities.
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe === false) {
-          return makeReadResponse(makeThreadWithCaps(null));
-        }
-        return makeReadResponse(makeThread());
-      });
-      // The refresh must reject (malformed caps).
-      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow(
-        "capabilities is not an object",
-      );
-      // Current pair must be intact — send reaches the wire with ref-1.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
-    });
 
-    it("refresh: wrong-type field returns rejection and does not corrupt current pair", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      const badCaps = {
-        ...ALL_TRUE_CAPS,
-        interrupt: "no" as unknown as boolean,
-      };
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe === false) {
-          return makeReadResponse(makeThreadWithCaps(badCaps));
-        }
-        return makeReadResponse(makeThread());
-      });
-      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow(
-        'capability "interrupt" is not a boolean',
-      );
-      // Current pair intact — send reaches wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
-    });
 
-    it("refresh: throwing getter returns rejection and does not corrupt current pair", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      const throwingCaps = {
-        send: true,
-        steer: true,
-        get interrupt() {
-          throw new Error("refresh getter bomb");
-        },
-        compact: true,
-        clear: true,
-        forkFromTurn: true,
-        shutdown: true,
-        changeModel: true,
-        changeVisionModel: true,
-        sharedNotes: false,
-        queue: true,
-        goal: true,
-        rename: true,
-      };
-      client.on("thread/read", (params) => {
-        const p = params as { ref: string; subscribe?: boolean };
-        if (p.subscribe === false) {
-          return makeReadResponse(makeThreadWithCaps(throwingCaps));
-        }
-        return makeReadResponse(makeThread());
-      });
-      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow();
-      // Current pair intact — send reaches wire.
-      client.on(
-        "turn/start",
-        () =>
-          ({
-            turn: { id: "t1", itemsView: "default", status: "running" },
-            receipt: makeReceipt(),
-          }) as TurnStartResponse,
-      );
-      const receipt = await service.send(textInput("hello"));
-      expect(receipt).toBeDefined();
-      const startCall = client.calls.find((c) => c.method === "turn/start");
-      expect(startCall).toBeDefined();
-      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
-    });
   });
 
   // I3: projectOlderTurns must never emit actionable kind:'question' rows

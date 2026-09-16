@@ -331,15 +331,6 @@ export interface LiveActivitySink {
     n: AnyNotification,
     identity: ActivityIdentity,
   ): NotificationOutcome;
-  // I2: Narrow strict sink for a capabilities-only refresh. Updates only the
-  // capabilities for the exact current identity and an open view; returns
-  // false on stale/missing/wrong identity. The conversation cap-refresh writer
-  // calls this independently of the notification stream, publishing refreshed
-  // caps to the bound activity sink BEFORE committing conversation caps.
-  setLiveCapabilities(
-    capabilities: ThreadCapabilities,
-    identity: ActivityIdentity,
-  ): boolean;
   reset(): void;
 }
 
@@ -375,14 +366,10 @@ interface RequestBinding {
 // effect, which awaits a new scheduler request, which cannot start until the
 // current drain loop reaches idle — a deadlock. The reread effect
 // (requestRehydrate) calls storeGet().rehydrate() directly (not through the
-// scheduler). The cap-refresh effect (requestCapabilityRefresh) calls
-// liveService.refreshCapabilities() directly (not through the scheduler).
-// handleMutationError awaits scheduler.request() OUTSIDE any effect — it is
-// called from the send/steer/queue/interrupt action body, not from within a
-// scheduler effect. This invariant is confirmed by the production call graph:
+// scheduler). handleMutationError only requests a reread (never awaits one).
+// This invariant is confirmed by the production call graph:
 //   requestRehydrate effect -> rehydrate() -> readProjection() [no scheduler]
-//   requestCapabilityRefresh effect -> refreshCapabilities() [no scheduler]
-//   handleMutationError -> scheduler.request() [awaited in action body, not effect]
+//   handleMutationError -> requestRehydrate() [fire-and-forget, action body]
 function createDrainScheduler(): DrainScheduler {
   let scheduled = false;
   let busy = false;
@@ -682,11 +669,6 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
-  // Plan3 host projection: returns a fresh immutable snapshot of the private
-  // truncatedItemIds set. The caller (live-concept projector) uses this to
-  // mark items truncated:true/false without suffix inference. The returned
-  // Set is a copy — mutating it cannot affect the store's internal ownership.
-  getTruncatedItemIds(): ReadonlySet<string>;
   // Task3: store-owned external error publication seam. The dispatcher passes
   // a generic sanitized message plus the exact ref and conversationGeneration
   // it captured when deciding to publish. The store writes the error ONLY when
@@ -699,6 +681,11 @@ export interface LiveConversationState extends ConversationState {
   // service/display/raw IDs are accepted beyond the ref already privately held
   // by the store; the dispatcher is responsible for passing only generic
   // sanitized messages.
+  // Plan3 host projection: returns a fresh immutable snapshot of the private
+  // truncatedItemIds set. The caller (live-concept projector) uses this to
+  // mark items truncated:true/false without suffix inference. The returned
+  // Set is a copy — mutating it cannot affect the store's internal ownership.
+  getTruncatedItemIds(): ReadonlySet<string>;
   publishExternalError(
     message: string,
     expectedRef: string | null,
@@ -1116,91 +1103,6 @@ export function createConversationStore() {
 
   // I2: Request a mutation capability refresh through the store-owned drain
   // scheduler — no direct await bypass. This serializes/coalesces with rereads.
-  // I1: captures the exact binding tuple (epoch/service/sink/ref/gen) at
-  // request time. For openProjected, captureBinding() provides the full tuple.
-  // For plain open(), boundService/boundSink are null, so we capture a
-  // service-specific tuple from the passed service argument. The effect
-  // validates isBindingCurrent BEFORE the refresh, AFTER the refresh await,
-  // and immediately before publication. A rebind to serviceB/sinkB with same
-  // gen/mutation during the await suppresses A's capabilities.
-  // I2: The capability key includes mutation identity (cap:ref:mutationId)
-  // so distinct mutations do not coalesce with each other or with rereads.
-  // handleMutationError schedules the cap refresh through the scheduler AND
-  // awaits its per-key completion before surfacing error — an unrelated
-  // replenishing reread cannot delay the error.
-  function requestCapabilityRefresh(
-    service: ConversationService,
-    ref: string,
-    gen: number,
-    mutationId: number,
-  ): Promise<void> {
-    // C1: Capture the binding from the SUPPLIED service, not the current
-    // boundService. captureOperationBinding validates that the supplied
-    // service === boundService and captures epoch/ref/gen/sink. A wrong
-    // service (A after B bound) returns null and the effect is suppressed.
-    const binding = captureOperationBinding(service);
-    if (binding === null) return Promise.resolve();
-    const capKey = `cap:${ref}:${mutationId}`;
-    // I2: scheduler.request returns a per-key completion promise — resolves
-    // when this key's effect completes/skips/errors, even while unrelated
-    // rereads remain or hang. handleMutationError awaits this exact promise.
-    return scheduler.request(capKey, async () => {
-      const g = storeGet;
-      if (g === null) return;
-      // I1: Suppress stale work BEFORE any read — validate the full binding
-      // tuple (epoch/service/sink/ref/gen). A rebind with different objects
-      // suppresses this effect.
-      if (!isBindingCurrent(binding)) return;
-      const liveService = service as LiveConversationService;
-      if (typeof liveService.refreshCapabilities !== "function") return;
-      // I2: Check active mutation before the refresh — stale recovery bail.
-      if (g().pendingMutation?.mutationId !== mutationId) return;
-      let refreshed: ThreadCapabilities | null;
-      try {
-        refreshed = await liveService.refreshCapabilities(ref);
-      } catch {
-        // If refresh fails, the mutation error handler surfaces the error.
-        return;
-      }
-      // I1: Validate the full binding tuple AGAIN after the await — a rebind
-      // to serviceB/sinkB during the refresh must suppress A's capabilities.
-      if (!isBindingCurrent(binding)) return;
-      // I2: Check active mutation AFTER the refresh too.
-      if (g().pendingMutation?.mutationId !== mutationId) return;
-      // I1: Validate generation immediately before publication.
-      if (g().conversationGeneration === gen && refreshed !== null) {
-        const currentConv = g().conversation;
-        if (currentConv !== null) {
-          // D (I2 completion seam): publish refreshed caps to the bound
-          // activity sink under exact current identity BEFORE conversation
-          // capabilities. A false/stale sink suppresses conversation cap
-          // publication — the two stores stay atomically consistent. The
-          // plain-open path (no sink) still updates conversation caps.
-          const identity: ActivityIdentity = {
-            threadId: currentConv.threadId,
-            ref,
-            generation: gen,
-          };
-          const sinkAccepted =
-            boundSink !== null
-              ? boundSink.setLiveCapabilities(refreshed, identity)
-              : true;
-          if (!sinkAccepted) return;
-          // A plain publish. If a reread is in flight, the snapshot it
-          // returns is authoritative and supersedes this like any write that
-          // preceded the response cut; a refresh that lands after the commit
-          // writes on top of the snapshot.
-          storeSet?.({
-            conversation: { ...currentConv, capabilities: { ...refreshed } },
-          });
-        }
-      }
-    });
-  }
-
-  // Late-bound store setter — assigned inside create() so capability refresh
-  // effects can call set() outside the create() callback scope.
-  let storeSet: ((partial: Partial<ConversationState>) => void) | null = null;
   // Returns the current draft revision — passed to handleMutationError so it
   // can detect post-clear edits (type-then-delete) without exposing the
   // revision in public state.
@@ -1371,7 +1273,6 @@ export function createConversationStore() {
       rawSet(partial);
     };
     storeGet = get;
-    storeSet = set;
     return {
       ref: null,
       profileId: null,
@@ -1494,28 +1395,20 @@ export function createConversationStore() {
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
-        const buffered: AnyNotification[] = [];
-        let needsSnapshot = false;
         let active = true;
         let unsubscribe: (() => void) | null = null;
         let liveHandler: ((notification: AnyNotification) => void) | null =
           null;
         try {
-          // Subscribe before requesting the snapshot so live events cannot fall
-          // into the gap between the server snapshot and client publication.
+          // Subscribe before requesting the snapshot so no frame after the
+          // response can be missed. A frame delivered BEFORE the response is
+          // already folded into the snapshot — AppWire orders the thread/read
+          // response at the snapshot cut (see the response-cut note by
+          // applyThreadNotification) — so it is neither replayed nor a reason
+          // to reread; the handler simply is not installed yet.
           unsubscribe = service.subscribeNotifications((notification) => {
             if (!active || gen !== conversationGen) return;
-            if (liveHandler) liveHandler(notification);
-            else if (
-              notification.method === "evener/sandbox/escalation/requested" ||
-              notification.method === "evener/sandbox/escalation/resolved"
-            )
-              buffered.push(notification);
-            else {
-              const target = notificationRef(notification);
-              if (target && (target.ref === undefined || target.ref === ref))
-                needsSnapshot = true;
-            }
+            liveHandler?.(notification);
           });
           const {
             conversation,
@@ -1568,11 +1461,6 @@ export function createConversationStore() {
             // its own processing for conversation-specific notifications).
             get().applyNotification(n);
           };
-          for (const notification of buffered) liveHandler(notification);
-          buffered.length = 0;
-          // Deltas may already be included in the snapshot; reread rather than
-          // replaying those non-idempotent events onto the initial content.
-          if (needsSnapshot) requestRehydrate(ref);
         } catch (err) {
           if (gen !== conversationGen) return;
           set({
@@ -1582,7 +1470,6 @@ export function createConversationStore() {
         } finally {
           if (!liveHandler) {
             active = false;
-            buffered.length = 0;
             // The service's cleanup targets its current subscription. Never
             // let an old open unsubscribe a newer conversation's listener.
             if (gen === conversationGen) unsubscribe?.();
@@ -1638,23 +1525,11 @@ export function createConversationStore() {
 
         let active = true;
         let hydrated = false;
-        let needsSnapshot = false;
-        const buffered: AnyNotification[] = [];
+        // A frame delivered before the refresh's response is already folded
+        // into that snapshot (response-cut note by applyThreadNotification);
+        // frames apply once the snapshot has committed.
         const unsubscribe = service.subscribeNotifications((notification) => {
-          if (!active || gen !== conversationGen) return;
-          if (!hydrated) {
-            if (
-              notification.method === "evener/sandbox/escalation/requested" ||
-              notification.method === "evener/sandbox/escalation/resolved"
-            )
-              buffered.push(notification);
-            else {
-              const target = notificationRef(notification);
-              if (target && (target.ref === undefined || target.ref === ref))
-                needsSnapshot = true;
-            }
-            return;
-          }
+          if (!active || gen !== conversationGen || !hydrated) return;
           const identity = get().conversation
             ? {
                 threadId: get().conversation?.threadId ?? "",
@@ -1691,28 +1566,9 @@ export function createConversationStore() {
           suspendedService = null;
           set({ status: "open" });
           hydrated = true;
-          const conversation = get().conversation;
-          if (conversation) {
-            const identity = {
-              threadId: conversation.threadId,
-              ref,
-              generation: gen,
-            };
-            for (const notification of buffered) {
-              const outcome = sink.applyLiveNotification(
-                notification,
-                identity,
-              );
-              if (outcome === "rehydrate") requestRehydrate(ref);
-              get().applyNotification(notification);
-            }
-          }
-          buffered.length = 0;
-          if (needsSnapshot) requestRehydrate(ref);
         } finally {
           if (gen !== conversationGen || get().status === "error") {
             active = false;
-            buffered.length = 0;
             if (gen === conversationGen) unsubscribe();
           }
         }
@@ -2338,7 +2194,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2416,7 +2272,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2493,7 +2349,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2576,7 +2432,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -3109,28 +2965,20 @@ async function handleMutationError(
   getErrorOwnerRev: () => number,
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
-  requestCapabilityRefresh: (
-    service: ConversationService,
-    ref: string,
-    gen: number,
-    mutationId: number,
-  ) => Promise<void>,
+  requestRehydrate: (ref: string) => void,
 ): Promise<void> {
-  // F10: Check active mutation BEFORE the capability refresh. If a newer
-  // mutation has already started, this error is stale — bail out.
+  // F10: Check active mutation first. If a newer mutation has already
+  // started, this error is stale — bail out.
   if (get().pendingMutation?.mutationId !== mutationId) return;
 
-  // I2: on actionUnavailable, schedule the capability refresh through the
-  // store-owned drain scheduler AND await its completion before publishing
-  // capabilities/surfacing error. This preserves prior observable ordering and
-  // mutation guards — caps are published before the error is visible.
-  if (isActionUnavailableError(err) && ref !== null) {
-    await requestCapabilityRefresh(service, ref, gen, mutationId);
-  }
+  // The hub refused because its capabilities moved on without a status frame
+  // this client saw. The web's rule (decision 2): surface the typed error and
+  // let the model converge through the reducer — one coalesced reread of the
+  // authoritative snapshot — rather than a bespoke capability read and write.
+  if (isActionUnavailableError(err) && ref !== null) requestRehydrate(ref);
 
   // F10: Re-check mutationId — out-of-order failure cannot change a newer
-  // mutation, error, or draft. The capability refresh has completed (awaited);
-  // now surface the error.
+  // mutation, error, or draft.
   if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
     // Task 2A-Ops-4: Draft revision prevents type-delete restore — only

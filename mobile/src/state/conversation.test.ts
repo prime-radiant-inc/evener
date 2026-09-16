@@ -55,10 +55,6 @@ class FakeLiveActivitySink implements LiveActivitySink {
     identity: ActivityIdentity;
     n: AnyNotification;
   }[] = [];
-  setLiveCapabilitiesCalls: {
-    identity: ActivityIdentity;
-    capabilities: ThreadCapabilities;
-  }[] = [];
   resetCalls = 0;
   // Override per-notification return value. If set, called for each n.
   notificationOutcome?: (
@@ -68,11 +64,6 @@ class FakeLiveActivitySink implements LiveActivitySink {
   setLiveViewResult?: (
     identity: ActivityIdentity,
     view: ActivityView,
-  ) => boolean;
-  // Override setLiveCapabilities return value. If set, called for each call.
-  setLiveCapabilitiesResult?: (
-    identity: ActivityIdentity,
-    capabilities: ThreadCapabilities,
   ) => boolean;
 
   setLiveView(view: ActivityView, identity: ActivityIdentity): boolean {
@@ -87,15 +78,6 @@ class FakeLiveActivitySink implements LiveActivitySink {
   ): "applied" | "rehydrate" | "ignored" {
     this.applyLiveNotificationCalls.push({ identity, n });
     return this.notificationOutcome ? this.notificationOutcome(n) : "applied";
-  }
-  setLiveCapabilities(
-    capabilities: ThreadCapabilities,
-    identity: ActivityIdentity,
-  ): boolean {
-    this.setLiveCapabilitiesCalls.push({ identity, capabilities });
-    return this.setLiveCapabilitiesResult
-      ? this.setLiveCapabilitiesResult(identity, capabilities)
-      : true;
   }
   reset(): void {
     this.resetCalls += 1;
@@ -208,9 +190,6 @@ class FakeConversationService implements LiveConversationService {
   } | null = null;
   readProjectionBlock: Promise<ConversationReadProjection> | null = null;
   readProjectionCalls: { ref: string }[] = [];
-  // refreshCapabilities support
-  refreshCapsResult: ThreadCapabilities | null = null;
-  refreshCapsCallCount = 0;
 
   // Like the real service, the conversation returned is hydrated under the
   // ref that was opened: the store routes notifications by the model's ref.
@@ -243,10 +222,6 @@ class FakeConversationService implements LiveConversationService {
       },
       olderCursor: this.olderCursor,
     };
-  }
-  async refreshCapabilities(_ref: string): Promise<ThreadCapabilities | null> {
-    this.refreshCapsCallCount += 1;
-    return this.refreshCapsResult ?? { ...ALL_TRUE_CAPS };
   }
   async loadOlder(_cursor: string): Promise<{
     items: MobileConversation["items"];
@@ -721,35 +696,37 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("actionUnavailable publishes refreshed capabilities before error", () => {
-    it("store surfaces error immediately, publishes refreshed caps via scheduler", async () => {
+  // The web's rule (decision 2): a refused mutation surfaces its typed error
+  // and the model converges through the reducer — one coalesced reread of the
+  // authoritative snapshot — not through a bespoke capability read and write.
+  describe("actionUnavailable surfaces the error and requests one coalesced reread", () => {
+    it("surfaces the error and rereads once; the reread's capabilities are what the composer sees", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      // Initial: all caps true, send enabled
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS },
-      });
-      await store.getState().open(service, "ref-1");
-
-      // Script send to reject with actionUnavailable (F11: real WireError)
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-
-      // Script refreshCapabilities to return send=false
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      // Before the send, capabilities should have send=true
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS }, queue: { revision: 0 } } }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.capabilities.send).toBe(true);
-
-      // Send will fail with actionUnavailable
+      const readsBefore = service.readProjectionCalls.length;
+      // The hub refuses: its capabilities moved on without a status frame we saw.
+      service.sendShouldReject = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      }) as Error;
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS, send: false }, queue: { revision: 0 } },
+        }),
+      );
+      const ctrl = makeControlledRead(service);
       await store.getState().send(service, textInput("x"));
-
-      // I2: The error is surfaced after the cap refresh completes (send
-      // awaits handleMutationError which awaits the scheduler drain).
       expect(store.getState().error).not.toBeNull();
-      expect(service.refreshCapsCallCount).toBe(1);
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
       expect(store.getState().conversation?.capabilities.send).toBe(false);
     });
   });
@@ -1144,6 +1121,31 @@ describe("ConversationStore", () => {
   });
 
   describe("openProjected", () => {
+    // The initial read is the same thread/read (subscribe + replaceSubscription)
+    // as a reread: a frame delivered before its response is already folded
+    // into the snapshot, so it is neither replayed nor a reason to reread.
+    it("does not reread for a frame that precedes the initial read's response", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ status: { type: "idle" } }),
+      );
+      const store = createConversationStore();
+      const ctrl = makeControlledRead(service);
+      const opening = store.getState().openProjected(service, createFakeSink(), "ref-1");
+      await ctrl.started(1);
+      service.notificationHandler?.({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+      } as AnyNotification);
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await opening;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      expect(service.readProjectionCalls).toHaveLength(1);
+      expect(store.getState().conversation?.status).toEqual({ type: "idle" });
+    });
+
     it("uses readProjection to set conversation, cursor, and activity view", async () => {
       const service = new FakeConversationService();
       const sink = createFakeSink();
@@ -3094,12 +3096,6 @@ describe("ConversationStore", () => {
           applyCalls.push({ n, identity });
           return "applied" as const;
         },
-        setLiveCapabilities(
-          _capabilities: ThreadCapabilities,
-          _identity: ActivityIdentity,
-        ) {
-          return true;
-        },
         reset() {
           resetCalls.push(1);
         },
@@ -4002,67 +3998,6 @@ describe("ConversationStore", () => {
     };
   }
 
-  // Level-triggered controlled refreshCapabilities: every call hangs until
-  // released. started(target=1)/completed(target=1) resolve immediately when
-  // the counter has already reached target — level-triggered, no edge
-  // counting, no yieldMicrotask(count), no setTimeout, no polling.
-  function makeControlledRefresh(service: FakeConversationService): {
-    started: (target?: number) => Promise<void>;
-    release: () => void;
-    completed: (target?: number) => Promise<void>;
-    getStartedCount: () => number;
-    getDoneCount: () => number;
-  } {
-    let startedCount = 0;
-    let doneCount = 0;
-    const releaseQueue: Array<() => void> = [];
-    const startedWaiters: Array<{ target: number; resolve: () => void }> = [];
-    const doneWaiters: Array<{ target: number; resolve: () => void }> = [];
-    const orig = service.refreshCapabilities.bind(service);
-    service.refreshCapabilities = async (ref: string) => {
-      startedCount += 1;
-      for (let i = startedWaiters.length - 1; i >= 0; i--) {
-        const w = startedWaiters[i];
-        if (w !== undefined && startedCount >= w.target) {
-          w.resolve();
-          startedWaiters.splice(i, 1);
-        }
-      }
-      const result = await orig(ref);
-      await new Promise<void>((resolve) => {
-        releaseQueue.push(resolve);
-      });
-      doneCount += 1;
-      for (let i = doneWaiters.length - 1; i >= 0; i--) {
-        const w = doneWaiters[i];
-        if (w !== undefined && doneCount >= w.target) {
-          w.resolve();
-          doneWaiters.splice(i, 1);
-        }
-      }
-      return result;
-    };
-    return {
-      started: (target = 1) => {
-        if (startedCount >= target) return Promise.resolve();
-        return new Promise<void>((resolve) => {
-          startedWaiters.push({ target, resolve });
-        });
-      },
-      release: () => {
-        const r = releaseQueue.shift();
-        if (r !== undefined) r();
-      },
-      completed: (target = 1) => {
-        if (doneCount >= target) return Promise.resolve();
-        return new Promise<void>((resolve) => {
-          doneWaiters.push({ target, resolve });
-        });
-      },
-      getStartedCount: () => startedCount,
-      getDoneCount: () => doneCount,
-    };
-  }
 
   // One-shot microtask yield — single await Promise.resolve() so the
   // scheduler microtask fires. NOT a count-based drain.
@@ -4245,108 +4180,62 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("I2: actionUnavailable capability refresh through store-owned scheduler", () => {
-    it("capability refresh is requested through the scheduler, not direct await", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS },
-      });
-      await store.getState().open(service, "ref-1");
-
-      // Script send to reject with actionUnavailable (F11: real WireError).
-      const rejectErr = new WireError("action unavailable", -32000, {
+  // A refused mutation requests the one coalesced reread; the error never waits
+  // on it, and a newer mutation's own outcome is not disturbed by it.
+  describe("a refused mutation and the reread scheduler", () => {
+    const refusal = () =>
+      new WireError("action unavailable", -32000, {
         evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      }) as Error;
 
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-      await store.getState().send(service, textInput("x"));
-      // I2: The error is surfaced after the cap refresh completes (send
-      // awaits handleMutationError which awaits the scheduler drain).
-      expect(store.getState().error).not.toBeNull();
-      expect(service.refreshCapsCallCount).toBe(1);
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-    });
-
-    it("capability refresh serializes/coalesces with rereads", async () => {
+    it("surfaces the error while an earlier reread is still held; the refusal's reread runs after it", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Trigger a resync (rehydrate request) and a capability refresh
-      // simultaneously — both go through the same scheduler.
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
       const readsBefore = service.readProjectionCalls.length;
-      // Queue a resync rehydrate.
+      const ctrl = makeControlledRead(service);
       store.getState().applyNotification({
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      // Start a send that fails with actionUnavailable (queues cap refresh).
-      // send() awaits the cap refresh through the scheduler; the rehydrate
-      // queued via notification also drains through the scheduler.
+      await ctrl.started(1);
+      service.sendShouldReject = refusal();
       await store.getState().send(service, textInput("x"));
-      // Drain any trailing rehydrate from the notification.
+      // The send settled and the error is visible with the first read still held.
+      expect(store.getState().error).not.toBeNull();
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await ctrl.ready(2);
+      ctrl.release();
+      await ctrl.completed(2);
       await yieldMicrotask();
-      // Both the rehydrate (readProjection) and cap refresh should have run.
-      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
-      expect(service.refreshCapsCallCount).toBe(1);
+      expect(service.readProjectionCalls.length).toBe(readsBefore + 2);
     });
 
-    it("stale mutation recovery is suppressed by mutationId guard", async () => {
+    it("a newer mutation's outcome is not disturbed by the older refusal's reread", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS },
-      });
-      await store.getState().open(service, "ref-1");
-      // Script send to reject with actionUnavailable.
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      // M1: deterministic barrier — hang refreshCapabilities so the cap refresh
-      // effect starts but doesn't complete before the second send.
-      const refreshHolder: { release: () => void } = { release: () => {} };
-      service.refreshCapabilities = async () => {
-        await new Promise<void>((resolve) => {
-          refreshHolder.release = resolve;
-        });
-        return { ...ALL_TRUE_CAPS, send: false };
-      };
-      // Start a send that fails — queues a cap refresh for mutationId 1.
-      // send() now awaits the cap refresh, so it hangs until released.
-      // Do NOT await — start it without awaiting so we can start mutation 2.
-      const send1P = store.getState().send(service, textInput("first"));
-      // Let the cap refresh effect start (scheduler microtask + refresh).
-      await yieldMicrotask();
-      // The cap refresh effect is now in-flight (hanging). Before it completes,
-      // start a second send (mutationId 2).
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      service.sendShouldReject = refusal();
+      const ctrl = makeControlledRead(service);
+      await store.getState().send(service, textInput("first"));
+      await ctrl.started(1);
+      // The refusal's reread is in flight; a second mutation succeeds meanwhile.
       service.sendShouldReject = null;
       await store.getState().send(service, textInput("second"));
-      // Release the hanging refresh — the mutationId guard must suppress
-      // publication because mutationId 2 is now active.
-      refreshHolder.release();
-      await send1P;
-      // The refresh was called but did NOT publish caps (stale mutation guard).
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation).toBeNull();
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation).toBeNull();
+      expect(store.getState().conversation?.threadId).toBe("thread-1");
     });
   });
 
@@ -4747,9 +4636,6 @@ describe("ConversationStore", () => {
         applyLiveNotification(n, identity) {
           return realState.applyLiveNotification(n, identity);
         },
-        setLiveCapabilities(capabilities, identity) {
-          return realState.setLiveCapabilities(capabilities, identity);
-        },
         reset() {
           realState.reset();
         },
@@ -4833,169 +4719,6 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Residual 2: heterogeneous scheduler outcomes — reread + cap refresh both run exactly once", () => {
-    it("reread queued before cap refresh — both effects/outcomes happen exactly once", async () => {
-      // Queue a resync rehydrate (reread key), then start a send that fails
-      // with actionUnavailable (cap refresh key). Both go through the same
-      // scheduler with distinct keys — both must run exactly once.
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const readsBefore = service.readProjectionCalls.length;
-      const capsBefore = service.refreshCapsCallCount;
-
-      // Queue a resync rehydrate FIRST (reread key = "ref-1").
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      // Then start a send that fails (cap key = "cap:ref-1:<mutationId>").
-      // send() awaits handleMutationError which awaits the cap refresh.
-      await store.getState().send(service, textInput("x"));
-
-      // Drain any trailing rehydrate from the notification.
-      await yieldMicrotask();
-
-      // Both the reread and cap refresh should have run exactly once.
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      // Caps published: send=false.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // Error surfaced.
-      expect(store.getState().error).not.toBeNull();
-    });
-
-    it("cap refresh queued before reread — both effects/outcomes happen exactly once", async () => {
-      // Start a send that fails with actionUnavailable (cap refresh key),
-      // then queue a resync rehydrate (reread key). Both must run exactly once.
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const readsBefore = service.readProjectionCalls.length;
-      const capsBefore = service.refreshCapsCallCount;
-
-      // Start the send — it fails and queues a cap refresh. But send()
-      // awaits the cap refresh, so it hangs on the scheduler. We need to
-      // NOT await send yet — queue the reread while the cap refresh is
-      // pending in the scheduler. But send() awaits the cap refresh, so
-      // we need to start send without awaiting.
-      // Actually, the cap refresh goes through the scheduler which defers
-      // to a microtask. The send() call calls handleMutationError which
-      // calls requestCapabilityRefresh which calls scheduler.request()
-      // and returns scheduler.idle(). So send() hangs until the scheduler
-      // is idle. We can start send without awaiting.
-      const sendP = store.getState().send(service, textInput("x"));
-      // Let the scheduler start the cap refresh effect (microtask).
-      // But don't let it complete yet — the cap refresh resolves
-      // immediately (refreshCapabilities is not hanging). So the cap
-      // refresh will complete quickly. We need to queue the reread
-      // before the cap refresh completes.
-      // Actually both the cap refresh and the reread are in the same
-      // scheduler. The cap refresh is queued first, the reread second.
-      // They have different keys so both run. Let the scheduler drain.
-      // But we need to queue the reread before the cap refresh starts.
-      // The scheduler defers to a microtask, so if we queue the reread
-      // synchronously (before any await), both are in the pending Map.
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      // Now both are queued. Await send (which awaits scheduler idle).
-      await sendP;
-      await yieldMicrotask();
-
-      // Both the cap refresh and reread should have run exactly once.
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
-      // Caps published: send=false.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // Error surfaced.
-      expect(store.getState().error).not.toBeNull();
-    });
-
-    it("distinct mutations produce distinct cap keys — no coalescing across mutations", async () => {
-      // Two sends that both fail with actionUnavailable should each
-      // trigger a cap refresh with a distinct key (cap:ref:<mutationId>).
-      // They must not coalesce — both refresh calls must happen.
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS },
-      });
-      await store.getState().open(service, "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const capsBefore = service.refreshCapsCallCount;
-
-      // First send fails — queues cap refresh for mutationId 1.
-      await store.getState().send(service, textInput("first"));
-      // Second send fails — queues cap refresh for mutationId 2.
-      // But the first send's cap refresh already published send=false,
-      // so the second send also fails (send cap is still false from
-      // the initial caps until the refresh publishes). Wait — the first
-      // send already published send=false. The second send would check
-      // requireCap which checks conversation.capabilities.send. After
-      // the first cap refresh, send=false, so the second send would
-      // throw before even calling service.send. Let me fix: reset caps
-      // after the first send.
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-
-      // Reset caps to send=true so the second send can proceed.
-      store.setState({
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-      });
-      // Second send fails — queues cap refresh for mutationId 2.
-      await store.getState().send(service, textInput("second"));
-
-      // Two distinct cap refresh calls (one per mutation).
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 2);
-    });
-  });
 
   describe("Residual 4: no test-only mutable API on the production store", () => {
     it("store state does not expose flushScheduler", () => {
@@ -5019,133 +4742,7 @@ describe("ConversationStore", () => {
 
   // --- Fix round 1: I1/I2/M1 rejection items ----------------------------------
 
-  describe("I1 fix: stale post-await rebind suppresses A capabilities", () => {
-    it("rebind to serviceB/sinkB during refresh await suppresses A caps", async () => {
-      // Open A (openProjected), trigger a send that fails with
-      // actionUnavailable. The cap refresh effect starts (hanging on
-      // refreshCapabilities). During the await, rebind to serviceB/sinkB
-      // via rehydrate. The binding tuple changed — A's caps must NOT be
-      // published after the refresh completes.
-      const serviceA = new FakeConversationService();
-      serviceA.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const sinkA = createFakeSink();
-      const store = createConversationStore();
-      await store.getState().openProjected(serviceA, sinkA, "ref-1");
 
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      serviceA.sendShouldReject = rejectErr as Error;
-      serviceA.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      // Hang refreshCapabilities so we can rebind during the await.
-      const refreshCtrl = makeControlledRefresh(serviceA);
-
-      // Start send — fails, queues cap refresh (hanging on refresh).
-      // send() awaits handleMutationError which awaits the cap-key completion.
-      const sendP = store.getState().send(serviceA, textInput("x"));
-      // Let the cap refresh effect start.
-      await refreshCtrl.started();
-      // While the refresh is hanging, rebind to serviceB/sinkB via rehydrate.
-      const serviceB = new FakeConversationService();
-      serviceB.readProjectionResult = {
-        conversation: makeConversation({
-          threadId: "thread-1",
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const sinkB = createFakeSink();
-      // rehydrate with different objects increments epoch — A's cap refresh
-      // will be suppressed after the await.
-      const rehydrateP = store.getState().rehydrate(serviceB, sinkB);
-      // Let the rehydrate's readProjection start (it also hangs via controlled
-      // read on serviceB — but we didn't install one). Actually serviceB's
-      // readProjection resolves immediately. So rehydrate completes.
-      await rehydrateP;
-      // Release the hanging refresh — A's cap refresh effect checks
-      // isCapBindingCurrent after the await — the binding changed (epoch +
-      // service + sink), so caps are NOT published.
-      refreshCtrl.release();
-      await sendP;
-      // A's caps (send=false) must NOT have been published.
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-    });
-  });
-
-  describe("I2 fix: per-key completion — unrelated reread cannot delay error", () => {
-    it("pending reread does not delay cap refresh completion and error", async () => {
-      // Queue a resync rehydrate (reread key) and a cap refresh (cap key).
-      // Both are in the pending Map. The scheduler runs them in order.
-      // The per-key completion promise for the cap key resolves when the
-      // cap effect completes — send() does NOT wait for the reread to also
-      // complete. The error is surfaced as soon as the cap refresh is done.
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const readsBefore = service.readProjectionCalls.length;
-
-      // Queue a resync rehydrate (reread key = "ref-1").
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-
-      // Start a send that fails with actionUnavailable (cap key). send()
-      // awaits the cap-key completion promise. The scheduler runs both
-      // effects in order (reread first, then cap refresh). The cap-key
-      // promise resolves when the cap effect completes — even though
-      // the reread was also pending. With the old global idle(), send()
-      // would have waited for both. With per-key completion, the error
-      // is surfaced as soon as the cap refresh is done.
-      await store.getState().send(service, textInput("x"));
-
-      // The error should have been surfaced.
-      expect(store.getState().error).not.toBeNull();
-      // The cap refresh should have run.
-      expect(service.refreshCapsCallCount).toBe(1);
-      // Caps published.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // The reread should also have run.
-      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
-    });
-  });
 
   // --- Task 2A-Scheduler proof: per-key exact completion --------------------
 
@@ -5176,266 +4773,7 @@ describe("ConversationStore", () => {
     });
   }
 
-  describe("Task 2A-1: cap-first exact completion — send settles while reread remains blocked", () => {
-    it("send promise settles with refreshed caps/error while distinct reread is still held", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
-      // Script send to fail with actionUnavailable.
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      // Install controlled helpers so we can hang cap refresh and reread.
-      const refreshCtrl = makeControlledRefresh(service);
-      const readCtrl = makeControlledRead(service);
-
-      const capsBefore = service.refreshCapsCallCount;
-
-      // Start send — it fails, triggering handleMutationError which calls
-      // requestCapabilityRefresh → scheduler.request(capKey, ...) which
-      // returns a per-key completion promise that send() awaits.
-      const sendP = store.getState().send(service, textInput("x"));
-
-      // Wait until the cap refresh is definitely in flight.
-      await refreshCtrl.started();
-      // Yield so the controlled wrapper reaches the release gate.
-      await yieldMicrotask();
-
-      // Now queue a distinct authoritative reread (key "ref-1" ≠ cap key).
-      // The reread is pending in the scheduler's pending Map (distinct key),
-      // so it will not start until the cap refresh completes.
-      const readsBefore = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-
-      // The reread has NOT started yet (cap refresh is in flight).
-      expect(service.readProjectionCalls.length).toBe(readsBefore);
-
-      // Resolve the cap refresh — the cap-key completion promise resolves.
-      refreshCtrl.release();
-
-      // send() must settle (with error + refreshed caps) even though the
-      // reread is still blocked. Use a watchdog to catch a hang (old
-      // global-idle would hang here waiting for the reread too).
-      await withWatchdog("cap-first send settle", sendP);
-
-      // Caps published: send=false.
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // Error surfaced.
-      expect(store.getState().error).not.toBeNull();
-
-      // The reread is STILL blocked — it has started (the scheduler moved
-      // to it after the cap effect completed) but not completed.
-      // readCtrl counts only calls after installation (openProjected was
-      // before installation), so the reread is the 1st controlled read.
-      await readCtrl.started(1);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      expect(readCtrl.getDoneCount()).toBeLessThan(1);
-
-      // Now release the reread.
-      readCtrl.release();
-      await readCtrl.completed(1);
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
-    });
-  });
-
-  describe("Task 2A-2: reread-first converse — hold reread, queue cap, release into cap", () => {
-    it("reread held first, then cap queued — exact mutation settles after both drain", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const refreshCtrl = makeControlledRefresh(service);
-      const readCtrl = makeControlledRead(service);
-
-      // Hold a reread first (key "ref-1").
-      const readsBefore = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      // Wait until the reread starts and is held.
-      // readCtrl counts only calls after installation (openProjected was
-      // before installation), so the reread is the 1st controlled read.
-      await readCtrl.started(1);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-
-      // Now start a send that fails — cap refresh (distinct key) is queued.
-      const capsBefore = service.refreshCapsCallCount;
-      const sendP = store.getState().send(service, textInput("x"));
-
-      // The cap refresh has NOT started yet (reread is in flight).
-      expect(refreshCtrl.getStartedCount()).toBe(0);
-
-      // Release the reread — it resolves, then the scheduler drains into
-      // the cap refresh effect.
-      readCtrl.release();
-      await readCtrl.completed(1);
-      await yieldMicrotask(); // let scheduler drain to cap refresh
-
-      // Wait for the cap refresh to start and then complete it.
-      await refreshCtrl.started();
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      refreshCtrl.release();
-
-      // send() must settle with error + refreshed caps.
-      await withWatchdog("reread-first send settle", sendP);
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().error).not.toBeNull();
-      // R1: the send during the held rehydrate changes the mutation-owner
-      // revision, so the rehydrate schedules one trailing reread. The
-      // trailing reread goes through the scheduler (queued behind the cap
-      // refresh). It starts after the cap refresh completes. Release it.
-      await readCtrl.started(2);
-      await yieldMicrotask();
-      readCtrl.release();
-      await readCtrl.completed(2);
-      await yieldMicrotask();
-      // Total: original held rehydrate + one trailing reread.
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 2);
-    });
-
-    it("trailing reread may remain held after cap settles — no hang", async () => {
-      // Hold reread, queue cap, release reread into cap. After cap settles,
-      // an unrelated trailing reread may remain held — send must still
-      // settle promptly.
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const refreshCtrl = makeControlledRefresh(service);
-      const readCtrl = makeControlledRead(service);
-
-      // Hold a reread first.
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await readCtrl.started(1);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-
-      // Start send — cap refresh queued (distinct key).
-      const sendP = store.getState().send(service, textInput("x"));
-
-      // Release the reread — scheduler moves to cap refresh.
-      readCtrl.release();
-      await readCtrl.completed(1);
-      await yieldMicrotask(); // let scheduler drain to cap refresh
-
-      // Start and complete the cap refresh.
-      await refreshCtrl.started();
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      // I2: Update the projection to match the refreshed caps BEFORE releasing
-      // the cap refresh — the trailing reread (queued behind the cap refresh)
-      // will call readProjection immediately after the cap refresh completes,
-      // before we can update the result.
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS, send: false },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      refreshCtrl.release();
-
-      // send() must settle while NO trailing reread is held (only cap ran).
-      await withWatchdog("converse send settle", sendP);
-      expect(store.getState().error).not.toBeNull();
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-
-      // R1: the send during the held rehydrate changes the mutation-owner
-      // revision, so the rehydrate schedules one trailing reread. It's
-      // queued behind the cap refresh and starts after send settles.
-      // I2: The trailing reread commits its projected caps (cap owner
-      // unchanged since the cap refresh already ran before the trailing
-      // reread started). The projection was already updated above to match
-      // the refreshed caps so the trailing reread doesn't regress them.
-      // Release it so it doesn't interfere with the rest of the test.
-      await readCtrl.started(2);
-      await yieldMicrotask();
-      readCtrl.release();
-      await readCtrl.completed(2);
-      await yieldMicrotask();
-
-      // Now queue another trailing reread that remains held — it must not
-      // affect the already-settled send.
-      const trailingReadsBefore = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await readCtrl.started(3);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      // The trailing reread is held — send already settled, unaffected.
-      expect(store.getState().error).not.toBeNull();
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // Release it to clean up.
-      readCtrl.release();
-      await readCtrl.completed(3);
-      expect(service.readProjectionCalls.length).toBe(trailingReadsBefore + 1);
-    });
-  });
 
   describe("Task 2A-3: same-key reread coalescing through public notifications", () => {
     it("multiple same-key reread requests during a blocker produce exactly one trailing read", async () => {
@@ -5496,102 +4834,6 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 2);
     });
 
-    it("distinct work survives same-key coalescing — cap refresh and reread both run", async () => {
-      // A same-key reread coalesces, but a distinct cap-key request must
-      // still run — coalescing is per-key, not global.
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const refreshCtrl = makeControlledRefresh(service);
-      const readCtrl = makeControlledRead(service);
-
-      const readsBefore = service.readProjectionCalls.length;
-      const capsBefore = service.refreshCapsCallCount;
-
-      // Hold a reread first (key "ref-1").
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await readCtrl.started(1);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-
-      // While the reread is held, emit 2 more same-key resync notifications
-      // (these coalesce into the trailing reread entry).
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-
-      // Start a send that fails — cap refresh (distinct key) is queued.
-      const sendP = store.getState().send(service, textInput("x"));
-
-      // Release the reread — scheduler drains: trailing reread, then cap refresh.
-      readCtrl.release();
-      await readCtrl.completed(1);
-      await yieldMicrotask(); // let scheduler drain to trailing read
-
-      // C1+I1: The mutation-owner-changed trailing reread was scheduled via
-      // drainTrailingReread during R's rehydrate body (mutation already
-      // settled). It coalesces with the pending same-key entry from the 2
-      // resync notifications (overwrites the coalesced effect).
-      await readCtrl.started(2);
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      readCtrl.release();
-      await readCtrl.completed(2);
-      await yieldMicrotask(); // let scheduler drain
-
-      // The trailing reread's rehydrate may schedule another trailing if the
-      // mutation owner changed again. Drain it if present.
-      if (readCtrl.getStartedCount() < 3) {
-        // No 3rd read — proceed to cap refresh.
-      } else {
-        await yieldMicrotask();
-        readCtrl.release();
-        await readCtrl.completed(3);
-        await yieldMicrotask(); // let scheduler drain to cap refresh
-      }
-
-      // Then the cap refresh runs.
-      await refreshCtrl.started();
-      await yieldMicrotask(); // let the wrapper reach the release gate
-      refreshCtrl.release();
-
-      await withWatchdog("distinct-work send settle", sendP);
-
-      // Total reads: 1 original R + trailing reads. The exact count depends
-      // on whether the trailing reread's rehydrate also detects a mutation
-      // owner change. Key invariant: both reread and cap refresh ran.
-      expect(service.readProjectionCalls.length).toBeGreaterThanOrEqual(
-        readsBefore + 2,
-      );
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().error).not.toBeNull();
-    });
   });
 
   // --- Task 2A-4: deferred error-path drain proof ---------------------------
@@ -5705,160 +4947,41 @@ describe("ConversationStore", () => {
     };
   }
 
-  describe("Task 2A-4: deferred error-path drain — first effect errors, queued work drains", () => {
-    it("first reread errors after release — same-key coalesced reread and distinct cap refresh both drain exactly once", async () => {
+  describe("a reread that fails does not block the next reread", () => {
+    it("the second resync rereads and commits after the first read threw", async () => {
       const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
       const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      // Script send to fail with actionUnavailable (for the cap refresh path).
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-
-      const readCtrl = makeControlledErrorRead(service);
-      const refreshCtrl = makeControlledRefresh(service);
-
+      const orig = service.readProjection.bind(service);
+      let failNext = true;
+      service.readProjection = async (ref: string) => {
+        if (!failNext) return orig(ref);
+        failNext = false;
+        service.readProjectionCalls.push({ ref });
+        throw new Error("read failed");
+      };
       const readsBefore = service.readProjectionCalls.length;
-      const capsBefore = service.refreshCapsCallCount;
-
-      // Queue the first reread (key "ref-1") — it will hang, then error.
-      store.getState().applyNotification({
+      const resync = {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-
-      // Wait until the first reread starts (exposes started barrier).
-      await readCtrl.started(1);
-
-      // While the first reread is in flight, queue same-key work (coalesces
-      // into the trailing reread entry) and distinct heterogeneous work
-      // (cap refresh from a failed send).
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-
-      // Distinct heterogeneous work: start a send that fails (cap refresh).
-      const sendP = store.getState().send(service, textInput("x"));
-
-      // Release the first reread — it rejects with an error.
-      // The scheduler catches the error and continues draining.
-      readCtrl.releaseFirst();
-
-      // The first reread errored. The scheduler catches it and drains the
-      // pending queue: the coalesced trailing reread (same key "ref-1"),
-      // then the cap refresh (distinct key "cap:ref-1:<mutationId>").
-      //
-      // The trailing reread starts (2nd controlled read) — this proves the
-      // first error was caught and the drain continued.
-      await readCtrl.started(2);
-
-      // Release the trailing reread.
-      readCtrl.release();
-      await readCtrl.completed(1);
-      // Let the scheduler drain from the trailing reread to the cap refresh.
-      // A single yield is a level-triggered barrier, not a fixed count.
+      } as AnyNotification;
+      store.getState().applyNotification(resync);
       await yieldMicrotask();
-
-      // Then the cap refresh starts.
-      await refreshCtrl.started();
-      // Yield so the controlled wrapper reaches the release gate.
       await yieldMicrotask();
-      refreshCtrl.release();
-      // Let the cap refresh effect complete and the completion promise
-      // resolve so send() can settle.
-      await refreshCtrl.completed();
-
-      // send() must settle with error + refreshed caps — the cap refresh
-      // completed even though the first reread errored.
-      await withWatchdog("error-path send settle", sendP);
-      expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().error).not.toBeNull();
-
-      // The trailing reread ran exactly once (coalesced from 2 same-key signals).
-      // Total reads: 1 (openProjected) + 1 (first reread, errored) + 1 (trailing)
-      // = 3 calls to the patched readProjection. But readProjectionCalls only
-      // counts calls to the original (the first reread errored before reaching
-      // orig), so it's readsBefore + 1 (only the trailing reread reached orig).
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
-
-      // The scheduler remains usable — queue a new reread and verify it runs.
-      const usableReadsBefore = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await readCtrl.started(3);
-      readCtrl.release();
-      await readCtrl.completed(2);
-      expect(service.readProjectionCalls.length).toBe(usableReadsBefore + 1);
-    });
-
-    it("scheduler remains usable after error drain — new reread runs", async () => {
-      // After the error-path drain, the scheduler must accept new work.
-      // This test verifies a new reread runs after an error drain.
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS },
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-      // Trigger a reread that errors.
-      const readCtrl = makeControlledErrorRead(service);
-
-      // Queue a reread that will error.
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await readCtrl.started(1);
-
-      // Release with rejection.
-      readCtrl.releaseFirst();
-
-      // The scheduler catches the error and goes idle (no trailing work).
-      // Prove the scheduler remains usable: queue a new reread and verify
-      // it starts. If the scheduler were stuck, the started barrier would
-      // hang and the watchdog would catch it.
-      const newReadP = readCtrl.started(2);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await withWatchdog("post-error reread start", newReadP);
-      // The new reread started — scheduler is usable.
-      readCtrl.release();
-      await readCtrl.completed(1);
+      expect(store.getState().error).toBe("read failed");
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ name: "after the failed read" }),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification(resync);
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(service.readProjectionCalls.length).toBe(readsBefore + 2);
+      expect(store.getState().conversation?.name).toBe("after the failed read");
+      expect(store.getState().error).toBeNull();
     });
   });
 
@@ -6044,12 +5167,6 @@ describe("ConversationStore", () => {
       },
       applyLiveNotification(n: AnyNotification, identity: ActivityIdentity) {
         return state.applyLiveNotification(n, identity);
-      },
-      setLiveCapabilities(
-        caps: ThreadCapabilities,
-        identity: ActivityIdentity,
-      ) {
-        return state.setLiveCapabilities(caps, identity);
       },
       reset() {
         state.reset();
@@ -6626,42 +5743,6 @@ describe("ConversationStore", () => {
       expect(questionItem).toBeUndefined();
     });
 
-    it("mutation race: asserts error, pending owner, capabilities after stale cap refresh", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // First send fails with actionUnavailable — triggers cap refresh (hanging).
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-      const refreshCtrl = makeControlledRefresh(service);
-      const send1P = store.getState().send(service, textInput("first"));
-      await refreshCtrl.started();
-      await yieldMicrotask();
-      // While first cap refresh is hanging, start a second send that succeeds.
-      service.sendShouldReject = null;
-      const send2P = store.getState().send(service, textInput("second"));
-      // Release the first cap refresh — mutationId 1 is stale.
-      refreshCtrl.release();
-      await send1P;
-      await send2P;
-      // Mutation 2 succeeded — no error, no pending mutation.
-      expect(store.getState().error).toBeNull();
-      expect(store.getState().pendingMutation).toBeNull();
-      // Caps should NOT have been published by the stale mutation 1.
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-    });
   });
 
   // --- Residual: R1 — monotonic mutation-owner and error-owner revisions ---
@@ -14047,94 +13128,42 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- D (I2): setLiveCapabilities sink publication ---------------------------------
 
-  describe("D: requestCapabilityRefresh publishes to sink before conversation caps", () => {
-    it("real activity store: caps synchronized, tasks/work/usage/reasoning preserved", async () => {
+  // The activity view's capabilities follow the reread's snapshot through
+  // setLiveView — the same commit that carries the conversation's. There is
+  // no separate capability write into either store any more.
+  describe("a refusal's reread carries the reread's capabilities into the activity view", () => {
+    it("real activity store: the view's capabilities match the conversation's after the reread", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
       const activityStore = createActivityStore();
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      const activityView: ActivityView = {
-        tasks: [{ status: "done", count: 3 }],
-        work: [{ kind: "job", label: "shell", tone: "terminal" }],
-        usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS,
-        reasoningEffort: "high",
+      const realState = activityStore.getState();
+      const sink: LiveActivitySink = {
+        setLiveView: (view, identity) => realState.setLiveView(view, identity),
+        applyLiveNotification: (n, identity) =>
+          realState.applyLiveNotification(n, identity),
+        reset: () => realState.reset(),
       };
-      service.readProjectionResult = {
-        conversation: makeConversation({ threadId: "thread-1" }),
-        activity: activityView,
-        olderCursor: null,
-      };
-      const sink = wrapActivityStoreAsSink(activityStore);
+      const withCaps = (capabilities: ThreadCapabilities) => ({
+        ...makeReadProjectionResult(
+          makeThread({ evener: { ref: "ref-1", capabilities, queue: { revision: 0 } } }),
+        ),
+        activity: { tasks: [], work: [], usage: {}, capabilities },
+      });
+      service.readProjectionResult = withCaps({ ...ALL_TRUE_CAPS });
       await store.getState().openProjected(service, sink, "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
+      service.sendShouldReject = new WireError("action unavailable", -32000, {
         evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      }) as Error;
+      service.readProjectionResult = withCaps({ ...ALL_TRUE_CAPS, send: false });
+      const ctrl = makeControlledRead(service);
       await store.getState().send(service, textInput("x"));
-
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
       expect(store.getState().conversation?.capabilities.send).toBe(false);
-      const updatedView = activityStore.getState().view;
-      expect(updatedView?.capabilities.send).toBe(false);
-      expect(updatedView?.tasks).toEqual(activityView.tasks);
-      expect(updatedView?.work).toEqual(activityView.work);
-      expect(updatedView?.usage.totalTokens).toBe(42);
-      expect(updatedView?.reasoningEffort).toBe("high");
-    });
-
-    it("stale/rebound sink suppresses conversation cap publication", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({ threadId: "thread-1" }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const rejectingSink: LiveActivitySink = {
-        setLiveView() {
-          return true;
-        },
-        applyLiveNotification() {
-          return "applied" as const;
-        },
-        setLiveCapabilities() {
-          return false;
-        },
-        reset() {},
-      };
-      await store.getState().openProjected(service, rejectingSink, "ref-1");
-
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-      await store.getState().send(service, textInput("x"));
-
-      expect(store.getState().error).not.toBeNull();
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-    });
-
-    it("plain-open path with no sink still updates conversation caps", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-      await store.getState().send(service, textInput("x"));
-      expect(store.getState().error).not.toBeNull();
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      expect(activityStore.getState().view?.capabilities.send).toBe(false);
     });
   });
 

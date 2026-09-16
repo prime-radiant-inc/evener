@@ -138,7 +138,6 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 const sink: LiveActivitySink = {
 	setLiveView: () => true,
 	applyLiveNotification: (_n: AnyNotification, _identity) => "applied",
-	setLiveCapabilities: () => true,
 	reset: () => {},
 };
 
