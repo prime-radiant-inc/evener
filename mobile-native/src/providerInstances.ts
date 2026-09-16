@@ -137,8 +137,12 @@ export class ProviderInstances {
     this.mutate(() => this.core.getState().create(params), true);
   edit = (params: InstanceEditParams) =>
     this.mutate(() => this.core.getState().edit(params), true);
-  remove = (name: string) =>
-    this.mutate(() => this.core.getState().remove(name), true);
+  // The fingerprint is what the hub checks the removal against, so a screen
+  // holding a listing another client has since re-pointed refuses instead of
+  // deleting whatever now answers to the name (the web pane's removal asserts
+  // the same value).
+  remove = (name: string, expectedEndpointFingerprint?: string) =>
+    this.mutate(() => this.core.getState().remove(name, expectedEndpointFingerprint), true);
   setDefault = (name: string) =>
     this.mutate(() => this.core.getState().setDefault(name), true);
   setApiKey = (provider: string, value: string) =>

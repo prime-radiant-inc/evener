@@ -380,6 +380,25 @@ describe("fromEnvironment", () => {
       ),
     ).toBe(false);
   });
+
+  test("true for a keyless-capable instance a stored key cannot keep alive", () => {
+    // The row is the curated provider's own: the registry re-derives it with or
+    // without a credential, so removing it could not take the instance away -
+    // the key is what Clear is for.
+    expect(
+      fromEnvironment(
+        instance({
+          name: "ollama",
+          providerId: "ollama",
+          auth: "optional-bearer",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+          credentialRequired: false,
+        }),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("unconfiguredLabel", () => {

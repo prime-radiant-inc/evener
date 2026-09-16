@@ -120,6 +120,12 @@ export function fromEnvironment(instance: InstanceEntry): boolean {
   // unreadable record (cmd/evener-hub's openAIInstanceStatus) while the
   // registry reports the oauth source and permits the removal.
   if (instance.auth === "oauth-openai-codex") return false;
+  // An instance that exists without a credential at all - a keyless local
+  // endpoint, a gateway on the optional-bearer scheme - is not the user's to
+  // remove, however its store layer looks: the registry re-derives it either
+  // way, so a removal would delete the key and leave the row. Clear is the
+  // action for that key (registry spec §5.1, §10).
+  if (!instance.credentialRequired) return true;
   return instance.activeSource !== "store" && instance.activeSource !== "oauth";
 }
 

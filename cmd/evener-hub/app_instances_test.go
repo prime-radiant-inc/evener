@@ -739,6 +739,32 @@ func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
 	}
 }
 
+// TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey: the keyless
+// schemes are re-derived with or without a credential, so a removal would
+// delete the key and leave the row standing - with the badge the affordance
+// just said it did not have. The client offers no Remove for one, and the hub
+// refuses it; clearing the credential is the action for that key.
+func TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("ollama", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	before := entry(t, f.ctl.List(), "ollama")
+	if !before.Implicit || before.ActiveSource != "store" || before.CredentialRequired {
+		t.Fatalf("fixture: ollama = %+v, want an implicit keyless instance resolving the stored key", before)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "ollama"}); err == nil {
+		t.Fatal("Remove accepted an instance the reload would re-derive anyway")
+	}
+	if v, _ := f.store.Get("ollama"); v != "gk" {
+		t.Fatalf("the refused removal deleted the stored key: %q", v)
+	}
+}
+
 // TestInstances_RemoveLeavesTheEnvironmentRowWhenAVariableAlsoSuppliesIt: the
 // stored key is what makes the instance the user's, so removing it takes that
 // key - but the environment then supplies the instance again, and the row that

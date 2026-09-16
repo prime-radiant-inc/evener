@@ -1189,6 +1189,14 @@ func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
 		return false
 	}
+	// An instance whose scheme tolerates a missing credential is re-derived by
+	// the reload with or without one (computeInstances), so a removal would
+	// delete the credential and leave the row standing - with the badge the
+	// affordance just said it did not have. Those are refused, and clearing the
+	// credential is the action that describes what the user wants.
+	if inst.Auth == registry.AuthNone || inst.Auth == registry.AuthOptionalBearer {
+		return true
+	}
 	return inst.CredentialSource != "store" && inst.CredentialSource != "oauth"
 }
 

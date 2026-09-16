@@ -381,3 +381,19 @@ it("does not reconcile or publish after a credential write finishes after dispos
   ]);
   expect(model.getSnapshot().data).toEqual(listing("initial"));
 });
+
+// The removal carries the row's endpoint fingerprint, so the hub compares the
+// destination this screen showed against the one the name resolves to at the
+// write. Without it the hub accepts an empty assertion and a stale screen can
+// delete whatever now answers to the name (the web pane's removal sends the
+// same value).
+it("sends the row's endpoint fingerprint with a removal", async () => {
+  const { model, io, requests } = boundary();
+  io.request = async () => listing("fingerprinted");
+  await model.refresh();
+
+  await model.remove("test", "fp-test");
+
+  const removal = requests.find((request) => request.method === "evener/instance/remove");
+  expect(removal?.params).toEqual({ name: "test", expectedEndpointFingerprint: "fp-test" });
+});

@@ -474,7 +474,7 @@ function Providers({
                             disabled={state.busy || state.data?.writesRefused}
                             onPress={() =>
                               confirm("Remove provider instance?", () =>
-                                model.remove(instance.name),
+                                model.remove(instance.name, instance.endpointFingerprint),
                               )
                             }
                           >
