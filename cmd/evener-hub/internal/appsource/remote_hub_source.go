@@ -1300,10 +1300,3 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
 }
-
-// notImplemented is the staged-method error for interface methods 05b/05c/05d
-// will fill in. It is deliberately loud and names the Go method so a wiring
-// mistake surfaces instead of silently degrading.
-func (s *RemoteHubSource) notImplemented(method string) error {
-	return appwire.InternalError(fmt.Sprintf("remote hub source: %s is not implemented yet", method))
-}
