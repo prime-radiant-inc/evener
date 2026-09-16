@@ -1944,7 +1944,7 @@ it("falls back to a reasoning item's own text when no chunks were kept", () => {
   ]);
 });
 
-it("counts a question row on screen as a pending ask", () => {
+it("counts a question row on screen as a pending question, without touching the wire flag", () => {
   const askArgs =
     '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
   const projected = projectThread(
@@ -1961,12 +1961,14 @@ it("counts a question row on screen as a pending ask", () => {
     ]),
   );
   // The hub's own askPending is absent from this fixture: the answerable
-  // question the projection found is what makes the ask pending.
+  // question the projection found is what makes a question pending, and the
+  // wire's field keeps the value the snapshot gave it.
   expect(projected.items.some((row) => row.kind === "question")).toBe(true);
-  expect(projected.askPending).toBe(true);
+  expect(projected.questionsPending).toBe(true);
+  expect(projected.askPending).toBe(false);
 });
 
-it("leaves askPending false when nothing is answerable", () => {
+it("leaves the pending question flag false when nothing is answerable", () => {
   const projected = projectThread(
     thread([
       turn("t", [
@@ -1981,5 +1983,5 @@ it("leaves askPending false when nothing is answerable", () => {
     ]),
   );
   expect(projected.items.some((row) => row.kind === "question")).toBe(false);
-  expect(projected.askPending).toBe(false);
+  expect(projected.questionsPending).toBe(false);
 });

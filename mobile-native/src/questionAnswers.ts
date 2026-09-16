@@ -11,7 +11,9 @@ export type QuestionSelections = Record<
 export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
-  return conversation?.askPending
+  // questionsPending, not the wire's askPending: what can be answered here is
+  // what the projection found answerable in this window (project.ts).
+  return conversation?.questionsPending
     ? conversation.items.flatMap((item) =>
         item.kind === "question" ? item.questions : [],
       )
