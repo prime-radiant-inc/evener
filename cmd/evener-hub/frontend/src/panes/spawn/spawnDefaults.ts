@@ -117,6 +117,18 @@ export interface SaveDefaultsInput {
   // Whether the chosen harness uses evener models (kind === "evener"). Gates
   // whether the model field is persisted at all (floor §1.9, spawn.js:92-98).
   harnessUsesEvenerModels: boolean;
+  // Whether this submit targets a remote source. A remote launch's cwd and
+  // model belong to the SELECTED HOST, not this controller, so they must not be
+  // written to the global scalar defaults a later LOCAL spawn consults: the
+  // remote cwd would default the next local Spawn to a path that usually does
+  // not exist here, and a host-only model would default the next local launch
+  // to a model this hub may not serve (Component 06b review, round seven). The
+  // per-project blob keyed by that cwd is still written, minus any model of its
+  // OWN (round eight - the cwd key cannot distinguish a local checkout of the
+  // same path from the remote one) while keeping a model already stored there
+  // (round nine - a remote submit must not erase the local project's sticky
+  // choice).
+  remoteLaunch?: boolean;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -136,14 +148,39 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (harness) blob.harness = harness;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
-  if (model && input.harnessUsesEvenerModels) blob.model = model;
+  // The blob is keyed by the cwd ALONE, and a cwd does not identify a host: the
+  // same path is often also a local checkout. A model chosen on a remote host
+  // came from THAT host's catalog, so persisting it here would hand it to a
+  // later LOCAL spawn of the same path - a model this hub may not serve, which
+  // the stale-model sweep cannot even recognize as wrong (an unknown provider
+  // is deliberately left untouched). Only the host-specific model value is
+  // dropped; the remote project's harness/access/effort layer is still
+  // remembered (Component 06b review, round eight, refining round seven's
+  // "the blob is still written").
+  if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
+  // ...and the remote launch must not ERASE a model a previous LOCAL launch
+  // stored for this path either. The write below replaces the whole blob, so
+  // omitting model was not "this submit names no model" - it was "this path has
+  // no model", and a later local spawn of the same cwd silently lost its sticky
+  // choice (round nine). A remote submit therefore carries the existing blob's
+  // model over verbatim: it contributes no model of its own (round eight's
+  // intent, above) while leaving the local one exactly as it found it.
+  if (input.remoteLaunch) {
+    const previous = loadDefaultsBlob(input.cwd).model;
+    if (typeof previous === "string" && previous.trim() !== "") blob.model = previous;
+  }
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   else removeRaw(key);
 
-  if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
-  if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  // Global scalars are controller-wide defaults; a remote launch must not
+  // rewrite them (round seven). The per-project blob above stays keyed by the
+  // submitted cwd, so the remote project's own layer is still remembered.
+  if (!input.remoteLaunch) {
+    if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
+    if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  }
 }
 
 export type ModelValidity = "malformed" | "stale" | "unknown" | "valid";

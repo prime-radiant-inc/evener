@@ -136,6 +136,77 @@ describe("saveDefaults", () => {
     saveDefaults({ cwd: "", harness: "evener", harnessUsesEvenerModels: true });
     expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBeNull();
   });
+
+  test("omits the model from the cwd blob for a remote launch, but keeps its other fields (round eight)", () => {
+    // The blob is keyed by the cwd alone, and that path is often also a local
+    // checkout: a model chosen on the selected host would become this project's
+    // LOCAL default - one this hub may not serve, and which the stale-model
+    // sweep cannot even recognize as wrong (an unknown provider is left alone).
+    saveDefaults({
+      cwd: "/srv/app",
+      harness: "evener",
+      model: "host-only/gpt-5",
+      accessMode: "read-only",
+      harnessUsesEvenerModels: true,
+      remoteLaunch: true,
+    });
+    expect(loadDefaultsBlob("/srv/app").model).toBeUndefined();
+    expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBeNull();
+    // The host-generic layer is still remembered for that project (round
+    // seven's "the blob is still written").
+    expect(loadDefaultsBlob("/srv/app")).toMatchObject({ harness: "evener", access_mode: "read-only" });
+
+    // A later LOCAL submit of the same project persists its own model, so the
+    // omission is scoped to the remote launch, not to the cwd.
+    saveDefaults({ cwd: "/srv/app", model: "local/gpt-5", harnessUsesEvenerModels: true });
+    expect(loadDefaultsBlob("/srv/app").model).toBe("local/gpt-5");
+  });
+
+  // The other half of the same rule (round nine): omitting the model must not
+  // ERASE what a previous local launch stored for this path. The write replaces
+  // the whole blob, so "no model from this submit" used to mean "no model for
+  // this project" - and the next local spawn of the path silently lost its
+  // sticky choice.
+  test("a remote launch keeps the cwd blob's existing local model (round nine)", () => {
+    saveDefaults({ cwd: "/srv/app", harness: "evener", model: "local/gpt-5", harnessUsesEvenerModels: true });
+    expect(loadDefaultsBlob("/srv/app").model).toBe("local/gpt-5");
+
+    saveDefaults({
+      cwd: "/srv/app",
+      harness: "evener",
+      model: "host-only/gpt-5",
+      accessMode: "read-only",
+      harnessUsesEvenerModels: true,
+      remoteLaunch: true,
+    });
+
+    // The local default survives, the host's own model is still never written -
+    // not into the project blob and not into the controller's global scalar.
+    expect(loadDefaultsBlob("/srv/app")).toMatchObject({
+      harness: "evener",
+      access_mode: "read-only",
+      model: "local/gpt-5",
+    });
+    expect(loadDefaultsBlob("/srv/app").model).not.toBe("host-only/gpt-5");
+    // The controller's global scalar is untouched by the remote submit too: it
+    // keeps the local launch's own value, not the host's.
+    expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBe("local/gpt-5");
+    // A fresh local page reads the surviving project default back, layered over
+    // whatever the controller-wide scalar says.
+    localStorage.setItem(GLOBAL_MODEL_KEY, "other/global-model");
+    expect(resolveInitialDefaults({ serverPrefillDir: "/srv/app" }).model).toBe("local/gpt-5");
+  });
+
+  test("a remote launch onto a path with no stored model still writes no model (round eight)", () => {
+    saveDefaults({
+      cwd: "/srv/fresh",
+      harness: "evener",
+      model: "host-only/gpt-5",
+      harnessUsesEvenerModels: true,
+      remoteLaunch: true,
+    });
+    expect(loadDefaultsBlob("/srv/fresh")).toEqual({ harness: "evener" });
+  });
 });
 
 describe("modelValidityAgainstList (floor §1.10, spawn.js:154-175)", () => {
