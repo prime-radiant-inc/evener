@@ -75,9 +75,12 @@ export function textOffsetToDocumentPosition(doc: ProseMirrorNode, offset: numbe
   doc.forEach((node, position) => {
     const length = node.isText ? node.nodeSize : node.attrs.name.length + 1;
     if (offset >= textOffset && offset <= textOffset + length) {
-      result = node.isText
-        ? position + offset - textOffset
-        : position + (offset === textOffset ? 0 : offset === textOffset + length || bias === 1 ? 1 : 0);
+      if (node.isText) {
+        result = position + offset - textOffset;
+      } else {
+        const afterAtom = offset !== textOffset && (offset === textOffset + length || bias === 1);
+        result = position + (afterAtom ? 1 : 0);
+      }
     }
     textOffset += length;
   });

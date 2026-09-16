@@ -217,20 +217,19 @@ func (c skillGuardLLMCall) skillContexts() []skillGuardDocument {
 	for _, m := range c.Messages {
 		text := m.text()
 		for {
-			open := strings.Index(text, "<skill-context>")
-			if open < 0 {
+			_, body, ok := strings.Cut(text, "<skill-context>")
+			if !ok {
 				break
 			}
-			text = text[open+len("<skill-context>"):]
-			closing := strings.Index(text, "</skill-context>")
-			if closing < 0 {
+			encoded, rest, ok := strings.Cut(body, "</skill-context>")
+			if !ok {
 				break
 			}
 			var doc skillGuardDocument
-			if err := json.Unmarshal([]byte(strings.TrimSpace(text[:closing])), &doc); err == nil {
+			if err := json.Unmarshal([]byte(strings.TrimSpace(encoded)), &doc); err == nil {
 				out = append(out, doc)
 			}
-			text = text[closing+len("</skill-context>"):]
+			text = rest
 		}
 	}
 	return out

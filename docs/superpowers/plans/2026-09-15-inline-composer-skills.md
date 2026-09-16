@@ -106,3 +106,17 @@ expect(call.params.input).toEqual([
 - `GOMAXPROCS=2 make vet && GOMAXPROCS=2 make lint`: passed on final source.
 - Focused backend and browser assertion tests passed with `-count=1`. Independent review findings were resolved with targeted regression tests, including mixed image/text paste, editor height/scrolling, and stale cursor restoration after same-text edits.
 - Scope remains the approved inline-chip behavior, with existing persistence and wire contracts. No old-session migration, push or merge to main.
+
+## Simplify and publication follow-up (2026-09-15)
+
+Jesse's request: “do that. once that’s done, please open a pr and then shepherd it with”. His subsequent choices were “Rebase the feature onto main” and “60 observations, 120 seconds apart”. Publication and bounded shepherding are authorized; merging into main remains unauthorized.
+
+- Four read-only reviews covered reuse, simplification, efficiency and abstraction level. Applied five behavior-preserving changes: schema-based suffix extraction, explicit offset branches, `strings.Cut` carrier extraction, schema-owned clipboard formatting, and reuse of the parsed external replacement with fresh editor state. Each passed its focused check; all 21 editor/model tests passed together. No added API or assertion changed.
+- Skipped the draft-helper rewrite because it changes return identity, and serialization caching because mutable values would change callback/echo ownership or require extra defensive state. No simplification was reverted.
+- Rebased onto `1988c5b5a68e67400186e9c76e153a5ce13b57e9`. The single import conflict retained both upstream and feature helpers. Independent review found no lost behavior.
+- The full gate exposed a provider-dialog focus bug reproduced on both base and feature: a delayed listing refresh unmounted its focused row. A dialog-local fix retains existing rows during refresh. Deterministic tests also await the permitted store-owned refresh before asserting no further work. All 52 dialog tests and 458 related tests passed; independent review found no weakened assertions or changed endpoint guards.
+- Browser guards exposed a Linux desktop-keyring dependency before the first HTTP request. A real Chrome comparison confirmed that the built-in key store restores navigation in a disposable profile. The Linux-only test-launcher setting passed its regression, all 64 launcher/CDP tests, all six real-browser guards, and independent review. Ordinary browser profiles and application credential storage are unchanged.
+- Final integrated verification exited zero: `GOMAXPROCS=2 make merge-approval-gate && GOMAXPROCS=2 make vet && GOMAXPROCS=2 make test-web-browser`. Lint, production build, all seven Go modules, frontend gate, native bundle, 746 native tests, 778 shared tests, native typecheck, AppWire package qualification, vet and all six actual browser guards passed.
+- The successful run emitted Node SQLite experimental warnings, a Metro cold-cache warning and an npm update notice. These are recorded rather than described as warning-free output. PR creation and bounded shepherding follow the simplification commit; merging into main remains unauthorized.
+
+The native dependency install also reported 14 moderate audit entries rooted in `decode-uri-component` and `uuid`. Those lockfiles are unchanged from main; I haven’t applied dependency upgrades.
