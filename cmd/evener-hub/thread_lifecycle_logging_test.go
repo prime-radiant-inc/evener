@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -81,13 +82,13 @@ func TestThreadLifecycleLoggingLaunchFailure(t *testing.T) {
 func threadLifecycleLogRecords(t *testing.T, output string) []map[string]string {
 	t.Helper()
 	var records []map[string]string
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		body, ok := strings.CutPrefix(line, "[hub] lifecycle ")
 		if !ok {
 			continue
 		}
 		record := make(map[string]string)
-		for _, field := range strings.Fields(body) {
+		for field := range strings.FieldsSeq(body) {
 			key, value, ok := strings.Cut(field, "=")
 			if !ok || key == "" || value == "" {
 				t.Fatalf("invalid structured lifecycle field %q", field)
@@ -120,6 +121,50 @@ func TestThreadLifecycleLoggingResumeSuccess(t *testing.T) {
 	records := assertThreadLifecycleRecords(t, output.String())
 	for _, stage := range []string{"request", "ownership", "lock_wait", "lock_held", "ownership_recheck", "discovery", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
 		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
+	}
+}
+
+func TestThreadLifecycleLoggingResumeAliasCorrelation(t *testing.T) {
+	var currentID string
+	cfg, id, calls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: currentID, SessionID: currentID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, InstanceID: currentID}}}, nil
+		})
+	})
+	currentID = id
+	requestedID := hubtest.SessionID(t)
+	if requestedID == currentID {
+		t.Fatal("alias fixture requires distinct requested and current session IDs")
+	}
+	locks, err := hubcore.NewPersistentResumeLocks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliases := []string{requestedID, currentID}
+	finish := locks.BeginForceStop(aliases)
+	if err := locks.PersistForceStop(aliases, currentID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(currentID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	cfg.ResumeLocks = locks
+	var output bytes.Buffer
+	ctx, _ := withThreadLifecycleLog(t.Context(), "resume", requestedID, &output)
+	response, err := hubThreadResume(ctx, cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: "local:" + requestedID})
+	if err != nil || response.Thread.SessionID != currentID || *calls != 1 {
+		t.Fatalf("alias resume fixture: session=%s calls=%d err=%v", response.Thread.SessionID, *calls, err)
+	}
+	records := assertThreadLifecycleRecords(t, output.String())
+	requestID := records[0]["request_id"]
+	for _, stage := range []string{"request_preparation", "spawner_resume", "daemon_read"} {
+		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
+		for _, record := range records {
+			if record["stage"] == stage && (record["session_id"] != requestedID || record["resolved_session_id"] != currentID || record["request_id"] != requestID) {
+				t.Fatalf("lost requested/resolved correlation: %#v, want session=%s resolved=%s request=%s", record, requestedID, currentID, requestID)
+			}
+		}
 	}
 }
 
@@ -185,8 +230,7 @@ func TestThreadLifecycleLoggingLockWaiting(t *testing.T) {
 	locks := hubcore.NewResumeLocks()
 	lock := locks.For(id)
 	lock.Lock()
-	var unlock sync.Once
-	release := func() { unlock.Do(lock.Unlock) }
+	release := sync.OnceFunc(lock.Unlock)
 	defer release()
 	w := &threadLifecycleWaitWriter{waiting: make(chan struct{})}
 	ctx, _ := withThreadLifecycleLog(t.Context(), "resume", id, w)
@@ -362,7 +406,7 @@ func TestThreadLifecycleLoggingPreparationCorrelation(t *testing.T) {
 	dir := t.TempDir()
 	id := hubtest.SessionID(t)
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n  printf '%%s' '{\"protocol\":\"%s\",\"launch_flags\":[\"api-log\"]}'\n  exit 0\nfi\nexit 17\n", appwire.ProtocolVersion))
+	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n  printf '%%s' '{\"protocol\":%q,\"launch_flags\":[\"api-log\"]}'\n  exit 0\nfi\nexit 17\n", appwire.ProtocolVersion))
 	var output bytes.Buffer
 	ctx, _ := withThreadLifecycleLog(t.Context(), "resume", id, &output)
 	spawner := &HubSpawner{EvenerBinary: bin, RunDir: filepath.Join(dir, "run")}
@@ -393,7 +437,7 @@ func TestThreadLifecycleLoggingHandlerSpawnerCorrelation(t *testing.T) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n  printf '%%s' '{\"protocol\":\"%s\",\"launch_flags\":[\"api-log\"]}'\n  exit 0\nfi\nexit 19\n", appwire.ProtocolVersion))
+	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = launch-check ]; then\n  printf '%%s' '{\"protocol\":%q,\"launch_flags\":[\"api-log\"]}'\n  exit 0\nfi\nexit 19\n", appwire.ProtocolVersion))
 	runDir := filepath.Join(dir, "run")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -453,5 +497,84 @@ func TestThreadLifecycleLoggingBoundedMetadata(t *testing.T) {
 		if len(output.String()) > 2048 {
 			t.Fatal("unbounded lifecycle record")
 		}
+	}
+}
+
+func TestThreadLifecycleLoggingConcreteErrorPrecedesContext(t *testing.T) {
+	t.Parallel()
+	const secret = "PRIVATE_CLASSIFICATION_ERROR_opaque_sentinel\nforged=value"
+	exitErr := exec.Command("/bin/sh", "-c", "exit 23").Run()
+	if exit, ok := errors.AsType[*exec.ExitError](exitErr); !ok || exit.ExitCode() != 23 {
+		t.Fatalf("process fixture: got %v, want exit 23", exitErr)
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	expired, cancelDeadline := context.WithDeadline(t.Context(), time.Unix(1, 0))
+	defer cancelDeadline()
+	for _, contextCase := range []struct {
+		name           string
+		ctx            context.Context
+		err            error
+		fallbackClass  string
+		fallbackResult string
+	}{
+		{"active", t.Context(), nil, "failed", "error"},
+		{"canceled", canceled, context.Canceled, "canceled", "canceled"},
+		{"deadline", expired, context.DeadlineExceeded, "timeout", "error"},
+	} {
+		t.Run(contextCase.name, func(t *testing.T) {
+			if !errors.Is(contextCase.ctx.Err(), contextCase.err) {
+				t.Fatalf("context fixture: got %v, want %v", contextCase.ctx.Err(), contextCase.err)
+			}
+			for _, tc := range []struct {
+				name     string
+				err      error
+				class    string
+				result   string
+				exitCode string
+			}{
+				{"nil", nil, "none", "success", "-1"},
+				{"permission", fmt.Errorf("%s: %w", secret, fs.ErrPermission), "permission", "error", "-1"},
+				{"not_found", fmt.Errorf("%s: %w", secret, fs.ErrNotExist), "not_found", "error", "-1"},
+				{"process_exit", fmt.Errorf("%s: %w", secret, exitErr), "process_exit", "error", "23"},
+				{"explicit_cancel", fmt.Errorf("%s: %w", secret, context.Canceled), "canceled", "canceled", "-1"},
+				{"explicit_deadline", fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "timeout", "error", "-1"},
+				{"rendezvous_cancel", fmt.Errorf("%s: %w", secret, errRendezvousCanceled), "canceled", "canceled", "-1"},
+				{"rendezvous_timeout", fmt.Errorf("%s: %w", secret, errRendezvousTimeout), "timeout", "error", "-1"},
+				{"permission_and_cancel", errors.Join(fs.ErrPermission, context.Canceled), "canceled", "canceled", "-1"},
+				{"permission_and_deadline", errors.Join(fs.ErrPermission, context.DeadlineExceeded), "timeout", "error", "-1"},
+				{"unclassified", errors.New(secret), contextCase.fallbackClass, contextCase.fallbackResult, "-1"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					if got := lifecycleErrorClass(contextCase.ctx, tc.err); got != tc.class {
+						t.Errorf("error class = %s, want %s", got, tc.class)
+					}
+					id := hubtest.SessionID(t)
+					var output bytes.Buffer
+					ctx, trace := withThreadLifecycleLog(contextCase.ctx, "resume", id, &output)
+					done := trace.stage(ctx, "request")
+					done(tc.err)
+					if strings.Contains(output.String(), secret) || strings.Contains(output.String(), "forged=") {
+						t.Fatalf("raw error leaked into lifecycle log: %s", &output)
+					}
+					records := assertThreadLifecycleRecords(t, output.String())
+					if len(records) != 2 {
+						t.Fatalf("got %d records, want begin and complete", len(records))
+					}
+					if records[0]["error_class"] != "none" || records[0]["result"] != "pending" {
+						t.Fatalf("nil-error begin affected by context: %#v", records[0])
+					}
+					for _, record := range records {
+						if record["session_id"] != id || record["resolved_session_id"] != "-" || record["operation"] != "resume" {
+							t.Fatalf("lost lifecycle identity: %#v", record)
+						}
+					}
+					if records[1]["exit_code"] != tc.exitCode {
+						t.Fatalf("exit code = %s, want %s", records[1]["exit_code"], tc.exitCode)
+					}
+					assertThreadLifecycleOutcome(t, records, "request", tc.result, tc.class)
+				})
+			}
+		})
 	}
 }

@@ -52,9 +52,9 @@ func threadLifecycleFromContext(ctx context.Context) *threadLifecycleLog {
 }
 
 func (l *threadLifecycleLog) resolved(ctx context.Context, sessionID string) (context.Context, *threadLifecycleLog) {
-	copy := *l
-	copy.resolvedSessionID = sessionID
-	return context.WithValue(ctx, threadLifecycleLogKey{}, &copy), &copy
+	resolved := *l
+	resolved.resolvedSessionID = sessionID
+	return context.WithValue(ctx, threadLifecycleLogKey{}, &resolved), &resolved
 }
 
 // Invalid caller-controlled identities are omitted, not merely escaped: even a
@@ -79,18 +79,23 @@ func lifecycleErrorClass(ctx context.Context, err error) string {
 	switch {
 	case err == nil:
 		return "none"
-	case errors.Is(err, errRendezvousCanceled), errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+	case errors.Is(err, errRendezvousCanceled), errors.Is(err, context.Canceled):
 		return "canceled"
-	case errors.Is(err, errRendezvousTimeout), errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case errors.Is(err, errRendezvousTimeout), errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.Is(err, fs.ErrNotExist):
 		return "not_found"
 	case errors.Is(err, fs.ErrPermission):
 		return "permission"
 	default:
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
 			return "process_exit"
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return "canceled"
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "timeout"
 		}
 		return "failed"
 	}
@@ -110,8 +115,7 @@ func (l *threadLifecycleLog) record(ctx context.Context, stage, state string, st
 		result = "error"
 	}
 	exitCode := -1
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 		exitCode = exit.ExitCode()
 	}
 	_, _ = fmt.Fprintf(l.writer, "[hub] lifecycle request_id=%s operation=%s session_id=%s resolved_session_id=%s stage=%s state=%s result=%s error_class=%s elapsed_ms=%d stage_elapsed_ms=%d pid=%d exit_code=%d tail_bytes=%d tail_at_limit=%t\n",

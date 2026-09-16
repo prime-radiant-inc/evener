@@ -30,7 +30,7 @@ func TestThreadLifecycleLoggingFreshSpawnFinalIdentity(t *testing.T) {
 	}
 	id := hubtest.SessionID(t)
 	bin := filepath.Join(dir, "fake-evener")
-	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '{\"pid\":%%s,\"session_id\":\"%s\",\"started_at\":\"2999-01-01T00:00:00Z\"}\\n' \"$$\" > '%s/'\"$$\"'.json'\nexec /bin/cat '%s'\n", id, runDir, gate))
+	writeFakeEvener(t, bin, fmt.Sprintf("#!/bin/sh\nprintf '{\"pid\":%%s,\"session_id\":%q,\"started_at\":\"2999-01-01T00:00:00Z\"}\\n' \"$$\" > '%s/'\"$$\"'.json'\nexec /bin/cat '%s'\n", id, runDir, gate))
 	var output bytes.Buffer
 	entry, err := spawnDaemon(t.Context(), bin, runDir, hubcore.SpawnRequest{}, 0, &output)
 	if err != nil {
