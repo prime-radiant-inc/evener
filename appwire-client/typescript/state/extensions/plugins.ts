@@ -61,6 +61,15 @@ export interface PluginsStore extends FrameworkFreeStore<PluginsState> {
 
 export const PLUGIN_REFETCH_DEBOUNCE_MS = 250;
 
+/** The five mutations addressed by a plugin reference alone; setAutoUpgrade
+ * carries its flag as well. */
+type PluginRefMethod =
+  | "evener/plugin/install"
+  | "evener/plugin/upgrade"
+  | "evener/plugin/remove"
+  | "evener/plugin/enable"
+  | "evener/plugin/disable";
+
 export function createPluginsStore(client: PluginsClient): PluginsStore {
   // Every mutation, and the notification refetch, replaces the whole list from
   // its own response; see listRevision.ts for the fence.
@@ -95,17 +104,8 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       if (listRevision.commit(revision)) set({ plugins: resp.plugins });
     }
 
-    const mutation =
-      (
-        method:
-          | "evener/plugin/install"
-          | "evener/plugin/upgrade"
-          | "evener/plugin/remove"
-          | "evener/plugin/enable"
-          | "evener/plugin/disable",
-      ) =>
-      (plugin: string, marketplace: string) =>
-        mutate(() => client.request(method, { plugin, marketplace }));
+    const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>
+      mutate(() => client.request(method, { plugin, marketplace }));
 
     return {
       plugins: null,
