@@ -1,17 +1,22 @@
-// Display sourcing for the two binding-list UIs (the Settings keybindings
-// section and the cheatsheet overlay): WHICH actions to list, in what order,
-// and which of an action's registered bindings is the one to show. Both
-// consumers read this module so the list can never drift into two
-// hand-maintained copies - the survey's stale-HELP_ROWS lesson, named as a
-// binding constraint in docs/superpowers/plans/2026-09-04-webui-keybindings-p4-plan.md.
+// Display sourcing for every binding-list UI (the web Settings keybindings
+// section and cheatsheet overlay, native's shortcut settings): WHICH actions
+// to list, in what order, and which of an action's registered bindings is
+// the one to show. Every consumer reads this module so the list can never
+// drift into two hand-maintained copies - the survey's stale-HELP_ROWS
+// lesson, named as a binding constraint in
+// docs/superpowers/plans/2026-09-04-webui-keybindings-p4-plan.md.
 //
 // Deliberately React-free and store-free like the rest of the keybinding
 // group: the registry's bindings array, its parser and the
 // characterKeyTriggers pref value are passed in by the caller.
 
-import { type KeybindingParser, serializeChord } from "./chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingChordsForAction } from "./defaults";
-import type { Binding } from "./registry";
+import { type KeybindingParser, serializeChord } from "./keybindingChord";
+import {
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  DEFAULT_BINDINGS,
+  defaultBindingChordsForAction,
+} from "./keybindingDefaults";
+import type { Binding } from "./keybindingRegistry";
 
 export interface ActionDisplayRow {
   actionId: string;

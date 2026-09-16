@@ -1,9 +1,8 @@
-// Canonical shell action ids. Where a palette command already owns the
-// behavior, the action id IS the palette command id (see
-// shell/palette/commands.ts: "next-needs-you" and "settings"); the rest are
-// shell action ids. The components that own each behavior register its run
-// function against the registry (AppShell, RailHost, Settings,
-// SelectionQuote, the session transcript's useTranscriptScrollKeys).
+// Canonical action ids for the keybinding registry, shared by the web shell
+// (which registers a run function per action) and native (which lists them
+// for its shortcut settings). Where a web palette command already owns the
+// behavior, the action id IS the palette command id ("next-needs-you" and
+// "settings"); the rest are shell action ids.
 
 export const ACTIONS = {
   paletteOpen: "palette.open",

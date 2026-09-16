@@ -36,7 +36,15 @@ model catalog view helpers both apps' model pickers are built from
 row list), the launch-config engine's pure half both apps' launch settings
 are built on (option grouping, layer filtering, the form state
 populate/collect pair, the inherited entries a collection control ghosts in,
-and the add-a-path decision every path list gates on), and the doc-pane URL
+and the add-a-path decision every path list gates on), the keybinding group
+both apps' shortcut settings are built on (the action ids, the chord AST with
+its overlap predicate, the default binding map, the display rows, the
+override primitives and the semantic override validation) - its registry is
+a framework-free store factory, `createKeybindingsRegistry(parse)` returning
+a `getState`/`setState`/`subscribe` triple each app wraps for its own view
+layer, and its chord parsing goes through a `KeybindingParser` port the host
+supplies (tinykeys' `parseKeybinding` in both apps), so the package names
+neither a store library nor a parser - and the doc-pane URL
 builders, which hang their hrefs off a base origin the host supplies (empty
 for a same-origin web page). The doc-pane data layer is published at the
 `./docContent` subpath as well, where `readDocFile` takes the host's

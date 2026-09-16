@@ -1,6 +1,7 @@
-// Semantic validation for user keybinding overrides. The server validates
-// STRUCTURE only (it does not know the frontend action registry); everything
-// that requires knowing the live bindings happens here, at load and at patch:
+// Semantic validation for user keybinding overrides, shared by the web's
+// overrides store and native's shortcut preview. The hub validates STRUCTURE
+// only (it does not know the action registry); everything that requires
+// knowing the live bindings happens here, at load and at patch:
 //
 //   - action ids against the default map (unknown or stale rules are skipped),
 //   - chord parseability,
@@ -13,7 +14,7 @@
 // the offending rule is skipped, so persisted data can degrade to defaults
 // but can never crash the shell.
 
-import { ACTIONS } from "./actions";
+import { ACTIONS } from "./keybindingActions";
 import {
   chordsOverlap,
   type KeybindingParser,
@@ -22,9 +23,13 @@ import {
   parseChord,
   regexMatchesKeyValue,
   serializeChord,
-} from "./chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
-import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+} from "./keybindingChord";
+import {
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  DEFAULT_BINDINGS,
+  defaultBindingShapesForAction,
+} from "./keybindingDefaults";
+import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 export type KeybindingsPlatform = "apple" | "other";
 

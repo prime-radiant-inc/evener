@@ -61,6 +61,13 @@
     "taskListTime.ts",
     "launchSchema.ts",
     "launchInherited.ts",
-    "launchPathListAdd.ts"
+    "launchPathListAdd.ts",
+    "keybindingActions.ts",
+    "keybindingChord.ts",
+    "keybindingDefaults.ts",
+    "keybindingDisplay.ts",
+    "keybindingOverrides.ts",
+    "keybindingRegistry.ts",
+    "keybindingValidation.ts"
   ]
 }

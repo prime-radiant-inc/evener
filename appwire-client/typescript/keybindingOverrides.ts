@@ -1,5 +1,5 @@
 // User override application for the keybinding registry: rebindAction is the
-// one primitive the overrides store (src/stores/keybindings.ts) applies each
+// one primitive the web's overrides store (stores/keybindings.ts) applies each
 // validated rule through. A rebind replaces the action's CURRENT binding(s) -
 // the default entry and its cross-platform `#mod-twin`, or an earlier
 // `#override` - with a single binding that keeps the default's scope and
@@ -13,11 +13,12 @@
 // a failed rebind never leaves the action half-unbound. The store's semantic
 // validation layer (validation.ts) pre-checks the same conditions and skips
 // bad rules with warnings, so these throws should never reach startup; they
-// exist so a direct caller cannot corrupt the registry either.
+// exist so a direct caller cannot corrupt the registry either. Every helper
+// parses through the registry's own parser.
 
-import { chordsOverlap, parseChord, serializeChord } from "./chord";
-import { DEFAULT_BINDINGS, registerDefaultBindingsForAction } from "./defaults";
-import { type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+import { chordsOverlap, parseChord, serializeChord } from "./keybindingChord";
+import { DEFAULT_BINDINGS, registerDefaultBindingsForAction } from "./keybindingDefaults";
+import { type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 function defaultInputFor(actionId: string): BindingInput {
   const input = DEFAULT_BINDINGS.find((b) => b.actionId === actionId);

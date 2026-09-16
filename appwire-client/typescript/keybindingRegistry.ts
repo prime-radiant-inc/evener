@@ -6,8 +6,7 @@
 // shape React's useSyncExternalStore (and zustand's useStore over it) binds to
 // without the package depending on either. Pure logic - no DOM, no React.
 
-import { parseKeybinding } from "tinykeys";
-import { type KeybindingParser, type KeySequence, parseChord, serializeChord } from "./chord";
+import { type KeybindingParser, type KeySequence, parseChord, serializeChord } from "./keybindingChord";
 
 /** The implicit bottom of every scope stack: bindings with no `scope` land here. */
 export const GLOBAL_SCOPE = "global";
@@ -206,7 +205,3 @@ export function createKeybindingsRegistry(parse: KeybindingParser): KeybindingsR
     parseKeybinding: parse,
   };
 }
-
-/** The app-wide registry, bound to tinykeys' parser; tests build their own
- * with createKeybindingsRegistry(parseKeybinding). */
-export const keybindingsRegistry = createKeybindingsRegistry(parseKeybinding);

@@ -8,7 +8,7 @@ import {
   type KeybindingParser,
   parseChord,
   serializeChord,
-} from "./chord";
+} from "./keybindingChord";
 
 function singleChord(input: string): Chord {
   const sequence = parseChord(parseKeybinding, input);

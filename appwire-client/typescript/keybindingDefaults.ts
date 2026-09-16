@@ -46,9 +46,15 @@
 // settings.close is scope-gated: it lives in the settings scope, NOT global.
 // The Settings pane pushes that scope while it is open.
 
-import { ACTIONS } from "./actions";
-import { type KeybindingParser, type KeySequence, parseChord, serializeChord, withOptionalModifier } from "./chord";
-import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+import { ACTIONS } from "./keybindingActions";
+import {
+  type KeybindingParser,
+  type KeySequence,
+  parseChord,
+  serializeChord,
+  withOptionalModifier,
+} from "./keybindingChord";
+import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 export const SETTINGS_SCOPE = "settings";
 export const CHEATSHEET_SCOPE = "cheatsheet";

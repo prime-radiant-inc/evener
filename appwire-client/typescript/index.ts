@@ -128,6 +128,54 @@ export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export type { ActionId } from "./keybindingActions";
+export { ACTIONS } from "./keybindingActions";
+export type { Chord, KeybindingParser, KeybindingPress, KeySequence } from "./keybindingChord";
+export {
+  chordDisplayKeys,
+  chordsOverlap,
+  formatChord,
+  formatSequence,
+  keyComparisonIdentity,
+  modifierDisplayKey,
+  parseChord,
+  regexMatchesKeyValue,
+  serializeChord,
+  withOptionalModifier,
+} from "./keybindingChord";
+export type { DefaultBindingShape, DefaultChordInfo } from "./keybindingDefaults";
+export {
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  CHEATSHEET_SCOPE,
+  DEFAULT_BINDINGS,
+  defaultBindingChordsForAction,
+  defaultBindingShapesForAction,
+  registerDefaultBindings,
+  registerDefaultBindingsForAction,
+  SETTINGS_SCOPE,
+} from "./keybindingDefaults";
+export type { ActionDisplayRow } from "./keybindingDisplay";
+export { ACTION_DISPLAY_ROWS, displayBindingFor, displayBindingsFor, isActionCustomized } from "./keybindingDisplay";
+export { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
+export type {
+  ActionRunner,
+  Binding,
+  BindingInput,
+  KeybindingsListener,
+  KeybindingsRegistry,
+  KeybindingsState,
+  WhenClause,
+} from "./keybindingRegistry";
+export { createKeybindingsRegistry, GLOBAL_SCOPE } from "./keybindingRegistry";
+export type {
+  KeybindingsPlatform,
+  OverrideRule,
+  ValidatedOverrides,
+  ValidatedRule,
+  ValidationWarning,
+  ValidationWarningReason,
+} from "./keybindingValidation";
+export { actionDisplayLabel, currentKeybindingsPlatform, validateOverrideRules } from "./keybindingValidation";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";

@@ -1,7 +1,7 @@
 import { parseKeybinding } from "tinykeys";
 import { describe, expect, test, vi } from "vitest";
-import type { KeybindingParser } from "./chord";
-import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsState } from "./registry";
+import type { KeybindingParser } from "./keybindingChord";
+import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsState } from "./keybindingRegistry";
 
 describe("the parser port", () => {
   test("string chords parse through the parser the registry was created with", () => {
