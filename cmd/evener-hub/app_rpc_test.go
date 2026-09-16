@@ -570,6 +570,76 @@ func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) 
 	t.Fatalf("logger did not receive sentinel error as an argument: %+v", logs)
 }
 
+// metadataErrorRemoteImageRPCSource is a source whose images live on another hub
+// (EnrichThreadFileBackedImages reports they are not files on this hub) and whose
+// optional metadata read fails.
+type metadataErrorRemoteImageRPCSource struct {
+	itemPackingRPCSource
+}
+
+func (*metadataErrorRemoteImageRPCSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, errors.New("metadata sentinel")
+}
+
+func (*metadataErrorRemoteImageRPCSource) EnrichThreadFileBackedImages() bool { return false }
+
+// Remote image routes must be neutralized independently of the optional metadata
+// read. The routes arrive on the item page itself, and a root-relative route left
+// on the response resolves against this hub's origin for a session this hub does
+// not have (404, or another session's bytes on an id collision). Metadata only
+// supplies the session id and CWD the local stamp/file-backed pass needs, so a
+// failed metadata read must not skip the neutralization that does not need them.
+func TestListItemTurnsNeutralizesRemoteImageRoutesWithoutMetadata(t *testing.T) {
+	const external = "https://images.example.test/plot.png"
+	route := "/s/remote-session/images/" + strings.Repeat("a", 64)
+	candidates := testItemCandidates(1)
+	candidates[0].Item.Images = []appwire.InputItem{{URL: route}, {URL: external}}
+	candidates[0].Item.OutputImages = []appwire.OutputImage{
+		{Source: "tool-result", URL: route},
+		{Source: "written-file", Path: "plot.png", URL: "/doc/image?session=remote-session&path=plot.png"},
+	}
+	source := &metadataErrorRemoteImageRPCSource{itemPackingRPCSource{
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+			Identity:   appitempaging.CursorIdentity{ThreadRef: "h1:t1", Incarnation: "route-incarnation", ProjectionVersion: 1},
+			Exhausted:  true,
+		},
+	}}
+
+	response, handled, err := listItemTurns(context.Background(), source, appwire.ThreadTurnsListParams{Ref: "h1:t1"}, nil)
+	if err != nil {
+		t.Fatalf("listItemTurns: %v", err)
+	}
+	if !handled {
+		t.Fatal("listItemTurns handled = false, want true")
+	}
+	items := flattenTestItems(response.Data)
+	if len(items) != 1 {
+		t.Fatalf("packed items = %+v, want the single source item", items)
+	}
+	if len(items[0].Images) != 2 {
+		t.Fatalf("input images = %+v, want both remote descriptors preserved", items[0].Images)
+	}
+	if got := items[0].Images[0].URL; got != "" {
+		t.Fatalf("remote input image route = %q, want the controller-relative route neutralized", got)
+	}
+	if got := items[0].Images[1].URL; got != external {
+		t.Fatalf("external input image URL = %q, want %q preserved", got, external)
+	}
+	if len(items[0].OutputImages) != 2 {
+		t.Fatalf("output images = %+v, want both remote descriptors preserved", items[0].OutputImages)
+	}
+	if got := items[0].OutputImages[0].URL; got != "" {
+		t.Fatalf("remote output image route = %q, want it neutralized", got)
+	}
+	if got := items[0].OutputImages[1].URL; got != "" {
+		t.Fatalf("remote /doc/image URL = %q, want it neutralized (it would resolve against the controller origin)", got)
+	}
+	if got := items[0].OutputImages[1].Path; got != "plot.png" {
+		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the staged proxy", got)
+	}
+}
+
 func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
 	identity := appitempaging.CursorIdentity{ThreadRef: "codex:byte-packing", Incarnation: "rpc-byte-packing", ProjectionVersion: 1}
 	candidates := testItemCandidates(2)

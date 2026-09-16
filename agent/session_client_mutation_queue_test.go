@@ -1152,7 +1152,11 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 	}
 }
 
-func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) {
+// TestClientMutation_SteerStaysAcceptedUntilDurableAppend: popping a steer
+// writes nothing durable; the store keeps it accepted (and the projection
+// shows it pending) until its transcript append lands, and in between it is
+// out of the in-memory queue.
+func TestClientMutation_SteerStaysAcceptedUntilDurableAppend(t *testing.T) {
 	sess := newTestSession(t)
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "steer-claim",
@@ -1169,12 +1173,15 @@ func TestClientMutation_SteerClaimFinalizesOnlyAfterDurableAppend(t *testing.T) 
 	if !ok {
 		t.Fatal("popSteeringHead returned empty")
 	}
-	claimed := sess.clientMutations.snapshot()
-	if claimed.PendingExecutions[params.ClientMutationID].ExecutionState != "claimed" {
-		t.Fatalf("steering was not claimed: %#v", claimed.PendingExecutions[params.ClientMutationID])
+	popped := sess.clientMutations.snapshot()
+	if popped.PendingExecutions[params.ClientMutationID].ExecutionState != "accepted" {
+		t.Fatalf("a popped steer is not accepted in the store: %#v", popped.PendingExecutions[params.ClientMutationID])
 	}
-	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "claimed" {
-		t.Fatalf("claimed steering projection = %#v, ok=%v", pending, ok)
+	if pending, ok := projectedClientMutation(sess, params.ClientMutationID); !ok || pending.ExecutionState != "accepted" {
+		t.Fatalf("popped steering projection = %#v, ok=%v", pending, ok)
+	}
+	if sess.hasPendingUserSteering() {
+		t.Fatal("a popped steer is still in the in-memory queue")
 	}
 	if msg.StableTurnID != response.Receipt.TurnID {
 		t.Fatalf("steering stable turn = %q, receipt = %q", msg.StableTurnID, response.Receipt.TurnID)
@@ -1411,7 +1418,7 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 			if !ok || msg.ClientMutationID != mutationID {
 				t.Fatalf("claimed steering = %#v, ok=%v", msg, ok)
 			}
-			if !sess.consumeSteeringMessage(msg) {
+			if sess.consumeSteeringMessage(msg) == steeringAppendFailed {
 				t.Fatal("consumeSteeringMessage did not durably incorporate steering")
 			}
 

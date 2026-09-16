@@ -10,6 +10,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import type { NavigationPages } from "./navigationPages";
+import { singleFlight } from "./singleFlight";
 
 export async function readPinLocation(
 	client: ConversationClientLike,
@@ -168,4 +169,40 @@ export async function refreshPinNavigation(
 				(section) => section.id === (sectionId ?? location?.pin_section_id),
 			) ?? null,
 	};
+}
+
+/** Re-read the pin navigation whenever the hub says the pin catalog changed,
+ * one read at a time. A run only reads while the catalog is still stale, so
+ * a change that a read in flight (or a mutation's own confirmation) already
+ * absorbed costs nothing and a hub that notifies on every read cannot keep
+ * this reading. A read that ends stale is retried once, so a change that
+ * landed between its location and catalog steps is not lost. */
+export function followPinCatalog(
+	pages: Pick<
+		NavigationPages<NavigationPinSectionDescriptor>,
+		"watch" | "getSnapshot"
+	>,
+	read: () => Promise<unknown>,
+	canRead: () => boolean,
+) {
+	const reads = singleFlight(
+		() =>
+			(pages.getSnapshot().stale ? read() : Promise.resolve())
+				.catch(() =>
+					pages.getSnapshot().stale && canRead() ? read() : undefined,
+				)
+				.catch(() => undefined),
+		canRead,
+	);
+	return { drain: reads.drain, stop: pages.watch(reads.request) };
+}
+
+/** True while the catalog still lists a section exactly as the user was
+ * shown it; a renamed, recounted or missing section is a change. */
+export function pinSectionAsShown(
+	rows: readonly NavigationPinSectionDescriptor[],
+	shown: NavigationPinSectionDescriptor,
+) {
+	const now = rows.find((row) => row.id === shown.id);
+	return !!now && now.name === shown.name && now.count === shown.count;
 }

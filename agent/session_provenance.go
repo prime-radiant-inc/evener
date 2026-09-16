@@ -70,12 +70,12 @@ func (s *Session) drainSteeringForTurn() []steeringMessage {
 
 // drainSteeringForCommunicate returns daemon-authored steering context for a
 // terminal communicate inbox. Client-authored steering remains durable pending
-// work for wakeForPendingSteering and EntrySteeringCarrier: marking it
+// work for wakeForPendingSteering and the steering carrier: marking it
 // incorporated in a result that ends the turn would create a durable transcript
 // item without a model request that can act on it.
 func (s *Session) drainSteeringForCommunicate() []steeringMessage {
 	// Snapshot only the daemon-authored prefix. A client-authored entry is
-	// intentionally left in the durable queue for EntrySteeringCarrier.
+	// intentionally left in the durable queue for the steering carrier.
 	s.mu.Lock()
 	daemon := make([]steeringMessage, 0, len(s.steeringQueue))
 	for _, msg := range s.steeringQueue {

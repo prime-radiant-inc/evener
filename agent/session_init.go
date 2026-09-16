@@ -935,6 +935,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				items.User = true
 			case schema.TurnFailure:
 				items.Failure = true
+			case schema.TurnSteering:
+				items.Steering = true
 			}
 			restoredClientMutationItems[entry.Turn.ClientMutationID] = items
 		}

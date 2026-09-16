@@ -36,7 +36,10 @@ options, provider grouping, per-row metadata and the flat picker row list),
 the launch-config engine's pure half both apps' launch settings are built on
 (option grouping, layer filtering, the form state populate/collect pair, the
 inherited entries a collection control ghosts in, and the add-a-path decision
-every path list gates on), the new-session form's pure trio both apps' spawn
+every path list gates on) with its wire gateway - `createLaunchConfigStore(client)`,
+a framework-free store over the schema/layer/resolve/trust/path-validate
+methods with a per-instance schema cache - and the per-layer draft editor
+(`LaunchSettings`) the native settings screen drives over it, the new-session form's pure trio both apps' spawn
 surfaces share (the per-launch option filter and override collection with the
 schema-wins model/effort precedence, the plugin selection state and its
 launchOverrides merge, and the harness rules: which harnesses take evener
