@@ -6,11 +6,11 @@ import type {
   AuthTestResponse,
   InstanceCreateParams,
   InstanceEditParams,
-  InstanceListResponse,
 } from "@evener/appwire-client";
 import {
-  type CredentialInstancesState,
+  type CredentialListing,
   createCredentialInstancesStore,
+  listingOf,
 } from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
@@ -20,24 +20,13 @@ interface ProviderState {
     pending: boolean;
     result?: AuthTestResponse;
   } | null;
-  data: InstanceListResponse | null;
+  // Null until a read has landed: the core's empty listing and "never read"
+  // look the same from its state, and the screen shows a spinner for one and
+  // an empty list for the other.
+  data: CredentialListing | null;
   loading: boolean;
   busy: boolean;
   error: string | null;
-}
-
-// The listing the core holds, in the response shape the screen reads. Null
-// until a read has landed: the core's empty listing and "never read" look the
-// same from its state, and the screen shows a spinner for one and an empty
-// list for the other.
-function listingOf(state: CredentialInstancesState): InstanceListResponse {
-  return {
-    instances: state.instances,
-    availableProviders: state.availableProviders,
-    diagnostics: state.diagnostics,
-    userLayer: state.userLayer,
-    writesRefused: state.writesRefused,
-  };
 }
 
 /** Provider data and operations owned by one connected hub's screen lifetime:
@@ -103,14 +92,12 @@ export class ProviderInstances {
       // asked for while this one was out re-runs below instead.
       const applied = await this.core.getState().fetch();
       if (this.dirty) continue;
-      if (applied) this.publish({ data: listingOf(this.core.getState()) });
-      else {
-        const failure = this.core.getState().error;
-        if (failure !== null)
-          this.publish({
-            error: sessionActionError("Could not load providers", failure),
-          });
-      }
+      const state = this.core.getState();
+      if (applied) this.publish({ data: listingOf(state) });
+      else if (state.error !== null)
+        this.publish({
+          error: sessionActionError("Could not load providers", state.error),
+        });
     } while (this.dirty && !this.disposed && !this.state.busy);
     this.publish({ loading: false });
   }
@@ -188,8 +175,9 @@ export class ProviderInstances {
     this.disposed = true;
     this.unsubscribe?.();
     this.listeners.clear();
-    // A late answer on this client describes a screen that is gone: the core
-    // discards what arrives for a connection it no longer holds.
+    // Nothing more may go out on this client for a screen that is gone: this
+    // cancels the core's pending coalesced refetch and its restore-on-ready
+    // read, and drops whatever in-flight answer was still its to apply.
     this.core.connectionChanged(null, "closed");
   }
 }

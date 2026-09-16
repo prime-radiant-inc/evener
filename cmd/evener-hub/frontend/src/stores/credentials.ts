@@ -29,12 +29,14 @@ import {
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
+import { type ConnectionStoreState, connectionStore } from "./connection";
 import { ownClientId } from "./mutationClientIdentity";
 
 export { isStaleListingRefusal, StaleListingRefusal, staleListingHeld } from "@evener/appwire-client/state/credentials";
 
-export interface CredentialsStoreState extends CredentialInstancesState {
+// The auth RPCs this store adds to the listing core's state until they move
+// into the package (D8 1b, D9).
+interface CredentialAuthActions {
   // Auth mutations return the raw wire response and never touch
   // instances/availableProviders synchronously - on success the store
   // schedules its own listing refresh (see the wrappers below), which
@@ -68,7 +70,7 @@ export interface CredentialsStoreState extends CredentialInstancesState {
   testCredentials(provider: string, expectedEndpointFingerprint?: string): Promise<AuthTestResponse>;
 }
 
-type CredentialAuthActions = Omit<CredentialsStoreState, keyof CredentialInstancesState>;
+export type CredentialsStoreState = CredentialInstancesState & CredentialAuthActions;
 
 // The auth RPCs, bound to the core's write gate, landed-write count and
 // coalesced refetch through the seam the core hands its extension.
@@ -455,6 +457,11 @@ function attachNotifications(client: AppwireClientLike | null): void {
 // own connect() effect). The core learns of the same transition through
 // connectionChanged: it retires in-flight requests, marks a replaced
 // connection's listing, and restores the listing on ready.
+function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  attachNotifications(state.client);
+  credentialsStore.connectionChanged(state.client, state.state);
+}
+
 connectionStore.subscribe((state, previous) => {
   if (state.client !== previous.client || state.state !== previous.state) {
     // A marker belongs to the connection its mutation was issued on: the echo
@@ -466,14 +473,9 @@ connectionStore.subscribe((state, previous) => {
     localAuthMutations.clear();
     connectionGeneration += 1;
   }
-  attachNotifications(state.client);
-  credentialsStore.connectionChanged(state.client, state.state);
+  syncConnection(state);
 });
-const initialConnection = connectionStore.getState();
-if (initialConnection.client) {
-  attachNotifications(initialConnection.client);
-  credentialsStore.connectionChanged(initialConnection.client, initialConnection.state);
-}
+if (connectionStore.getState().client) syncConnection(connectionStore.getState());
 
 // resetCredentialsStoreForTests resets this singleton store's state between
 // tests, including the module-private wiring/marker bookkeeping above and

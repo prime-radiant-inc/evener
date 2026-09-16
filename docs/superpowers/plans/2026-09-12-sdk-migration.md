@@ -244,7 +244,7 @@ which is a separate decision and not needed by either app.
 
 ## Temporary seams
 
-Exactly two, each with its removal PR named.
+Exactly three, each with its removal PR named.
 
 1. **A3 keeps the old `protocol/` path as a directory of re-export stubs** so
    A3 and A4 can be reviewed separately. A4 deletes the stubs. If A3 and A4 land
@@ -278,6 +278,13 @@ Exactly two, each with its removal PR named.
 2. **D21–D24 leave `mobile/src/conversation/project.ts` in place as a shrinking
    shim** while its four halves migrate. D24 deletes the file and the
    `mobile/src/conversation/` directory. No PR after D24 may import it.
+3. **D8 PR 1a leaves the web's auth RPCs and their own-echo markers in
+   `stores/credentials.ts`** while the listing core lands. The core exposes the
+   `CredentialInstancesSeam` (`requireWritableClient`, `noteLandedMutation`,
+   `scheduleRefetch`) and an `extend` option that adds the app's store-bound
+   methods to the state, so the web store keeps its one snapshot. D8 PR 1b
+   moves the credential mutations and the echo correlation into the core;
+   D9 moves the sign-in RPCs; whichever lands last deletes `extend`.
 
 Nothing else gets a compatibility layer. In particular, no PR adds a
 `legacy`/`v1` export alongside a new one.

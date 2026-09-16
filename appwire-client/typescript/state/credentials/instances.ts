@@ -169,22 +169,17 @@ export interface CredentialInstancesStore<Extra extends object = Record<never, n
   resetForTests(): void;
 }
 
-export interface CredentialInstancesOptions<Extra extends object> {
-  // extend adds an app's own store-bound methods to the state, alongside the
-  // listing actions, so the view layer selects them from one snapshot. The
-  // seam it receives is bound to the store being built.
-  extend?: (seam: CredentialInstancesSeam) => Extra;
-}
-
-// listState normalizes one instance/list answer into the store's own always-
-// present shape. Every reader of the listing goes through it, so a field
-// added to InstanceListResponse is defaulted in exactly one place.
-type ListState = Pick<
+/** The listing half of the state: InstanceListResponse with every optional
+ * field present. */
+export type CredentialListing = Pick<
   CredentialInstancesState,
   "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
 >;
 
-function listState(resp: InstanceListResponse): ListState {
+// listState normalizes one instance/list answer into the store's own always-
+// present shape. Every reader of the listing goes through it, so a field
+// added to InstanceListResponse is defaulted in exactly one place.
+function listState(resp: InstanceListResponse): CredentialListing {
   return {
     instances: resp.instances,
     availableProviders: resp.availableProviders,
@@ -194,11 +189,11 @@ function listState(resp: InstanceListResponse): ListState {
   };
 }
 
-// emptyListState is the listing state before anything has been fetched, and
-// the state resetForTests returns to. A function, not a shared literal: each
-// caller gets its own arrays.
-function emptyListState(): ListState {
-  return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
+/** listingOf picks the listing out of a store snapshot, for a consumer that
+ * hands the rows on as one value rather than selecting fields. */
+export function listingOf(state: CredentialListing): CredentialListing {
+  const { instances, availableProviders, diagnostics, userLayer, writesRefused } = state;
+  return { instances, availableProviders, diagnostics, userLayer, writesRefused };
 }
 
 // MutationReconcile tells applyMutation how to place its answer among newer
@@ -206,7 +201,7 @@ function emptyListState(): ListState {
 // names the row the landed-write count belongs to, and written names the
 // model a toggle wrote.
 interface MutationReconcile {
-  instance?: string;
+  instance: string;
   supersededFor?: (response: InstanceListResponse) => void;
   written?: { instance: string; model: string };
 }
@@ -233,7 +228,12 @@ function changedCounts(before: Map<string, number>, now: Map<string, number>): S
 const REFETCH_DEBOUNCE_MS = 250;
 
 export function createCredentialInstancesStore<Extra extends object = Record<never, never>>(
-  options: CredentialInstancesOptions<Extra> = {},
+  options: {
+    // extend adds an app's own store-bound methods to the state, alongside the
+    // listing actions, so the view layer selects them from one snapshot. The
+    // seam it receives is bound to the store being built.
+    extend?: (seam: CredentialInstancesSeam) => Extra;
+  } = {},
 ): CredentialInstancesStore<Extra> {
   type State = CredentialInstancesState & Extra;
   // Every listing transition patches the listing half of the state; the cast is
@@ -242,7 +242,10 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
     store.setState(partial as Partial<State>);
   }
 
-  let connection: { client: CredentialInstancesClient | null; state: ConnectionState } = { client: null, state: "idle" };
+  let connection: { client: CredentialInstancesClient | null; state: ConnectionState } = {
+    client: null,
+    state: "idle",
+  };
   let requestVersion = 0;
   let requestedList = false;
   // landedMutations counts authoritative writes that LANDED, PER INSTANCE (a
@@ -295,12 +298,12 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
     return client;
   }
 
-  function noteLandedMutation(instance: string): void {
-    landedMutations.set(instance, (landedMutations.get(instance) ?? 0) + 1);
+  function bump(counts: Map<string, number>, name: string): void {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
   }
 
-  function noteRefreshedInstance(name: string): void {
-    refreshedInstances.set(name, (refreshedInstances.get(name) ?? 0) + 1);
+  function noteLandedMutation(instance: string): void {
+    bump(landedMutations, instance);
   }
 
   // keepRefreshedModels keeps, for the instances a refresh landed for during a
@@ -312,7 +315,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
   function keepRefreshedModels(
     instances: InstanceEntry[],
     names: Set<string>,
-    written?: { instance: string; model: string },
+    written?: MutationReconcile["written"],
   ): InstanceEntry[] {
     const current = store.getState().instances;
     return instances.map((entry) => {
@@ -383,13 +386,10 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
   // can replace the listing, even when responses arrive out of order. Reports
   // whether THIS response is the one that replaced it: a superseded response
   // carries a listing the store discarded, and a caller steering a view on the
-  // strength of its own write has to be able to tell the two apart.
-  // reconcile places this write's answer correctly among newer reads:
-  // supersededFor receives an answer a newer request outran (a write the
-  // server applied still knows the authoritative outcome of the ONE row it
-  // wrote), instance records the landed-write count against the row it touched,
-  // and written names the model a toggle wrote, re-applied onto an inventory a
-  // refresh replaced while the write was in flight.
+  // strength of its own write has to be able to tell the two apart. A write
+  // the server applied still knows the authoritative outcome of the ONE row it
+  // wrote, which is what `reconcile` (MutationReconcile) places among newer
+  // reads.
   async function applyMutation(
     request: () => Promise<InstanceListResponse>,
     reconcile: MutationReconcile,
@@ -402,7 +402,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
     try {
       const response = await request();
       const sameClient = connection.client === client;
-      if (sameClient) noteLandedMutation(reconcile.instance ?? "");
+      if (sameClient) noteLandedMutation(reconcile.instance);
       if (version !== requestVersion) {
         // A superseded answer from a client that is gone describes a listing
         // this client never had: reconciling it would write the dead client's
@@ -542,7 +542,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
         // A row this connection never held is this read's own data, so it is
         // staged - the reconnect is not blank while its listing is out - with
         // the error left exactly where it is.
-        noteRefreshedInstance(name);
+        bump(refreshedInstances, name);
         patch({ instances: [...state.instances, { ...row }] });
         return;
       }
@@ -552,7 +552,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
       // knows about live models.
       const merged = state.instances.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
       if (!known) merged.push({ ...row });
-      noteRefreshedInstance(name);
+      bump(refreshedInstances, name);
       patch({ instances: merged, error: null });
     } finally {
       // Only this client's entry: a reconnect clears the map, and the next
@@ -568,7 +568,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
   const seam: CredentialInstancesSeam = { requireWritableClient, noteLandedMutation, scheduleRefetch };
 
   const store = createFrameworkFreeStore<State>(() => ({
-    ...emptyListState(),
+    ...listState({ instances: [], availableProviders: [] }),
     loading: false,
     error: null,
     selfRefresh: 0,
@@ -669,13 +669,7 @@ export function createCredentialInstancesStore<Extra extends object = Record<nev
     clearClientBookkeeping();
     cancelRefetch();
     connection = { client: null, state: "idle" };
-    patch({
-      ...emptyListState(),
-      loading: false,
-      error: null,
-      selfRefresh: 0,
-      listingFromPreviousConnection: false,
-    });
+    store.setState(store.getInitialState());
   }
 
   return { ...store, ...seam, connectionChanged, resetForTests };

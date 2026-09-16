@@ -3,26 +3,22 @@ import type {
   AnyNotification,
   InstanceListResponse,
 } from "@evener/appwire-client";
+import type { CredentialListing } from "@evener/appwire-client/state/credentials";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
 
+// The core's normalized listing: every optional wire field present.
 const listing = (
   label: string,
   writesRefused = false,
-): InstanceListResponse => ({
+): CredentialListing => ({
   instances: [],
   availableProviders: [],
   diagnostics: [label],
   userLayer: "",
   writesRefused,
 });
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 function boundary() {
   const handlers = new Set<(n: AnyNotification) => void>();
   const requests: { method: string; params: unknown }[] = [];

@@ -345,11 +345,19 @@ assert.throws(
     // pure helpers and the refusal type resolve and behave.
     "./state/credentials": {
       esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore();
-const held: boolean = staleListingHeld(store.getState()); void held;`,
+const held: boolean = staleListingHeld(store.getState());
+const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
       cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
       smoke: `const credentialStore = client.createCredentialInstancesStore();
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.deepEqual(client.listingOf(credentialStore.getState()), {
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+});
 credentialStore.connectionChanged(null, "idle");
 assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
 assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
