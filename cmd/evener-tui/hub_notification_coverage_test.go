@@ -44,10 +44,13 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	// re-emitting a REMOTE host's own config broadcast (evener/auth/updated,
 	// launch/updated, marketplace/updated, plugin/updated,
 	// settings/agentsDoc/changed) tagged with the source host (component 07a).
-	// It exists for the Web UI's per-host settings panes. The TUI has no
-	// remote-host settings surface to fold it into — a local config change still
-	// arrives unwrapped as the underlying method and is dispatched above — so
-	// there is no case to give it.
+	// That wrapper is a Go-side fan-out contract: this component emits it for the
+	// controller's browser clients, and the Web UI side that unwraps it into
+	// per-host settings state is a later component (07b,
+	// multi-host-pr07b-host-routing), not this one. The TUI has no remote-host
+	// settings surface to fold it into — a local config change still arrives
+	// unwrapped as the underlying method and is dispatched above — so there is no
+	// case to give it.
 	appwire.NotifyEvenerHostNotification,
 }
 

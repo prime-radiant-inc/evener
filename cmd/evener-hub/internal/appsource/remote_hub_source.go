@@ -1452,8 +1452,26 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // through mapCallError exactly as on AdminCall (SessionUnavailable for a dead
 // channel), which is a safe retry; reporting it as outcome-unknown/blocked
 // would discourage a retry that cannot double-apply anything.
+//
+// The caller's own context ending while the call is in flight is reported the
+// same blocked way (round seven). The browser disconnecting cancels the RPC
+// handler's context, and appwire.Client reports that identically whether it
+// stopped the frame write (StreamTransport.Send's own ctx check,
+// appwire/stream_transport.go) or the response wait after the frame went out
+// (Client.request's select on ctx.Done(), appwire/client.go). Nothing in the
+// client's API distinguishes the two, so the post-send reading — the response
+// was lost, the host may have applied the change — is the only safe one: the
+// raw cancellation this used to return reads as "nothing happened, retry",
+// which duplicates a forwarded instance/create or plugin/install whenever the
+// frame did reach the host. The pre-call ctx check inside the call stays,
+// because a context already canceled before the request is handed to the
+// client cannot have sent anything.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
+		// Provably not sent: this runs before the request is handed to the
+		// client, so the caller's context ending maps exactly as AdminCall maps
+		// it (a raw cancellation, or SessionUnavailable for an expired
+		// deadline), which is a safe retry.
 		return s.mapCallError(err)
 	}
 	client, err := s.client(ctx, s.id)
@@ -1467,10 +1485,23 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 }
 
 // remoteHubAdminMutationCallError turns a transport-level loss on a forwarded
-// admin mutation into an explicit outcome-unknown error. Any other error shape
-// passes through mapped exactly as AdminCall maps it: caller cancellation stays
-// raw, and a semantic wire refusal keeps its own code.
+// admin mutation into an explicit outcome-unknown error.
+//
+// Three shapes reach it. A context end the in-flight call observed (the
+// caller's cancellation or deadline) is the ambiguous case described on
+// AdminMutationCall: it becomes outcome-unknown/blocked directly, so the
+// classification no longer depends on mapCallError turning a deadline into
+// SessionUnavailable and the unavailability re-label below catching it. A
+// semantic wire refusal keeps its own code and message, exactly as on
+// AdminCall. Everything else is mapped by mapCallError, and only an
+// unavailability it produced is re-labelled: that mapping stays deliberately
+// narrow because mapCallError's other outcomes are not lost responses.
 func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
+	var refused appwire.WireError
+	if !errors.As(err, &refused) && callerContextEnded(err) {
+		return s.hubAdminMutationOutcomeUnknown(
+			"mutation outcome is unknown after the caller's context ended while the remote hub call was in flight")
+	}
 	mapped := s.mapCallError(err)
 	var wire appwire.WireError
 	if !errors.As(mapped, &wire) {
@@ -1480,9 +1511,27 @@ func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
 	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 		return mapped
 	}
+	return s.hubAdminMutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss")
+}
+
+// callerContextEnded reports whether err is the caller's own context ending
+// while the call was in flight, as appwire.Client reports it: a bare
+// context.Canceled or context.DeadlineExceeded. A remote's own refusal is a
+// WireError and never reaches this test — remoteHubAdminMutationCallError
+// checks that first — so a semantic error keeps its code and message.
+func callerContextEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// hubAdminMutationOutcomeUnknown builds the blocked-retry error every lost
+// forwarded admin mutation is reported as. The message names the host (the id
+// is the source's identity in the controller's registry) and the reason, so an
+// operator reading a hub log can tell a lost response from a caller-side
+// context end.
+func (s *RemoteHubSource) hubAdminMutationOutcomeUnknown(reason string) appwire.WireError {
 	return appwire.WireError{
 		Code:    appwire.CodeInternalError,
-		Message: "mutation outcome is unknown after remote hub response loss: " + s.id,
+		Message: reason + ": " + s.id,
 		Data: appwire.ErrorData{
 			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
 			MutationOutcome:  appwire.MutationOutcomeUnknown,
