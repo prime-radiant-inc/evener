@@ -54,8 +54,9 @@ export interface HubOverviewStore {
   /** Back to the initial state; a request still in flight publishes nothing
    * when it lands, and the next fetch() requests again. */
   reset(): void;
-  /** Terminal: drops the in-flight result, clears subscribers, and turns every
-   * later fetch()/refresh() into a no-op - for a host whose screen unmounts. */
+  /** Terminal: drops the in-flight result and turns every later
+   * fetch()/refresh() into a no-op, so subscribers hear nothing more - for a
+   * host whose screen unmounts. */
   dispose(): void;
 }
 
@@ -157,7 +158,6 @@ export function createHubOverviewStore(client: HubOverviewClient): HubOverviewSt
     reset,
     dispose() {
       disposed = true;
-      listeners.clear();
       reset();
     },
   };

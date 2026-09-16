@@ -201,7 +201,7 @@ describe("reset and dispose", () => {
 
     const read = store.getState().refresh();
     store.dispose();
-    const before = updates;
+    const before = updates; // dispose's own reset is the last notification a subscriber hears
 
     slow.resolve(SAMPLE);
     await read;
