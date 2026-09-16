@@ -933,6 +933,44 @@ describe("completePaths", () => {
   });
 });
 
+describe("reconnect-triggered refetch", () => {
+  // The hub broadcasts evener/marketplace/updated and evener/plugin/updated to
+  // every CONNECTED client, so a change another client made while this browser
+  // was away arrives nowhere: the notification cannot recover it and the
+  // reconnect has to. The sections' own mount effect is a one-shot (it latches
+  // `started`), so without this the pane shows the pre-disconnect lists until
+  // the user navigates away and back.
+  test("a reconnect re-reads the lists something has already read", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    await extensionsStore.getState().fetchPlugins();
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(2);
+  });
+
+  test("a reconnect reads nothing for a section that was never opened", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    const marketplaceCalls = fake.calls.filter((c) => c.method === "evener/marketplace/list").length;
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(marketplaceCalls + 1);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
+  });
+});
+
 describe("notification-triggered refetch", () => {
   beforeEach(() => {
     vi.useFakeTimers();

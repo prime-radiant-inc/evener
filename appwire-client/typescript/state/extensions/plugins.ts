@@ -21,7 +21,7 @@ import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { PluginEntry, PluginListResponse } from "../../types.gen";
 import { createListRevision } from "./listRevision";
-import { createStoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type PluginsClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -45,7 +45,7 @@ export interface PluginsState {
   setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
 }
 
-export interface PluginsStore extends FrameworkFreeStore<PluginsState> {
+export interface PluginsStore extends FrameworkFreeStore<PluginsState>, Omit<StoreLifecycle<PluginsState>, "guard"> {
   /** Follows evener/plugin/updated, which the hub broadcasts to every client
    * after any client's successful mutation (and after a marketplace edit,
    * which can re-key installed plugins): pluginRevision moves at once and the
@@ -86,6 +86,7 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     // says so.
     onNotified: () => store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 })),
     onFence: () => listRevision.fence(),
+    established: (s) => s.plugins !== null || s.pluginsError !== null,
   });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
@@ -136,6 +137,6 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     };
   });
 
-  const { start, reset, dispose } = lifecycle;
-  return { ...store, start, reset, dispose };
+  const { start, connectionChanged, reset, dispose } = lifecycle;
+  return { ...store, start, connectionChanged, reset, dispose };
 }

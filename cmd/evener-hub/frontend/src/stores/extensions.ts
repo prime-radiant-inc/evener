@@ -112,6 +112,17 @@ marketplaces.start();
 const plugins = createPluginsStore(hubClient);
 plugins.start();
 
+// The hub broadcasts a change to every CONNECTED client, so a change made
+// while this browser was disconnected reaches it as nothing at all: the
+// notification each core follows cannot recover it, and the reconnect can.
+// Each core re-reads its list when this connection is ready again - only if
+// something has read it already, so a section the user never opened still
+// sends nothing.
+connectionStore.subscribe((s) => {
+  marketplaces.connectionChanged(s.client, s.state);
+  plugins.connectionChanged(s.client, s.state);
+});
+
 export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
   ...marketplaces.getState(),
   ...plugins.getState(),
