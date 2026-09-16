@@ -113,6 +113,49 @@ func TestRemoteHubFromRemoteThreadNestedRefRefused(t *testing.T) {
 	}
 }
 
+// A remote thread's diagnostics carry nested transcript refs of its own.
+// Delegate refs are session refs in the remote hub's own "local:" namespace
+// (agent/delegate_tree_start.go stamps encodeRef("", childSessionID)), so an
+// untranslated one makes a client read the controller's local session — or fail —
+// instead of the remote child. Refs in other namespaces are not source-qualified
+// thread refs the controller could route, so they must survive untouched rather
+// than fail the whole response.
+func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	thread, err := source.fromRemoteThread(appwire.Thread{
+		ID: "t1",
+		Evener: appwire.EvenerThread{
+			Ref: "local:t1",
+			Diagnostics: &appwire.EvenerDiagnostics{
+				Delegates: []appwire.EvenerDelegateInfo{
+					{DelegateID: "dlg_1", TranscriptRef: "local:child"},
+					{DelegateID: "dlg_2", TranscriptRef: ""},
+					{DelegateID: "dlg_3", TranscriptRef: "proj:project:child"},
+				},
+				Jobs: []appwire.EvenerJobInfo{
+					{JobID: "job_1", TranscriptRef: "job:job_1"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("fromRemoteThread: %v", err)
+	}
+	diagnostics := thread.Evener.Diagnostics
+	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
+		t.Fatalf("delegate transcript ref = %q, want host:child", got)
+	}
+	if got := diagnostics.Delegates[1].TranscriptRef; got != "" {
+		t.Fatalf("empty delegate transcript ref = %q, want empty", got)
+	}
+	if got := diagnostics.Delegates[2].TranscriptRef; got != "proj:project:child" {
+		t.Fatalf("project-scoped delegate transcript ref = %q, want it left untouched", got)
+	}
+	if got := diagnostics.Jobs[0].TranscriptRef; got != "job:job_1" {
+		t.Fatalf("job transcript ref = %q, want it left untouched", got)
+	}
+}
+
 func TestRemapRemoteSourceIDs(t *testing.T) {
 	cases := []struct {
 		name string

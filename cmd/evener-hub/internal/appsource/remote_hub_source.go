@@ -327,6 +327,16 @@ type remoteItemPagingState struct {
 	// from identity AND lets any boundary observed under identity be replayed
 	// locally, instead of failing ValidateCursorBoundary against the tail alone.
 	candidates []appitempaging.TranscriptItemCandidate
+	// gaps records the spans inside candidates the retained window never
+	// observed, oldest first. A forward page that resumes above the retained
+	// window without provably abutting it leaves such a span: the positions
+	// between the two pages may hold items this source never fetched (and may
+	// equally hold none at all, because a logical group with no visible items
+	// still consumes an entry ordinal — apptranscript.groupedAppTurnProjection).
+	// The remote cursor stays the authority for whatever lives there, so the
+	// window keeps its incarnation and a client's live cursors survive the
+	// append, but no locally served answer may span a gap.
+	gaps []remoteItemGap
 	// complete marks a page the remote hub returned in full (it named no older
 	// cursor).
 	complete bool
@@ -335,6 +345,13 @@ type remoteItemPagingState struct {
 	// recognized as a divergent transcript and the incarnation rotates.
 	head    appwire.ThreadItemPosition
 	hasHead bool
+}
+
+// remoteItemGap is one unobserved span between retained candidates, named by the
+// newest retained position below it and the oldest retained position above it.
+type remoteItemGap struct {
+	lower appwire.ThreadItemPosition
+	upper appwire.ThreadItemPosition
 }
 
 // remoteItemPagingCapacity bounds retained continuations. An evicted entry
@@ -463,7 +480,7 @@ func (s *RemoteHubSource) ListItemCandidates(ctx context.Context, params appwire
 	// contradicts the retained window means the transcript was rewritten after
 	// the cursor was minted. Answering under a rotated identity would splice old
 	// and new history together, so the continuation fails closed instead.
-	if _, compatible := remoteMergeCandidates(state.candidates, candidates); !compatible {
+	if _, compatible, _ := remoteMergeCandidates(state.candidates, candidates); !compatible {
 		return ItemCandidateResult{}, appwire.TranscriptItemCursorStale()
 	}
 	return s.recordRemoteItemPage(key, state.identity, candidates, next, state.head, state.hasHead)
@@ -511,6 +528,14 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
+	// A remote hub is a separate process, possibly a different version: its
+	// fragments must satisfy the same strictly-increasing, uniquely-keyed contract
+	// the local daemon source validates before anything is merged or cached, or a
+	// misbehaving remote could poison the retained cursor identity for later
+	// continuations.
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return ItemCandidateResult{}, err
+	}
 	identity, head, hasHead := s.remoteItemPageIdentity(key, candidates)
 	return s.recordRemoteItemPage(key, identity, candidates, response.OlderCursor, head, hasHead)
 }
@@ -526,6 +551,9 @@ func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.Thr
 	if err != nil {
 		return nil, "", err
 	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return nil, "", err
+	}
 	return candidates, out.NextCursor, nil
 }
 
@@ -534,12 +562,16 @@ func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.Thr
 // snapshot is re-served locally before the caller's boundary, exactly as the
 // local daemon source does for a complete snapshot. The remote hub is not
 // called; the same identity and snapshot keep further continuations answerable.
+// Only the window's provably contiguous prefix is served: a boundary above an
+// unobserved span would have to include items this source never fetched, and
+// with the remote cursor exhausted the honest answer is a stale cursor rather
+// than a page that silently omits the middle.
 func continueCompleteRemoteItemPage(cursor string, state remoteItemPagingState, itemLimit int) (ItemCandidateResult, error) {
 	before, err := appitempaging.DecodeCursor(cursor, state.identity)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
-	selected, hasOlder, err := appitempaging.SelectCandidates(state.candidates, &before, itemLimit)
+	selected, hasOlder, err := appitempaging.SelectCandidates(remoteContiguousPrefix(state), &before, itemLimit)
 	if err != nil {
 		return ItemCandidateResult{}, err
 	}
@@ -554,6 +586,24 @@ func continueCompleteRemoteItemPage(cursor string, state remoteItemPagingState, 
 		}
 	}
 	return ItemCandidateResult{Candidates: window, Identity: state.identity, Exhausted: !hasOlder}, nil
+}
+
+// remoteContiguousPrefix returns the leading run of retained candidates the
+// window observed without an unobserved span. It is the whole window while no
+// forward page ever left a gap.
+func remoteContiguousPrefix(state remoteItemPagingState) []appitempaging.TranscriptItemCandidate {
+	if len(state.gaps) == 0 {
+		return state.candidates
+	}
+	oldest := state.gaps[0].lower
+	prefix := len(state.candidates)
+	for index, candidate := range state.candidates {
+		if remotePositionCompare(candidate.Position, oldest) > 0 {
+			prefix = index
+			break
+		}
+	}
+	return state.candidates[:prefix]
 }
 
 // remoteItemPageHead returns the newest position of an item page, which is the
@@ -580,20 +630,24 @@ func remotePositionCompare(a, b appwire.ThreadItemPosition) int {
 // remoteItemPageIdentity chooses the controller-owned identity for a fresh
 // remote page. The incarnation is reused while the page's newest position is
 // not older than the retained one AND the page does not contradict the retained
-// window: an untouched or appended transcript keeps outstanding cursors valid,
-// so a re-read between a page and a scroll no longer invalidates them. A page
-// that starts before the retained head, or that re-reports an observed position
-// with a different item, is a rewrite, so the incarnation rotates and
-// outstanding cursors fail closed. The remote hub stays the authority for its
-// own opaque cursor; this fence only stops the controller's cursor namespace
-// from churning on every compatible read.
+// window or provably skip items: an untouched or appended transcript keeps
+// outstanding cursors valid, so a re-read between a page and a scroll no longer
+// invalidates them. A forward page that may have skipped a span is accepted too
+// — entry ordinals advance for logical groups with no visible items, so
+// requiring the exact successor position would stale a live cursor on an
+// ordinary append — and the skipped span is recorded so no local answer spans
+// it. A page that starts before the retained head, or that re-reports an
+// observed position with a different item, is a rewrite, so the incarnation
+// rotates and outstanding cursors fail closed. The remote hub stays the
+// authority for its own opaque cursor; this fence only stops the controller's
+// cursor namespace from churning on every compatible read.
 func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appitempaging.TranscriptItemCandidate) (appitempaging.CursorIdentity, appwire.ThreadItemPosition, bool) {
 	head, hasHead := remoteItemPageHead(candidates)
 	if !hasHead {
 		return s.mintRemoteItemIdentity(key), appwire.ThreadItemPosition{}, false
 	}
 	if state, ok := s.itemPaging.peek(key); ok && state.hasHead && remotePositionCompare(head, state.head) >= 0 {
-		if _, compatible := remoteMergeCandidates(state.candidates, candidates); compatible {
+		if _, compatible, _ := remoteMergeCandidates(state.candidates, candidates); compatible {
 			return state.identity, head, true
 		}
 	}
@@ -603,24 +657,28 @@ func (s *RemoteHubSource) remoteItemPageIdentity(key string, candidates []appite
 // remoteMergeCandidates folds a newly observed page into the retained window,
 // keeping it chronological. It reports ok=false when a position observed before
 // now carries a different fingerprint, i.e. the item at that position was
-// replaced and the transcript rewritten under this incarnation. Items are keyed
-// by position: an item-mode projection positions every item uniquely, and a
-// replacement at an observed position must be recognized rather than silently
-// appended at the same boundary.
+// replaced and the transcript rewritten under this incarnation, and when a
+// forward page provably skips items: a fragment cut mid-turn leaves items
+// between the two pages that were never returned. Items are keyed by position:
+// an item-mode projection positions every item uniquely, and a replacement at an
+// observed position must be recognized rather than silently appended at the same
+// boundary.
 //
 // A forward page (one that shares no position with the retained window and lies
-// entirely newer than it) is only unioned when it abuts the retained newest
-// item. A forward page that leaves unobserved positions between the two windows
-// would retain a holed window, and a later page that reaches the beginning of
-// the transcript would mark that hole complete. A backward page is not gated
-// here: it is fetched through the retained remote cursor, which is the remote
-// hub's own authority for the next older page.
-func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, bool) {
+// entirely newer than it) is unioned when it provably abuts the retained newest
+// item, and otherwise — when neither fragment is cut — the span it may have
+// skipped is returned so the caller can record it. Contiguity is not provenance:
+// the exact successor position of the retained newest item can be computed from
+// positions alone, but a later entry is not evidence of a hole, because entry
+// ordinals advance for logical groups that project no item at all. A backward
+// page is not gated here: it is fetched through the retained remote cursor,
+// which is the remote hub's own authority for the next older page.
+func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCandidate) ([]appitempaging.TranscriptItemCandidate, bool, *remoteItemGap) {
 	if len(observed) == 0 {
-		return retained, true
+		return retained, true, nil
 	}
 	if len(retained) == 0 {
-		return append([]appitempaging.TranscriptItemCandidate(nil), observed...), true
+		return append([]appitempaging.TranscriptItemCandidate(nil), observed...), true, nil
 	}
 	byPosition := make(map[appwire.ThreadItemPosition]appitempaging.TranscriptItemCandidate, len(retained))
 	for _, candidate := range retained {
@@ -631,7 +689,7 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 	for _, candidate := range observed {
 		if previous, ok := byPosition[candidate.Position]; ok {
 			if transcriptItemFingerprint(previous) != transcriptItemFingerprint(candidate) {
-				return nil, false
+				return nil, false, nil
 			}
 			overlap = true
 			continue
@@ -639,40 +697,78 @@ func remoteMergeCandidates(retained, observed []appitempaging.TranscriptItemCand
 		byPosition[candidate.Position] = candidate
 		merged = append(merged, candidate)
 	}
+	var gap *remoteItemGap
 	if !overlap {
 		retainedNewest := retained[len(retained)-1]
 		observedOldest := observed[0]
 		if remotePositionCompare(retainedNewest.Position, observedOldest.Position) < 0 {
-			// A forward page is contiguous only when it abuts the retained newest
-			// item AND the retained fragment is complete at that boundary. A
-			// candidate carrying HasLaterItems is a turn fragment whose later items
-			// were not returned; an observed page that resumes at the next entry is
-			// position-adjacent but skips those items, so unioning it would retain a
-			// holed window that a later complete page would mark complete, silently
-			// omitting the intervening items.
-			if !remotePositionsAdjacent(retainedNewest.Position, observedOldest.Position) || retainedNewest.HasLaterItems {
-				return nil, false
+			switch {
+			case remotePositionsAdjacent(retainedNewest.Position, observedOldest.Position) && !retainedNewest.HasLaterItems:
+				// The page resumes at the exact successor position and the retained
+				// fragment is complete there, so the union is provably contiguous.
+			case remoteForwardMergeCutsItems(retainedNewest, observedOldest):
+				// Either fragment is cut mid-turn: items between the two pages exist
+				// and were never returned, so the union cannot be served soundly.
+				return nil, false, nil
+			default:
+				gap = &remoteItemGap{lower: retainedNewest.Position, upper: observedOldest.Position}
 			}
 		}
 	}
 	slices.SortFunc(merged, func(a, b appitempaging.TranscriptItemCandidate) int {
 		return remotePositionCompare(a.Position, b.Position)
 	})
-	return merged, true
+	return merged, true, gap
 }
 
 // remotePositionsAdjacent reports whether newer is the position immediately
 // after older. Item-mode positions are (entry, item) pairs, and an entry can
 // project several items, so the successor of an item is the next item of the
-// same entry or the first item (item 0) of the next entry. A cross-entry page
-// that begins mid-entry (item > 0) leaves the earlier items of the previous
-// entry unobserved, so it is not adjacent and must fail closed as stale rather
-// than retain a holed window.
+// same entry or the first item (item 0) of the next entry. This is the only
+// successor relationship positions alone can prove: a page that resumes at a
+// later entry may still be contiguous (entry ordinals skip for logical groups
+// with no visible items), but that cannot be proven locally, so
+// remoteMergeCandidates accepts it only as an unproven span.
 func remotePositionsAdjacent(older, newer appwire.ThreadItemPosition) bool {
 	if older.Entry == newer.Entry {
 		return newer.Item == older.Item+1
 	}
 	return newer.Entry == older.Entry+1 && newer.Item == 0
+}
+
+// remoteForwardMergeCutsItems reports whether merging a forward page across the
+// retained window provably skips items. Either fragment can be cut mid-turn: the
+// retained newest item's HasLaterItems says its turn continues after the retained
+// window, and the observed oldest item's position within its turn (or its
+// HasEarlierItems flag) says the page starts inside a turn. The position check is
+// not redundant with the flag: a mixed-version remote that omits the flag still
+// reports the position, and a page that starts mid-turn is a hole either way. A
+// cross-entry page that starts its turn is not cut, because the entries between
+// the two visible turns may be logical groups that projected no item at all.
+func remoteForwardMergeCutsItems(older, newer appitempaging.TranscriptItemCandidate) bool {
+	return older.HasLaterItems || newer.HasEarlierItems || newer.Position.Item != 0
+}
+
+// remoteGapsAfterObserving reports which unobserved spans the newly observed page
+// did not bridge. A remote page is internally contiguous, so a page carrying
+// items on both sides of a span covers every position inside it; a span the page
+// never touched stays unobserved.
+func remoteGapsAfterObserving(gaps []remoteItemGap, observed []appitempaging.TranscriptItemCandidate) []remoteItemGap {
+	if len(gaps) == 0 || len(observed) == 0 {
+		return gaps
+	}
+	oldest, newest := observed[0].Position, observed[len(observed)-1].Position
+	kept := make([]remoteItemGap, 0, len(gaps))
+	for _, gap := range gaps {
+		if remotePositionCompare(oldest, gap.lower) <= 0 && remotePositionCompare(newest, gap.upper) >= 0 {
+			continue
+		}
+		kept = append(kept, gap)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // remoteRetainedCandidatesExceedBounds reports whether a merged retained window
@@ -692,10 +788,24 @@ func remoteItemCandidatesBytes(candidates []appitempaging.TranscriptItemCandidat
 	return total
 }
 
-// remoteItemCandidateBytes approximates one candidate's transcript payload.
+// remoteItemCandidateBytes approximates one candidate's transcript payload. Every
+// retained field that can carry bytes is counted, including nested image payloads
+// and their metadata: a remote page of base64 input images or output-image routes
+// whose visible text is short would otherwise retain far past the documented byte
+// bound while this estimate saw almost nothing.
 func remoteItemCandidateBytes(candidate appitempaging.TranscriptItemCandidate) int {
 	item := candidate.Item
-	return len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
+	total := len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
+	for _, image := range item.Images {
+		total += len(image.Type) + len(image.Text) + len(image.URL) + len(image.MediaType) + len(image.Data) + len(image.Name) + len(image.Path)
+		for name, value := range image.Metadata {
+			total += len(name) + len(value)
+		}
+	}
+	for _, image := range item.OutputImages {
+		total += len(image.Source) + len(image.Name) + len(image.MediaType) + len(image.URL) + len(image.SHA) + len(image.Path)
+	}
+	return total
 }
 
 // remoteTrimCandidatesToBound returns the newest suffix of candidates that fits
@@ -735,11 +845,13 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 	hasHead bool,
 ) (ItemCandidateResult, error) {
 	retained := []appitempaging.TranscriptItemCandidate(nil)
+	gaps := []remoteItemGap(nil)
 	if previous, ok := s.itemPaging.peek(key); ok && previous.identity == identity {
 		retained = previous.candidates
+		gaps = previous.gaps
 	}
 	windowCandidates := candidates
-	merged, compatible := remoteMergeCandidates(retained, candidates)
+	merged, compatible, gap := remoteMergeCandidates(retained, candidates)
 	if !compatible || remoteRetainedCandidatesExceedBounds(merged) {
 		// The fresh page contradicts the retained window, or the union would
 		// exceed the retained bound, so the accumulated history cannot be served
@@ -757,15 +869,24 @@ func (s *RemoteHubSource) recordRemoteItemPage(
 		// a continuation the retained window cannot validate, so the first
 		// continuation would fail ValidateCursorBoundary as stale.
 		windowCandidates = merged
+		gaps = nil
+	} else {
+		// A page can bridge an earlier gap only by carrying items on both of its
+		// sides; keep the spans that survive, then record the new one (if any).
+		gaps = remoteGapsAfterObserving(gaps, candidates)
+		if gap != nil {
+			gaps = append(gaps, *gap)
+		}
 	}
 	window := appitempaging.TranscriptItemWindow{Candidates: windowCandidates}
-	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, complete: native == "", head: head, hasHead: hasHead}
+	state := remoteItemPagingState{identity: identity, native: native, candidates: merged, gaps: gaps, complete: native == "", head: head, hasHead: hasHead}
 	if native == "" {
 		// The identity is returned even when the page is complete: packing can
 		// still drop the oldest item for size and needs an identity to mint a
 		// continuation cursor from, exactly as the local-daemon source does. The
 		// merged window is retained so that continuation, and every boundary
-		// observed under this identity, can be served locally.
+		// observed under this identity below any unobserved span, can be served
+		// locally.
 		s.itemPaging.put(key, state)
 		return ItemCandidateResult{Candidates: window, Identity: identity, Exhausted: true}, nil
 	}
