@@ -276,7 +276,7 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 	}
 	trace.WrapperArgv = sandboxLifecycleNormalizedArgv(base, scratch, cmd.Args)
 	escaped := ShellEscapeArgs("plain", "", "semi;"+string(program), "quote'x")
-	if !strings.Contains(escaped, "''") || !strings.Contains(escaped, "'semi;") || !strings.Contains(escaped, "'\"'\"'") {
+	if !strings.Contains(escaped, "''") || !strings.Contains(escaped, "'semi;") || !strings.Contains(escaped, `'\''`) {
 		t.Fatalf("ShellEscapeArgs did not preserve shell boundaries: %q", escaped)
 	}
 	trace.EscapedArgs = escaped

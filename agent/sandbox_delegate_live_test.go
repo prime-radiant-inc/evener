@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -97,19 +98,19 @@ func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
 					record(fmt.Sprintf("read_file did not succeed: %#v", result))
 				}
 				return toolCallResponse(liveDelegateToolCall("modify", "shell", map[string]any{
-					"command": "printf changed > '" + strings.ReplaceAll(modifyPath, "'", "'\\''") + "'",
+					"command": "printf changed > " + shellquote.Literal(modifyPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				expectShellFailure(req, "modify")
 				return toolCallResponse(liveDelegateToolCall("create", "shell", map[string]any{
-					"command": "mkdir '" + strings.ReplaceAll(createPath, "'", "'\\''") + "'",
+					"command": "mkdir " + shellquote.Literal(createPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {
 				expectShellFailure(req, "create")
 				return toolCallResponse(liveDelegateToolCall("delete", "shell", map[string]any{
-					"command": "rm '" + strings.ReplaceAll(modifyPath, "'", "'\\''") + "'",
+					"command": "rm " + shellquote.Literal(modifyPath),
 				}))
 			},
 			func(req llm.Request) llm.Response {

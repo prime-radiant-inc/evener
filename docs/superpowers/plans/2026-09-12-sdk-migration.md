@@ -434,11 +434,13 @@ before acting on it.
 | C14 | #1401 | open — `shell/rail/sessionState.ts` → `appwire-client/typescript/railSessionState.ts` (renamed: a bare `sessionState` beside `sessionErrors` in the package root is ambiguous); `humanizeState` gets its first test, both importers move to the package name, no stub at the old path |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
 | C16 | #1404 | open — `shell/reasoningEffort.ts` → `appwire-client/typescript/reasoningEffort.ts`, with the oracle test the module never had; nine importers (five web, four native) take the package-name import |
+| C19 | #1405 | open — `settings/credentials/credentialLabels.ts` → `appwire-client/typescript/credentialLabels.ts`, both tests with it; `hubWireFixtures.ts` follows into the package's `testing/` on a `?raw` import so the wire test can stay beside the module |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
+| C20 | #1403 | open — `settings/marketplacesPlugins/sourceLabel.ts` → `marketplaceSourceLabel.ts`, renamed because the root already exports watchRows' `sourceLabel`; three web importers and `mobile-native/src/MarketplaceBrowser.tsx` (which had reached into the web tree by relative path) now import it by package name |
 
 **What A3 and A4 actually block — corrected, because three relocations have now
 landed without them.** A3 moves the package directory and A4 rewrites imports to
