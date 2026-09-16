@@ -109,6 +109,13 @@ export interface CredentialInstancesState {
   // disabled under the keyboard's own focus drops focus to <body> (the
   // credential dialog's rows are that dialog's focus targets).
   listingFromPreviousConnection: boolean;
+  // True once a full listing has landed - an empty one counts - and from then
+  // on, across any client change, until the store is reset: it says a listing
+  // has been applied, while listingFromPreviousConnection says whose rows they
+  // are. It distinguishes "nothing read yet" from "read, and there are no
+  // rows", and, together with listingFromPreviousConnection, tells a
+  // refreshModels answer whether a name it does not find was removed.
+  listingEstablished: boolean;
   // A marker that changes ONLY when a state transition came from the store's
   // own self-marked refresh (fetchSelf, or scheduleRefetch(true)).
   // Subscriptions that watch for unrelated changes compare it across a
@@ -237,6 +244,24 @@ export function listingChanged(state: CredentialListing, previous: CredentialLis
   return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
 }
 
+type ListingTransition = CredentialListing & Pick<CredentialInstancesState, "selfRefresh" | "loading" | "error">;
+
+/** foreignListingChange reports whether a store transition is a change a
+ * credential probe or a guided flow must not be trusted against: the rows
+ * moved, or a read began or failed, and the transition is NOT the store's own
+ * self-marked refresh (selfRefresh moves only on those). A host that shows a
+ * probe result, or steers a flow on a listing, invalidates on exactly this. */
+export function foreignListingChange(
+  state: ListingTransition,
+  previous: ListingTransition,
+  moved: boolean = listingChanged(state, previous),
+): boolean {
+  return (
+    state.selfRefresh === previous.selfRefresh &&
+    (moved || state.loading !== previous.loading || state.error !== previous.error)
+  );
+}
+
 // MutationReconcile tells applyMutation how to place its answer among newer
 // reads: supersededFor receives the answer a newer request outran, instance
 // names the row the landed-write count belongs to, and written names the
@@ -302,9 +327,6 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // sheets may refresh different instances concurrently, and starting B's
   // refresh must not cancel A's.
   const refreshVersions = new Map<string, number>();
-  // listEstablished turns true on the first applied full-list answer: it
-  // distinguishes "the store never held this name" from "a remove dropped it".
-  let listEstablished = false;
   // refreshedInstances counts, per instance, the refreshes that landed since the
   // last full-list apply: a read that started before one merges around those rows
   // instead of replacing them, and a COUNT rather than a name is what tells a
@@ -349,6 +371,14 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
   function bump(counts: Map<string, number>, name: string): void {
     counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  // landedListing is the one transition that installs a listing: every applied
+  // read or write goes through it. The rows are this connection's (the same
+  // claim whichever request made them), a listing has now been applied, and
+  // the read state is clean.
+  function landedListing(listing: CredentialListing): Partial<CredentialInstancesState> {
+    return { ...listing, loading: false, error: null, listingFromPreviousConnection: false, listingEstablished: true };
   }
 
   // settleLoading drops the loading flag a retired read left behind, once the
@@ -434,6 +464,15 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     });
   }
 
+  // A refused write reads nothing of its own, for instance writes and credential
+  // writes alike: a failed reply may still follow a write the hub applied, and
+  // the hub broadcasts evener/auth/updated for every write it applies
+  // (notifyInstanceUpdated, cmd/evener-hub/app_rpc.go) - an instance write's
+  // echo carries no origin and no marker was armed, so it reads as foreign here;
+  // a credential write's echo reads as foreign once the refused write's marker
+  // is retired (authMutation) - so the echo is what re-reads, and a refused
+  // write that applied nothing changed nothing to read.
+  //
   // Reads and writes share ordering: only the most recently started request
   // can replace the listing, even when responses arrive out of order. Reports
   // whether THIS response is the one that replaced it: a superseded response
@@ -464,16 +503,14 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       }
       const refreshedDuringFlight = changedCounts(before, refreshedInstances);
       refreshedInstances.clear();
-      listEstablished = true;
       const applied = listState(response);
       if (refreshedDuringFlight.size > 0) {
         applied.instances = keepRefreshedModels(applied.instances, refreshedDuringFlight, reconcile.written);
       }
       // The mutation ran on the connection the store is wired to now (a request
       // left over from a replaced one is discarded by the version guard above),
-      // so the listing it answered with is this connection's - the same claim a
-      // read through the current client makes, and it clears the same mark.
-      store.setState({ ...applied, loading: false, error: null, listingFromPreviousConnection: false });
+      // so the listing it answered with is this connection's.
+      store.setState(landedListing(applied));
       return true;
     } finally {
       settleLoading(version);
@@ -504,14 +541,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     try {
       const resp = await client.request("evener/instance/list", {});
       if (version !== requestVersion || !connectionStillCurrent(client)) return false;
-      listEstablished = true;
       const instances = mergeNewerRows(resp.instances, writes, refreshes);
-      store.setState({
-        ...listState({ ...resp, instances }),
-        loading: false,
-        listingFromPreviousConnection: false,
-        ...mark(),
-      });
+      store.setState({ ...landedListing(listState({ ...resp, instances })), ...mark() });
       return true;
     } catch (err) {
       if (version !== requestVersion || !connectionStillCurrent(client)) return false;
@@ -549,7 +580,6 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshedInstances.clear();
     refreshVersions.clear();
     landedMutations.clear();
-    listEstablished = false;
   }
 
   async function refreshModels(name: string): Promise<void> {
@@ -581,8 +611,10 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       const state = store.getState();
       const known = state.instances.some((existing) => existing.name === name);
       // A removal that landed while this refresh was out: merging nothing
-      // preserves it instead of resurrecting a phantom stub row.
-      if (listEstablished && !known) return;
+      // preserves it instead of resurrecting a phantom stub row. Only this
+      // connection's own listing can say a name was removed; a replaced
+      // connection's rows are handled below.
+      if (state.listingEstablished && !state.listingFromPreviousConnection && !known) return;
       if (state.listingFromPreviousConnection) {
         // The rows on screen are a replaced connection's, and an answer naming
         // one of them describes the hub that is there now: merging its
@@ -790,7 +822,9 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       } else retireLocalAuthMutation(provider);
       return result;
     } catch (err) {
-      if (connection === issued) retireLocalAuthMutation(provider); // refused: no echo will follow
+      // Refused: the marker retires, so an echo that follows after all - the
+      // write landed and only its reply was lost - reads as foreign and re-reads.
+      if (connection === issued) retireLocalAuthMutation(provider);
       throw err;
     } finally {
       settleLoading(version);
@@ -803,6 +837,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     error: null,
     selfRefresh: 0,
     listingFromPreviousConnection: false,
+    listingEstablished: false,
 
     async fetch() {
       return readListing(false);

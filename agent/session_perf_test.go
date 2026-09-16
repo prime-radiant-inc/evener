@@ -782,6 +782,7 @@ func TestSession_PersonalDocUsedInSystemPrompt(t *testing.T) {
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
+		testOnly:              testConfig{skipGitSnapshot: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

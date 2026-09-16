@@ -136,7 +136,6 @@ export interface ConversationRecoveryActions {
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
-  refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
 }
 
 export interface ConversationModelCatalog {
@@ -492,7 +491,6 @@ export function createConversationService(
   // must not redirect a draft to a replacement session.
   let instanceId: string | null = null;
   let threadId: string | null = null;
-  let capabilityRevision = 0;
   let opening: {
     ref: string;
     threadId: string | null;
@@ -575,48 +573,10 @@ export function createConversationService(
     }
   }
 
-  // Non-subscribing capability refresh: reads the thread metadata WITHOUT
-  // subscribing or replacing the subscription, and WITHOUT loading all turns.
-  // Returns the refreshed capabilities. This is the only path the store should
-  // use for actionUnavailable recovery — it never disturbs the active
-  // subscription. The cache is published only when, at request START, the
-  // committed ref equaled threadRef AND, after the await, both the lifecycle
-  // epoch and the committed ref remain unchanged (epoch === epochStart and
-  // ref === threadRef). A refresh started while pending or closed (ref=null)
-  // may never activate the pending/failed ref: startRef !== threadRef, so the
-  // cache is left untouched. The requested capabilities are always returned to
-  // the caller (generation-safe store), unless a newer push superseded the read.
-  async function refreshCapabilities(
-    threadRef: string,
-  ): Promise<ThreadCapabilities | null> {
-    const epoch = openEpoch;
-    const requestedRef = threadRef;
-    const startRef = ref;
-    const startCapabilityRevision = capabilityRevision;
-    const response: ThreadReadResponse = await client.request("thread/read", {
-      ref: threadRef,
-      includeTurns: false,
-      subscribe: false,
-    });
-    // Extract+validate capabilities into a plain copy; a malformed response
-    // rejects the refresh and cannot corrupt the current pair.
-    const refreshed = extractCapabilities(response.thread.evener.capabilities);
-    if (
-      startRef === requestedRef &&
-      openEpoch === epoch &&
-      ref === requestedRef &&
-      capabilityRevision === startCapabilityRevision
-    ) {
-      capabilities = refreshed;
-    }
-    return capabilityRevision === startCapabilityRevision ? refreshed : null;
-  }
-
   // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, the service just re-throws — it does NOT auto-refresh
-  // capabilities. Exactly one non-subscribing thread/read occurs, and it is
-  // driven by the store's handleMutationError (F2). The store is the sole
-  // caller of refreshCapabilities; the service never duplicates the read.
+  // actionUnavailable, the service just re-throws — it does NOT refresh
+  // capabilities. The store surfaces the typed error and requests its
+  // coalesced reread of the authoritative snapshot (handleMutationError).
   async function withCapabilityRefresh<T>(
     _action: string,
     fn: () => Promise<T>,
@@ -776,7 +736,6 @@ export function createConversationService(
       };
     },
 
-    refreshCapabilities,
 
     subscribeNotifications(handler) {
       if (notificationUnsub !== null) {
@@ -798,7 +757,6 @@ export function createConversationService(
               if (committed) capabilities = next;
               if (pending && opening)
                 opening.pushed = { threadId: params.threadId, caps: next };
-              capabilityRevision++;
             } catch {
               return;
             }
