@@ -93,8 +93,13 @@ function onConnectionChange(
 }
 
 connectionStore.subscribe(onConnectionChange);
-const initialClient = connectionStore.getState().client;
-if (initialClient !== null) rewireClient(initialClient);
+// A module evaluating AFTER the handshake (a lazily loaded settings chunk, HMR)
+// finds a connected client and its feature set already in the store: seed
+// both, in onConnectionChange's order, so the transition into supported
+// loads exactly as a live connection change would.
+const initial = connectionStore.getState();
+keybindingsStore.setSupport(keybindingsSupport(initial.features));
+if (initial.client !== null) rewireClient(initial.client);
 
 // A characterKeyTriggers flip changes what the persisted rules MEAN: a rule
 // skipped while the pref was on (a Shift+? claim conflicting with the

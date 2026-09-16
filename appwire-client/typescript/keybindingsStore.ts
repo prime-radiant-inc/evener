@@ -932,7 +932,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState({ revision: 0, hubError: UNAPPLY_ROLLED_BACK_MESSAGE, conflict: null });
       return false;
     }
+    // loaded drops with the payload even when the host has not ended the
+    // generation first: a reset payload that still read as confirmed could be
+    // PATCHed against at expectedRevision 0.
     setState({
+      loaded: false,
       revision: 0,
       overrides: [],
       rawOverrides: [],

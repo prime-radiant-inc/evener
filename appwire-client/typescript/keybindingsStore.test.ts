@@ -149,6 +149,21 @@ describe("support transitions", () => {
   });
 });
 
+describe("hub replacement", () => {
+  test("detachHub leaves the previous hub's confirmed state non-current, so nothing can be edited or patched against it", async () => {
+    const store = await readyStore(clientServing(5, rules));
+    expect(store.getState()).toMatchObject({ loaded: true, revision: 5 });
+
+    // A host following the public doc alone may detach without ending the
+    // generation first; the reset payload must not read as confirmed.
+    expect(store.detachHub()).toBe(true);
+
+    expect(store.getState()).toMatchObject({ loaded: false, revision: 0, rawOverrides: [], overrides: [] });
+    expect(() => store.getState().editDraft([])).toThrow("unavailable");
+    await expect(store.getState().patchOverrides([])).rejects.toThrow("unavailable");
+  });
+});
+
 describe("without a registry", () => {
   test("the hub's rules publish verbatim, nothing is validated and nothing needs un-applying", async () => {
     const served = [{ action: "from.a.newer.client", chord: "Control+Shift+Q" }];
