@@ -447,6 +447,7 @@ before acting on it.
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
 | C20 | #1403 | open — `settings/marketplacesPlugins/sourceLabel.ts` → `marketplaceSourceLabel.ts`, renamed because the root already exports watchRows' `sourceLabel`; three web importers and `mobile-native/src/MarketplaceBrowser.tsx` (which had reached into the web tree by relative path) now import it by package name |
+| C3 | #1448 | open — `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` → `appwire-client/typescript/keybinding{Actions,Chord,Defaults,Display,Overrides,Registry,Validation}.ts` under decision 1: `parseChord(parse, input)` takes a `KeybindingParser` port (tinykeys' `parseKeybinding` shape) and `createKeybindingsRegistry(parse)` is a framework-free store factory (`getState`/`setState`/`subscribe` plus `getInitialState`, so zustand's `useStore` accepts it unchanged) exposing `registry.parseKeybinding`; the web's one instance lives in `src/keybindings/appRegistry.ts`, `dispatcher.ts` stays in the web, the dispatcher half of `defaults.test.ts` stays beside it; 20 web importers and `mobile-native/src/keybindingRules.ts` import by package name |
 
 **What A3 and A4 actually block — corrected, because three relocations have now
 landed without them.** A3 moves the package directory and A4 rewrites imports to
