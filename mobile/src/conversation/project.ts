@@ -41,9 +41,10 @@ import {
 
 // The package ThreadModel, as reducer.hydrateThread produces it, plus the
 // display rows this shim still projects from its turns; D24 removes `items`.
-// Until D23 routes notifications through reducer.applyNotification, the
-// store's live appliers update `items` only, so `turns` is the last read's
-// snapshot between rereads — nothing native renders reads it yet.
+// Item frames fold through reducer.applyNotification (state/conversation.ts)
+// before the store's row appliers run, so `turns` is live between rereads and
+// `items` is the dual-written display half until c-2b projects the rows from
+// the model.
 export type MobileConversation = ThreadModel & {
   items: MobileTimelineItem[];
 };
