@@ -104,7 +104,11 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		t.Fatalf("EstimateTokens = %d, want %d", got, want)
 	}
 
-	// Thinking the adapter will replay (provider-scoped signature) is billed.
+	// Thinking the adapter will replay is billed. The signature-bearing block is
+	// a shape only the Anthropic adapter emits (anthropic/request.go: the text
+	// plus the signature), so it is billed against an Anthropic target; the
+	// OpenAI Responses target this profile resolves to emits no signature-only
+	// part at all (responses/input.go), so only the answer counts there.
 	replayable := []schema.Turn{
 		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
@@ -115,8 +119,12 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		}},
 	}
 	totalChars := len("let me think about this carefully") + len("crypto-sig") + len("answer")
-	if got := testEstimateTokens(t, replayable); got != totalChars/4 {
-		t.Fatalf("EstimateTokens = %d, want %d", got, totalChars/4)
+	anthropic := NewManager(provider.FromResolved(registry.Resolved{Instance: "anthropic", Protocol: registry.ProtocolAnthropic}, nil), nil, cheapmodel.New(nil))
+	if got := anthropic.estimateTokens(replayable); got != totalChars/4 {
+		t.Fatalf("anthropic EstimateTokens = %d, want %d: the adapter emits text and signature", got, totalChars/4)
+	}
+	if got := testEstimateTokens(t, replayable); got != len("answer")/4 {
+		t.Fatalf("responses EstimateTokens = %d, want %d: a signature-only part never rides", got, len("answer")/4)
 	}
 }
 
