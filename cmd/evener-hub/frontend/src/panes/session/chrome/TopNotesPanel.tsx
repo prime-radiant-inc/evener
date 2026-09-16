@@ -164,13 +164,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
             hidden text is excluded from the accessible NAME while
             aria-describedby still resolves it as the description. */}
         <span className={CLASS.hint} id={hintId} aria-hidden="true">
-          {expanded
-            ? "Click to collapse"
-            : isPlaceholder
-              ? canWrite
-                ? "Click to write"
-                : "Click to view"
-              : "Click to expand"}
+          {expanded ? "Click to collapse" : isPlaceholder && !canWrite ? "Click to view" : "Click to expand"}
         </span>
       </button>
       {expanded && (
