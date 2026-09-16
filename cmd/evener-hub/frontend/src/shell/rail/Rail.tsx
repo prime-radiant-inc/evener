@@ -67,6 +67,8 @@ import {
   deleteProject,
   deleteSession,
   type NavigationMutationReceipt,
+  partialFanOutNotice,
+  projectOwnership,
   renamePinSection,
   setArchived,
   setFavorite,
@@ -1318,7 +1320,11 @@ function NavigationRail({
       onToggleArchiveSession: (session) => {
         const archiving = session.tier !== "archived";
         return runAction(
-          () => setArchived("session", session.session_id, archiving),
+          // The canonical ref, not the bare session ID: a remote row's ref is
+          // host-qualified and is the identity its archive decision is read
+          // back under, while "local:<id>" refs normalize server-side to the
+          // bare ID local decisions already use.
+          () => setArchived("session", session.ref, archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,
           true,
@@ -1349,21 +1355,55 @@ function NavigationRail({
       },
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
-        void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
-          kind: "projectFavorite",
-          key: project.key,
-          value,
-        });
+        void runAction(
+          async () => {
+            // A merged project's favorite is one decision per owning source.
+            // The fan-out settles every owner, so a partial result is a commit
+            // for the owners that answered: present the value the settled set
+            // yields (the read side shows a favorite when any owner holds one)
+            // and name the owners still holding the old decision. The row's own
+            // favorite is what the settled set is derived from: it says whether
+            // any owner held one, so a clear that missed an owner of a project
+            // nobody had favorited cannot present the row as favorited.
+            const result = await setFavorite(client, "project", project.key, value, project.sources, {
+              favoritedBefore: project.favorite ?? false,
+            });
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Favorite not updated everywhere: ${notice}`);
+            return result;
+          },
+          "Couldn't update favorite",
+          (result) => ({ kind: "projectFavorite", key: project.key, value: result.favorite }),
+        );
       },
       onToggleArchiveProject: (project) => {
         const value = !(project.is_archived ?? false);
         void runAction(
-          () => setArchived("project", project.key, value, project.working_dir),
+          async () => {
+            const result = await setArchived("project", project.key, value, project.working_dir, project.sources);
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Archive state not updated everywhere: ${notice}`);
+            return result;
+          },
           "Couldn't update archive state",
           value ? { kind: "hideProject", key: project.key } : undefined,
         );
       },
-      onDeleteProjectRequest: (project) => setDeleteTarget(project),
+      onDeleteProjectRequest: (project) => {
+        // Deletion is local-only (the hub refuses any other source), and a
+        // merged project — this hub's own rows plus a remote host's under the
+        // same canonical ID and path — must never be answered with a delete of
+        // the local project. Refuse before the confirmation dialog opens.
+        const { hosts } = projectOwnership(project.sources);
+        if (hosts.length > 0) {
+          toasts.push(
+            "error",
+            `Couldn't delete "${project.name}": it also has sessions on ${hosts.join(", ")}, and deletion is local-only`,
+          );
+          return;
+        }
+        setDeleteTarget(project);
+      },
     }),
     [client, runAction, toasts.push],
   );
@@ -1379,7 +1419,7 @@ function NavigationRail({
     let converged = false;
     setPending((ops) => [...ops, optimistic]);
     try {
-      const result = await deleteProject(target.key, target.working_dir ?? "");
+      const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
       mutationCompleted = true;
       await convergeMutation(result);
       converged = true;

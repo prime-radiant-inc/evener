@@ -237,6 +237,41 @@ it("applies typed system-event flags and masks usage fields independently", () =
 	expect(result.usage).toEqual({ usage: null, cost: null });
 });
 
+// tokenCounts gates the token aggregate and estimatedCost gates the cost, each
+// on its own: a crossed gate or an always-null branch fails one of these rows.
+it.each([
+	{ tokenCounts: true, estimatedCost: true, usage: { inputTokens: 10, outputTokens: 20 }, cost: "$1" },
+	{ tokenCounts: true, estimatedCost: false, usage: { inputTokens: 10, outputTokens: 20 }, cost: null },
+	{ tokenCounts: false, estimatedCost: true, usage: null, cost: "$1" },
+	{ tokenCounts: false, estimatedCost: false, usage: null, cost: null },
+])(
+	"passes usage through only under tokenCounts=$tokenCounts and cost only under estimatedCost=$estimatedCost",
+	({ tokenCounts, estimatedCost, usage, cost }) => {
+		const result = projectNativeTranscript(
+			conversation([]),
+			makeTranscriptDisplayConfig(
+				{ kind: "preset", level: "chat" },
+				{ tokenCounts, estimatedCost },
+			),
+		);
+		expect(result.usage).toEqual({ usage, cost });
+	},
+);
+
+it("reads an unknown cost as null even when estimatedCost is on", () => {
+	const result = projectNativeTranscript(
+		{ ...conversation([]), cost: undefined },
+		makeTranscriptDisplayConfig(
+			{ kind: "preset", level: "chat" },
+			{ tokenCounts: true, estimatedCost: true },
+		),
+	);
+	expect(result.usage).toEqual({
+		usage: { inputTokens: 10, outputTokens: 20 },
+		cost: null,
+	});
+});
+
 it("does not mutate clustered members or source items while projecting", () => {
 	const items: MobileTimelineItem[] = [
 		{

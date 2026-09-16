@@ -15,7 +15,7 @@ func TestArchiveStoreSetWaitsForConcurrentWriter(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "index.db")
 	store := NewArchiveStore(dbPath)
-	if err := store.Set("session", "seed", true, time.Unix(1, 0)); err != nil {
+	if err := store.Set("", "session", "seed", true, time.Unix(1, 0)); err != nil {
 		t.Fatalf("seed Set: %v", err)
 	}
 
@@ -41,7 +41,7 @@ func TestArchiveStoreSetWaitsForConcurrentWriter(t *testing.T) {
 		released <- tx.Rollback()
 	}()
 
-	if err := store.Set("session", "contended", true, time.Unix(3, 0)); err != nil {
+	if err := store.Set("", "session", "contended", true, time.Unix(3, 0)); err != nil {
 		t.Fatalf("Set during concurrent write lock: %v", err)
 	}
 	if err := <-released; err != nil {
@@ -57,14 +57,14 @@ func TestArchiveStoreRoundTripsPathWithURIDelimiters(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "seed#7?x%20")
 	dbPath := filepath.Join(dir, "index.db")
 	store := NewArchiveStore(dbPath)
-	if err := store.Set("session", "s1", true, time.Unix(1, 0)); err != nil {
+	if err := store.Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	got, err := store.Decisions()
 	if err != nil {
 		t.Fatalf("Decisions: %v", err)
 	}
-	if v, ok := got[ArchiveKey{"session", "s1"}]; !ok || !v {
+	if v, ok := got[ArchiveKey{Kind: "session", ID: "s1"}]; !ok || !v {
 		t.Fatalf("decision = %v,%v; want true,true", v, ok)
 	}
 }
@@ -80,13 +80,13 @@ func TestSharedStoresOpenDatabaseInWALMode(t *testing.T) {
 	}{
 		{"archive", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if err := NewArchiveStore(dbPath).Set("session", "s1", true, time.Unix(1, 0)); err != nil {
+			if err := NewArchiveStore(dbPath).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 				t.Fatalf("archive Set: %v", err)
 			}
 		}},
 		{"favorite", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if err := NewFavoriteStore(dbPath).Set("session", "s1", true, time.Unix(1, 0)); err != nil {
+			if err := NewFavoriteStore(dbPath).Set("", "session", "s1", true, time.Unix(1, 0)); err != nil {
 				t.Fatalf("favorite Set: %v", err)
 			}
 		}},

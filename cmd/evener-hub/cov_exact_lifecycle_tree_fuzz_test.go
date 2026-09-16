@@ -91,8 +91,8 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			{ID: "fav", Name: "fav", CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/p"}},
 		})
 		fav := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "tree.db"))
-		_ = fav.Set("session", "active", true, now)
-		_ = fav.Set("session", "fav", true, now)
+		_ = fav.Set("", "session", "active", true, now)
+		_ = fav.Set("", "session", "fav", true, now)
 		treeRoster := hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
@@ -118,7 +118,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 				}}},
 			}
 		}
-		_ = fav.Set("session", "fav2", true, now)
+		_ = fav.Set("", "session", "fav2", true, now)
 		structuredRoster := hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "active", WorkingDir: "/work/p", StartedAt: now}, SessionID: "active", Status: "waiting"},
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
