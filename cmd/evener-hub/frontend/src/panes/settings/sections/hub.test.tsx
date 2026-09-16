@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
+import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { HubSection } from "./hub";
 
@@ -18,12 +19,14 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
     listenAddr: "127.0.0.1:9180",
     runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
+    daemonIdleTimeoutMillis: 3600000,
   },
 };
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetSettingsOverviewStoreForTests();
+  resetDaemonResidentsStoreForTests();
 });
 
 afterEach(cleanup);
@@ -31,6 +34,7 @@ afterEach(cleanup);
 test("fetches the overview on mount and renders the 3 read-only fields with their help text", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
 
@@ -39,12 +43,18 @@ test("fetches the overview on mount and renders the 3 read-only fields with thei
   expect(screen.getByText("30s")).toBeTruthy();
   expect(screen.getByText("Listen address").tagName).toBe("DT");
   expect(screen.getByText(/Address and port the hub HTTP server binds to/)).toBeTruthy();
-  expect(fake.calls).toEqual([{ method: "evener/settings/overview", params: {} }]);
+  await waitFor(() =>
+    expect(fake.calls).toEqual([
+      { method: "evener/settings/overview", params: {} },
+      { method: "evener/daemon/list", params: {} },
+    ]),
+  );
 });
 
 test("shows a loading skeleton before the overview resolves", () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => new Promise(() => {})); // never resolves
+  // daemon/list is not called until settings/overview resolves (HubResidents mounts after data)
 
   render(<HubSection />);
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
@@ -59,6 +69,7 @@ describe("on load failure", () => {
     fake.on("evener/settings/overview", () => {
       throw new Error("hub unreachable");
     });
+    // daemon/list is not called when overview fails (HubResidents never mounts)
 
     render(<HubSection />);
 
@@ -78,9 +89,10 @@ describe("on load failure", () => {
     await screen.findByText("Couldn't load hub settings");
 
     fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+    fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
-    await waitFor(() => expect(fake.calls).toHaveLength(2));
+    await waitFor(() => expect(fake.calls).toHaveLength(3));
   });
 });
