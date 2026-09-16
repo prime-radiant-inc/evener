@@ -43,7 +43,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace"
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
-import { recoveryClientFixture } from "./testing/recoveryClient";
+import { recoveryClientFixture } from "./testing/recoveryClientTestUtils";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
