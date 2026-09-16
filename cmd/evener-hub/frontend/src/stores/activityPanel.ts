@@ -13,7 +13,6 @@ export { graftContinuationTree } from "@evener/appwire-client";
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 export type ActivityLoadState =
@@ -44,6 +43,28 @@ export type ActivityFetchResult =
   | { kind: "ended" }
   | { kind: "failed"; error: PanelLoadFailure }
   | { kind: "continuation-failed"; nodeID: string; message: string };
+
+/** What a settled continuation page owes the summary store: the summary
+ * generation it began under (absent when no summary entry existed then) and
+ * the badge's due - the merged tree's counts, or a failure. No debt when the
+ * page landed as a fresh root, since there was no tree to merge into. */
+export interface ContinuationSettlement {
+  summaryRequestID?: number;
+  debt?: { kind: "failure" } | { kind: "counts"; counts: ActivityCounts };
+}
+
+/** The summary store's side of the seam. activitySummary.ts imports this
+ * module and registers the link at load; the panel never imports back. */
+export interface ActivitySummaryLink {
+  summaryGeneration(ref: string): number | undefined;
+  onContinuationSettled(ref: string, settlement: ContinuationSettlement): void;
+}
+
+let summaryLink: ActivitySummaryLink | undefined;
+
+export function linkActivitySummary(link: ActivitySummaryLink): void {
+  summaryLink = link;
+}
 
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
@@ -133,7 +154,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
-      const summaryRequestID = activitySummaryStore.getState().entries.get(ref)?.requestID;
+      const summaryRequestID = summaryLink?.summaryGeneration(ref);
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
@@ -172,12 +193,10 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   },
 
   publishFetch(ref, requestID, result) {
-    let settledContinuation = false;
     // What this page owes the summary store, decided inside the updater and
     // paid after it: the updater stays a pure function of panel state, and a
     // nested set can no longer land inside this store's own commit.
-    let summaryDebt: { kind: "failure" } | { kind: "counts"; counts: ActivityCounts } | undefined;
-    let summaryRequestID: number | undefined;
+    let settlement: ContinuationSettlement | undefined;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.requestID !== requestID) return state;
@@ -186,9 +205,8 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       let next = current;
 
       if (pending.kind === "continuation") {
-        settledContinuation = true;
-        summaryRequestID = pending.summaryRequestID;
-        if (result.kind !== "ready") summaryDebt = { kind: "failure" };
+        settlement = { summaryRequestID: pending.summaryRequestID };
+        if (result.kind !== "ready") settlement.debt = { kind: "failure" };
         if (result.kind === "continuation-failed") {
           next = {
             ...current,
@@ -200,7 +218,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
-            summaryDebt = { kind: "counts", counts: tree.root.counts };
+            settlement.debt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];
@@ -287,17 +305,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       entries.set(ref, next);
       return { entries };
     });
-    // Same order the merge relied on when these ran inside the updater: the
-    // badge settles against the tree just committed, and only then does a root
-    // refresh queued behind this page get its turn.
-    if (summaryDebt && summaryRequestID !== undefined) {
-      const summary = activitySummaryStore.getState();
-      if (summaryDebt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
-      else summary.publishContinuationCounts(ref, summaryRequestID, summaryDebt.counts);
-    }
-    // A root refresh queued while this continuation was in flight waited for
-    // the merge above rather than replacing the panel tree mid-page.
-    if (settledContinuation) activitySummaryStore.getState().issuePendingRootFetch(ref);
+    if (settlement) summaryLink?.onContinuationSettled(ref, settlement);
   },
 
   setExpanded(ref, expandedIDs) {

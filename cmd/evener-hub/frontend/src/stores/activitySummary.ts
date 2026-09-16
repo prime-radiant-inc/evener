@@ -11,7 +11,12 @@ import {
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { type ActivityFetchResult, activityPanelStore, retainedActivityTree } from "./activityPanel";
+import {
+  type ActivityFetchResult,
+  activityPanelStore,
+  linkActivitySummary,
+  retainedActivityTree,
+} from "./activityPanel";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 // A refresh that arrived while a root fetch was in flight. Nothing re-runs
@@ -300,6 +305,27 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
     set({ entries: new Map() });
   },
 }));
+
+// The panel store's side of the continuation protocol. The panel cannot
+// import this module (the dependency points one way: summary → panel), so it
+// reads the generation a page begins under and reports the page's settlement
+// through this link instead.
+linkActivitySummary({
+  summaryGeneration: (ref) => activitySummaryStore.getState().entries.get(ref)?.requestID,
+  onContinuationSettled(ref, { summaryRequestID, debt }) {
+    // Same order the merge relied on when these ran inside the panel's
+    // updater: the badge settles against the tree just committed, and only
+    // then does a root refresh queued behind this page get its turn.
+    const summary = activitySummaryStore.getState();
+    if (debt && summaryRequestID !== undefined) {
+      if (debt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
+      else summary.publishContinuationCounts(ref, summaryRequestID, debt.counts);
+    }
+    // A root refresh queued while this continuation was in flight waited for
+    // the merge rather than replacing the panel tree mid-page.
+    summary.issuePendingRootFetch(ref);
+  },
+});
 
 registerPanelStoreEvictor({
   refs: () => activitySummaryStore.getState().entries.keys(),
