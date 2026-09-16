@@ -335,6 +335,70 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
+    // The connection state layer: the client-swap safety and
+    // notification-following a host's own connection store wraps, over an
+    // AppwireClientLike only - no handshake, no view binding, so a bare Node
+    // consumer needs no socket. AppwireClientLike and FeatureSet are root
+    // exports, not this barrel's own surface, so the type-use program imports
+    // them itself rather than relying on the generated import block.
+    "./state/connection": {
+      esmTypeUses: `import type { AppwireClientLike, FeatureSet } from "@evener/appwire-client";
+const fakeClient: AppwireClientLike = {
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} as FeatureSet }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "idle",
+  terminalReason: null,
+};
+const store: ConnectionStore = createConnectionStore();
+const state: ConnectionStoreState = store.getState();
+state.connect(fakeClient);
+const stop = onConnectionNotification(store, () => undefined);
+stop();`,
+      cjsTypeUses: `const connectionState: client.ConnectionStoreState = client.createConnectionStore().getState(); void connectionState;`,
+      // A store with no client wired starts idle; connect() mirrors an
+      // already-"ready" client's state (a reconnect scenario) and wires its
+      // client-swap safety; onConnectionNotification follows the client the
+      // store holds - all without opening a socket.
+      smoke: `let notified = 0;
+const readyClient = {
+  stateChangeHandlers: new Set(),
+  notificationHandlers: new Set(),
+  state: "ready",
+  terminalReason: null,
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification(cb) {
+    this.notificationHandlers.add(cb);
+    return () => this.notificationHandlers.delete(cb);
+  },
+  onReady: () => () => undefined,
+  onStateChange(cb) {
+    this.stateChangeHandlers.add(cb);
+    return () => this.stateChangeHandlers.delete(cb);
+  },
+  retryNow: () => undefined,
+};
+const connectionStore = client.createConnectionStore();
+assert.equal(connectionStore.getState().state, "idle");
+connectionStore.getState().connect(readyClient);
+assert.equal(connectionStore.getState().state, "ready");
+assert.equal(connectionStore.getState().client, readyClient);
+const stopNotifications = client.onConnectionNotification(connectionStore, () => {
+  notified += 1;
+});
+for (const cb of readyClient.notificationHandlers) cb({ method: "evener/plugin/updated", params: {} });
+assert.equal(notified, 1);
+stopNotifications();
+`,
+    },
     // The navigation state layer, published as one subpath rather than through
     // the root: both apps' navigation stores are built on it, it is not part of
     // the client surface every consumer takes, and a barrel is the seam later
