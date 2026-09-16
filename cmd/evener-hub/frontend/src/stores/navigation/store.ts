@@ -23,12 +23,18 @@ import {
   canonicalResourceKey,
   type DecodedNavigationResponse,
   decodeNavigationResponse,
+  isGenerationMismatch,
+  isNavigationNotInitialized,
   isNavigationUnavailable,
+  isRevalidatorDisposed,
+  isSequenceGap,
   isSettledGone,
   keyID,
   materializeNavigationResource,
   NavigationBaseInvalidError,
+  type NavigationInvalidationWaiter,
   type NavigationRequest,
+  NavigationRevalidator,
   type NormalizedResource,
   nextNavigationOffset,
   normalizedGraphFromSnapshot,
@@ -39,13 +45,6 @@ import {
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
-import {
-  isGenerationMismatch,
-  isNavigationNotInitialized,
-  isRevalidatorDisposed,
-  type NavigationInvalidationWaiter,
-  NavigationRevalidator,
-} from "./revalidator";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
 
@@ -766,7 +765,7 @@ export function initNavigation(
         navigationStore.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
         return;
       }
-      const gap = p.sequence > s.lastSequence + 1;
+      const gap = isSequenceGap(s.lastSequence, p.sequence);
       navigationStore.setState({ lastSequence: p.sequence });
       if (revalidator) {
         if (gap) revalidator.force(revalidator.loadedKeys());

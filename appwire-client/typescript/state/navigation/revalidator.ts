@@ -1,6 +1,14 @@
-import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "@evener/appwire-client";
+// The navigation revalidator: one entry per loaded resource key, each holding
+// its request callback, settled state (loaded and target revisions, ETag,
+// stale/loading/error) and the run in flight. Hub invalidations raise a key's
+// target revision and re-run its request; a generation change resets every
+// entry for the new epoch; forced re-reads supersede an in-flight response;
+// waiters resolve once the resources a mutation names have caught up. Pure
+// coordination over injected request callbacks - it schedules nothing itself,
+// and every deadline belongs to the caller.
+import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "../../types.gen";
+import { isSequenceGap, matchesTarget } from "./invalidation";
 import {
-  isProjectResource,
   keyID,
   NavigationBaseInvalidError,
   type NavigationRequest,
@@ -8,8 +16,7 @@ import {
   type ResourceKey,
   type ResourceListener,
   type ResourceState,
-  targetBase,
-} from "@evener/appwire-client/state/navigation";
+} from "./types";
 
 interface Entry {
   state: ResourceState;
@@ -165,20 +172,15 @@ export class NavigationRevalidator {
     }
   }
   acceptSequence(sequence: number): boolean {
-    const gap = sequence > this.lastSequence + 1;
+    const gap = isSequenceGap(this.lastSequence, sequence);
     this.lastSequence = Math.max(this.lastSequence, sequence);
     return gap;
   }
 
   invalidate(target: NavigationInvalidationTarget): void {
     if (this.disposed) return;
-    if (target.kind === "all_loaded_projects") {
-      for (const e of this.entries.values()) if (isProjectResource(e.state.key)) this.raise(e, undefined, false);
-      return;
-    }
-    const base = targetBase(target);
-    if (!base) return;
-    for (const e of this.entries.values()) if (matchesBase(e.state.key, base)) this.raise(e, target.revision, false);
+    for (const e of this.entries.values())
+      if (matchesTarget(e.state.key, target)) this.raise(e, target.revision, false);
   }
   force(keys: Iterable<ResourceKey>): void {
     if (this.disposed) return;
@@ -426,22 +428,6 @@ function usableNavigationBase(state: ResourceState): NonNullable<ResourceState["
   )
     return undefined;
   return base;
-}
-function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
-  if (key.kind !== base.kind) {
-    if (!(base.kind === "project" && key.kind === "project_page")) return false;
-  }
-  if (base.kind === "section" && key.kind === "section") return key.section === base.section;
-  if (base.kind === "catalog" && key.kind === "catalog") return key.catalog === base.catalog;
-  if (base.kind === "pin_section" && key.kind === "pin_section") return key.sectionId === base.sectionId;
-  if (base.kind === "project" && (key.kind === "project" || key.kind === "project_page"))
-    return key.projectKey === base.projectKey;
-  return key.kind === base.kind;
-}
-function matchesTarget(key: ResourceKey, target: NavigationInvalidationTarget): boolean {
-  if (target.kind === "all_loaded_projects") return isProjectResource(key);
-  const base = targetBase(target);
-  return base ? matchesBase(key, base) : false;
 }
 function validate(response: NavigationResponse, generation: string, cachedETag: string | null): void {
   if (!response || (response.status !== 200 && response.status !== 304))

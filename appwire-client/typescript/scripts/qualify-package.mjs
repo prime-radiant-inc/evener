@@ -322,18 +322,22 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
-    // The navigation quartet, published as one subpath rather than through the
-    // root: it is a state layer both apps' navigation stores are built on, not
-    // part of the client surface every consumer takes, and a barrel is the seam
-    // later state relocations extend rather than multiply.
+    // The navigation state layer, published as one subpath rather than through
+    // the root: both apps' navigation stores are built on it, it is not part of
+    // the client surface every consumer takes, and a barrel is the seam later
+    // state relocations extend rather than multiply.
     "./state/navigation": {
       esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;`,
+const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;
+const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;`,
       cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
       // One call per module: types (keyID, the offset rule), immutable (the
       // freeze and the equality), codec (a snapshot normalized into a graph),
       // merge (an empty delta onto a manifest that carries no metadata, which
-      // the merge refuses as an invalid base).
+      // the merge refuses as an invalid base), invalidation (the wildcard
+      // reaching a project page, a receipt's revision floor, a sequence gap),
+      // revalidator (an instance that carries its generation and recognises
+      // its own generation-mismatch rejection).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -348,6 +352,18 @@ assert.throws(
   () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
   client.NavigationBaseInvalidError,
 );
+const projectPage = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 50 };
+assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }), true);
+assert.equal(client.matchesTarget(projectPage, { kind: "section", section: "live" }), false);
+assert.equal(
+  client.requiredRevision(projectPage, [{ kind: "manifest", revision: 9 }, { kind: "project", projectKey: "p", revision: 3 }]),
+  3,
+);
+assert.equal(client.isSequenceGap(1, 3), true);
+const revalidator = new client.NavigationRevalidator("g");
+assert.equal(revalidator.generationID, "g");
+assert.equal(client.isGenerationMismatch(new Error("navigation protocol: generation mismatch")), true);
+revalidator.dispose();
 `,
     },
   };
