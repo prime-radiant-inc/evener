@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -88,10 +89,10 @@ func TestRemoteHubRetireDefersToAliasedStillAttachingReplacement(t *testing.T) {
 
 	// When the replacement settles it adopts local:stable, so the deferred ref is
 	// its own and must not be unsubscribed.
-	if !source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+	if installed, refusal := source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: "stable", Source: "local", Evener: appwire.EvenerThread{Ref: "local:stable"},
-	}}) {
-		t.Fatal("settleSubscriber rejected the installed replacement")
+	}}); !installed || refusal != nil {
+		t.Fatalf("settleSubscriber rejected the installed replacement: %v", refusal)
 	}
 	expectResync(t, replacement.out, "stable", "host:stable")
 	if sawRemoteUnsubscribe(t, remote, "local:stable") {
@@ -140,10 +141,10 @@ func TestRemoteHubAliasedDeferralReleasedWhenNotAdopted(t *testing.T) {
 		t.Fatal("predecessor unsubscribed a ref its attaching sibling may still adopt")
 	}
 
-	if !source.settleSubscriber(sibling, appwire.ThreadReadResponse{Thread: appwire.Thread{
+	if installed, refusal := source.settleSubscriber(sibling, appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: "other", Source: "local", Evener: appwire.EvenerThread{Ref: "local:other"},
-	}}) {
-		t.Fatal("settleSubscriber rejected the installed sibling")
+	}}); !installed || refusal != nil {
+		t.Fatalf("settleSubscriber rejected the installed sibling: %v", refusal)
 	}
 	if !sawRemoteUnsubscribe(t, remote, "local:stable") {
 		t.Fatalf("the deferred canonical ref leaked; calls = %+v", remote.calls())
@@ -166,6 +167,9 @@ func TestRemoteHubFailedReplacementHandoffCannotLoseConcurrentRoute(t *testing.T
 	previous := &remoteHubSubscription{
 		threadID: "S",
 		client:   client,
+		// A live predecessor always carries its own live context; the context is
+		// what makes it restorable.
+		ctx:      context.Background(),
 		in:       make(chan appwire.Notification, 4),
 		pumpDone: make(chan struct{}),
 		cancel:   func() {},

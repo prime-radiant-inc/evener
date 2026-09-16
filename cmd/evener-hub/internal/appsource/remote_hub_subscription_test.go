@@ -767,10 +767,10 @@ func TestRemoteHubRetireDefersToStillAttachingSameThreadReplacement(t *testing.T
 
 	// When the replacement settles it adopts local:stable, so the deferred ref is
 	// its own and must not be unsubscribed.
-	if !source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+	if installed, refusal := source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: "stable", Source: "local", Evener: appwire.EvenerThread{Ref: "local:stable"},
-	}}) {
-		t.Fatal("settleSubscriber rejected the installed replacement")
+	}}); !installed || refusal != nil {
+		t.Fatalf("settleSubscriber rejected the installed replacement: %v", refusal)
 	}
 	expectResync(t, replacement.out, "stable", "host:stable")
 	if sawRemoteUnsubscribe(t, remote, "local:stable") {
@@ -817,10 +817,10 @@ func TestRemoteHubReplacedSettleKeepsAdoptedRemoteRef(t *testing.T) {
 	}
 	source.subs["root"] = replacement
 
-	if !source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+	if installed, refusal := source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: "child", Source: "local", Evener: appwire.EvenerThread{Ref: "local:child"},
-	}}) {
-		t.Fatal("settleSubscriber rejected the installed replacement")
+	}}); !installed || refusal != nil {
+		t.Fatalf("settleSubscriber rejected the installed replacement: %v", refusal)
 	}
 	expectResync(t, replacement.out, "child", "host:child")
 	if sawRemoteUnsubscribe(t, remote, "local:child") {
@@ -876,10 +876,10 @@ func TestRemoteHubSettleRejectsReplacementInstalledDuringSettlement(t *testing.T
 	}
 	source.subs["root"] = replacement
 
-	if source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
+	if installed, refusal := source.settleSubscriber(replacement, appwire.ThreadReadResponse{Thread: appwire.Thread{
 		ID: "child", Source: "local", Evener: appwire.EvenerThread{Ref: "local:child"},
-	}}) {
-		t.Fatal("settleSubscriber published a subscription displaced during settlement")
+	}}); installed || refusal != nil {
+		t.Fatalf("settleSubscriber published a subscription displaced during settlement: %v", refusal)
 	}
 	if len(replacement.out) != 0 {
 		t.Fatalf("settleSubscriber wrote a resync (%d frames) for a displaced subscription", len(replacement.out))
@@ -1391,6 +1391,8 @@ func TestRemoteHubDiscardSubscriberDoesNotRestoreDeadPrevious(t *testing.T) {
 		live := &remoteHubSubscription{
 			threadID: "S",
 			client:   client,
+			// A live previous always carries its own live context.
+			ctx:      context.Background(),
 			in:       make(chan appwire.Notification, 1),
 			pumpDone: make(chan struct{}),
 			cancel:   func() { t.Error("a live previous subscription was cancelled") },

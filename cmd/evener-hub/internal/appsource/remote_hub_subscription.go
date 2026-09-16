@@ -85,6 +85,18 @@ type remoteHubSubscription struct {
 	// otherwise block forever and its out would never close, so the relay's
 	// recovery path would never re-attach to the reconnected client.
 	client *appwire.Client
+	// ctx is this subscription's own context, derived from the caller's in
+	// SubscribeThread. It is what ends the subscription: the pump exits when it
+	// is done (closing out, which is how the caller observes subscription end),
+	// the drain retires a stalled or stranded subscription by cancelling it, and
+	// a replacement cancels the predecessor it displaces. A subscription whose
+	// context is already done (or that was built without one) can never serve
+	// again, and liveness must say so: one whose pump never started — the caller
+	// gave up while its subscribe was still in flight — has no pumpDone for
+	// anything to close, so without the context it would keep looking live and a
+	// failed replacement could restore it as a routing target nothing pumps. See
+	// subscriberLiveLocked.
+	ctx context.Context
 	// in is the drain's delivery slot. It is NEVER closed.
 	in chan appwire.Notification
 	// out is returned to the relay and closed ONLY by the pump.
@@ -173,6 +185,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 		// one — is what is recorded here.
 		remoteRef: target,
 		client:    client,
+		ctx:       subCtx,
 		in:        make(chan appwire.Notification, remoteHubSubBuffer),
 		out:       make(chan appwire.Notification, remoteHubSubBuffer),
 		pumpDone:  make(chan struct{}),
@@ -224,8 +237,11 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// A live subscription attached for a different relay is not a replacement to
 	// displace but a second relay for one remote thread, and the two would trade
 	// the subscription until one of them stopped watching. That attach is refused
-	// before any request reaches the remote (see admitSubscriber); the refused
-	// relay's own backoff decides when it tries again.
+	// before any request reaches the remote when it addresses the incumbent's
+	// routing slot directly (see admitSubscriber), and at settlement when it
+	// reaches the same thread through another alias and only the snapshot reveals
+	// the shared identity (see settleSubscriber); the refused relay's own backoff
+	// decides when it tries again.
 	previous, admitErr := s.admitSubscriber(sub)
 	if admitErr != nil {
 		cancel()
@@ -255,7 +271,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			}
 			return nil, s.mapCallError(result.err)
 		}
-		if !s.settleSubscriber(sub, result.snapshot) {
+		if installed, refusal := s.settleSubscriber(sub, result.snapshot); !installed {
 			// A concurrent replacement won this thread's routing slot while the
 			// subscribe was in flight. Installing this subscription anyway would
 			// hand the relay a channel nothing routes to — a live-looking but
@@ -264,6 +280,14 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 			// re-attaches through its recovery path.
 			s.discardSubscriber(sub, previous)
 			cancel()
+			if refusal != nil {
+				// Another relay reached this remote thread through an alias of its
+				// address, so it never collided with that relay at admission: only
+				// the snapshot revealed the identity the two share. Nothing was
+				// displaced, and the relay already serving the thread keeps serving
+				// it — surface the same refusal admission produces.
+				return nil, refusal
+			}
 			return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id + ": subscription was replaced before it attached")
 		}
 		go s.pumpSubscription(subCtx, sub)
@@ -275,7 +299,10 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 		// The caller (or the drain retiring this client's connection) cancelled
 		// after the request was sent. Return at once, but keep the request alive:
 		// the remote may still install a subscription for it, and the cleanup
-		// unsubscribe must not be issued until that request has finished.
+		// unsubscribe must not be issued until that request has finished. The entry
+		// stays in the routing table until then, but its cancelled context keeps it
+		// from ever being mistaken for a live target (see subscriberLiveLocked): no
+		// pump will ever run for it.
 		callerCanceled := ctx.Err() != nil
 		cancel()
 		go s.retireCanceledSubscribe(sub, previous, outcome)
@@ -380,20 +407,26 @@ func remoteSubscriptionTarget(ref appwire.Ref, threadID string) string {
 // on and nothing to fold in, so the caller-derived key stands and the
 // controller's copy is left alone.
 //
-// It reports whether sub is the installed routing target when it returns.
-// false means a concurrent replacement displaced sub before its own subscribe
-// response arrived: the caller must not start sub's pump or hand the relay sub's
+// It reports whether sub is the installed routing target when it returns, and,
+// when it is not, the refusal the caller has to surface. false means sub must
+// not be installed: the caller must not start sub's pump or hand the relay sub's
 // channel, because nothing will ever route to it. A re-key that finds sub
-// displaced reports false; a snapshot key that already matches sub's key still
-// checks that sub is the installed subscription, since a replacement for the
-// same thread under the same key leaves the snapshot key equal to sub.threadID.
+// displaced reports false with no refusal — a concurrent replacement took the
+// slot — and a snapshot key that already matches sub's key still checks that sub
+// is the installed subscription, since a replacement for the same thread under
+// the same key leaves the snapshot key equal to sub.threadID. A re-key that
+// finds a live subscription attached for a different controller relay reports
+// false with that Conflict: aliases of one remote thread occupy different
+// provisional keys, so the collision admission refuses on a shared key only
+// becomes visible here, and displacing the incumbent instead would be the
+// flapping the refusal exists to prevent (see foreignRelayLocked).
 //
 // The re-key, the canonical remote identity, and the installed check all happen
 // under one remoteMu+subMu hold, so a replacement can never observe sub at its
 // new key with a stale provisional ref: that interleaving is what let a retiring
 // predecessor conclude the ref was unowned and unsubscribe the remote
 // subscription its live replacement had just adopted.
-func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) bool {
+func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot appwire.ThreadReadResponse) (bool, error) {
 	degenerate := snapshot.Thread.ID == "" && snapshot.Thread.Evener.Ref == ""
 	canonical := strings.TrimSpace(snapshot.Thread.Evener.Ref)
 	key := ""
@@ -415,10 +448,32 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 		}
 		s.subMu.Unlock()
 		s.remoteMu.Unlock()
-		return false
+		return false, nil
 	}
 	var displaced *remoteHubSubscription
 	if key != "" && key != sub.threadID {
+		// Aliases of one remote thread occupy different provisional keys, so
+		// admission cannot see that two relays are attaching to the same thread:
+		// only the snapshot names the identity the aliases share. A live
+		// subscription attached for another relay already serves that identity,
+		// and displacing it is exactly the flapping the admission refusal exists
+		// to prevent — the displaced relay recovers, re-attaches under its own
+		// identity, is refused in turn, and its client starves until this one
+		// ends. Refuse this attach now that the collision is visible, with the
+		// incumbent left untouched.
+		if incumbent := s.subs[key]; s.foreignRelayLocked(sub, incumbent) {
+			if canonical != "" {
+				// The remote keyed this connection's subscription under the ref the
+				// snapshot named — the incumbent's identity. Recording it keeps the
+				// caller's cleanup from releasing a ref that is not this
+				// subscription's to release.
+				sub.remoteRef = canonical
+			}
+			refusal := s.foreignRelayErrorLocked(incumbent)
+			s.subMu.Unlock()
+			s.remoteMu.Unlock()
+			return false, refusal
+		}
 		delete(s.subs, sub.threadID)
 		displaced = s.subs[key]
 		sub.threadID = key
@@ -447,7 +502,7 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 	// routing slot after the atomic settle. A subscription that is no longer
 	// installed must not hand the relay a channel nothing routes to.
 	if !s.subscriberInstalled(sub) {
-		return false
+		return false, nil
 	}
 	// Refs a retired predecessor deferred to this subscription are resolved now
 	// that its own canonical identity is known: the one it adopted is its own,
@@ -456,14 +511,14 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 	if degenerate {
 		// No authoritative identity to key on and nothing to fold in: the
 		// caller-derived key stands and the controller's copy is left alone.
-		return true
+		return true, nil
 	}
 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: sub.threadID,
 		Ref:      appwire.Ref{SourceID: s.id, ThreadID: sub.threadID}.String(),
 	}).Notification
 	sub.out <- resync
-	return true
+	return true, nil
 }
 
 // canonicalizeRemoteRef records the remote-namespace ref a completed subscribe
@@ -590,10 +645,15 @@ func (s *RemoteHubSource) publishLocked(sub *remoteHubSubscription) *remoteHubSu
 // ended, a client reconnecting through the same relay — keeps its identity, and
 // this reports false for it, so the replacement semantics are untouched. A
 // second relay that reached the same remote thread by another ref carries a
-// different key: a current root thread ID and the stable ref name one remote
-// session, and the remote resolves both onto the same subscription identity, so
-// the two relays do collide at this routing slot. A subscription published
-// without an identity (a direct caller) is never treated as a foreign relay.
+// different key. When the two addresses share a provisional routing slot
+// admission sees the collision and refuses it there (admitSubscriber); when they
+// reach one remote thread through different aliases — a current root thread ID
+// and the stable ref, which the remote resolves onto one subscription identity —
+// only the subscribe snapshot reveals the shared identity, and settlement makes
+// the same refusal before it re-keys the newcomer onto the incumbent's slot
+// (settleSubscriber). Either way one relay keeps serving the thread and the
+// other retries on its own backoff. A subscription published without an identity
+// (a direct caller) is never treated as a foreign relay.
 func (s *RemoteHubSource) foreignRelayLocked(sub, existing *remoteHubSubscription) bool {
 	if existing == nil || existing == sub {
 		return false
@@ -721,12 +781,19 @@ func forwardBufferedNotifications(sub, previous *remoteHubSubscription) {
 }
 
 // subscriberLiveLocked reports whether sub can still deliver. Called with subMu
-// held. A subscription is live while its pump is running and its client's
-// notification stream is still being drained: once the drain has exited for
-// that client, nothing will ever feed sub.in again and the pump would block
-// forever, so restoring such a subscription would strand the relay.
+// held. A subscription is live while its own context is alive and its pump — the
+// running one, or the one it is about to start — has not been retired: once the
+// context is done, nothing will ever feed sub.in again and the pump would block
+// forever, and once the drain has exited for that client the same is true, so
+// restoring such a subscription would strand the relay. The context is what
+// catches a subscription whose pump never started at all — its caller gave up
+// while the subscribe was still in flight — because nothing but the pump's
+// discard closes pumpDone for it.
 func (s *RemoteHubSource) subscriberLiveLocked(sub *remoteHubSubscription) bool {
 	if sub == nil {
+		return false
+	}
+	if sub.ctx == nil || sub.ctx.Err() != nil {
 		return false
 	}
 	select {
