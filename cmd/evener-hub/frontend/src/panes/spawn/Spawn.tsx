@@ -22,9 +22,9 @@ import {
   pluginSelectionIssues,
   reconcilePluginSelection,
   resolveScalars,
-  schemaPathKind,
   type SlashMenuItem,
   type SlashToken,
+  schemaPathKind,
   selectedPluginNames,
   slashCommandInvocation,
   spliceSlashCommand,
@@ -1183,7 +1183,19 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, remoteLaunch, setModel, setDefaultModelFallback, harness, usesEvenerModels]);
+  }, [
+    cwd,
+    draft,
+    advancedOverrides,
+    advancedModel,
+    resolveConfig,
+    loadModels,
+    remoteLaunch,
+    setModel,
+    setDefaultModelFallback,
+    harness,
+    usesEvenerModels,
+  ]);
 
   // Retire a model this fallback installed once the target becomes remote: the
   // value describes the CONTROLLER's catalog, and forwarding it would prevent
