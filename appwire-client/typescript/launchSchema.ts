@@ -1,11 +1,16 @@
-// schema.ts is the pure-logic half of the LaunchConfigControls port
-// (docs/web-ui/parity/parity-m7-settings.md Appendix B): grouping, layer
-// filtering, prompt-composite plumbing, and the populate()/collect() pair,
-// all operating on a plain in-memory LaunchFormState instead of the legacy's
-// direct DOM reads/writes. LaunchConfigForm.tsx (the rendering half) and the
-// field components under this directory are the only callers.
-import type { LaunchConfigLayer, LaunchOption, MCPServerSpec } from "@evener/appwire-client";
-import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
+// The pure-logic half of the launch-config engine both apps' launch settings
+// are built on (docs/web-ui/parity/parity-m7-settings.md Appendix B): option
+// grouping, layer filtering, prompt-composite plumbing, the path-kind spelling
+// evener/path/validate accepts, and the populate()/collect() pair, all
+// operating on a plain in-memory LaunchFormState. The web settings form and
+// its field components render from it; native's launch settings, overrides
+// and scalar editor read the same rules. No React, no wire.
+import type { LaunchConfigLayer, LaunchOption, MCPServerSpec } from "./types.gen";
+
+// The two launch-config layers a user edits. The global layer is the
+// machine-wide default; the project layer overrides it for one cwd. A
+// LaunchOption's defaultableLayers names which of these it may be set on.
+export type LaunchConfigLayerName = "global" | "project";
 
 export function optionSupportsLayer(opt: LaunchOption, layer: LaunchConfigLayerName): boolean {
   return (opt.defaultableLayers ?? []).includes(layer);
@@ -162,10 +167,9 @@ export function emptyChoiceLabel(layer: LaunchConfigLayerName): string {
 // empty option avoids a real duplicate-"unset"-entry defect the legacy
 // engine has (it unconditionally prepends its own placeholder AND then
 // renders the schema's own choices, which for every current field already
-// includes one - two indistinguishable value:"" options.
-// See this task's own report for the write-up of this deliberate fix. A
-// hypothetical future option with no empty choice of its own still gets a
-// sensible fallback (the generic per-layer placeholder).
+// includes one - two indistinguishable value:"" options). A hypothetical
+// future option with no empty choice of its own still gets a sensible
+// fallback (the generic per-layer placeholder).
 export function resolvedEmptyChoice(opt: LaunchOption, layer: LaunchConfigLayerName): { value: ""; label: string } {
   const own = (opt.choices ?? []).find((c) => (c.value ?? "") === "");
   if (own) return { value: "", label: own.label || emptyChoiceLabel(layer) };
@@ -233,13 +237,13 @@ export function resolvedDefaultLabel(
   return `${value} ${emptyChoiceLabel(layer)}`;
 }
 
-// --- form state: the React-side stand-in for the legacy's direct DOM state ---
+// --- form state: the in-memory stand-in for the legacy's direct DOM state ---
 
 export interface LaunchFormState {
   // wireField -> string value for every scalar kind (text/select/radio/
   // modelPicker/integer/multilineText/path) - booleans use the same 3-value
-  // string domain ("" | "true" | "false") as their <select> control, so
-  // ScalarField.tsx has one uniform string in/out contract for every kind.
+  // string domain ("" | "true" | "false") as their <select> control, so a
+  // scalar field control has one uniform string in/out contract for every kind.
   scalars: Record<string, string>;
   // wireField -> string[] for pathList/modelList kinds.
   lists: Record<string, string[]>;

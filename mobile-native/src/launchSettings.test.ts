@@ -2,12 +2,13 @@ import { expect, it } from "vitest";
 import type {
   AnyNotification,
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchConfigResolved,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchSettings } from "./launchSettings";
 
-function fixture(layerName: "global" | "project" = "global", cwd = "/") {
+function fixture(layerName: LaunchConfigLayerName = "global", cwd = "/") {
   let layer: LaunchConfigLayer = {
     model: "fixture/model",
     maxRounds: 3,

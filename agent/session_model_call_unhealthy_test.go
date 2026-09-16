@@ -131,7 +131,7 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 	}
 	sess := unhealthyChainSession(t, a)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
+	_, _, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError from the fallback-b group", err, err)
@@ -184,7 +184,7 @@ func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
+	_, _, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -242,7 +242,7 @@ func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
 	)
 	evs, mu, done := collectEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
+	_, _, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), unhealthyChainRequest(), nil, "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v, want nil (fallback should succeed)", err)
 	}
@@ -305,7 +305,7 @@ func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
 	)
 	drainSessionEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), []llm.Message{llm.User("full history")}, "", 1)
+	_, _, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), []llm.Message{llm.User("full history")}, "", 1)
 
 	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); !ok {
 		t.Fatalf("terminal error = %v (%T), want *llm.ProviderUnhealthyError", err, err)
@@ -357,7 +357,7 @@ func TestContinuationRecovery_SkippedWithoutRetainedHistory(t *testing.T) {
 	)
 	drainSessionEvents(sess)
 
-	_, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), nil, "", 1)
+	_, _, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), continuationRecoveryRequest(), nil, "", 1)
 
 	if !errors.Is(err, anchorMissing) {
 		t.Fatalf("terminal error = %v, want the anchor rejection itself — a message-less recovery round would replace it", err)

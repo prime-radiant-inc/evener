@@ -66,7 +66,7 @@ list.
    `role="presentation"` rows are group heads (and unavailable-provider
    lines — see Sharp edges); `role="option"` rows are the models, in the
    server's order (`toCatalogOptions` preserves it,
-   `widgets/modelCatalog/catalogView.ts#toCatalogOptions`).
+   `appwire-client/typescript/modelCatalogView.ts#toCatalogOptions`).
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
    model`) as `modelPicker` controls
@@ -192,7 +192,7 @@ remove your `$run` dir. Nothing is spawned by this card.
   for provider/`Recent` group heads *and* for unavailable-provider lines
   (`widgets/modelCatalog/index.tsx:263-277`). A group head is a bare
   provider name; an unavailable line reads `<provider> — <message>`
-  (`unavailableLine`, `widgets/modelCatalog/pickerRows.ts:60-65`). Only
+  (`unavailableLine`, `appwire-client/typescript/modelCatalogPickerRows.ts:60-65`). Only
   `role="option"` rows are models.
 - Don't confuse "dated" with "has a date-shaped substring anywhere" —
   the regex is anchored to the *end* of the id (`-\d{8}(-v\d+)?$`,

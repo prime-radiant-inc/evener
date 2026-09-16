@@ -160,6 +160,8 @@ no router (reserved).
 | `evener/instance/edit` | hub | `InstanceEditParams` | `InstanceListResponse` | Edits a provider instance; returns the updated list. |
 | `evener/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `evener/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
+| `evener/instance/setModelDisabled` | hub | `InstanceSetModelDisabledParams` | `InstanceListResponse` | Enables or disables one model row on an instance; returns the updated list. |
+| `evener/instance/refreshModels` | hub | `InstanceRefreshModelsParams` | `InstanceListResponse` | Fetches the instance's live model listing, then returns the updated list. |
 | `evener/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
 | `evener/plugin/preview` | hub | `PluginPreviewParams` | `PluginPreviewResponse` | Previews the plugins selected for a launch without starting a session or executing plugin commands. |
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
@@ -771,6 +773,7 @@ _(no fields)_
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
+| `models` | `[]appwire.InstanceModelEntry` | yes |  |
 
 
 ### `InstanceListResponse`
@@ -782,6 +785,21 @@ _(no fields)_
 | `diagnostics` | `[]string` | yes |  |
 | `userLayer` | `string` | yes |  |
 | `writesRefused` | `bool` | yes |  |
+
+
+### `InstanceModelEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `disabled` | `bool` | yes |  |
+
+
+### `InstanceRefreshModelsParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
 
 
 ### `InstanceRemoveParams`
@@ -797,6 +815,15 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+
+
+### `InstanceSetModelDisabledParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `model` | `string` |  |  |
+| `disabled` | `bool` |  |  |
 
 
 ### `ItemLifecycleParams`

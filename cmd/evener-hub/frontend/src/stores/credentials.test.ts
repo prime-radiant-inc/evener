@@ -196,6 +196,258 @@ describe("mutations returning the updated instance list", () => {
     },
   );
 
+  test("concurrent refreshes for different instances each land their own row", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    const workModels = [{ id: "work-live-model" }];
+    const personalModels = [{ id: "personal-live-model" }];
+    const gates = new Map<string, (v: InstanceListResponse) => void>();
+    fake.on("evener/instance/refreshModels", (params: { name: string }) => {
+      return new Promise<InstanceListResponse>((resolve) => {
+        gates.set(params.name, resolve);
+      });
+    });
+    fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+    const workRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    const personalRefresh = credentialsStore.getState().refreshModels("personal");
+    await Promise.resolve();
+    // Each answer carries ONLY its own instance's row — the way the
+    // per-instance merge must treat it. If the store replaced the whole
+    // snapshot (or dropped the earlier answer), one row's models would be
+    // missing below.
+    gates.get("personal")?.({ instances: [{ ...OTHER, models: personalModels }], availableProviders: [] });
+    await personalRefresh;
+    gates.get("work")?.({ instances: [{ ...ONE_INSTANCE, models: workModels }], availableProviders: [] });
+    await workRefresh;
+    const byName = new Map(credentialsStore.getState().instances.map((i) => [i.name, i]));
+    expect([...byName.keys()].sort()).toEqual(["personal", "work"]);
+    expect(byName.get("work")?.models).toEqual(workModels);
+    expect(byName.get("personal")?.models).toEqual(personalModels);
+  });
+
+  test("a refresh neither sets nor clears the global fetch spinner", async () => {
+    const fake = connectFakeClient();
+    let finishFetch!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishFetch = resolve;
+        }),
+    );
+    const fetchPromise = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    expect(credentialsStore.getState().loading).toBe(true);
+    // A refresh racing the fetch must leave the spinner alone: it never
+    // sets loading, and finishing must not clear the fetch's spinner.
+    fake.on("evener/instance/refreshModels", () => ({ instances: [ONE_INSTANCE], availableProviders: [] }));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().loading).toBe(true);
+    finishFetch(LIST_RESPONSE);
+    await fetchPromise;
+    expect(credentialsStore.getState().loading).toBe(false);
+  });
+
+  test("a refresh whose answer omits a concurrently removed instance does not resurrect it", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    // Order: refresh starts, remove completes (its applyMutation bumps
+    // the global version past the refresh's basis), then the stale
+    // refresh answer omits the removed row. The merge must leave the
+    // store empty, not resurrect a phantom stub.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    fake.on("evener/instance/remove", () => ({ instances: [], availableProviders: [] }));
+    await credentialsStore.getState().remove("work");
+    // Stale answer omits the removed row: the store must stay empty,
+    // not resurrect a phantom stub.
+    finishRefresh({ instances: [], availableProviders: [] });
+    await refresh;
+    expect(credentialsStore.getState().instances).toEqual([]);
+  });
+
+  test("a stale full-list fetch keeps newer metadata and refreshed models", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "none" }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().fetch();
+
+    // A slow read starts, then a refresh lands with a live-only row.
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "none", models: [{ id: "live-new" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("work");
+
+    // The read's answer is the newer authority for everything except the
+    // models the refresh fetched.
+    finishRead({
+      instances: [{ ...ONE_INSTANCE, activeSource: "store" }],
+      availableProviders: [],
+      diagnostics: ["new diagnostics"],
+    });
+    await read;
+    const state = credentialsStore.getState();
+    expect(state.instances[0]?.activeSource).toBe("store");
+    expect(state.instances[0]?.models?.map((model) => model.id)).toEqual(["live-new"]);
+    expect(state.diagnostics).toEqual(["new diagnostics"]);
+  });
+
+  test("a stale full-list fetch does not resurrect an instance its answer omits", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+
+    // A read is out when a refresh for "personal" lands...
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...OTHER, models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("personal");
+    expect(credentialsStore.getState().instances.map((entry) => entry.name)).toEqual(["work", "personal"]);
+
+    // ...and the read's answer no longer carries it: the server removed it,
+    // so the stale answer must not put the row back.
+    finishRead({ instances: [ONE_INSTANCE], availableProviders: [] });
+    await read;
+    expect(credentialsStore.getState().instances.map((entry) => entry.name)).toEqual(["work"]);
+  });
+
+  test("a stale full-list fetch merges around landed refresh rows instead of wiping them", async () => {
+    const fake = connectFakeClient();
+    const workModels = [{ id: "work-live-model" }];
+    let finishFetch!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishFetch = resolve;
+        }),
+    );
+    const fetchPromise = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    // Refresh lands first with the live row; the older fetch answers
+    // after with the pre-refresh snapshot. The live row must survive.
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...ONE_INSTANCE, models: workModels }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("work");
+    finishFetch(LIST_RESPONSE);
+    await fetchPromise;
+    expect(credentialsStore.getState().instances).toEqual([{ ...ONE_INSTANCE, models: workModels }]);
+  });
+
+  test("a refresh that landed before the read began is not newer than the read's answer", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+
+    // A refresh for "work" lands BEFORE this read starts: the answer the read
+    // is about to receive postdates it, so none of this row is newer than the
+    // answer.
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...ONE_INSTANCE, models: [{ id: "refresh-before-read" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["refresh-before-read"]);
+
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    // A refresh for a DIFFERENT instance lands while the read is out: that is
+    // what makes this answer stale for its own rows, and it is why the earlier
+    // "work" refresh must not be read as one of them.
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...OTHER, models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("personal");
+
+    // The answer carries the newer inventory for "work".
+    finishRead({
+      instances: [
+        { ...ONE_INSTANCE, models: [{ id: "answer-newer" }] },
+        { ...OTHER, models: [{ id: "personal-old" }] },
+      ],
+      availableProviders: [],
+    });
+    await read;
+    const rows = credentialsStore.getState().instances;
+    expect(rows.find((entry) => entry.name === "work")?.models?.map((model) => model.id)).toEqual(["answer-newer"]);
+    // The row a refresh landed for during the read keeps that refresh's
+    // inventory, which is the merge this read still owes.
+    expect(rows.find((entry) => entry.name === "personal")?.models?.map((model) => model.id)).toEqual([
+      "personal-live",
+    ]);
+  });
+
+  test("a background fetch in flight does not discard a landing refresh", async () => {
+    const fake = connectFakeClient();
+    const workModels = [{ id: "work-live-model" }];
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    // Refresh starts; a notification-driven background refetch starts
+    // while it is out. The refresh must still land when it answers.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    await credentialsStore.getState().fetch();
+    finishRefresh({ instances: [{ ...ONE_INSTANCE, models: workModels }], availableProviders: [] });
+    await refresh;
+    expect(credentialsStore.getState().instances).toEqual([{ ...ONE_INSTANCE, models: workModels }]);
+  });
+
   test("a newer mutation wins when mutation responses arrive out of order", async () => {
     const fake = connectFakeClient();
     let finishOld!: (value: InstanceListResponse) => void;
@@ -213,6 +465,524 @@ describe("mutations returning the updated instance list", () => {
     finishOld({ instances: [], availableProviders: [] });
     await older;
     expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("concurrent toggles for different models both land when the later answer omits the earlier write", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }, { id: "m2" }]));
+    await credentialsStore.getState().fetch();
+
+    const gates = new Map<string, (value: InstanceListResponse) => void>();
+    fake.on(
+      "evener/instance/setModelDisabled",
+      (params: { model: string }) =>
+        new Promise<InstanceListResponse>((resolve) => {
+          gates.set(params.model, resolve);
+        }),
+    );
+    const first = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+    const second = credentialsStore.getState().setModelDisabled({ name: "work", model: "m2", disabled: true });
+    await Promise.resolve();
+
+    // The later toggle answers first, and its answer was computed before the
+    // earlier write reached the server: it still shows m1 enabled.
+    gates.get("m2")?.(withModels([{ id: "m1" }, { id: "m2", disabled: true }]));
+    await second;
+    // The earlier toggle answers second, carrying both writes — but a newer
+    // request already replaced the listing, so its answer is superseded.
+    gates.get("m1")?.(
+      withModels([
+        { id: "m1", disabled: true },
+        { id: "m2", disabled: true },
+      ]),
+    );
+    await first;
+
+    // Both switches must read disabled: dropping the superseded answer
+    // loses the first toggle until something else refetches.
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([
+      { id: "m1", disabled: true },
+      { id: "m2", disabled: true },
+    ]);
+  });
+
+  test("a refresh cannot overwrite a toggle that landed while it was in flight", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }, { id: "m2" }]));
+    await credentialsStore.getState().fetch();
+
+    // The toggle starts first and is still out when the refresh starts, so
+    // the refresh's guard has to catch a write that LANDS during its flight —
+    // not one that starts after it.
+    let finishToggle!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    finishToggle(withModels([{ id: "m1", disabled: true }, { id: "m2" }]));
+    await toggle;
+    // The refresh's snapshot predates the toggle: applying it would flip the
+    // switch back.
+    finishRefresh(withModels([{ id: "m1" }, { id: "m2" }]));
+    await refresh;
+
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([{ id: "m1", disabled: true }, { id: "m2" }]);
+  });
+
+  test("a read cannot revert a toggle that landed while it was in flight", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // The toggle starts first...
+    let finishToggle!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+
+    // ...and a full-list refetch starts after it, before the write has been
+    // applied server-side.
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+
+    // The toggle lands; the newer read supersedes its answer, so only the
+    // row it wrote is reconciled.
+    finishToggle(withModels([{ id: "m1", disabled: true }]));
+    await toggle;
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([{ id: "m1", disabled: true }]);
+
+    // The read answers with the pre-write listing: it must not flip the
+    // switch back.
+    finishRead(withModels([{ id: "m1" }]));
+    await read;
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([{ id: "m1", disabled: true }]);
+  });
+
+  test("a write on another instance does not discard this instance's refresh", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+
+    // A refresh for "work" is out when the user signs a DIFFERENT instance
+    // in: that write says nothing about work's live models.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    fake.on("evener/auth/apiKey/set", () => ({
+      provider: "personal",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().setApiKey("personal", "sk-personal");
+
+    finishRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "work-live" }] }], availableProviders: [] });
+    await refresh;
+    const work = credentialsStore.getState().instances.find((entry) => entry.name === "work");
+    expect(work?.models?.map((model) => model.id)).toEqual(["work-live"]);
+  });
+
+  test("refresh bookkeeping does not survive a client change", async () => {
+    const first = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    first.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "store" }, OTHER],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().fetch();
+    // The first client's refresh marks "work" with its own row.
+    first.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "store", models: [{ id: "old-live" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.activeSource).toBe("store");
+
+    // A new client takes over — a server that says "work" has no stored
+    // credentials. Its read is in flight when a refresh for another
+    // instance lands, which moves the generation and forces that read
+    // through the merge path.
+    const second = new FakeClient("ready");
+    let finishRead!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    second.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...OTHER, models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    }));
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    await credentialsStore.getState().refreshModels("personal");
+
+    // The old client's marked row must not be preserved into the new
+    // client's listing: this answer is the only authority for its fields.
+    finishRead({
+      instances: [
+        { ...ONE_INSTANCE, activeSource: "none" },
+        { ...OTHER, activeSource: "none" },
+      ],
+      availableProviders: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(credentialsStore.getState().instances[0]?.activeSource).toBe("none");
+    // The old client's marked inventory is gone with it: this answer's row
+    // for "work" carries no live models, and nothing may stage them back.
+    expect(credentialsStore.getState().instances[0]?.models).toBeUndefined();
+  });
+
+  test("a write landing from a replaced client does not discard the new client's refresh", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    let finishToggle!: (value: InstanceListResponse) => void;
+    first.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+
+    // The session reconnects on a new client while that write is still out,
+    // and the new client's refresh starts.
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // The old client's write lands afterwards. It belongs to a client that is
+    // gone: it must not count against the new client's refresh.
+    finishToggle({ instances: [{ ...ONE_INSTANCE, models: [{ id: "m1", disabled: true }] }], availableProviders: [] });
+    await toggle;
+    finishRefresh({
+      instances: [{ ...ONE_INSTANCE, models: [{ id: "m1" }, { id: "live-new" }] }],
+      availableProviders: [],
+    });
+    await refresh;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "live-new"]);
+  });
+
+  test("a refresh landing after a newer read does not revert its metadata", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "none", models: [{ id: "m1" }] }],
+      availableProviders: [],
+      diagnostics: ["old diagnostics"],
+    }));
+    await credentialsStore.getState().fetch();
+
+    // The refresh is out when a newer read lands: the credential source and
+    // the diagnostics it reports are newer than the refresh's snapshot.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "store", models: [{ id: "m1" }] }],
+      availableProviders: [],
+      diagnostics: ["new diagnostics"],
+    }));
+    await credentialsStore.getState().fetch();
+
+    // The refresh only ever knows about live models: its older row and
+    // globals must not overwrite what the newer read established.
+    finishRefresh({
+      instances: [{ ...ONE_INSTANCE, activeSource: "none", models: [{ id: "m1" }, { id: "live-new" }] }],
+      availableProviders: [],
+      diagnostics: ["old diagnostics"],
+    });
+    await refresh;
+
+    const state = credentialsStore.getState();
+    expect(state.instances[0]?.activeSource).toBe("store");
+    expect(state.instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "live-new"]);
+    expect(state.diagnostics).toEqual(["new diagnostics"]);
+  });
+
+  test("a second refresh landing during a write keeps its newer inventory", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // One refresh lands before the write starts, marking the row...
+    fake.on("evener/instance/refreshModels", () => withModels([{ id: "m1" }, { id: "first-live" }]));
+    await credentialsStore.getState().refreshModels("work");
+
+    // ...the write starts...
+    let finishToggle!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+
+    // ...and a SECOND refresh for the same instance lands while it is out,
+    // with inventory newer than the write's answer.
+    fake.on("evener/instance/refreshModels", () => withModels([{ id: "m1", disabled: true }, { id: "second-live" }]));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "second-live"]);
+
+    finishToggle(withModels([{ id: "m1", disabled: true }, { id: "first-live" }]));
+    await toggle;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "second-live"]);
+  });
+
+  test("reconnecting lets a refresh stage a row the previous client never had", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // The session reconnects — its own first read is still out — and the new
+    // client's refresh starts for an instance this store has never held.
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("personal");
+    await Promise.resolve();
+    finishRefresh({
+      instances: [{ ...ONE_INSTANCE, name: "personal", models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    });
+    await refresh;
+    const personal = credentialsStore.getState().instances.find((entry) => entry.name === "personal");
+    expect(personal?.models?.map((model) => model.id)).toEqual(["personal-live"]);
+  });
+
+  test("a superseded toggle from a replaced client does not touch the new client's listing", async () => {
+    const first = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    first.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // The toggle is out when the session reconnects on a new client, whose
+    // own listing says the model is enabled.
+    let finishToggle!: (value: InstanceListResponse) => void;
+    first.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    await credentialsStore.getState().fetch();
+
+    // The old client's answer lands afterwards: it must not write its row
+    // into the new client's listing.
+    finishToggle(withModels([{ id: "m1", disabled: true }]));
+    await toggle;
+    expect(credentialsStore.getState().instances[0]?.models).toEqual([{ id: "m1" }]);
+  });
+
+  test("a replaced client's refresh cannot delete the new client's refresh token", async () => {
+    const first = connectFakeClient();
+    first.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // A refresh is out on the first client...
+    let finishOldRefresh!: (value: InstanceListResponse) => void;
+    first.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishOldRefresh = resolve;
+        }),
+    );
+    const oldRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // ...when the session reconnects and the new client starts its own
+    // refresh for the same instance (its version restarts at 1).
+    const second = new FakeClient("ready");
+    second.on("evener/instance/list", () => LIST_RESPONSE);
+    connectionStore.getState().connect(second);
+    await Promise.resolve();
+    let finishNewRefresh!: (value: InstanceListResponse) => void;
+    second.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishNewRefresh = resolve;
+        }),
+    );
+    const newRefresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // The old request's cleanup must not take the new request's token with
+    // it: that would discard the live inventory the new client asked for.
+    finishOldRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "old-live" }] }], availableProviders: [] });
+    await oldRefresh;
+    finishNewRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "new-live" }] }], availableProviders: [] });
+    await newRefresh;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["new-live"]);
+  });
+
+  test("a refresh cannot revert an edit that landed while it was in flight", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // The other side of the same guard: a write that STARTS after the
+    // refresh does keep superseding it, so the refresh's older snapshot
+    // never carries an edited field back to its previous value.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    fake.on("evener/instance/edit", () => ({
+      instances: [{ ...ONE_INSTANCE, baseUrl: "https://edited" }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().edit({ name: "work", baseUrl: "https://edited" });
+    finishRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "live" }] }], availableProviders: [] });
+    await refresh;
+
+    expect(credentialsStore.getState().instances).toEqual([{ ...ONE_INSTANCE, baseUrl: "https://edited" }]);
+  });
+
+  test("a toggle cannot discard live rows a refresh landed while it was in flight", async () => {
+    const fake = connectFakeClient();
+    const withModels = (models: InstanceEntry["models"]): InstanceListResponse => ({
+      instances: [{ ...ONE_INSTANCE, models }],
+      availableProviders: [],
+    });
+    fake.on("evener/instance/list", () => withModels([{ id: "m1" }]));
+    await credentialsStore.getState().fetch();
+
+    // The toggle starts first...
+    let finishToggle!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishToggle = resolve;
+        }),
+    );
+    const toggle = credentialsStore.getState().setModelDisabled({ name: "work", model: "m1", disabled: true });
+    await Promise.resolve();
+
+    // ...and a refresh lands while it is out, carrying a live-only row the
+    // toggle's answer (computed before that fetch) cannot know about.
+    fake.on("evener/instance/refreshModels", () => withModels([{ id: "m1" }, { id: "live-new" }]));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["m1", "live-new"]);
+
+    // The toggle's answer arrives with the pre-refresh inventory: it is
+    // authoritative for the row it wrote, not for a newer live listing.
+    finishToggle(withModels([{ id: "m1", disabled: true }]));
+    await toggle;
+
+    const models = credentialsStore.getState().instances[0]?.models ?? [];
+    expect(models.map((model) => model.id)).toEqual(["m1", "live-new"]);
+    expect(models.find((model) => model.id === "m1")?.disabled).toBe(true);
   });
 
   test("a failed mutation releases loading from a superseded read", async () => {
@@ -407,6 +1177,50 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     await expect(credentialsStore.getState().testCredentials("custom / team-east")).resolves.toEqual(response);
   });
 
+  test("a model refresh cannot revive a pre-auth row after an auth mutation landed", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "none" }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().fetch();
+
+    // A model refresh is out when the user signs in.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+
+    // The auth write lands and the caller refetches the list, which now
+    // reports the stored key.
+    fake.on("evener/auth/apiKey/set", () => ({
+      provider: "work",
+      supported: true,
+      signedIn: true,
+      activeSource: "store",
+      hasStoredOAuth: false,
+    }));
+    await credentialsStore.getState().setApiKey("work", "sk-secret");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...ONE_INSTANCE, activeSource: "store" }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().fetch();
+    expect(credentialsStore.getState().instances[0]?.activeSource).toBe("store");
+
+    // The refresh's snapshot predates the sign-in: applying it would show
+    // the signed-out row again.
+    finishRefresh({ instances: [{ ...ONE_INSTANCE, activeSource: "none" }], availableProviders: [] });
+    await refresh;
+    expect(credentialsStore.getState().instances[0]?.activeSource).toBe("store");
+  });
+
   test("setApiKey() calls evener/auth/apiKey/set and returns its response", async () => {
     const fake = connectFakeClient();
     fake.on("evener/auth/apiKey/set", (params) => {
@@ -551,6 +1365,30 @@ describe("auth RPCs: thin proxies, no local state mutation", () => {
     });
     const result = await credentialsStore.getState().devicePoll("work", "flow-2");
     expect(result.state).toBe("pending");
+  });
+
+  test("a pending device poll does not discard an in-flight model refresh", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    // A refresh is out when the user's device poll answers "pending": that
+    // answer writes nothing, so the listing it fetched is still good.
+    let finishRefresh!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/refreshModels",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresh = credentialsStore.getState().refreshModels("work");
+    await Promise.resolve();
+    fake.on("evener/auth/device/poll", () => ({ state: "pending" }));
+    await credentialsStore.getState().devicePoll("work", "flow-2");
+    finishRefresh({ instances: [{ ...ONE_INSTANCE, models: [{ id: "live-new" }] }], availableProviders: [] });
+    await refresh;
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-new"]);
   });
 });
 

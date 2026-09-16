@@ -18,3 +18,8 @@ test("trailing whitespace with nothing after it does not create an empty atom", 
 test("interior runs of whitespace stay whole in the head", () => {
   expect(splitTrailingWord("a  b")).toEqual(["a  ", "b"]);
 });
+
+test("multi-line text splits at the final word of its last line", () => {
+  expect(splitTrailingWord("line one\nline two end")).toEqual(["line one\nline two ", "end"]);
+  expect(splitTrailingWord("\nword")).toEqual(["\n", "word"]);
+});

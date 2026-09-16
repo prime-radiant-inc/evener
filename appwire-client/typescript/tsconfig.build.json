@@ -24,6 +24,7 @@
     "reconcileBatches.ts",
     "attachmentLimits.ts",
     "attachmentMarkers.ts",
+    "textareaMarkers.ts",
     "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",
@@ -52,6 +53,15 @@
     "reasoningEffort.ts",
     "credentialLabels.ts",
     "pathRows.ts",
+    "modelCatalogTypes.ts",
+    "modelCatalogView.ts",
+    "modelCatalogPickerRows.ts",
+    "taskListData.ts",
+    "taskListGroups.ts",
+    "taskListTime.ts",
+    "launchSchema.ts",
+    "launchInherited.ts",
+    "launchPathListAdd.ts",
     "builtinInvocation.ts"
   ]
 }

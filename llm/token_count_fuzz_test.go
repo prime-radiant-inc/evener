@@ -69,7 +69,7 @@ func FuzzTokenEstimators(f *testing.F) {
 		// The dispatcher over an inline image with no decodable bytes falls through
 		// to the fallback branch; it must stay non-negative.
 		img := &ImageData{MediaType: "image/png", Detail: detail}
-		if got := estimateImageTokens(provider, model, img); got < 0 {
+		if got := estimateImageTokens(targetFromNames(provider, model), img); got < 0 {
 			t.Fatalf("estimateImageTokens negative: %d", got)
 		}
 	})

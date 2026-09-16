@@ -1,16 +1,17 @@
 import { createStore } from "zustand/vanilla";
-import { MAX_ATTACHMENTS } from "@evener/appwire-client";
 import {
+  buildComposerInput,
+  MAX_ATTACHMENTS,
   markerText,
   stripMarker,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
+  WireError,
+} from "@evener/appwire-client";
 import { harnessSupportsPluginSelection } from "../../cmd/evener-hub/frontend/src/panes/spawn/harnessModels";
 import {
   pluginSelectionIssues,
   withPluginSelection,
 } from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
 import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
-import { buildComposerInput, WireError } from "@evener/appwire-client";
 import type {
   HarnessDescriptor,
   LaunchConfigLayer,

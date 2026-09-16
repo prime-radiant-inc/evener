@@ -281,7 +281,54 @@
         "activeSource": "store",
         "hasStoredFile": true,
         "hasStoredOAuth": false,
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
+        ]
       },
       {
         "name": "openai-codex",
@@ -299,7 +346,12 @@
         "activeSource": "oauth",
         "hasStoredOAuth": true,
         "storedEmail": "bot@example.com",
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "gpt-6-astra"
+          }
+        ]
       },
       {
         "name": "openai",
@@ -317,7 +369,147 @@
         "activeSource": "env:OPENAI_API_KEY",
         "hasStoredOAuth": false,
         "envVar": "OPENAI_API_KEY",
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "chatgpt-image-latest"
+          },
+          {
+            "id": "gpt-3.5-turbo"
+          },
+          {
+            "id": "gpt-4"
+          },
+          {
+            "id": "gpt-4-turbo"
+          },
+          {
+            "id": "gpt-4.1"
+          },
+          {
+            "id": "gpt-4.1-mini"
+          },
+          {
+            "id": "gpt-4.1-nano"
+          },
+          {
+            "id": "gpt-4o"
+          },
+          {
+            "id": "gpt-4o-2024-05-13"
+          },
+          {
+            "id": "gpt-4o-2024-08-06"
+          },
+          {
+            "id": "gpt-4o-2024-11-20"
+          },
+          {
+            "id": "gpt-4o-mini"
+          },
+          {
+            "id": "gpt-5"
+          },
+          {
+            "id": "gpt-5-mini"
+          },
+          {
+            "id": "gpt-5-nano"
+          },
+          {
+            "id": "gpt-5-pro"
+          },
+          {
+            "id": "gpt-5.1"
+          },
+          {
+            "id": "gpt-5.2"
+          },
+          {
+            "id": "gpt-5.2-chat-latest"
+          },
+          {
+            "id": "gpt-5.2-pro"
+          },
+          {
+            "id": "gpt-5.3-chat-latest"
+          },
+          {
+            "id": "gpt-5.3-codex"
+          },
+          {
+            "id": "gpt-5.3-codex-spark"
+          },
+          {
+            "id": "gpt-5.4"
+          },
+          {
+            "id": "gpt-5.4-mini"
+          },
+          {
+            "id": "gpt-5.4-nano"
+          },
+          {
+            "id": "gpt-5.4-pro"
+          },
+          {
+            "id": "gpt-5.5"
+          },
+          {
+            "id": "gpt-5.5-pro"
+          },
+          {
+            "id": "gpt-5.6"
+          },
+          {
+            "id": "gpt-5.6-luna"
+          },
+          {
+            "id": "gpt-5.6-sol"
+          },
+          {
+            "id": "gpt-5.6-terra"
+          },
+          {
+            "id": "gpt-6-astra"
+          },
+          {
+            "id": "gpt-image-1-mini"
+          },
+          {
+            "id": "gpt-image-1.5"
+          },
+          {
+            "id": "gpt-realtime-2.1"
+          },
+          {
+            "id": "o1"
+          },
+          {
+            "id": "o1-pro"
+          },
+          {
+            "id": "o3"
+          },
+          {
+            "id": "o3-mini"
+          },
+          {
+            "id": "o3-pro"
+          },
+          {
+            "id": "o4-mini"
+          },
+          {
+            "id": "text-embedding-3-large"
+          },
+          {
+            "id": "text-embedding-3-small"
+          },
+          {
+            "id": "text-embedding-ada-002"
+          }
+        ]
       },
       {
         "name": "ollama",
@@ -353,7 +545,54 @@
         ],
         "activeSource": "api_key",
         "hasStoredOAuth": false,
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
+        ]
       },
       {
         "name": "gateway",
@@ -413,6 +652,53 @@
         "credentialRequired": true,
         "warnings": [
           "no credential"
+        ],
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
         ]
       },
       {
