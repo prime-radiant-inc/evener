@@ -8,7 +8,7 @@ export type ControlsSource = Pick<MobileConversation, "status" | "capabilities">
 
 /**
  * What this conversation may be asked to do now: the SDK's sessionControls
- * (appwire-client/typescript/submitRouting.ts) over the conversation's status,
+ * (@evener/appwire-client's submitRouting module) over the conversation's status,
  * capabilities and queue depth. Every native affordance and submission reads
  * this rather than a raw capability flag: the hub advertises steer as harness
  * support alone, so the status (and, for a drain, the queue a Stop parked) is

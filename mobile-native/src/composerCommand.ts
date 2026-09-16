@@ -41,8 +41,8 @@ const commands = [
   // capability (the hub folds the status into that flag; the client applies
   // it too, so the rule is one and the transcript's turn id never enters).
   { id: "interrupt", capability: "interrupt", control: "stop", label: "Interrupt" },
-  // Steering commands read the session's controls (appwire-client/typescript/
-  // submitRouting.ts sessionControls): the hub advertises steer as harness
+  // Steering commands read the session's controls (@evener/appwire-client's
+  // sessionControls): the hub advertises steer as harness
   // support alone, so the status -- and, for a drain, the queue a Stop parked
   // -- is applied here, the same rule the web's composer and palette use.
   { id: "steer", args: true, capability: "steer", control: "steer", label: "Steer" },

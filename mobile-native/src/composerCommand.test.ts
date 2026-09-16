@@ -30,7 +30,7 @@ it.each([
 });
 
 // The completion registry reads the conversation the way the web's palette
-// does (appwire-client/typescript/submitRouting.ts sessionControls): the
+// does (@evener/appwire-client's sessionControls): the
 // harness's capabilities, and for steering the status and queue depth too.
 function conversation(
   capabilities: Partial<MobileConversation["capabilities"]>,

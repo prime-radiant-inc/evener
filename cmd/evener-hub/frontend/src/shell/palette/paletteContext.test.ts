@@ -1,6 +1,5 @@
 // @vitest-environment node
 
-import type { ThreadModel } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { buildPaletteContext } from "./paletteContext";

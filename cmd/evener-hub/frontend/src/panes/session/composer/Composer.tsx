@@ -26,12 +26,13 @@ import {
   decideSubmitRoute,
   deriveSendQueueAvailability,
   filterSlashMenuItems,
-  isTurnActive,
   mergeSlashCommands,
+  NO_ACTIVE_TURN,
   parseSlashToken,
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
+  sessionControls,
   spliceSlashCommand,
 } from "@evener/appwire-client";
 import {
@@ -44,7 +45,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { NO_ACTIVE_TURN, sessionControls } from "@evener/appwire-client";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";
@@ -815,7 +815,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface, with the rationale (status alone, never activeTurnId; capability
-  // is the harness's) in appwire-client/typescript/submitRouting.ts.
+  // is the harness's) in @evener/appwire-client's submitRouting module.
   const controls = sessionControls(model.status.type, model.capabilities, queueDepth);
   const canSendWhenEnded = controls.send;
   // The target's skillInput capability, same narrowing rule: submission is

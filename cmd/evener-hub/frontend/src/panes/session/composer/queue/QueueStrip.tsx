@@ -9,9 +9,14 @@
 // integration merge (T6), not here.
 
 import type { InputItem } from "@evener/appwire-client";
-import { canonicalSkillNames, errorText, sessionActionError } from "@evener/appwire-client";
+import {
+  canonicalSkillNames,
+  errorText,
+  STEER_UNAVAILABLE,
+  sessionActionError,
+  sessionControls,
+} from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
-import { STEER_UNAVAILABLE, sessionControls } from "@evener/appwire-client";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";

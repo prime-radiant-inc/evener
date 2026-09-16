@@ -10,8 +10,13 @@
 // for a fire-and-report action - never a silent swallow.
 
 import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
-import { canReadSharedNotes, slashCommandInvocation, visibleCatalogCommands } from "@evener/appwire-client";
-import { NO_ACTIVE_TURN, sessionControls } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  NO_ACTIVE_TURN,
+  sessionControls,
+  slashCommandInvocation,
+  visibleCatalogCommands,
+} from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";
@@ -147,7 +152,7 @@ export interface ScopedCommand extends Command {
 // (mid-turn /clear) as much as it is for a cold or foreign-source one.
 export const UNAVAILABLE_REASON = "not available right now";
 
-// The session's controls (appwire-client/typescript/submitRouting.ts
+// The session's controls (@evener/appwire-client's submitRouting module
 // sessionControls) as the palette's availability rules: each returns the
 // reason the action is refused, or undefined.
 function controlsFor(model: ThreadModel) {
