@@ -53,6 +53,22 @@ function clearIntent(targetRef = "ref-a"): MutationIntent {
   };
 }
 
+function drainIntent(targetRef = "ref-a", text = "steer this"): MutationIntent {
+  const input = [{ type: "text", text }];
+  return {
+    targetRef,
+    threadId: "thread-a",
+    method: "turn/drainAsSteer",
+    payload: {
+      ref: targetRef,
+      expectedQueueRevision: 2,
+      input,
+    },
+    attachments: [],
+    optimisticDisplay: { method: "turn/drainAsSteer", input },
+  };
+}
+
 function storage(indexedDB: IDBFactory, databaseName: string, mutationIds: string[]): MutationOutboxIndexedDB {
   let nextId = 0;
   return new MutationOutboxIndexedDB({
@@ -616,6 +632,59 @@ describe("MutationDispatcher", () => {
     await dispatcher.dispatchTargets(["ref-a"]);
 
     expect(await outbox.getOutbox(record.clientMutationId)).toBeUndefined();
+  });
+
+  // A drain-as-steer consumes the whole server queue into one steering
+  // message. Same-client queue intents accepted before the drain (sitting in
+  // the optimistic store with projectionState "pending") are consumed with
+  // it, but no push ever names their ids again: the post-drain queueChanged
+  // carries only the REMAINING entries' ids and evener/steering/injected
+  // carries only the drain's own id. Without retiring them at the drain's own
+  // receipt, their optimistic rows resurface in the queue strip after the
+  // server queue empties.
+  test("an applied drain retires earlier accepted same-target queue intents", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-retires-queue", ["queue-a", "queue-b", "drain-a"]);
+    const first = await outbox.enqueueIntent(queueIntent("ref-a", "first queued"));
+    await outbox.enqueueIntent(queueIntent("ref-a", "second queued"));
+    const drain = await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.listOutbox("ref-a")).toEqual([]);
+    const optimistic = await outbox.listOptimistic("ref-a");
+    expect(optimistic.map((record) => record.clientMutationId)).toEqual([drain.clientMutationId]);
+    expect(first.clientMutationId).not.toBe(drain.clientMutationId);
+    outbox.close();
+  });
+
+  // A queue submitted AFTER the drain (higher intentSequence) lands on the
+  // emptied queue as fresh work - retiring it with the drain would lose a
+  // message the server never saw.
+  test("an applied drain keeps later queue intents submitted after it", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-keeps-later-queue", ["drain-a", "late-queue-a"]);
+    await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", async (params) => {
+      // A fresh queue lands while the drain is in flight: it is dispatched after
+      // the drain (FIFO) and must survive the drain's receipt.
+      await outbox.enqueueIntent(queueIntent("ref-a", "queued after the drain"));
+      return { receipt: receipt(params.clientMutationId, "applied", "pending") };
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.listOutbox("ref-a")).toEqual([]);
+    const optimistic = await outbox.listOptimistic("ref-a");
+    expect(optimistic.map((record) => record.clientMutationId).sort()).toEqual(["drain-a", "late-queue-a"]);
+    outbox.close();
   });
 });
 
