@@ -101,6 +101,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   in state and mutations reject), with the installed-plugin and directory
   stores to follow. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
+- `@evener/appwire-client/state/credentials` - the credentials state layer:
+  `createCredentialInstancesStore()` is the framework-free listing core
+  (`instances`) each app's Providers & credentials store adapts, with the
+  stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

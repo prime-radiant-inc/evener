@@ -22,6 +22,7 @@
       "@evener/appwire-client": ["../../../appwire-client/typescript/index.ts"],
       "@evener/appwire-client/docContent": ["../../../appwire-client/typescript/docContent.ts"],
       "@evener/appwire-client/state/navigation": ["../../../appwire-client/typescript/state/navigation/index.ts"],
+      "@evener/appwire-client/state/credentials": ["../../../appwire-client/typescript/state/credentials/index.ts"],
       "@evener/appwire-client/state/extensions": ["../../../appwire-client/typescript/state/extensions/index.ts"],
       "@evener/appwire-client/testing/*": ["../../../appwire-client/typescript/testing/*"],
       // The package's own test files import these bare, and node resolution

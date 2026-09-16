@@ -361,6 +361,33 @@ assert.throws(
 );
 `,
     },
+    // The credentials state layer: the listing core each app's Providers &
+    // credentials store is an adapter over. A store is built and driven
+    // without a connection, which is the whole of what qualification can do
+    // to it: no request is issued, so the smoke proves the factory, the
+    // pure helpers and the refusal type resolve and behave.
+    "./state/credentials": {
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore();
+const held: boolean = staleListingHeld(store.getState());
+const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
+      cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
+      smoke: `const credentialStore = client.createCredentialInstancesStore();
+assert.deepEqual(credentialStore.getState().instances, []);
+assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.deepEqual(client.listingOf(credentialStore.getState()), {
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+});
+credentialStore.connectionChanged(null, "idle");
+assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
+assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
+assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
+assert.throws(() => credentialStore.requireWritableClient(), /no client connected/);
+`,
+    },
     // The extensions state layer - the marketplaces store, with the plugins
     // and directories stores to follow - published as one subpath for the same
     // reason state/navigation is: a layer both apps build their settings
