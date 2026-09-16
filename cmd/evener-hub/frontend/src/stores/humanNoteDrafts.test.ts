@@ -307,6 +307,62 @@ test.each(["Stop", "storage abort"] as const)(
   },
 );
 
+// RoboRev finding (merged head of PR 1393, issue #1568): the blocked-note save
+// returned unconditionally after retryBlockedMutation, so a same-generation row
+// that another connection settled or removed left the draft with nothing to
+// settle it and the stale "blocked pending recovery" status standing in for a
+// save that never happened. The qualification matters: a genuinely newer edit
+// increments the generation and takes the normal setHumanNote path already, so
+// this is that narrower case - no acknowledgement reached this tab, and the
+// note is still unsaved.
+test("a background save reports a settled-elsewhere blocked row instead of its stale status", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  // The adoption of the durable blocked row is a real IndexedDB read, and this
+  // file's fake setInterval freezes waitFor's own polling: awaiting one of our
+  // own reads behind it proves the adoption has landed instead.
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  const blockedStatus = result.current?.error;
+  expect(blockedStatus).toBeTruthy();
+  // Another connection settles the row: the outbox no longer holds it, and no
+  // canonical acknowledgement reached this tab.
+  await storage.settleApplied(original.clientMutationId);
+  expect(await storage.getOutbox(original.clientMutationId)).toBeUndefined();
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  // The retry declined, so this save never ran: the draft must say so rather
+  // than keep a status that describes a row this tab no longer has.
+  expect(result.current?.error).not.toBe(blockedStatus);
+  expect(result.current?.error).toBeTruthy();
+  expect(result.current).toMatchObject({
+    text: "retained blocked note",
+    dirty: true,
+    saved: false,
+  });
+  expect(fake.calls.filter(({ method }) => method === "notes/human/set")).toEqual([]);
+  expect(await storage.listOutbox()).toEqual([]);
+  expect(await storage.listRecovery(ref)).toEqual([]);
+});
+
 // A resumeRequired session presents as a live, idle thread with the
 // SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
 // is not zeroed by the recovery fence), so the status/capability pair alone
