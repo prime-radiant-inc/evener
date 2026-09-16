@@ -1881,11 +1881,24 @@ func openCommittedRelay(t *testing.T, source *LocalDaemonSource, daemon *relayTe
 func TestRelaySessionDaemonGoneReachesALegacyEntryThroughItsResolvedSession(t *testing.T) {
 	legacy := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://thread-1", SourceID: "local", ThreadID: "thread-1"}
 	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
+	var listingMu sync.Mutex
+	listed := []LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}}
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		return []LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}}
+		listingMu.Lock()
+		defer listingMu.Unlock()
+		return listed
 	}, nil)
 	source.dial = relayTestDial(daemon)
 	_, deliveries, call := openCommittedRelay(t, source, daemon, "resolved")
+
+	// The daemon exits: its rendezvous entry goes, its socket closes, and the
+	// roster (here, the test) announces it by the session it resolved. The
+	// entry has to go first: recovery re-dials whatever the listing still
+	// names, and a re-dial that answers publishes the reconnect's own resync
+	// ahead of this announcement.
+	listingMu.Lock()
+	listed = nil
+	listingMu.Unlock()
 	if err := call.transport.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1896,5 +1909,8 @@ func TestRelaySessionDaemonGoneReachesALegacyEntryThroughItsResolvedSession(t *t
 		delivery.Acknowledge()
 	case <-time.After(5 * time.Second):
 		t.Fatal("the legacy entry's subscriber was never told the daemon is gone")
+	}
+	if dials := daemon.dials.Load(); dials != 1 {
+		t.Fatalf("dials = %d, want 1: a daemon that left the roster is not dialled", dials)
 	}
 }
