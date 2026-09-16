@@ -160,9 +160,26 @@ type threadReadLocalImagePolicy interface {
 // the controller-side proxy that will resolve it, which is not yet part of this
 // read path.
 func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) appwire.Thread {
-	if policy, ok := source.(threadReadLocalImagePolicy); ok && !policy.EnrichThreadFileBackedImages() {
+	if !threadImagesLocal(source) {
 		return stripRemoteImageRoutes(thread)
 	}
+	return enrichLocalSourcedThreadImages(thread)
+}
+
+// threadImagesLocal reports whether a source's threads describe files on this hub's
+// own filesystem. A source that does not implement the policy serves this hub's own
+// sessions, so its threads are local.
+func threadImagesLocal(source appsource.Source) bool {
+	if policy, ok := source.(threadReadLocalImagePolicy); ok {
+		return policy.EnrichThreadFileBackedImages()
+	}
+	return true
+}
+
+// enrichLocalSourcedThreadImages runs the two image passes that need this hub's own
+// view of the thread: the sha-addressed route stamp, which is minted from the
+// session id, and the file-backed pass, which reads the thread's CWD here.
+func enrichLocalSourcedThreadImages(thread appwire.Thread) appwire.Thread {
 	thread = stampThreadImageURLs(thread)
 	return enrichThreadFileBackedOutputImages(thread)
 }
@@ -252,16 +269,25 @@ func listItemTurns(
 		logf("thread turns metadata enrichment unavailable: %v", metaErr)
 	}
 	packed, packErr := packThreadTurnsItemCandidates(candidates, func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
+		thread := appwire.Thread{Turns: response.Data}
 		if metaErr == nil {
-			thread := appwire.Thread{
-				ID:        meta.Thread.ID,
-				SessionID: meta.Thread.SessionID,
-				CWD:       meta.Thread.CWD,
-				Turns:     response.Data,
-			}
-			thread = enrichSourcedThreadImages(source, thread)
-			response.Data = thread.Turns
+			thread.ID = meta.Thread.ID
+			thread.SessionID = meta.Thread.SessionID
+			thread.CWD = meta.Thread.CWD
 		}
+		// Image handling is independent of the optional metadata read. A remote
+		// source's root-relative routes are neutralized whether or not that read
+		// succeeded — nothing about neutralizing them needs the session id or CWD it
+		// would have supplied, and a route left on the page resolves against this
+		// hub's origin for a session this hub does not have. The two local passes do
+		// need those, so they run only after a successful read.
+		switch {
+		case !threadImagesLocal(source):
+			thread = stripRemoteImageRoutes(thread)
+		case metaErr == nil:
+			thread = enrichLocalSourcedThreadImages(thread)
+		}
+		response.Data = thread.Turns
 		return response, nil
 	}, itemLimit)
 	if packErr != nil {

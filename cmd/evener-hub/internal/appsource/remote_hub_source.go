@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -546,10 +547,11 @@ func (s *RemoteHubSource) ItemCandidatesFromRead(ctx context.Context, params app
 	}
 	// A remote hub is a separate process, possibly a different version: its
 	// fragments must satisfy the same strictly-increasing, uniquely-keyed contract
-	// the local daemon source validates before anything is merged or cached, or a
+	// the local daemon source validates — plus the per-entry adjacency a page's
+	// observed run depends on — before anything is merged or cached, or a
 	// misbehaving remote could poison the retained cursor identity for later
 	// continuations.
-	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+	if err := validateRemotePagePositions(candidates); err != nil {
 		return ItemCandidateResult{}, err
 	}
 	// The remote hub's read cursor is retained behind the controller identity, so
@@ -573,10 +575,44 @@ func (s *RemoteHubSource) remoteItemPage(ctx context.Context, remote appwire.Thr
 	if err != nil {
 		return nil, "", err
 	}
-	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+	if err := validateRemotePagePositions(candidates); err != nil {
 		return nil, "", err
 	}
 	return candidates, out.NextCursor, nil
+}
+
+// validateRemotePagePositions applies to one remote item page the whole positional
+// contract this source must prove before the page is merged or retained: the
+// strictly-increasing, uniquely-keyed candidates appitempaging validates, and the
+// per-entry adjacency the page's observed run depends on.
+func validateRemotePagePositions(candidates []appitempaging.TranscriptItemCandidate) error {
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		return err
+	}
+	return validateRemotePageAdjacency(candidates)
+}
+
+// validateRemotePageAdjacency rejects a page whose observed positions skip an item
+// index inside one entry. Item-mode positions are (entry, item) pairs and a turn's
+// projected items are numbered densely from zero within their entry
+// (apptranscript.ProjectTurn and server.positionAppItems), so (10,0) followed by
+// (10,2) without (10,1) is an item the remote holds and did not return — never a
+// contiguous window. Both consumers of an observed page trust the run between its
+// endpoints: the retained span the page is recorded as, and the local continuation
+// served from that span. Accepting the page would let them skip the withheld item
+// silently, so it is refused before anything is merged or cached, exactly as an
+// out-of-order page is. A jump to a later entry is not gated: entry ordinals advance
+// for logical groups that project no visible item at all, which positions alone
+// cannot rule out.
+func validateRemotePageAdjacency(candidates []appitempaging.TranscriptItemCandidate) error {
+	for index := 1; index < len(candidates); index++ {
+		previous := candidates[index-1].Position
+		current := candidates[index].Position
+		if current.Entry == previous.Entry && current.Item != previous.Item+1 {
+			return fmt.Errorf("remote item page skips item positions in entry %d: %d then %d", previous.Entry, previous.Item, current.Item)
+		}
+	}
+	return nil
 }
 
 // validateRemotePageCursor validates the cursor a remote page carries before the
@@ -879,11 +915,12 @@ func remoteForwardMergeCutsItems(older, newer appitempaging.TranscriptItemCandid
 // remoteItemSpansAfterObserving folds one observed page into the window's
 // recorded runs.
 //
-// A remote page is internally contiguous — the hub returns consecutive items — so
-// the page contributes the run between its oldest and its newest item. That run is
-// merged with every recorded run it is provably connected to, and runs it connects
-// are merged with each other, so the recorded runs stay maximal. Connected means
-// one of:
+// A remote page is internally contiguous — the hub returns consecutive items, and
+// validateRemotePagePositions has already refused a page that skips an item index
+// inside one entry — so the page contributes the run between its oldest and its
+// newest item. That run is merged with every recorded run it is provably connected
+// to, and runs it connects are merged with each other, so the recorded runs stay
+// maximal. Connected means one of:
 //
 //   - the runs overlap, or the new run is exactly the successor position of the
 //     recorded run's upper edge and that fragment is complete
@@ -976,8 +1013,9 @@ func remoteItemSpanUnion(left, right remoteItemSpan) remoteItemSpan {
 
 // remoteItemSpansForCandidates returns the single run a window of candidates
 // covers when that window is one page, or the trimmed suffix of one page: its
-// positions are strictly increasing and the page carried every position between
-// its oldest and newest item.
+// positions are strictly increasing, they hold no gap inside an entry
+// (validateRemotePagePositions), and the page carried every position between its
+// oldest and newest item.
 func remoteItemSpansForCandidates(candidates []appitempaging.TranscriptItemCandidate) []remoteItemSpan {
 	if len(candidates) == 0 {
 		return nil
@@ -992,8 +1030,23 @@ func remoteRetainedCandidatesExceedBounds(candidates []appitempaging.TranscriptI
 	return len(candidates) > remoteItemPagingCandidateCapacity || remoteItemCandidatesBytes(candidates) > remoteItemPagingByteCapacity
 }
 
-// remoteItemCandidatesBytes approximates the retained window's transcript
-// payload so its memory can be bounded by bytes as well as by item count.
+// remoteItemCandidatesBytes measures the retained window's transcript payload so
+// its memory can be bounded by bytes as well as by item count.
+//
+// The measurement walks the retained value itself instead of listing the fields it
+// expects: every string, byte slice and map entry reachable from a candidate
+// contributes its own length, so a variable-length field added to ThreadItem,
+// InputItem, OutputImage, or Turn is counted as soon as it exists and no list here
+// can fall behind. The hand-written sum this replaces counted only the payload
+// fields its author remembered — ThreadItem.ID, ToolName, CallID, Source,
+// SteeringKind, ClientMutationID and every field of the candidate's turn were
+// invisible to it — so a remote page could retain megabytes per item while the
+// estimate saw almost nothing.
+//
+// The one field not counted is the turn's item slice (appwire.Turn.Items): a page's
+// candidates share that slice, its elements' payload is already counted through each
+// candidate's own Item, and counting it per candidate would multiply a page's payload
+// by its item count and rotate windows that fit the bound.
 func remoteItemCandidatesBytes(candidates []appitempaging.TranscriptItemCandidate) int {
 	total := 0
 	for _, candidate := range candidates {
@@ -1002,24 +1055,67 @@ func remoteItemCandidatesBytes(candidates []appitempaging.TranscriptItemCandidat
 	return total
 }
 
-// remoteItemCandidateBytes approximates one candidate's transcript payload. Every
-// retained field that can carry bytes is counted, including nested image payloads
-// and their metadata: a remote page of base64 input images or output-image routes
-// whose visible text is short would otherwise retain far past the documented byte
-// bound while this estimate saw almost nothing.
+// remoteItemCandidateBytes measures one candidate's retained payload, including its
+// turn's own fields and nested image payloads and metadata.
 func remoteItemCandidateBytes(candidate appitempaging.TranscriptItemCandidate) int {
-	item := candidate.Item
-	total := len(item.Text) + len(item.Delta) + len(item.ArgumentsJSON) + len(item.Output) + len(item.Error) + len(item.Description) + len(item.Raw)
-	for _, image := range item.Images {
-		total += len(image.Type) + len(image.Text) + len(image.URL) + len(image.MediaType) + len(image.Data) + len(image.Name) + len(image.Path)
-		for name, value := range image.Metadata {
-			total += len(name) + len(value)
+	return remoteRetainedPayloadBytes(reflect.ValueOf(candidate))
+}
+
+// remoteTurnType is the turn whose item slice remoteRetainedPayloadBytes leaves out
+// of the measurement (see remoteItemCandidatesBytes).
+var remoteTurnType = reflect.TypeFor[appwire.Turn]()
+
+// remoteRetainedPayloadBytes sums the variable-length payload held by one retained
+// value and everything reachable from it. Fixed-size fields (counts, flags, pointers,
+// struct headers) contribute nothing: the candidate-count bound already caps that
+// part of a window, while the byte bound exists to cap the unbounded part.
+func remoteRetainedPayloadBytes(value reflect.Value) int {
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if value.IsNil() {
+			return 0
 		}
+		return remoteRetainedPayloadBytes(value.Elem())
+	case reflect.String:
+		return value.Len()
+	case reflect.Slice:
+		if value.IsNil() {
+			return 0
+		}
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			// A byte slice (json.RawMessage included) holds its bytes directly.
+			return value.Len()
+		}
+		total := 0
+		for index := 0; index < value.Len(); index++ {
+			total += remoteRetainedPayloadBytes(value.Index(index))
+		}
+		return total
+	case reflect.Array:
+		total := 0
+		for index := 0; index < value.Len(); index++ {
+			total += remoteRetainedPayloadBytes(value.Index(index))
+		}
+		return total
+	case reflect.Map:
+		total := 0
+		for entry := value.MapRange(); entry.Next(); {
+			total += remoteRetainedPayloadBytes(entry.Key()) + remoteRetainedPayloadBytes(entry.Value())
+		}
+		return total
+	case reflect.Struct:
+		total := 0
+		turn := value.Type() == remoteTurnType
+		for field, fieldValue := range value.Fields() {
+			if turn && field.Name == "Items" {
+				continue
+			}
+			total += remoteRetainedPayloadBytes(fieldValue)
+		}
+		return total
+	default:
+		return 0
 	}
-	for _, image := range item.OutputImages {
-		total += len(image.Source) + len(image.Name) + len(image.MediaType) + len(image.URL) + len(image.SHA) + len(image.Path)
-	}
-	return total
 }
 
 // remoteTrimCandidatesToBound returns the newest suffix of candidates that fits
@@ -1036,13 +1132,13 @@ func remoteTrimCandidatesToBound(candidates []appitempaging.TranscriptItemCandid
 	start := len(candidates) - 1
 	bytes := 0
 	for start >= 0 {
+		size := remoteItemCandidateBytes(candidates[start])
 		if start < len(candidates)-1 {
-			next := remoteItemCandidateBytes(candidates[start])
-			if len(candidates)-start > remoteItemPagingCandidateCapacity || bytes+next > remoteItemPagingByteCapacity {
+			if len(candidates)-start > remoteItemPagingCandidateCapacity || bytes+size > remoteItemPagingByteCapacity {
 				break
 			}
 		}
-		bytes += remoteItemCandidateBytes(candidates[start])
+		bytes += size
 		start--
 	}
 	return candidates[start+1:]

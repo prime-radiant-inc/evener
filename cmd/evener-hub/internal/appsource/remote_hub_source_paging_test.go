@@ -1226,12 +1226,16 @@ func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
 	if !ok {
 		t.Fatal("no retained paging state")
 	}
-	if got := remoteItemCandidatesBytes(state.candidates); got > remoteItemPagingByteCapacity {
-		t.Fatalf("retained window bytes = %d, want <= %d", got, remoteItemPagingByteCapacity)
+	// The retained run is the newest one that fits the budget. The exact count is
+	// not pinned to a literal here: completing the estimate (round eleven) made each
+	// candidate's measured size include its turn-level fields, so the boundary moved
+	// by a few dozen bytes; the property is that the window is maximal — no dropped
+	// candidate would still have fit.
+	pageCandidates, err := appitempaging.CandidatesFromTurns(page.Data)
+	if err != nil {
+		t.Fatalf("page candidates: %v", err)
 	}
-	if len(state.candidates) != 4 {
-		t.Fatalf("retained candidates = %d, want the newest 4 that fit the byte budget", len(state.candidates))
-	}
+	requireNewestRetainedRunThatFits(t, pageCandidates, state.candidates)
 	if got := state.candidates[len(state.candidates)-1].Position.Entry; got != 5 {
 		t.Fatalf("retained newest entry = %d, want 5", got)
 	}
@@ -1251,6 +1255,29 @@ func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
 		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
 	}); err != nil {
 		t.Fatalf("continuation after trimming the rotated page = %v, want it to resume from a retained boundary", err)
+	}
+}
+
+// requireNewestRetainedRunThatFits asserts a byte-trimmed window is the newest run
+// that fits the budget: the window is inside the bound, and the next older candidate
+// of the page would push it past the bound, so neither a longer nor a shorter suffix
+// would be right.
+func requireNewestRetainedRunThatFits(t *testing.T, page, retained []appitempaging.TranscriptItemCandidate) {
+	t.Helper()
+	kept := remoteItemCandidatesBytes(retained)
+	if kept > remoteItemPagingByteCapacity {
+		t.Fatalf("retained window bytes = %d, want <= %d", kept, remoteItemPagingByteCapacity)
+	}
+	if len(retained) == 0 {
+		t.Fatal("no candidates retained")
+	}
+	if len(retained) >= len(page) {
+		t.Fatalf("retained candidates = %d, want the byte bound to drop the oldest of %d", len(retained), len(page))
+	}
+	older := page[len(page)-len(retained)-1]
+	if kept+remoteItemCandidateBytes(older) <= remoteItemPagingByteCapacity {
+		t.Fatalf("retained window bytes = %d plus the next older candidate's %d still fit %d: position %+v was dropped early",
+			kept, remoteItemCandidateBytes(older), remoteItemPagingByteCapacity, older.Position)
 	}
 }
 
@@ -1340,6 +1367,160 @@ func itemPageWithImages(cursor string, count, size int) appwire.ThreadTurnsListR
 	}
 }
 
+// The byte bound must count every variable-length field the window retains, not just
+// the payload fields a hand-written sum happened to remember. This page is large only
+// through the fields such a sum misses — ThreadItem.ID, ToolName, CallID, Source,
+// SteeringKind and ClientMutationID, plus the turn's own Status — with every Text,
+// Delta, Output and image field empty, so an estimate that lists payload fields sees
+// almost nothing while the window retains megabytes per candidate. It must still be
+// trimmed to the documented bound, and its continuation cursor must still name the
+// oldest retained position so the next page can be served.
+func TestRemoteItemPagingBoundsRetainedVariableLengthFields(t *testing.T) {
+	page := itemPageWithVariableLengthFields(remoteItemCursor(t, 1), 7, 256<<10)
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: page}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
+	if !ok {
+		t.Fatal("no retained paging state")
+	}
+	pageCandidates, err := appitempaging.CandidatesFromTurns(page.Data)
+	if err != nil {
+		t.Fatalf("page candidates: %v", err)
+	}
+	requireNewestRetainedRunThatFits(t, pageCandidates, state.candidates)
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live continuation cursor", first)
+	}
+	before, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode first cursor: %v", err)
+	}
+	if len(first.Candidates.Candidates) == 0 || before != first.Candidates.Candidates[0].Position {
+		t.Fatalf("cursor boundary = %+v, want the returned window's oldest %+v", before, first.Candidates.Candidates)
+	}
+}
+
+// itemPageWithVariableLengthFields builds one item-mode page of count items whose
+// retention cost lives only in fields a Text/Delta/Output-only estimate cannot see:
+// the item's identity, tool metadata, provenance, and the turn's own fields.
+func itemPageWithVariableLengthFields(cursor string, count, size int) appwire.ThreadTurnsListResponse {
+	payload := strings.Repeat("x", size)
+	items := make([]appwire.ThreadItem, 0, count)
+	for index := range count {
+		items = append(items, appwire.ThreadItem{
+			Type:             "commandExecution",
+			ID:               payload,
+			TranscriptKey:    fmt.Sprintf("key-%d", index),
+			Position:         &appwire.ThreadItemPosition{Entry: uint64(index + 1)},
+			ToolName:         payload,
+			CallID:           payload,
+			Source:           payload,
+			SteeringKind:     payload,
+			ClientMutationID: payload,
+			Status:           appwire.TurnStatusCompleted,
+		})
+	}
+	return appwire.ThreadTurnsListResponse{
+		Data: []appwire.Turn{{
+			ID:     "turn-1",
+			Status: payload,
+			Cost:   strings.Repeat("c", 64<<10),
+			Items:  items,
+		}},
+		NextCursor: cursor,
+	}
+}
+
+// The estimate walks the retained value, so every variable-length field a candidate
+// holds contributes its own bytes. This pins the fields an earlier hand-written sum
+// missed — the item's identity, tool metadata and provenance, and the turn's own
+// fields — one at a time, including a nested metadata value and the item's raw
+// payload.
+func TestRemoteItemCandidateBytesCountsVariableLengthFields(t *testing.T) {
+	const payloadBytes = 1024
+	payload := strings.Repeat("x", payloadBytes)
+	cases := []struct {
+		name string
+		set  func(*appitempaging.TranscriptItemCandidate)
+	}{
+		{"ThreadItem.ID", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Item.ID = payload }},
+		{"ThreadItem.ToolName", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Item.ToolName = payload }},
+		{"ThreadItem.CallID", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Item.CallID = payload }},
+		{"ThreadItem.Source", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Item.Source = payload }},
+		{"ThreadItem.SteeringKind", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Item.SteeringKind = payload }},
+		{"ThreadItem.ClientMutationID", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.ClientMutationID = payload
+		}},
+		{"ThreadItem.TranscriptKey", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.TranscriptKey = payload
+		}},
+		{"ThreadItem.Raw", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.Raw = json.RawMessage(payload)
+		}},
+		{"InputItem.Data", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.Images = []appwire.InputItem{{Data: []byte(payload)}}
+		}},
+		{"InputItem.Metadata", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.Images = []appwire.InputItem{{Metadata: map[string]string{"key": payload}}}
+		}},
+		{"OutputImage.SHA", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Item.OutputImages = []appwire.OutputImage{{SHA: payload}}
+		}},
+		{"TurnID", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.TurnID = payload }},
+		{"Turn.ID", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Turn.ID = payload }},
+		{"Turn.Status", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Turn.Status = payload }},
+		{"Turn.Cost", func(candidate *appitempaging.TranscriptItemCandidate) { candidate.Turn.Cost = payload }},
+		{"Turn.Error.Message", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Turn.Error = &appwire.TurnError{Message: payload}
+		}},
+		{"Turn.Error.AdditionalDetails", func(candidate *appitempaging.TranscriptItemCandidate) {
+			candidate.Turn.Error = &appwire.TurnError{AdditionalDetails: payload}
+		}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			candidate := appitempaging.TranscriptItemCandidate{}
+			testCase.set(&candidate)
+			if got := remoteItemCandidateBytes(candidate); got < payloadBytes {
+				t.Fatalf("%s estimate = %d, want at least the %d-byte payload it holds", testCase.name, got, payloadBytes)
+			}
+		})
+	}
+}
+
+// A page's candidates share the turn's fragment item slice, and the payload those
+// items hold is counted through each candidate's own Item. Counting the shared slice
+// once per candidate would multiply a page's measured size by its item count and trim
+// windows that fit the bound, so a window of large items must stay close to the sum
+// of the items themselves.
+func TestRemoteItemCandidateBytesCountsSharedTurnItemsOnce(t *testing.T) {
+	item := appwire.ThreadItem{
+		Type:          "text",
+		ID:            "item-1",
+		TranscriptKey: "key-1",
+		Position:      &appwire.ThreadItemPosition{Entry: 1},
+		Text:          strings.Repeat("x", 1<<20),
+	}
+	turn := appwire.Turn{ID: "turn-1", Items: []appwire.ThreadItem{item}}
+	candidate := appitempaging.TranscriptItemCandidate{TurnID: turn.ID, Turn: turn, Item: item, Position: *item.Position}
+	if got := remoteItemCandidateBytes(candidate); got < 1<<20 || got >= 2<<20 {
+		t.Fatalf("candidate estimate = %d, want its own 1 MiB item payload counted once", got)
+	}
+	window := make([]appitempaging.TranscriptItemCandidate, 8)
+	for index := range window {
+		window[index] = candidate
+	}
+	if got := remoteItemCandidatesBytes(window); got > 9<<20 {
+		t.Fatalf("window estimate = %d, want the eight candidates' own payload (~8 MiB), not the shared fragment slice once per candidate", got)
+	}
+}
+
 // A remote hub is a separate process and may be a different version, so its item
 // fragments must satisfy the contract the local daemon source validates before
 // anything is merged or cached: strictly increasing, uniquely-keyed candidates.
@@ -1377,5 +1558,87 @@ func TestRemoteHubSourceRejectsDuplicateKeyRemoteItemRead(t *testing.T) {
 	}
 	if _, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); ok {
 		t.Fatal("a rejected read was retained")
+	}
+}
+
+// Item-mode positions index a turn's projected items densely inside one entry
+// (apptranscript.ProjectTurn and server.positionAppItems number them from 0), so a
+// page that carries (10,0) and (10,2) but not (10,1) is missing an item the remote
+// holds. Every consumer trusts the run between a page's endpoints — the recorded
+// span, and the local continuation served from it — so accepting the page would let
+// that item be skipped silently. It is refused before anything is merged or
+// retained, exactly like an out-of-order page.
+func TestRemoteHubSourceRejectsNonAdjacentRemoteItemPage(t *testing.T) {
+	page := itemPageWithItemPositions(remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 10}),
+		appwire.ThreadItemPosition{Entry: 10},
+		appwire.ThreadItemPosition{Entry: 10, Item: 2},
+	)
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: page}
+	})
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err == nil {
+		t.Fatal("a remote item page that skips an item inside one entry was accepted")
+	} else if !strings.Contains(err.Error(), "skips item positions") {
+		t.Fatalf("error = %v, want an interior-gap rejection", err)
+	}
+	if _, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); ok {
+		t.Fatal("a rejected page was retained")
+	}
+	// The materialized read path is held to the same contract.
+	if _, err := NewRemoteHubSource("host", nil, nil).ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: page.Data},
+		OlderCursor: remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 10}),
+	}); err == nil {
+		t.Fatal("a remote item read that skips an item inside one entry was accepted")
+	} else if !strings.Contains(err.Error(), "skips item positions") {
+		t.Fatalf("read error = %v, want an interior-gap rejection", err)
+	}
+}
+
+// A continuation page is held to the same contract, and a page refused for the gap
+// leaves the retained window and the cursors minted over it exactly as they were:
+// the refusal happens before the read-modify-write commits, so a live continuation
+// is not replaced by a window built from a page that never observed its middle.
+func TestRemoteHubSourceRejectsNonAdjacentRemoteContinuationPage(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+		}
+		if remote.Cursor == "" {
+			return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 5), 5, 6, 7, 8)}
+		}
+		return scriptedReply{result: itemPageWithItemPositions("",
+			appwire.ThreadItemPosition{Entry: 4},
+			appwire.ThreadItemPosition{Entry: 4, Item: 2},
+		)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+	key := remoteItemPagingKey("host", "t1")
+	retained, ok := source.itemPaging.peek(key)
+	if !ok {
+		t.Fatal("no retained paging state")
+	}
+
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	}); err == nil {
+		t.Fatal("a remote continuation page that skips an item inside one entry was accepted")
+	} else if !strings.Contains(err.Error(), "skips item positions") {
+		t.Fatalf("continuation error = %v, want an interior-gap rejection", err)
+	}
+	after, ok := source.itemPaging.peek(key)
+	if !ok {
+		t.Fatal("the refused continuation dropped the retained window")
+	}
+	if after.identity != retained.identity || len(after.candidates) != len(retained.candidates) || after.native != retained.native {
+		t.Fatalf("retained window changed across a refused continuation: %+v, want %+v", after, retained)
 	}
 }
