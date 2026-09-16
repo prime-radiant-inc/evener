@@ -9,10 +9,11 @@ pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
 answer's questions frozen while late ones arrive, the attachment count, size
-and type limits every composer rejects a staged file against, the
-translation that turns a composer's `[image N]` attachment markers into
-prose at send and the composer input assembly that applies that translation
-and stages the attached images beside the text, the thread view model and
+and type limits every composer rejects a staged file against, the `[image N]`
+marker splicing that anchors a staged image in the composer text and removes
+it again, the translation that turns those markers into prose at send and
+the composer input assembly that applies that translation and stages the
+attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
 rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable

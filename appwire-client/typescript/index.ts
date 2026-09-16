@@ -201,6 +201,8 @@ export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
 export { absoluteTime, relativeTime } from "./taskListTime";
+export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,

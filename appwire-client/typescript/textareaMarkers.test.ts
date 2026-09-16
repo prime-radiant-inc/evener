@@ -8,9 +8,8 @@ test("markerText renders the literal [image N] placeholder", () => {
 });
 
 // --- insertMarker: parity-m5-composer.md §G / test-composer-image-markers.js ---
-// Pure string splicing - the caller (useAttachments/Composer.tsx) applies
-// the result through React's own controlled-value state, never a direct
-// DOM mutation (see this module's own header comment for why).
+// Pure string splicing - callers apply the result through their own text
+// state, never a direct DOM mutation (see the module's header comment for why).
 
 test("inserts text at the cursor position, splitting the existing value", () => {
   const result = insertMarker("hello world", 5, 5, markerText(1));
