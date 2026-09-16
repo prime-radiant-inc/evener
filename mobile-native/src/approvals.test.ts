@@ -107,18 +107,17 @@ describe("approval decisions", () => {
         return {};
       },
     } as unknown as ConversationClientLike;
-    const approval = pending;
     const controls = new ApprovalControls(
       client,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         refreshed++;
       },
     );
-    const request = controls.resolve(approval, true);
-    await controls.resolve(approval, false);
+    const request = controls.resolve(pending, true);
+    await controls.resolve(pending, false);
     await controls.refresh();
     expect(refreshed).toBe(0);
     expect(sent).toEqual([
@@ -164,7 +163,6 @@ describe("approval decisions", () => {
   });
   it("retains failure and never repeats an unconfirmed decision", async () => {
     let calls = 0;
-    const approval = pending;
     const client = {
       request: async () => {
         calls++;
@@ -174,14 +172,14 @@ describe("approval decisions", () => {
     const controls = new ApprovalControls(
       client,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {},
     );
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(calls).toBe(1);
   });
   it.each(
@@ -189,8 +187,7 @@ describe("approval decisions", () => {
   )(
     "treats malformed resolution receipt $receipt as uncertain",
     async ({ receipt }) => {
-      const approval = pending;
-      let calls = 0;
+        let calls = 0;
       const client = {
         request: async () => {
           calls++;
@@ -201,22 +198,21 @@ describe("approval decisions", () => {
       const controls = new ApprovalControls(
         client,
         "local:s",
-        () => [approval],
+        () => [pending],
         () => true,
         async () => {
           refreshed++;
         },
       );
-      await controls.resolve(approval, true);
+      await controls.resolve(pending, true);
       expect(refreshed).toBe(0);
       expect(controls.getSnapshot().error).not.toBeNull();
-      await controls.resolve(approval, false);
+      await controls.resolve(pending, false);
       expect(calls).toBe(1);
       expect(controls.getSnapshot().pending).toBeNull();
     },
   );
   it("requires a successful current refresh before allowing another decision", async () => {
-    const approval = pending;
     let refreshFails = true;
     let calls = 0;
     const controls = new ApprovalControls(
@@ -227,30 +223,29 @@ describe("approval decisions", () => {
         },
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         if (refreshFails) throw new Error("offline");
       },
     );
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     await controls.refresh();
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     refreshFails = false;
     await controls.refresh();
     expect(controls.getSnapshot().error).toBeNull();
     expect(calls).toBe(1);
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(2);
   });
   it("does not dispatch a card removed by the recovery read", async () => {
-    const approval = pending;
-    let values = [approval];
+    let values = [pending];
     let calls = 0;
     const controls = new ApprovalControls(
       {
@@ -266,14 +261,13 @@ describe("approval decisions", () => {
         values = [];
       },
     );
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     await controls.refresh();
     expect(controls.getSnapshot().error).toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
   });
   it("serializes recovery reads and retains uncertainty when the binding changes", async () => {
-    const approval = pending;
     let current = true;
     let calls = 0;
     let reads = 0;
@@ -286,7 +280,7 @@ describe("approval decisions", () => {
         },
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => current,
       () => {
         reads++;
@@ -298,7 +292,7 @@ describe("approval decisions", () => {
     const reading = controls.refresh();
     expect(controls.getSnapshot().refreshing).toBe(true);
     await controls.refresh();
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(reads).toBe(1);
     expect(calls).toBe(0);
     current = false;
@@ -307,11 +301,10 @@ describe("approval decisions", () => {
     expect(controls.getSnapshot().refreshing).toBe(false);
     expect(controls.getSnapshot().error).not.toBeNull();
     current = true;
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(0);
   });
   it("ignores late acknowledgments and reads after disposal", async () => {
-    const approval = pending;
     let release!: () => void;
     let reads = 0;
     const controls = new ApprovalControls(
@@ -322,13 +315,13 @@ describe("approval decisions", () => {
           }),
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         reads++;
       },
     );
-    const request = controls.resolve(approval, true);
+    const request = controls.resolve(pending, true);
     const before = controls.getSnapshot();
     controls.dispose();
     release();

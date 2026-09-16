@@ -3393,5 +3393,3 @@ async function handleMutationError(
     }
   }
 }
-
-export type { MobileConversation, MobileTimelineItem };

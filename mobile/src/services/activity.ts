@@ -13,6 +13,7 @@ import type {
   EvenerDelegateInfo,
   EvenerDiagnostics,
   EvenerJobInfo,
+  EvenerThread,
   EvenerUsage,
   TaskAggregate,
   Thread,
@@ -75,14 +76,17 @@ export interface WorkEntry {
 // a 0 that would read as a real measurement. The package's ThreadModel keeps
 // these as separate fields (usage/cost/contextUsed/...) and the web derives its
 // summary app-side (decision 4); D18 reconciles the two derivations.
-export interface UsageSummary extends Readonly<EvenerUsage> {
-  readonly cost?: string;
-  readonly contextUsed?: number;
-  readonly contextWindow?: number;
-  readonly contextRemaining?: number;
-  readonly contextPressure?: number;
-  readonly durationMs?: number;
-}
+export type UsageSummary = Readonly<
+  EvenerUsage &
+    Pick<
+      EvenerThread,
+      | "cost"
+      | "contextUsed"
+      | "contextWindow"
+      | "contextRemaining"
+      | "contextPressure"
+    > & { durationMs?: number }
+>;
 
 export interface ActivityView {
   readonly tasks: TaskGroup[];
@@ -438,10 +442,7 @@ export function deriveOpenTaskCount(counts: {
 
 function projectUsageSummary(evener: Thread["evener"]): UsageSummary {
   return {
-    inputTokens: evener.usage?.inputTokens,
-    outputTokens: evener.usage?.outputTokens,
-    cacheReadTokens: evener.usage?.cacheReadTokens,
-    totalTokens: evener.usage?.totalTokens,
+    ...evener.usage,
     cost: evener.cost,
     contextUsed: evener.contextUsed,
     contextWindow: evener.contextWindow,

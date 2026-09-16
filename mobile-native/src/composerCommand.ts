@@ -6,9 +6,9 @@ import {
   matchBuiltinInvocation,
   mergeSlashCommands,
 } from "@evener/appwire-client";
-import type { ThreadClearResponse, ThreadStatus } from "@evener/appwire-client";
-import { sessionControls } from "@evener/appwire-client";
+import type { ThreadClearResponse } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/project";
+import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
   ConversationClearActions,
   ConversationForkActions,
@@ -54,19 +54,7 @@ const commands = [
 ] as const;
 
 /** What the completion registry and submission both read off the session. */
-export interface ComposerCommandSession {
-  status: ThreadStatus;
-  capabilities: Partial<MobileConversation["capabilities"]>;
-  queue: { revision: number; depth?: number } | null;
-}
-
-function controlsFor(session: ComposerCommandSession) {
-  return sessionControls(
-    session.status.type,
-    session.capabilities,
-    session.queue?.depth ?? 0,
-  );
-}
+export type ComposerCommandSession = ControlsSource;
 
 export type ComposerCommandSpec = (typeof commands)[number];
 
@@ -75,7 +63,7 @@ export function composerCommandAvailable(
   command: ComposerCommandSpec,
   session: ComposerCommandSession,
 ): boolean {
-  if ("control" in command) return controlsFor(session)[command.control];
+  if ("control" in command) return conversationControls(session)[command.control];
   return (
     command.capability === null || !!session.capabilities[command.capability]
   );
@@ -153,7 +141,7 @@ export async function submitComposerCommand(
   const requireControl = (): void => {
     if (!("control" in match.command)) return;
     const turn = context.turn();
-    const controls = turn ? controlsFor(turn) : null;
+    const controls = turn ? conversationControls(turn) : null;
     const control = match.command.control;
     if (!controls || !controls[control])
       throw new CommandArgumentError(

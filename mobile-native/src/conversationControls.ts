@@ -1,9 +1,13 @@
 import { sessionControls } from "@evener/appwire-client";
+import type { QueueState } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/project";
 
-/** The slice of a conversation every control decision reads. */
-export type ControlsSource = Pick<MobileConversation, "status" | "capabilities"> & {
-  queue: Pick<NonNullable<MobileConversation["queue"]>, "depth" | "revision"> | null;
+/** The slice of a conversation every control decision reads. Capabilities may
+ * be partial: sessionControls reads only the four it gates on, and the
+ * composer's command tests describe a session by just those. */
+export type ControlsSource = Pick<MobileConversation, "status"> & {
+  capabilities: Partial<MobileConversation["capabilities"]>;
+  queue: Pick<QueueState, "depth" | "revision"> | null;
 };
 
 /**

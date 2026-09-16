@@ -1343,7 +1343,7 @@ describe("projectThread", () => {
   });
 
   describe("capability projection", () => {
-    it("maps ThreadCapabilities booleans 1:1 to MobileCapabilities", () => {
+    it("passes ThreadCapabilities through unchanged", () => {
       const caps: ThreadCapabilities = {
         send: true,
         steer: false,

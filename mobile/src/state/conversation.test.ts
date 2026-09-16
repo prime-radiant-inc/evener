@@ -211,7 +211,7 @@ class FakeConversationService implements LiveConversationService {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       },
       olderCursor: this.olderCursor,
     };
@@ -302,7 +302,7 @@ async function beginHeldClusterRehydrate() {
   service.openConv = stale;
   service.readProjectionResult = {
     conversation: stale,
-    activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities },
+    activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
     olderCursor: null,
   };
   const store = createConversationStore();
@@ -656,7 +656,7 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       // Only send is disabled, in the state that offers it.
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS, send: false } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS, send: false },
       });
       await store.getState().open(service, "ref-1");
       await expect(
@@ -677,7 +677,7 @@ describe("ConversationStore", () => {
       // Only queue is disabled, in the state that offers it.
       service.openConv = makeConversation({
         status: { type: "active" },
-        capabilities: { ...ALL_TRUE_CAPS, queue: false } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS, queue: false },
       });
       await store.getState().open(service, "ref-1");
       await expect(
@@ -699,7 +699,7 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       // Initial: all caps true, send enabled
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -1109,7 +1109,7 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-proj" }),
@@ -1142,7 +1142,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "page-1",
       };
@@ -1162,7 +1162,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -1179,7 +1179,7 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -1252,7 +1252,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-resumed",
       });
@@ -1310,7 +1310,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -1338,7 +1338,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       });
@@ -1366,7 +1366,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "fresh-cursor",
       };
@@ -1394,7 +1394,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       });
@@ -1741,7 +1741,7 @@ describe("ConversationStore", () => {
         method: "item/completed",
         params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" } },
       } as AnyNotification);
-      release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null });
+      release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       expect(store.getState().conversation?.items.filter((item) => item.kind === "activity")).toHaveLength(1);
       const members = store.getState().conversation?.items.flatMap((item) => item.kind === "activity" ? item.members ?? [item] : []) ?? [];
@@ -1767,7 +1767,7 @@ describe("ConversationStore", () => {
       const first = snapshot.members[0];
       if (!first) throw new Error("missing first member");
       snapshot.members[0] = { ...first, state: "completed", detail: { output: "authoritative first" } };
-      release({ conversation: { ...stale, items: [snapshot] }, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null });
+      release({ conversation: { ...stale, items: [snapshot] }, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       const activities = store.getState().conversation?.items.filter((item) => item.kind === "activity") ?? [];
       expect(activities).toHaveLength(2);
@@ -1783,7 +1783,7 @@ describe("ConversationStore", () => {
       const stale = makeConversation({ items: [cluster, { kind: "attachments", id: "old-wire:attachments", sourceTranscriptKey: "later", items: [{ id: "old", src: "old" }] }] });
       const service = new FakeConversationService();
       service.openConv = stale;
-      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null };
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -1791,7 +1791,7 @@ describe("ConversationStore", () => {
       service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
       const rehydratePromise = store.getState().rehydrate(service, sink);
       store.getState().applyNotification({ method: "item/completed", params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" } } } as AnyNotification);
-      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null });
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       expect(store.getState().conversation?.items.some((item) => item.kind === "attachments")).toBe(false);
     });
@@ -1818,7 +1818,7 @@ describe("ConversationStore", () => {
         ],
       });
       service.openConv = stale;
-      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null };
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -1832,7 +1832,7 @@ describe("ConversationStore", () => {
           item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] },
         },
       } as AnyNotification);
-      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as ThreadCapabilities }, olderCursor: null });
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       const items = store.getState().conversation?.items ?? [];
       const activity = items.find((item) => item.kind === "activity");
@@ -2667,7 +2667,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-after-resync",
       };
@@ -2711,7 +2711,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -2776,7 +2776,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -2798,7 +2798,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -2820,7 +2820,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "initial-cursor",
       };
@@ -2833,7 +2833,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "updated-cursor",
       };
@@ -2976,7 +2976,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -3023,7 +3023,7 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -3096,7 +3096,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3140,7 +3140,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3183,7 +3183,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3226,7 +3226,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3259,7 +3259,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3610,7 +3610,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -3640,7 +3640,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-2",
       };
@@ -4036,7 +4036,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4059,7 +4059,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4084,7 +4084,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4111,7 +4111,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4136,7 +4136,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4169,7 +4169,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4189,7 +4189,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4207,7 +4207,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -4232,13 +4232,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4271,7 +4271,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // Script send to reject with actionUnavailable.
@@ -4316,7 +4316,7 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4356,7 +4356,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4395,7 +4395,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4439,7 +4439,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4483,7 +4483,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4537,7 +4537,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4558,7 +4558,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4581,7 +4581,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4604,7 +4604,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4629,7 +4629,7 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -4653,7 +4653,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4688,7 +4688,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4732,7 +4732,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4757,7 +4757,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4799,13 +4799,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4848,13 +4848,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4915,7 +4915,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -4943,7 +4943,7 @@ describe("ConversationStore", () => {
       // Reset caps to send=true so the second send can proceed.
       store.setState({
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
       });
       // Second send fails — queues cap refresh for mutationId 2.
@@ -4986,13 +4986,13 @@ describe("ConversationStore", () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5019,13 +5019,13 @@ describe("ConversationStore", () => {
       serviceB.readProjectionResult = {
         conversation: makeConversation({
           threadId: "thread-1",
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5057,13 +5057,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5138,13 +5138,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5220,13 +5220,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5297,13 +5297,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5344,13 +5344,13 @@ describe("ConversationStore", () => {
       // before we can update the result.
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS, send: false } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5403,7 +5403,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5459,13 +5459,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5667,13 +5667,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5777,13 +5777,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5864,7 +5864,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5982,7 +5982,7 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       },
       olderCursor: null,
     };
@@ -6286,7 +6286,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // Set an error via a failed send.
@@ -6311,7 +6311,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as ThreadCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // First send hangs then fails.
@@ -8895,7 +8895,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -9135,7 +9135,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -9152,7 +9152,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10059,7 +10059,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10122,7 +10122,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10203,7 +10203,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10239,7 +10239,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10283,7 +10283,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10316,7 +10316,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -12981,7 +12981,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13007,7 +13007,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13403,7 +13403,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-A",
       };
@@ -13432,7 +13432,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13463,7 +13463,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-A",
       };
@@ -13491,7 +13491,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13517,7 +13517,7 @@ describe("ConversationStore", () => {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13558,7 +13558,7 @@ describe("ConversationStore", () => {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13597,7 +13597,7 @@ describe("ConversationStore", () => {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13644,7 +13644,7 @@ describe("ConversationStore", () => {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13729,7 +13729,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -13779,7 +13779,7 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [{ kind: "job", label: "shell", tone: "terminal" }],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
       };
       service.readProjectionResult = {
@@ -13815,7 +13815,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13870,7 +13870,7 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 5 }],
         work: [],
         usage: { totalTokens: 100 },
-        capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
         conversation: makeConversation({ threadId: "thread-1" }),
@@ -13897,7 +13897,7 @@ describe("ConversationStore", () => {
           tasks: [{ status: "open", count: 2 }],
           work: [],
           usage: { totalTokens: 50 },
-          capabilities: ALL_TRUE_CAPS as ThreadCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };

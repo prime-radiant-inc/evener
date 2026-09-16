@@ -302,14 +302,9 @@ function outputAttachment(
 // Malformed argumentsJson degrades to a fallback (undefined) rather than
 // throwing, since this is untrusted wire JSON.
 
-interface ParsedAskQuestion {
-  header: string;
-  question: string;
-  options: AskUserOption[];
-  multiSelect: boolean;
-  why?: string;
-  ifUnanswered?: string;
-}
+// A parsed question before it is keyed to its call: the package's
+// AskQuestionRef minus the two identity fields projectItem adds.
+type ParsedAskQuestion = Omit<AskQuestionRef, "key" | "callId">;
 
 function parseOption(raw: unknown): AskUserOption | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
@@ -474,14 +469,9 @@ function projectItem(
     if (parsed) {
       const callId = item.callId ?? item.id;
       const questions: AskQuestionRef[] = parsed.map((q, idx) => ({
+        ...q,
         key: `${callId}:${idx}`,
         callId,
-        header: q.header,
-        question: q.question,
-        options: q.options,
-        multiSelect: q.multiSelect,
-        why: q.why,
-        ifUnanswered: q.ifUnanswered,
       }));
       return {
         kind: "final",
@@ -785,9 +775,11 @@ export function projectThread(thread: Thread): MobileConversation {
 
   // Thread-level fields follow reducer.hydrateThread's defaults (name,
   // visionModel, reasoning profile, usage, cost) so a screen reading this
-  // shape reads the same values the web does. Two derivations stay native's
+  // shape reads the same values the web does. Three derivations stay native's
   // until D22 reconciles them with hydrateThread: instanceId defaults to the
-  // thread id (the store fences on it), and pendingEscalations keeps the
+  // thread id (the store fences on it), askPending is derived from the turns
+  // rather than read off the wire flag (the store's item/completed applier
+  // settles question rows against it), and pendingEscalations keeps the
   // threadId/ref filter.
   return {
     threadId: thread.id,

@@ -2027,7 +2027,7 @@ export function ConversationScreen({
 							data={timelineRows}
 							ListFooterComponent={
 								presentation.usage ? (
-									<TranscriptUsage usage={presentation.usage} />
+									<TranscriptUsage {...presentation.usage} />
 								) : null
 							}
 							CellRendererComponent={readerCellRenderer}

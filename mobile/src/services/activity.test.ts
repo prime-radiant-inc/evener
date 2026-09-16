@@ -544,7 +544,7 @@ describe("ActivityService — projectActivity", () => {
       };
       const t = thread({ evener: evenerThread({ capabilities: caps }) });
       const view = service.projectActivity(t);
-      expect(view.capabilities).toEqual(caps as ThreadCapabilities);
+      expect(view.capabilities).toEqual(caps);
     });
 
     it("projects reasoning effort and levels", () => {
