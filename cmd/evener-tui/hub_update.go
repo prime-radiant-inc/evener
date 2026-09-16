@@ -554,6 +554,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// availability and the next drain's preQueueDepth read.
 					m.sessionQueue = append(m.sessionQueue, preview)
 					m.detail.Queue.Depth++
+					m.queueRevisionAtDrain = m.detail.Queue.Revision
 					m.queueRevisionStale = true
 					m.session.refreshViewport()
 				}

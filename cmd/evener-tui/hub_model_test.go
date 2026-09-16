@@ -2312,6 +2312,13 @@ func TestHubModelPartialDrainWaitsForTheQueueRevision(t *testing.T) {
 	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
 		t.Fatal("ctrl+s right after a partial drain produced a command; the queue revision is stale until queueChanged reconciles it")
 	}
+	// A thread/read snapshot cut before the daemon moved the revision (the
+	// same revision 8 the drain was sent against) must not re-enable Ctrl+S:
+	// only a newer revision reconciles the optimistic row.
+	got.applyQueueState("local:01SEND", appwire.QueueState{Depth: 1, Revision: 8, Preview: []string{"later"}})
+	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
+		t.Fatal("ctrl+s after an older thread/read snapshot produced a command; its revision is not newer than the one the drain expected")
+	}
 
 	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 		ThreadID: "01SEND",

@@ -426,7 +426,13 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 	// against the revision the client last saw, and a queue another client
 	// edited since hydrate would otherwise be refused as a conflict.
 	m.detail.Queue = queue
-	m.queueRevisionStale = false
+	// The stale gate set by a partial drain lifts only for a revision newer
+	// than the one that drain was sent against: a thread/read snapshot cut
+	// before the daemon moved the revision would otherwise re-enable Ctrl+S
+	// with the same stale revision.
+	if m.queueRevisionStale && queue.Revision > m.queueRevisionAtDrain {
+		m.queueRevisionStale = false
+	}
 	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
 		return

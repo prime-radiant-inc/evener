@@ -207,6 +207,11 @@ type hubModel struct {
 	// offered in between: it would carry the stale revision and be refused as
 	// "queue revision changed".
 	queueRevisionStale bool
+	// queueRevisionAtDrain is the revision the model held when that optimistic
+	// row was appended; only a queue state carrying a newer revision (the
+	// daemon's move, arriving as queueChanged or a fresh thread/read) clears
+	// the stale flag. An older snapshot keeps the gate closed.
+	queueRevisionAtDrain uint64
 
 	// modelRetry holds the in-flight model-call retry the daemon reported on
 	// evener/thread/modelRetry (kata 4zn8), or nil when none is pending. Ephemeral
