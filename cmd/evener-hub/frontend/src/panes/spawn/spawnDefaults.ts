@@ -123,7 +123,9 @@ export interface SaveDefaultsInput {
   // remote cwd would default the next local Spawn to a path that usually does
   // not exist here, and a host-only model would default the next local launch
   // to a model this hub may not serve (Component 06b review, round seven). The
-  // per-project blob keyed by that cwd is still written.
+  // per-project blob keyed by that cwd is still written, minus its model
+  // (round eight - the cwd key cannot distinguish a local checkout of the same
+  // path from the remote one).
   remoteLaunch?: boolean;
 }
 
@@ -144,7 +146,16 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (harness) blob.harness = harness;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
-  if (model && input.harnessUsesEvenerModels) blob.model = model;
+  // The blob is keyed by the cwd ALONE, and a cwd does not identify a host: the
+  // same path is often also a local checkout. A model chosen on a remote host
+  // came from THAT host's catalog, so persisting it here would hand it to a
+  // later LOCAL spawn of the same path - a model this hub may not serve, which
+  // the stale-model sweep cannot even recognize as wrong (an unknown provider
+  // is deliberately left untouched). Only the host-specific model value is
+  // dropped; the remote project's harness/access/effort layer is still
+  // remembered (Component 06b review, round eight, refining round seven's
+  // "the blob is still written").
+  if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));

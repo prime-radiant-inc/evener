@@ -524,7 +524,14 @@ function SpawnForm({
   // - and is retired when the target becomes remote. Cleared on every
   // user-driven model change, so a value the person chose is never treated as
   // fallback-derived (Component 06b review, round seven).
-  const defaultModelFallbackRef = useRef<string | null>(null);
+  //
+  // The marker lives in the DRAFT, not a form-local ref (round eight): this
+  // component is a singleton reused across drafts and unmounted/remounted with
+  // the pane, so a ref-local marker leaked draft A's provenance onto an
+  // identical model string draft B legitimately owns (clearing B's user-chosen
+  // or sticky-default model when B went remote) and vanished on a remount,
+  // letting the controller's fallback model ride a remote launch after all.
+  const [defaultModelFallback, setDefaultModelFallback] = useDraftField(draft, "defaultModelFallback");
 
   function isCurrentDraft(): boolean {
     return spawnDraftsStore.getState().current?.fields === draft.fields;
@@ -1019,7 +1026,7 @@ function SpawnForm({
             !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
           ) {
             const installed = `${fallback.provider}/${fallback.model}`;
-            defaultModelFallbackRef.current = installed;
+            setDefaultModelFallback(installed);
             setModel(installed);
           }
         },
@@ -1034,21 +1041,22 @@ function SpawnForm({
       active = false;
       clearTimeout(settle);
     };
-  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, remoteLaunch, setModel, harness, usesEvenerModels]);
+  }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, remoteLaunch, setModel, setDefaultModelFallback, harness, usesEvenerModels]);
 
   // Retire a model this fallback installed once the target becomes remote: the
   // value describes the CONTROLLER's catalog, and forwarding it would prevent
   // the selected host from resolving its own default (round seven). Only a
   // value still equal to the one the fallback installed is cleared, so a
-  // person's own choice - or a sticky draft default - is never touched.
+  // person's own choice - or a sticky draft default - is never touched. The
+  // mark is this draft's own (round eight), so another draft's identical model
+  // string is untouched, and it survives a pane remount.
   useEffect(() => {
     if (!remoteLaunch) return;
-    const installed = defaultModelFallbackRef.current;
-    if (installed !== null && modelRef.current === installed) {
-      defaultModelFallbackRef.current = null;
+    if (defaultModelFallback !== null && modelRef.current === defaultModelFallback) {
+      setDefaultModelFallback(null);
       setModel("");
     }
-  }, [remoteLaunch, setModel]);
+  }, [remoteLaunch, defaultModelFallback, setDefaultModelFallback, setModel]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
   // same precedence thread/start applies (floor §1.11, spawnSchema's
@@ -1153,7 +1161,7 @@ function SpawnForm({
     // Any value the person sets is their own choice, not the
     // uncredentialed-default fallback's controller-derived pick, so it is no
     // longer retired if the launch target becomes remote.
-    defaultModelFallbackRef.current = null;
+    setDefaultModelFallback(null);
     setModel(next);
     clearAdvancedOverride("model");
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
@@ -1618,6 +1626,19 @@ function SpawnForm({
     }
   }
 
+  // The dir-picker's "last accepted directory" seed (GLOBAL_LAST_WORKING_DIR_KEY)
+  // is the CONTROLLER's own browse history: it seeds this hub's pickers, local
+  // ones included. A remote target's cwd belongs to the SELECTED HOST, so
+  // recording it would open the next local picker at a path that usually does
+  // not exist here (Component 06b review, round eight - the picker-seed half of
+  // round seven's controller-scoped-cwd rule).
+  const commitLastWorkingDir = useCallback(
+    (path: string) => {
+      if (!remoteLaunch) setGlobalLastWorkingDir(path);
+    },
+    [remoteLaunch],
+  );
+
   const harnessOptions =
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
@@ -1673,7 +1694,7 @@ function SpawnForm({
             onClose={() => setDirectoryOpen(false)}
             onPick={(path) => {
               setCwd(path);
-              setGlobalLastWorkingDir(path);
+              commitLastWorkingDir(path);
               setDirectoryOpen(false);
             }}
           />
@@ -1698,7 +1719,18 @@ function SpawnForm({
               id="spawn-host"
               className={CLASS.hostSelect}
               value={hostChoice}
-              onChange={(event) => setSource(event.target.value)}
+              // A submit snapshots this choice (handleSpawn's closure carries
+              // the submittedSource/remoteLaunch that thread/start and
+              // saveDefaults receive) and then awaits the local directory
+              // preflight, so a change mid-submit would silently diverge from
+              // what actually launches and from which defaults are saved.
+              // Disabled while busy; the guard also covers the same-tick window
+              // before that attribute commits (kata 61v2's busyRef discipline).
+              disabled={busy}
+              onChange={(event) => {
+                if (busyRef.current) return;
+                setSource(event.target.value);
+              }}
             >
               {sources.map((candidate) => (
                 <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
@@ -2027,7 +2059,7 @@ function SpawnForm({
             createDirectory={createDirectory}
             listRecents={listRecents}
             fallbackDir={getGlobalLastWorkingDir()}
-            onCwdPanelClose={setGlobalLastWorkingDir}
+            onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
             accessMode={accessMode}
             accessOptions={accessOptions}
