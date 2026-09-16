@@ -92,8 +92,13 @@ func TestDurableTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testin
 	sess.transcriptReady = false
 	sess.mu.Unlock()
 
-	if err := sess.appendSteeringTurnDurably("held", ""); err != nil {
-		t.Fatalf("appendSteeringTurnDurably before the writer exists: %v, want nil", err)
+	// A non-owner durable write (recorded-or-nil): pre-attach it is held, then
+	// flushed at attachTranscript. (A durability OWNER uses the synced door,
+	// which refuses a held turn — see TestSyncedWriteRefusesAHeldPreAttachTurn —
+	// because a held turn is neither recorded nor synced.)
+	msg := llm.User("held")
+	if err := sess.appendTurnWithDurableTranscriptMessage(schema.TurnSteering, msg, msg); err != nil {
+		t.Fatalf("durable append before the writer exists: %v, want nil", err)
 	}
 	sess.attachTranscript(w)
 	sess.Close()

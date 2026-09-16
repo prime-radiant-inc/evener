@@ -63,6 +63,38 @@ var ErrRollbackFailed = errors.New("rollback failed")
 // the file still holds.
 var ErrWriterPoisoned = errors.New("transcript writer refuses further appends after an unresolved partial append")
 
+// ErrWriterClosed marks a synced write to a closed writer. The ordinary doors
+// treat a closed (or nil) writer as a no-op that returns nil, because a session
+// with no state directory writes into a closed writer for its whole life; a
+// durability owner (AppendSynced) instead fails closed, so it never reads a
+// dropped write as durable.
+var ErrWriterClosed = errors.New("transcript writer is closed")
+
+// ErrRetainedUnsynced marks an AppendSynced whose whole record is in the file
+// but could be made durable by neither its own fsync nor the recovery barrier.
+// The record IS a record — a returning reader finds it — so the caller must
+// adopt it (record it in history) rather than re-append, which would duplicate
+// the line on restart; the next successful fsync settles its durability. Match
+// it with errors.Is; RetainedUnsyncedError carries the record's sequence.
+var ErrRetainedUnsynced = errors.New("transcript entry recorded but not synced")
+
+// RetainedUnsyncedError is the concrete ErrRetainedUnsynced, carrying the
+// sequence number the recorded-but-unsynced entry took.
+type RetainedUnsyncedError struct {
+	Seq   int
+	Cause error
+}
+
+func (e *RetainedUnsyncedError) Error() string {
+	return fmt.Sprintf("transcript entry seq %d recorded but not synced: %v", e.Seq, e.Cause)
+}
+
+func (e *RetainedUnsyncedError) Unwrap() error { return e.Cause }
+
+// Is reports a match against the ErrRetainedUnsynced sentinel so callers can
+// errors.Is without depending on the concrete type.
+func (e *RetainedUnsyncedError) Is(target error) bool { return target == ErrRetainedUnsynced }
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
@@ -456,21 +488,35 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 	return err
 }
 
-// AppendSynced records a turn AND establishes its durability, returning an
-// error unless the line is both a record and synced. It is the door for the
-// durability owners that raise their own barrier; ordinary producers use
-// AppendDurable and never inspect durability.
+// AppendSynced records a turn and establishes its durability. It has three
+// outcomes, because a durability owner must tell them apart or it duplicates
+// records across a crash:
 //
-// It reports through its return, never the warning channel: the append does not
-// queue its retained diagnostic (queueRetained=false), so this door cannot
-// steal another append's queued warning, and it raises the recovery barrier
-// ONLY when the append's own fsync was the one that failed (retained != nil).
-// A clean durable append needs no second fsync.
+//   - nil: the record is durable (its own fsync, or the recovery barrier,
+//     succeeded). The owner commits.
+//   - *RetainedUnsyncedError (errors.Is ErrRetainedUnsynced): the WHOLE record
+//     is in the file — a returning reader finds it — but neither its fsync nor
+//     the barrier could make it durable. The owner must ADOPT it (record it in
+//     history, never re-append: re-appending duplicates the line on restart)
+//     and let the next successful fsync settle the debt. The diagnostic is
+//     queued for the session to surface.
+//   - any other error: nothing was recorded (a partial line, or a clean
+//     rollback). The owner keeps its obligation pending and may retry.
+//
+// It is the door for the durability owners that raise their own barrier;
+// ordinary producers use AppendDurable and never inspect durability. It raises
+// the recovery barrier ONLY when the append's own fsync failed (retained !=
+// nil); a clean durable append is not fsynced twice.
 func (w *Writer) AppendSynced(turn schema.Turn) error {
-	if w == nil || w.closed.Load() {
-		return nil // no-op, like the other doors — see Append
+	if w == nil {
+		return nil // no writer to record into — see Append's nil no-op
 	}
-	_, retained, err := w.appendBatch([]schema.Turn{turn}, true, false)
+	if w.closed.Load() {
+		// A closed writer records nothing; a synced owner must not read that as
+		// durable (LOW). The nil no-op is only for a writer that never existed.
+		return ErrWriterClosed
+	}
+	firstSeq, retained, err := w.appendBatch([]schema.Turn{turn}, true, false)
 	if err != nil {
 		return err // not recorded
 	}
@@ -478,12 +524,18 @@ func (w *Writer) AppendSynced(turn schema.Turn) error {
 		return nil // recorded and its own fsync succeeded: durable
 	}
 	// Recorded but unsynced: the record is in the file, so a barrier that
-	// fsyncs the whole file settles it. If even that fails, the entry is not
-	// durable — report both the retained cause and the barrier failure.
-	if barrierErr := w.EstablishDurability(); barrierErr != nil {
-		return errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr))
+	// fsyncs the whole file settles it.
+	barrierErr := w.EstablishDurability()
+	if barrierErr == nil {
+		return nil
 	}
-	return nil
+	// The record is durable neither by its own fsync nor the barrier. It is
+	// still a record: queue its diagnostic for the session to surface, and tell
+	// the owner to adopt it rather than re-append.
+	w.mu.Lock()
+	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
+	w.mu.Unlock()
+	return &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 }
 
 // AppendBatch writes every turn as one write and one fsync, all-or-nothing:

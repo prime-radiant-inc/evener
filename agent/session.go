@@ -1811,10 +1811,14 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if committed {
 		s.maybeAutoSave()
 	}
-	// A durability failure rejects the input: the turn that owns this append is
-	// rolled back and its provisional count checkpointed
-	// (TestRejectedInputDoesNotPersistItsProvisionalTurn). AppendSynced settled
-	// its own warning channel, so the error is the only report needed.
+	// A NOT-RECORDED failure (a partial line, or a clean rollback) rejects the
+	// input: the turn is rolled back and its provisional count checkpointed
+	// (TestRejectedInputDoesNotPersistItsProvisionalTurn). A retained record —
+	// in the file but not yet durable — is adopted instead (committed above,
+	// err nil), never rejected, or the next turn would re-render and duplicate
+	// the entry a restart already holds. Either way the sync-failure diagnostic
+	// is on the writer's warning queue; surface it here, outside the door.
+	s.surfaceTranscriptWarnings()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
@@ -1889,7 +1893,16 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 }
 
 func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
-	if err := write(); err != nil {
+	// A write reports one of three things (see transcript.AppendSynced, and the
+	// ordinary doors' recorded-or-nil): nil is recorded; ErrRetainedUnsynced is
+	// ALSO recorded — the whole line is in the file — but not yet durable, so
+	// the turn is adopted here (never re-appended, which would duplicate it on
+	// restart) and the next fsync settles the debt; any other error recorded
+	// nothing, so nothing is appended. Returning nil for the adopted case is
+	// what keeps an owner from discarding its state and re-appending; the
+	// retained diagnostic is on the writer's warning queue, surfaced outside the
+	// lock by the caller's surfaceTranscriptWarnings.
+	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()

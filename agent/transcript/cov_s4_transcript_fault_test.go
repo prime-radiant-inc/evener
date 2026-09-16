@@ -333,10 +333,11 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 		faultOps     []int
 		wantRollback string
 		// retained is true when the truncate itself failed, so the whole line
-		// stays in the file: a record. The append returns nil, poisons the
-		// writer (retained cause), and surfaces the failure as a warning. When
-		// the truncate succeeded and only a later rollback step failed, the
-		// entry is gone and the append reports the error.
+		// stays in the file: a record. The append returns nil and surfaces the
+		// failure as a warning; the whole line is unsynced dirty debt the next
+		// fsync settles, NOT a poison — the writer stays usable. When the
+		// truncate succeeded and only a later rollback step failed, the entry is
+		// gone and the append reports the error.
 		retained bool
 	}{
 		{"truncateFails", []int{7}, "truncate to", true},

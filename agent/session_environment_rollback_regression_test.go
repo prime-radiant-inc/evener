@@ -545,35 +545,48 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 // reports the barrier failure so the input is rejected. A whole line is debt,
 // not poison, so the writer stays usable and the NEXT turn re-renders the whole
 // observation rather than being refused.
-func TestEnvironmentUnestablishedDurabilityReemitsForTheModel(t *testing.T) {
+// When the environment append's fsync AND the recovery barrier both fail, the
+// whole record is still in the file — a retained record. AppendSynced reports
+// that (ErrRetainedUnsynced), and the owner ADOPTS it: it commits the tracker
+// and does NOT re-emit next turn, because re-emitting would append the same
+// environment a restart already holds (the round-3 duplicate-free contract).
+// The next durable write settles the record's durability; the sync failure is
+// surfaced as a warning.
+func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
 	durabilityFailure := errors.New("environment transcript barrier failure")
 	attachEnvironmentUnverifiableWrite(t, sess, syncFailure, rollbackFailure, durabilityFailure)
+	seen, mu, done := collectEvents(sess)
 
-	if err := sess.maybeAppendEnvironmentContext(); !errors.Is(err, durabilityFailure) {
-		t.Fatalf("append error = %v, want the barrier failure AppendSynced could not resolve", err)
-	}
-	assertEnvironmentReemittedForModel(t, sess)
-}
-
-// assertEnvironmentReemittedForModel requires an unresolved append to leave the
-// tracker where the model's history is, and the next turn to put the
-// observation into that history.
-func assertEnvironmentReemittedForModel(t *testing.T, sess *Session) {
-	t.Helper()
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
-	if got := countEnvironmentTurns(sess); got != 0 {
-		t.Fatalf("model history environment turns after the unresolved append = %d, want none claimed", got)
-	}
 	if err := sess.maybeAppendEnvironmentContext(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("append error = %v, want nil: a retained record is adopted, not rejected", err)
 	}
+	adopted := durableEnvironmentTurnIDs(t, sess)
+	if len(adopted) != 1 || adopted[0] == "" {
+		t.Fatalf("durable environment entries = %v, want the one retained record", adopted)
+	}
+	// Adopted, not rewound: the next turn does not re-render, so the transcript
+	// carries the environment exactly once.
+	assertEnvironmentNotReemitted(t, sess, adopted)
 	if got := countEnvironmentTurns(sess); got != 1 {
-		t.Fatalf("model history environment turns after the next turn = %d, want the observation the unresolved append owes the model", got)
+		t.Fatalf("model history environment turns after the next turn = %d, want the one adopted entry", got)
 	}
-	assertEnvironmentTrackerMatchesModelHistory(t, sess)
+
+	sess.Close()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	surfaced := false
+	for _, ev := range *seen {
+		if w, ok := ev.Data.(events.WarningData); ev.Kind == events.EventWarning && ok && strings.Contains(w.Message, durabilityFailure.Error()) {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Fatal("the retained environment record's durability failure was never surfaced as a warning")
+	}
 }
 
 // TestEnvironmentAmbiguousWriteCommitsConfirmedEntry: AppendSynced records an
@@ -1214,16 +1227,16 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
-	rollbackFailure := errors.New("environment transcript rollback failure")
-	durabilityFailure := errors.New("environment transcript barrier failure")
-	// The barrier fails too, so AppendSynced cannot establish durability and the
-	// environment write genuinely fails — the case that rejects the input. (A
-	// recoverable ambiguous write, whose barrier succeeds, commits and does not
-	// reject; TestEnvironmentAmbiguousWriteCommitsConfirmedEntry owns that.)
-	attachEnvironmentUnverifiableWrite(t, sess, syncFailure, rollbackFailure, durabilityFailure)
+	seekFailure := errors.New("environment transcript rollback seek failure")
+	// The rollback truncate SUCCEEDS (the entry is taken back out) and only the
+	// closing seek fails: nothing is recorded, so AppendSynced returns a plain
+	// error — the NOT-RECORDED case that rejects the input. (A retained record,
+	// where the line stays in the file, is adopted, not rejected; round 3's
+	// TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord owns that.)
+	attachEnvironmentRolledBackWrite(t, sess, syncFailure, seekFailure)
 
-	if _, err := sess.ProcessInput(t.Context(), "rejected by its environment append", nil); !errors.Is(err, durabilityFailure) {
-		t.Fatalf("rejected input error = %v, want the unresolved environment durability barrier", err)
+	if _, err := sess.ProcessInput(t.Context(), "rejected by its environment append", nil); !errors.Is(err, syncFailure) {
+		t.Fatalf("rejected input error = %v, want the environment durability failure", err)
 	}
 	if got := loadMetaForTest(t, sess).AcceptedInputTurns; got != 0 {
 		t.Fatalf("persisted accepted input turns after the rejected input = %d, want the none it accepted", got)

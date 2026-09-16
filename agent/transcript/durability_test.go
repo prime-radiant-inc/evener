@@ -204,3 +204,61 @@ func TestAppendSyncedDoesNotDoubleFsyncACleanAppend(t *testing.T) {
 		t.Fatalf("entries = %d, want the one durable record", len(entries))
 	}
 }
+
+// AppendSynced must let a durability owner tell "recorded but not durable" from
+// "not recorded", or the owner discards and re-appends and the record lands
+// twice. When the append's fsync, its rollback, and the recovery barrier all
+// fail, the whole line is retained in the file: AppendSynced returns
+// *RetainedUnsyncedError (errors.Is ErrRetainedUnsynced) carrying the seq, and
+// the writer holds exactly one line — an owner that adopts it and does not
+// re-append keeps the file duplicate-free. Durable ops: Seq 4, Write 5, Sync 6
+// (fault), rollback Truncate 7 (fault); barrier Sync 9 (fault).
+func TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication(t *testing.T) {
+	plan := faultPlan(6)
+	plan[7] = 0x00 // rollback truncate fails: the whole line stays
+	plan[9] = 0x00 // recovery barrier fsync fails: durability unestablished
+	base := afero.NewMemMapFs()
+	w, err := newWriterFS(fault.FS(base, fault.FromBytes(plan)), faultTranscriptPath, faultTestHeader(), true)
+	if err != nil {
+		t.Fatalf("newWriterFS: %v", err)
+	}
+	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("recorded, not durable")))
+	if !errors.Is(err, ErrRetainedUnsynced) {
+		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced so the owner adopts rather than re-appends", err)
+	}
+	var retained *RetainedUnsyncedError
+	if !errors.As(err, &retained) || retained.Seq != 0 {
+		t.Fatalf("AppendSynced error = %v, want a RetainedUnsyncedError carrying seq 0", err)
+	}
+	// An owner that heeds this does not re-append; the file holds one line.
+	if entries := faultTestEntries(t, base); len(entries) != 1 {
+		t.Fatalf("entries = %d, want the one retained record (an owner that re-appended here would duplicate it)", len(entries))
+	}
+	// The diagnostic is queued for the session to surface, not returned only.
+	if len(w.DrainWarnings()) != 1 {
+		t.Fatal("the retained record queued no warning for the session to surface")
+	}
+}
+
+// AppendSynced fails closed on a closed writer: a durability owner writing
+// during shutdown (closeAttachedTranscript closes the writer without clearing
+// the session's reference) must not read a dropped write as durable. The nil
+// no-op is only for a writer that never existed (a stateless session).
+func TestAppendSyncedFailsClosedOnAClosedWriter(t *testing.T) {
+	w, err := NewWriterWithFS(afero.NewMemMapFs(), "/closed.jsonl", Header{SessionID: "sess-closed"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("during shutdown"))); !errors.Is(err, ErrWriterClosed) {
+		t.Fatalf("AppendSynced on a closed writer = %v, want ErrWriterClosed (a synced owner must not read a dropped write as durable)", err)
+	}
+	// A writer that never existed stays a nil no-op, so a stateless session's
+	// owners do not error.
+	var nilWriter *Writer
+	if err := nilWriter.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))); err != nil {
+		t.Fatalf("AppendSynced on a nil writer = %v, want nil no-op", err)
+	}
+}
