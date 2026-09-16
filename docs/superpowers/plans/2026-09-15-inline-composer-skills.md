@@ -120,3 +120,11 @@ Jesse's request: “do that. once that’s done, please open a pr and then sheph
 - The successful run emitted Node SQLite experimental warnings, a Metro cold-cache warning and an npm update notice. These are recorded rather than described as warning-free output. PR creation and bounded shepherding follow the simplification commit; merging into main remains unauthorized.
 
 The native dependency install also reported 14 moderate audit entries rooted in `decode-uri-component` and `uuid`. Those lockfiles are unchanged from main; I haven’t applied dependency upgrades.
+
+## Published-branch rebase (2026-09-16)
+
+- Opened [PR #1410](https://github.com/prime-radiant-inc/evener/pull/1410). Main advanced during verification; Jesse authorized “Rebase and force-with-lease”. Rebased onto `597d4e09b0bdffa93dad8e94e52e49d9193425f5` without changing main.
+- Resolved two test conflicts by retaining the upstream AppWire imports, inline-editor helpers, named auth/write assertions and deterministic refresh assertions. Both resolved suites passed all 104 tests, typecheck and Biome. Independent review found no lost assertions or behavior.
+- The new package-import gate caught a feature-added filesystem-path import. Switched it to the identical public AppWire export. The previously failing gate, all 21 editor/model tests, typecheck, Biome and independent review passed; committed as `2a4c2572a42aaa0198837ba3ec3a43f95c1f461f`.
+- Reran the complete canonical gate, vet and all six actual browser guards on that committed source; the command above exited zero. This run included 757 native tests, 778 shared tests and native script-import checks. The same SQLite, cold-cache and npm notices remain disclosed.
+- Hosted checks, required approval and bounded shepherding remain separate from local verification. The authorized push uses an explicit lease on the original published tip; merging into main remains unauthorized.
