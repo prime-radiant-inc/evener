@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../../panes/session/composer/askDock/askDockStore";
 import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { replaceEditorText } from "../../panes/session/testing/editor";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import ComposerSurfaceSection from "./composer";
 
@@ -28,14 +29,10 @@ test("each themed composer has a dedicated pane-width fixture and retains editab
       expect(fixture?.className).toMatch(/paneFixture/);
     }
     if (!drafted || !pending) throw new Error("missing gallery fixture");
-    const input = within(drafted).getByRole("textbox") as HTMLTextAreaElement;
-    expect(input.value).toContain("CHANGELOG");
-    // focus() blurs the previously focused pane's textarea; the Composer's
-    // blur handler (handleTextareaBlur) updates state in response, so the
-    // raw DOM focus call must be owned.
-    act(() => input.focus());
-    fireEvent.change(input, { target: { value: "Keep this editable" } });
-    expect(input.value).toBe("Keep this editable");
+    const input = within(drafted).getByRole("textbox");
+    expect(input.textContent).toContain("CHANGELOG");
+    replaceEditorText(input, "Keep this editable");
+    expect(input.textContent).toBe("Keep this editable");
     expect(document.activeElement).toBe(input);
     expect(within(drafted).getByRole("button", { name: /^Send$/ })).toBeTruthy();
     const choice = within(pending).getByRole("radio", { name: /No, main only/ }) as HTMLInputElement;

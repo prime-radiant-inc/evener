@@ -257,6 +257,12 @@ test("uses a mock keychain for a fresh macOS browser profile", async () => {
   }
 });
 
+test("isolates Linux browser profile credentials from the desktop keyring", () => {
+  assert.ok(browserGuardProcess.chromeProfileIsolationArgs("linux").includes("--password-store=basic"));
+  assert.ok(!browserGuardProcess.chromeProfileIsolationArgs("darwin").includes("--password-store=basic"));
+  assert.ok(!browserGuardProcess.chromeProfileIsolationArgs("win32").includes("--password-store=basic"));
+});
+
 test("stores Chrome crash metadata inside the private browser profile", async () => {
   const { guard, children } = await startFakeGuard();
   try {

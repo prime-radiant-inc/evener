@@ -353,7 +353,8 @@ function ManageConnections({
         {!loading && !error && visibleInstances.length === 0 && (
           <p className={CLASS.empty}>No provider instances are available.</p>
         )}
-        {!loading && !error && visibleInstances.length > 0 && (
+        {/* Keep existing controls mounted during refresh so their keyboard focus survives. */}
+        {!error && visibleInstances.length > 0 && (
           <ul className={CLASS.providerList}>
             {visibleInstances.map((instance) => {
               const providerName =

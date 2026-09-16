@@ -1937,6 +1937,75 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 	}
 }
 
+func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testing.T) {
+	root := skillFixtureRoot(t)
+	names := []string{"skill-1", "skill-2"}
+	body := skillSelectionFixtureBody("INLINE_BODY")
+	sources := make(map[string]string)
+	for _, name := range names {
+		sources[name] = writeSkillMDAndReturn(t, root, name, body)
+	}
+	const original = "Run /skill-1 and then /skill-2"
+	const mutationID = "inline-skill-references"
+	adapter := &agenttest.ScriptedAdapter{Provider: "anthropic", Responder: func(llm.Request) llm.Response {
+		return toolCallResponse(communicateCall("done-inline", "ok"))
+	}}
+	s := newSkillSelectionSession(t, root, adapter)
+	evs, stop := captureEvents(s)
+
+	response, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: mutationID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: original},
+			{Type: "skill", Name: names[0]},
+			{Type: "skill", Name: names[1]},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	if _, ran, err := s.ProcessClientMutationStart(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("ProcessClientMutationStart: ran=%v err=%v", ran, err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("provider requests = %d, want 1", len(requests))
+	}
+	var originalCount int
+	for _, text := range userMessageTexts(requests[0]) {
+		if text == original {
+			originalCount++
+		}
+	}
+	if originalCount != 1 {
+		t.Fatalf("provider input = %q, want complete inline sentence exactly once", userMessageTexts(requests[0]))
+	}
+	envelopes := requestSkillEnvelopes(t, requests[0])
+	if len(envelopes) != len(names) {
+		t.Fatalf("skill envelopes = %d, want %d", len(envelopes), len(names))
+	}
+	for i, envelope := range envelopes {
+		if envelope.Doc.Name != names[i] || envelope.Doc.Source != sources[names[i]] || envelope.Doc.Instructions != body {
+			t.Fatalf("envelope %d = %+v, want complete selected skill %q", i, envelope.Doc, names[i])
+		}
+		assertSelectionObligation(t, s, response.Turn.ID+":"+names[i], response.Turn.ID, mutationID)
+	}
+	stop()
+	input := findClientMutationTurn(s, mutationID, schema.TurnUserInput)
+	if input == nil || input.SkillState == nil || input.SkillState.Input == nil {
+		t.Fatalf("no typed skill input recorded: %+v", input)
+	}
+	if input.SkillState.Input.OriginalText != original || !slices.Equal(input.SkillState.Input.Names, names) {
+		t.Fatalf("typed input = %+v, want original sentence and both names", input.SkillState.Input)
+	}
+	if strings.Count(input.Message.Text(), original) != 1 {
+		t.Fatalf("transcript user message = %q, want complete inline sentence exactly once", input.Message.Text())
+	}
+	if got := skillActivatedEventNames(*evs); !slices.Equal(got, names) {
+		t.Fatalf("activation events = %v, want %v", got, names)
+	}
+}
+
 func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
 	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_613")
