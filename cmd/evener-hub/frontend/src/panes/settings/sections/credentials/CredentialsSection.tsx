@@ -35,12 +35,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import {
-  credentialsStore,
-  isStaleListingRefusal,
-  staleListingHeld,
-  useCredentialsStore,
-} from "../../../../stores/credentials";
+import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
   Button,
   ConfirmDialog,
@@ -219,10 +214,6 @@ export function CredentialsSection({
     instanceVersion.current += 1;
   }
   const toast = useToasts();
-  // The same predicate the store's own refusal uses (see the dialog): while it
-  // holds, the rows on screen - and everything derived from the listing that
-  // produced them - belong to a connection that is gone.
-  const staleListing = useCredentialsStore(staleListingHeld);
 
   // Any action this section issues can be refused by the store because the
   // rows it would act on were read by a replaced connection
@@ -307,6 +298,7 @@ export function CredentialsSection({
       await credentialsStore.getState().setModelDisabled({ name, model, disabled });
       toast.push("success", `${disabled ? "Disabled" : "Enabled"} ${model}`);
     } catch (err) {
+      if (recoverStaleListing(err)) return;
       toast.push("error", `Model toggle failed: ${friendlyErrorMessage(err)}`);
     } finally {
       pendingToggleKeys.current.delete(key);
@@ -428,7 +420,14 @@ export function CredentialsSection({
       }
       setPendingConfirm(null);
     } catch (err) {
-      if (recoverStaleListing(err)) return;
+      if (recoverStaleListing(err)) {
+        // The confirmation holds the destination fingerprint the row showed when
+        // it was opened, which is the connection that is gone: a retry against
+        // the listing that lands next has to capture it again, so the dialog
+        // closes rather than carrying a stale assertion into the retry.
+        setPendingConfirm(null);
+        return;
+      }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
       toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);
     } finally {
@@ -515,7 +514,10 @@ export function CredentialsSection({
           rows on screen belong to a connection that is gone they describe a
           listing this one never read. Suppressed until this connection's own
           read lands, the same way the management dialog suppresses them. */}
-      {!staleListing && <Diagnostics diagnostics={diagnostics} />}
+      {/* Gated on the raw marker rather than staleListingHeld: a warning
+          describes the listing that produced it, and that is true even when the
+          listing carried no rows to act on. */}
+      {!listingFromPreviousConnection && <Diagnostics diagnostics={diagnostics} />}
 
       {loading && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}

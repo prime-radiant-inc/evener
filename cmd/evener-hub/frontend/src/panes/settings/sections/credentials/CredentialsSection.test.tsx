@@ -275,6 +275,27 @@ test("a replaced connection's warnings stay hidden until its own listing lands",
   expect(screen.getByText(/user layer/)).toBeTruthy();
 });
 
+// staleListingHeld answers "are there rows to act on", which is the wrong
+// question for content: a warning describes the listing that produced it, and
+// that is true of a replaced listing that carried no rows at all.
+test("a replaced connection's warnings are hidden even when its listing held no rows", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => ({
+    instances: [],
+    availableProviders: [],
+    diagnostics: ['providers.toml: unexpected key "type"'],
+  }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await screen.findByText("Warnings");
+
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+  await act(async () => connectionStore.getState().connect(replacement));
+
+  expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+  expect(screen.queryByText("Warnings")).toBeNull();
+});
+
 describe("the detail sheet", () => {
   test("clicking a row opens the inspector; its close button dismisses it", async () => {
     const fake = connectFakeClient();
@@ -866,6 +887,41 @@ describe("actions refused while the held listing belongs to a replaced connectio
     expect(screen.queryByText(/Sign-in failed/)).toBeNull();
   });
 
+  // Every instance-scoped write goes through the same gate, the model toggle
+  // included: an open sheet over a replaced connection's rows could otherwise
+  // flip a model by name against the hub that is there now.
+  test("a model toggle from a replaced connection's listing is refused with the change", async () => {
+    const fake = connectFakeClient();
+    const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
+    fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+
+    // The replacement answers its own listing read (so the rows stay on screen
+    // rather than the skeleton) and every write path a wrongly-ungated toggle
+    // would reach; the stale state is then the one between a replacement and the
+    // listing this connection would read.
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+    replacement.on("evener/instance/setModelDisabled", () => ({ instances: [row], availableProviders: [] }));
+    await act(async () => connectionStore.getState().connect(replacement));
+    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await act(async () => credentialsStore.setState({ listingFromPreviousConnection: true }));
+
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+
+    expect(replacement.calls.filter((call) => call.method === "evener/instance/setModelDisabled")).toHaveLength(0);
+    await screen.findByText(CONNECTION_REPLACED_ERROR);
+    expect(screen.queryByText(/Model toggle failed/)).toBeNull();
+  });
+
   test("a confirm-gated removal is refused with the change, not reported as a failed removal", async () => {
     const { replacement } = await renderWithReplacedConnection();
     const user = userEvent.setup();
@@ -877,6 +933,10 @@ describe("actions refused while the held listing belongs to a replaced connectio
     expect(replacement.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(0);
     await screen.findByText(CONNECTION_REPLACED_ERROR);
     expect(screen.queryByText(/Remove failed/)).toBeNull();
+    // The confirmation carried the fingerprint the row showed on the connection
+    // that is gone, so it closes: the retry captures the fresh row instead of
+    // retrying with a stale assertion.
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
 });
 

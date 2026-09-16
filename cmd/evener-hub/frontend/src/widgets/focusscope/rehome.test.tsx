@@ -178,6 +178,32 @@ test("useFocusRehome leaves an aria-disabled control holding focus", () => {
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "row" }));
 });
 
+/** A surface with a nested modal (a sheet over the pane): the recovery has to
+ * land inside the overlay the keyboard was in, not on the surface behind it. */
+function NestedModalHarness({ inside }: { inside: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusRehome(ref);
+  return (
+    <div ref={ref}>
+      <button type="button">pane</button>
+      <div role="dialog" aria-modal="true">
+        {inside && <button type="button">inside</button>}
+        <button type="button">overlay-first</button>
+      </div>
+    </div>
+  );
+}
+
+test("useFocusRehome re-homes inside the overlay the keyboard was in", () => {
+  const { rerender } = render(<NestedModalHarness inside />);
+  const inside = screen.getByRole("button", { name: "inside" });
+  act(() => inside.focus());
+
+  rerender(<NestedModalHarness inside={false} />);
+  expect(screen.queryByRole("button", { name: "inside" })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "overlay-first" }));
+});
+
 test("useFocusRehome re-homes once per removal, not on every later commit", () => {
   const { rerender } = render(<Harness row />);
   const row = screen.getByRole("button", { name: "row" });

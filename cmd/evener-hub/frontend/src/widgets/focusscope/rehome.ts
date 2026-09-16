@@ -47,20 +47,28 @@ export function rehomeFocus(root: HTMLElement | null, lost: HTMLElement | null =
  * alone.
  */
 export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
-  const lastFocused = useRef<HTMLElement | null>(null);
+  const lastFocused = useRef<{ target: HTMLElement; container: HTMLElement } | null>(null);
 
   // Capture phase: focusin does not bubble, but a capture-phase listener on the
   // document sees every focus that lands anywhere, including on controls that
-  // stop propagation.
+  // stop propagation. root.current is resolved at EVENT time, not captured when
+  // the listener is bound: a surface can replace the node the ref points at - the
+  // connect dialog's body is unmounted when an editor opens and remounted when it
+  // closes - and a listener holding the old node would stop remembering anything
+  // for the rest of the session.
   useEffect(() => {
     const remember = (event: FocusEvent): void => {
       const target = event.target;
-      // root.current is resolved at EVENT time, not captured when the listener is
-      // bound: a surface can replace the node the ref points at - the connect
-      // dialog's body is unmounted when an editor opens and remounted when it
-      // closes - and a listener holding the old node would stop remembering
-      // anything for the rest of the session.
-      if (target instanceof HTMLElement && root.current?.contains(target)) lastFocused.current = target;
+      const node = root.current;
+      if (!(target instanceof HTMLElement) || node === null || !node.contains(target)) return;
+      lastFocused.current = {
+        target,
+        // The innermost overlay the control sits in (a sheet, a dialog, a
+        // confirm opened over this surface), so the recovery lands inside the
+        // overlay the keyboard was actually in. Falling back to the surface
+        // itself would push focus out of a nested modal and break its trap.
+        container: target.closest<HTMLElement>('[role="dialog"], [aria-modal="true"]') ?? node,
+      };
     };
     document.addEventListener("focusin", remember, true);
     return () => document.removeEventListener("focusin", remember, true);
@@ -78,8 +86,11 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
     // aria-disabled is deliberately NOT this case - a control refused that way
     // keeps the keyboard where it is, which is why it is not the native
     // attribute.
-    if (remembered.isConnected && !remembered.matches(":disabled")) return;
+    if (remembered.target.isConnected && !remembered.target.matches(":disabled")) return;
     lastFocused.current = null;
-    rehomeFocus(root.current, remembered);
+    // An overlay that closed with the control goes with it: the surface's own
+    // container is then what is left to hand focus to.
+    const container = remembered.container.isConnected ? remembered.container : root.current;
+    rehomeFocus(container, remembered.target);
   });
 }

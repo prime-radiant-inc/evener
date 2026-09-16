@@ -101,8 +101,17 @@ function ManageConnections({
   onBack,
   onSettings,
 }: ConnectProviderDialogProps & { onBack(): void; onSettings(): void }) {
-  const { instances, availableProviders, diagnostics, userLayer, writesRefused, loading, error, fetch } =
-    useCredentialsStore();
+  const {
+    instances,
+    availableProviders,
+    diagnostics,
+    userLayer,
+    writesRefused,
+    loading,
+    error,
+    listingFromPreviousConnection,
+    fetch,
+  } = useCredentialsStore();
   const bodyRef = useRef<HTMLDivElement>(null);
   // The gate the rows and footer below refuse on, derived from the same
   // predicate the store's own refusal uses (staleListingHeld) so a control can
@@ -422,7 +431,7 @@ function ManageConnections({
         {/* A diagnostic describes the listing that produced it, so a
             replacement connection's warnings are not shown until its own read
             lands - the same rule the rows follow. */}
-        {!actionsDisabled && onboardingDiagnostics.length > 0 && (
+        {!listingFromPreviousConnection && onboardingDiagnostics.length > 0 && (
           <ul className={CLASS.diagnostics} aria-label="Provider warnings">
             {onboardingDiagnostics.map((diagnostic, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: registry diagnostics are an unordered list without stable identities

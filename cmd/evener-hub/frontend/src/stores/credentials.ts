@@ -504,7 +504,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async setModelDisabled(params) {
-    const client = requireClient();
+    const client = requireWritableClient();
     // A toggle whose answer a newer request outran is not dropped: it holds
     // the authoritative outcome for the one model it wrote, so that row is
     // reconciled into whatever listing the store now has.
@@ -516,6 +516,12 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async refreshModels(name) {
+    // A read keeps the read gate: reads stay available while the rows on screen
+    // are a replaced connection's - a read is what clears the mark - and this one
+    // never clears it. Its answer is dropped outright when the client it was
+    // issued on is gone (the client check below), it touches only one row's model
+    // inventory, and it never sets listingFromPreviousConnection false. Gating it
+    // would refuse a view the very read that repairs it.
     const client = requireClient();
     // Per-instance version, not the global counter: a refresh for B must not
     // cancel an in-flight refresh for A. Only a newer refresh for THIS
