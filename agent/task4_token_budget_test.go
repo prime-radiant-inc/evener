@@ -673,6 +673,34 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 	}
 }
 
+// The fallback request belongs to the fallback's row, so it carries that row's
+// identity before anything prices it: the estimator keys on the resolved row
+// together with the names the request carries, and the primary's names would
+// claim a media family (here Google's 1032-token tile rule) the fallback never
+// speaks and the generic fallback (258) does not.
+func TestResponsesContinuationModelFallbackRequestStampsTheFallbacksIdentity(t *testing.T) {
+	fullHistory := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
+		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: task4LargePNG(), MediaType: "image/png"}},
+	}}}
+	primary := llm.Request{
+		Provider: "google", Model: "gemini-3-pro", Messages: fullHistory,
+		HistoryMode: llm.HistoryModeResponsesDelta,
+	}
+	fallback := registry.Resolved{Instance: "gateway", ModelID: "gateway-zz"}
+
+	got, ok := responsesContinuationModelFallbackRequest(fallback, primary, fullHistory)
+	if !ok {
+		t.Fatal("the round retained its full history, so the fallback request is constructible")
+	}
+	if got.Provider != fallback.Instance || got.Model != fallback.ModelID {
+		t.Fatalf("fallback request identity = %s/%s, want %s/%s", got.Provider, got.Model, fallback.Instance, fallback.ModelID)
+	}
+	if got.InputTokensEstimate != 258 || got.FullHistoryInputTokensEstimate != 258 {
+		t.Fatalf("fallback estimates = %d/%d, want 258/258: the fallback's own row carries no vendor facts, so the generic media fallback prices its image",
+			got.InputTokensEstimate, got.FullHistoryInputTokensEstimate)
+	}
+}
+
 func TestSessionAnchorRejectionRebudgetsFullHistoryRequest(t *testing.T) {
 	client := llm.NewClient()
 	adapter := &fakeErrAdapter{name: "budget-anchor", steps: []func(llm.Request) (llm.Response, error){

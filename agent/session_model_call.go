@@ -1277,8 +1277,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			if !ok {
 				break
 			}
-			fbReq.Model = fbProfile.Model()
-			fbReq.Provider = fbProfile.ID()
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
@@ -1287,7 +1285,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.WebSearch = s.providerWebSearchEnabled(fbProfile)
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
-			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			var budget llm.TokenBudget
 			fbReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(fbProfile, fbReq)
 			if budgetErr == nil {
@@ -1398,11 +1395,19 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 // responsesContinuationModelFallbackRequest un-anchors a request for a
 // different model. A continuation delta can be relabeled as full history only
 // when the round retained that full history; otherwise it refuses construction.
+// The returned request carries res's identity and its full-history estimate, so
+// a caller dispatches and budgets it without re-stamping either.
 func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
 	if req.HistoryMode == llm.HistoryModeResponsesDelta && len(fullHistory) == 0 {
 		return llm.Request{}, false
 	}
 	fallbackReq := req
+	// The request now belongs to the fallback's row, so it carries that row's
+	// identity before anything prices it: the estimator reads the names a request
+	// carries alongside the resolved row, and the primary's names would decide a
+	// media family or a name-based thinking rule the fallback never speaks.
+	fallbackReq.Provider = res.Instance
+	fallbackReq.Model = res.ModelID
 	fallbackReq.HistoryMode = llm.HistoryModeFullHistory
 	if len(fullHistory) > 0 {
 		fallbackReq.Messages = append([]llm.Message(nil), fullHistory...)

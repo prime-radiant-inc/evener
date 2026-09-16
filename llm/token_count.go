@@ -551,18 +551,20 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 }
 
 // dropsToolResultImages reports whether the resolved row's adapter leaves a
-// tool-result image off the wire. The Anthropic and Responses builders always
-// emit one, cap or no cap. The chat builder strips the image when the row does
-// not declare MultimodalToolResults (chatcompletions/messages.go), and the
-// Google builder refuses such a request outright (google/request.go) -- either
-// way the wire carries nothing of the image, so the estimate must not bill one.
+// tool-result image off the wire. The Anthropic and Responses builders emit one
+// whenever the result carries bytes, cap or no cap. The chat builder emits the
+// result's text alone: Chat Completions has no portable image-bearing
+// tool-message representation, so its MultimodalToolResults cap only decides
+// whether the image fields are stripped before serialization
+// (chatcompletions/messages.go). The Google builder emits the image inside the
+// function response when the row declares the cap and refuses the request
+// without it (google/request.go).
 func dropsToolResultImages(res registry.Resolved) bool {
-	if registry.BoolValue(res.Caps.MultimodalToolResults) {
-		return false
-	}
 	switch res.Protocol {
-	case registry.ProtocolOpenAIChat, registry.ProtocolGoogle:
+	case registry.ProtocolOpenAIChat:
 		return true
+	case registry.ProtocolGoogle:
+		return !registry.BoolValue(res.Caps.MultimodalToolResults)
 	default:
 		return false
 	}

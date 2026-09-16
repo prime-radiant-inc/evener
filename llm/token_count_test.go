@@ -828,12 +828,15 @@ func TestEstimateMessagesInputTokensForResolved_ChatRowDoesNotApplyTheRowsImageD
 	}
 }
 
-// The chat builder strips a tool-result image unless the row declares
-// MultimodalToolResults (chatcompletions/messages.go), so nothing about the image
-// reaches the wire and the estimate must not bill one: overcounting fails the
-// budget early and compacts a request the provider would have taken. The
-// Anthropic and Responses builders emit the image regardless of the cap, so only
-// a row whose adapter actually drops it changes the count.
+// A tool-result image is billed only where the adapter puts one on the wire. The
+// chat builder emits the tool text alone -- Chat Completions has no portable
+// image-bearing tool-message representation, so its cap only decides whether the
+// image fields are stripped before serialization (chatcompletions/messages.go) --
+// while the Google builder emits the image inside the function response when the
+// row declares MultimodalToolResults and refuses the request without it. The
+// Anthropic and Responses builders emit it either way. Billing any of the others
+// overcounts, which fails the budget early and compacts a request the provider
+// would have taken.
 func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenTheyRide(t *testing.T) {
 	toolResult := func(withImage bool) []Message {
 		result := &ToolResultData{ToolCallID: "call1", Name: "screenshot", Content: "ok"}
@@ -860,16 +863,27 @@ func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenThe
 	withCap.Caps = registry.Caps{MultimodalToolResults: &declared}
 	withoutCap.Caps = registry.Caps{MultimodalToolResults: &undeclared}
 
-	if got, want := EstimateMessagesInputTokensForResolved(withoutCap, toolResult(true)).Tokens, textOnly(withoutCap); got != want {
-		t.Fatalf("undeclared-cap chat tool-result image = %d, want the text-only estimate %d: the builder strips the image", got, want)
+	for _, row := range []registry.Resolved{withCap, withoutCap} {
+		if got, want := EstimateMessagesInputTokensForResolved(row, toolResult(true)).Tokens, textOnly(row); got != want {
+			t.Fatalf("chat tool-result image = %d, want the text-only estimate %d: the builder never serializes the image", got, want)
+		}
 	}
-	if got, want := EstimateMessagesInputTokensForResolved(withCap, toolResult(true)).Tokens, textOnly(withCap)+imageCost(withCap); got != want {
-		t.Fatalf("declared-cap chat tool-result image = %d, want %d: the declared cap keeps the image on the wire", got, want)
+	google := registry.Resolved{Instance: "google", ModelID: "gemini-3-pro", Protocol: registry.ProtocolGoogle}
+	googleOn, googleOff := google, google
+	googleOn.Caps = registry.Caps{MultimodalToolResults: &declared}
+	googleOff.Caps = registry.Caps{MultimodalToolResults: &undeclared}
+	if got, want := EstimateMessagesInputTokensForResolved(googleOn, toolResult(true)).Tokens, textOnly(googleOn)+imageCost(googleOn); got != want {
+		t.Fatalf("declared-cap google tool-result image = %d, want %d: the adapter emits it in the function response", got, want)
 	}
-	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses} {
-		row := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: protocol}
+	if got, want := EstimateMessagesInputTokensForResolved(googleOff, toolResult(true)).Tokens, textOnly(googleOff); got != want {
+		t.Fatalf("undeclared-cap google tool-result image = %d, want the text-only estimate %d: the builder refuses the request", got, want)
+	}
+	for _, row := range []registry.Resolved{
+		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolAnthropic},
+		{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIResponses},
+	} {
 		if got, want := EstimateMessagesInputTokensForResolved(row, toolResult(true)).Tokens, textOnly(row)+imageCost(row); got != want {
-			t.Fatalf("%s tool-result image = %d, want %d: the adapter emits it regardless of the cap", protocol, got, want)
+			t.Fatalf("%s tool-result image = %d, want %d: the adapter emits it regardless of the cap", row.Protocol, got, want)
 		}
 	}
 	if got := EstimateMessagesInputTokens(toolResult(true)).Tokens; got <= EstimateMessagesInputTokens(toolResult(false)).Tokens {
