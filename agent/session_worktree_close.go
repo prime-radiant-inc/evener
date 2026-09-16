@@ -225,8 +225,8 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	return stopCtx, cancel
 }
 
-// ObserveCloseStopJoin, when set, sees every stop join closeStopJoinContext
-// bounds under a cascade deadline: the stop's own deadline and the cascade's.
+// ObserveCloseStopJoin sees every stop join closeStopJoinContext bounds under
+// a cascade deadline -- the stop's own deadline and the cascade's -- when set.
 // It is EXPORTED for cmd/evener's wedged-delegate run tests, which check the
 // close tree's wiring -- that the hopeless stop join is bounded to its half of
 // the budget rather than the whole cascade -- off these two deadlines instead
