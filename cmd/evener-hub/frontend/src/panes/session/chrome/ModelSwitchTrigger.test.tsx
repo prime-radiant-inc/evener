@@ -384,21 +384,32 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
 test("connect another provider refreshes the actual instance catalog without switching on cancel", async () => {
   resetCredentialsStoreForTests();
   const fake = new FakeClient("ready");
+  const teamLocal = {
+    name: "team-local",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-team-local",
+  };
   fake.on("evener/instance/list", () => ({
-    instances: [
+    instances: [teamLocal],
+    availableProviders: [
       {
-        name: "team-local",
-        providerId: "ollama",
+        id: "ollama",
+        name: "Local endpoint",
         protocol: "openai-chat",
         auth: "none",
         implicit: false,
-        isDefault: false,
-        activeSource: "none",
-        hasStoredOAuth: false,
-        credentialRequired: false,
+        authModes: [],
+        setup: teamLocal,
       },
     ],
-    availableProviders: [],
   }));
   fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   connectionStore.getState().connect(fake);
@@ -414,14 +425,15 @@ test("connect another provider refreshes the actual instance catalog without swi
   expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   await user.click(screen.getByTestId("trigger"));
   await openConnectDialog(user);
-  await user.click(await screen.findByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   loadCatalog.mockResolvedValue({
     models: [{ provider: "team-local", model: "served", displayName: "Team served" }],
     recent: [],
   });
   const loadsBefore = loadCatalog.mock.calls.length;
-  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  await user.click(await screen.findByRole("button", { name: "Check connection" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   const option = await screen.findByRole("option", { name: /Team served/ });
   expect(loadCatalog.mock.calls.length).toBeGreaterThan(loadsBefore);
   expect(onPick).not.toHaveBeenCalled();

@@ -7,16 +7,17 @@
 // in it too - the same row→detail-sheet collection-page idiom the
 // marketplacesPlugins redesign introduced (a sibling workstream; the
 // idiom's design-system writeup lands with it) - instead of a per-row
-// button cluster. The secret-entry and multi-step flows
-// (add/apiKey/credential JSON/OAuth) stay dialogs: opening one from the
-// sheet replaces it (single-mutable-editor invariant below).
+// button cluster. The secret-entry and multi-step flows (apiKey/credential
+// JSON/OAuth) stay dialogs: opening one from the sheet replaces it
+// (single-mutable-editor invariant below).
 //
 // Updated for the provider registry's instance wire shape (spec §11.3):
-// instances group by providerId, the add form is fed availableProviders, and
-// a providers.toml load error surfaces as a diagnostics banner that disables
-// every instance-CRUD action until it clears (writesRefused) - Set key/Sign
-// in/Clear/Clear stored key/Test credentials are unaffected, since none of
-// them write providers.toml.
+// instances group by providerId, and a providers.toml load error surfaces as a
+// diagnostics banner that disables every instance-CRUD action until it clears
+// (writesRefused) - Set key/Sign in/Clear/Clear stored key/Test credentials
+// are unaffected, since none of them write providers.toml. Adding an instance
+// (the form that authors providers.toml) is not this section's own action: the
+// guided connector owns it, and the header action below opens that flow.
 //
 // Single-mutable-editor invariant: `openEditor` is ONE section-level state
 // value (a discriminated union), so opening a second editor always replaces
@@ -52,7 +53,7 @@ import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./
 import styles from "./CredentialsSection.module.css";
 import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
-import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
+import { ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
@@ -71,7 +72,6 @@ const CLASS = {
 };
 
 type OpenEditor =
-  | { kind: "add" }
   | { kind: "apiKey"; name: string; expectedEndpointFingerprint?: string }
   | { kind: "credentialJson"; name: string; expectedEndpointFingerprint?: string }
   | OAuthEditor
@@ -114,23 +114,6 @@ export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
-  /** The connector's escape must retain the full editor, not reopen itself. */
-  // fullEditor selects the raw add-instance entry (the form that authors
-  // providers.toml) instead of the guided connector. Only
-  // ConnectProviderDialog's own "Full provider settings" view passes it; the
-  // Settings pane renders the section without it so its header action opens the
-  // guided flow, which is the reachable path to the full editor from there.
-  fullEditor?: boolean;
-  /** Reports a successful rename from this section's own instance sheet, so a
-   * caller that holds a name for the same instance - the guided connection kept
-   * mounted behind the full settings view - can follow it instead of searching
-   * for the old one. */
-  onInstanceRenamed?: (from: string, to: string) => void;
-  /** Reports a successful removal from this section's own instance sheet, so a
-   * caller that holds a name for the same instance - the guided connection
-   * kept mounted behind the full settings view - can drop its retained editing
-   * state: an instance later recreated under the same name is a new entity. */
-  onInstanceRemoved?: (name: string) => void;
 }
 
 // NO_PENDING_KEYS is the shared empty set a render with no sheet open hands
@@ -146,11 +129,7 @@ function withoutKey(current: ReadonlySet<string>, key: string): ReadonlySet<stri
   return next;
 }
 
-export function CredentialsSection({
-  fullEditor = false,
-  onInstanceRenamed,
-  onInstanceRemoved,
-}: CredentialsSectionProps) {
+export function CredentialsSection(_props: CredentialsSectionProps) {
   const {
     instances,
     availableProviders,
@@ -371,30 +350,22 @@ export function CredentialsSection({
         // The store's own listing IS the applied response when the removal won
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
-        // before the removal is reported, or the guided owner's reset fires on
-        // a listing that never lost it. What must be gone is the *authored*
-        // row: a name the environment also supplies comes back as an implicit
-        // instance the moment the authored entry is removed, and requiring the
-        // name itself to vanish would report a removal that happened as
-        // unconfirmed.
+        // before the removal is reported as done. What must be gone is the
+        // *authored* row: a name the environment also supplies comes back as an
+        // implicit instance the moment the authored entry is removed, and
+        // requiring the name itself to vanish would report a removal that
+        // happened as unconfirmed.
         const removed = (instances: InstanceEntry[]) =>
           !instances.some((instance) => instance.name === name && !instance.implicit);
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
           // Close the confirm dialog with the failure: the row is gone on the
           // host, so re-issuing the remove can only fail on a missing instance.
+          // The row the listing still shows is one this client read before the
+          // removal landed, so the listing has to be re-read before a retry can
+          // even be offered.
           setPendingConfirm(null);
           toast.push("error", `Removed on the host, but the provider list could not be confirmed for ${name}`);
-          // A superseded verdict is not a failure: the removal's RPC resolved
-          // and only its response was discarded, so the entry left the host,
-          // and the listing that still shows it is one this client read before
-          // the removal landed. The guided owner has to hear about it anyway -
-          // what it retains for this name (a typed credential draft, a saved or
-          // configured verdict) describes an instance that no longer exists,
-          // and a name recreated under it would inherit that state. The applied
-          // path is the opposite case: the hub's own response still held an
-          // authored row, so the removal did not happen and is not reported.
-          if (!applied) onInstanceRemoved?.(name);
           return;
         }
         // The authored entry is gone, but the environment can still supply
@@ -416,7 +387,6 @@ export function CredentialsSection({
             ? `Removed instance ${name}; environment access for it is still active`
             : `Removed instance ${name}`,
         );
-        onInstanceRemoved?.(name);
       }
       setPendingConfirm(null);
     } catch (err) {
@@ -475,20 +445,14 @@ export function CredentialsSection({
   return (
     <div className={CLASS.root} ref={rootRef}>
       <div className={CLASS.headerRow}>
-        {/* Only the raw add-instance action authors providers.toml, so only it
-            is gated by the write refusal. The guided connector stays reachable:
-            its credential writes go to the credential store (a different file),
-            and a registry whose user layer failed to load still serves the
-            curated/implicit providers it did read (cmd/evener-hub/main_test.go's
-            broken-layer case), so disabling the entry point would hide a path
-            that works. The connector's own configuration step surfaces the
-            refusal when it needs a config write. */}
-        <Button
-          onClick={() => (fullEditor ? setOpenEditor({ kind: "add" }) : setConnecting(true))}
-          disabled={fullEditor && writesRefused}
-        >
-          {fullEditor ? "+ Add provider instance" : "Connect provider"}
-        </Button>
+        {/* Never gated by the write refusal: this opens the guided connector,
+            whose credential writes go to the credential store (a different
+            file), and a registry whose user layer failed to load still serves
+            the curated/implicit providers it did read (cmd/evener-hub/
+            main_test.go's broken-layer case), so disabling the entry point
+            would hide a path that works. The connector's own configuration
+            step surfaces the refusal when it needs a providers.toml write. */}
+        <Button onClick={() => setConnecting(true)}>Connect provider</Button>
       </div>
 
       {connecting && (
@@ -513,7 +477,7 @@ export function CredentialsSection({
           load error, the user-layer note, a stray OAuth notice - so while the
           rows on screen belong to a connection that is gone they describe a
           listing this one never read. Suppressed until this connection's own
-          read lands, the same way the management dialog suppresses them. */}
+          read lands. */}
       {/* Gated on the raw marker rather than staleListingHeld: a warning
           describes the listing that produced it, and that is true even when the
           listing carried no rows to act on. */}
@@ -574,11 +538,7 @@ export function CredentialsSection({
           )
         }
         onOAuthStart={() => openEditorFromSheet((name) => void handleOAuthStart(name))}
-        onRenamed={(next) => {
-          const previous = selectedInstance;
-          setSelectedInstance(next);
-          if (previous !== null && previous !== next) onInstanceRenamed?.(previous, next);
-        }}
+        onRenamed={(next) => setSelectedInstance(next)}
         onClear={() => {
           if (selectedInstance !== null) {
             setPendingConfirm({
@@ -632,9 +592,6 @@ export function CredentialsSection({
         }
       />
 
-      {openEditor?.kind === "add" && (
-        <AddInstanceDialog availableProviders={availableProviders} onCancel={closeEditor} onSuccess={closeEditor} />
-      )}
       {openEditor?.kind === "apiKey" &&
         (() => {
           const target = findInstance(openEditor.name);
