@@ -9,13 +9,13 @@ import type { MarketplaceSourceInput } from "./types.gen";
 export function marketplaceSourceLabel(source: MarketplaceSourceInput): string {
   switch (source.kind) {
     case "github":
-      return `github: ${source.repo}`;
+      return `github: ${source.repo ?? ""}`;
     case "url":
       return source.url ?? "";
     case "directory":
       return source.path ?? "";
     case "git-subdir":
-      return `${source.url} (${source.path})`;
+      return `${source.url ?? ""} (${source.path ?? ""})`;
     default:
       return source.kind;
   }

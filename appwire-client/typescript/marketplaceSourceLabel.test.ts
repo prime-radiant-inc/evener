@@ -20,6 +20,15 @@ test("git-subdir: shows the url followed by the path in parens", () => {
   );
 });
 
+test("a missing optional field renders as empty rather than 'undefined'", () => {
+  expect(marketplaceSourceLabel({ kind: "github" })).toBe("github: ");
+  expect(marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git" })).toBe(
+    "https://example.com/x.git ()",
+  );
+  expect(marketplaceSourceLabel({ kind: "url" })).toBe("");
+  expect(marketplaceSourceLabel({ kind: "directory" })).toBe("");
+});
+
 test("an unknown kind falls back to the raw kind string", () => {
   expect(marketplaceSourceLabel({ kind: "mystery" })).toBe("mystery");
 });
