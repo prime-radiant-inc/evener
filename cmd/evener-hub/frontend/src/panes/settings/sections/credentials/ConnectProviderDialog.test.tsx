@@ -5,7 +5,7 @@ import type {
   InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -18,7 +18,6 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 // Existing cases exercise management, now reached explicitly from discovery.
 function render(element: ReactElement) {

@@ -48,8 +48,9 @@ export function sourceFilesOnDisk(dir) {
 // base identifier (`resolve(packageDir, "..")`, `new URL("../x",
 // import.meta.url)`) resolves against that base, not the cwd, and an ordinary
 // `from "../x"` import names no such call; neither matches. testing/
-// hubWireFixtures.ts read `join("..", "testdata", …)` against the frontend's
-// CWD; it lives in the app now, which is the other way to satisfy this.
+// hubWireFixtures.ts once read `join("..", "testdata", …)` against the
+// frontend's CWD; it now loads the fixture through a `?raw` import, which is
+// the other way to satisfy this.
 const FS_PATH_FUNCTIONS = new Set([
   "join",
   "resolve",

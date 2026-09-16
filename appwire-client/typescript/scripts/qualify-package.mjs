@@ -64,6 +64,7 @@ assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
+assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
@@ -170,6 +171,21 @@ assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
 assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
+const envInstance = {
+  name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
+  activeSource: "env:OPENAI_API_KEY", hasStoredFile: true, hasStoredOAuth: false, credentialRequired: true,
+};
+assert.equal(client.activeSourceLabel(envInstance), "Configured via environment variable (OPENAI_API_KEY)");
+assert.deepEqual(client.credentialLayers(envInstance).map((layer) => layer.source), ["env:OPENAI_API_KEY", "store"]);
+assert.equal(client.keylessByDesign({ ...envInstance, activeSource: "none", credentialRequired: false }), true);
+assert.equal(client.unconfiguredLabel({ ...envInstance, activeSource: "none" }), "Not configured");
+assert.equal(client.styleInfoText({ ...envInstance, baseUrl: "https://api.example" }), "openai-chat · base https://api.example");
+assert.deepEqual(client.groupByProvider([envInstance]).map((group) => group.providerId), ["openai"]);
+assert.equal(client.safeCredentialTestResult("openai", { status: "bogus" }).status, "endpoint_failure");
+assert.equal(client.safeCredentialTestMessage("success"), "Credentials verified.");
+assert.equal(client.isEndpointConflict(new Error("conflict")), false);
+assert.equal(client.fingerprintUnavailable({ ...envInstance, baseUrl: "https://api.example" }), true);
+assert.equal(typeof client.ENDPOINT_CHANGED_TEST_MESSAGE, "string");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

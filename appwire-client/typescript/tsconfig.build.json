@@ -22,6 +22,7 @@
     "askShared.ts",
     "deriveAskQuestions.ts",
     "reconcileBatches.ts",
+    "attachmentLimits.ts",
     "attachmentMarkers.ts",
     "composerInput.ts",
     "activityData.ts",
@@ -48,6 +49,7 @@
     "sharedNotesAvailability.ts",
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
-    "reasoningEffort.ts"
+    "reasoningEffort.ts",
+    "credentialLabels.ts"
   ]
 }

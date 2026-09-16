@@ -1,6 +1,5 @@
 // @vitest-environment node
 
-import type { InstanceEntry } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import {
   activeSourceLabel,
@@ -10,6 +9,7 @@ import {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
+import type { InstanceEntry } from "./types.gen";
 
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {

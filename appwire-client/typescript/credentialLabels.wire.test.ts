@@ -6,10 +6,10 @@
 // evener/instance/list answer (cmd/evener-hub/testdata/authwire/
 // responses.json, produced and re-verified by
 // TestAuthWireFixturesMatchTheHubHandler), so an activeSource the registry
-// starts sending that this pane has no words for fails here.
+// starts sending that these labels have no words for fails here.
 import { describe, expect, test } from "vitest";
 import { activeSourceLabel, credentialLayers, keylessByDesign, unconfiguredLabel } from "./credentialLabels";
-import { hubInstanceEntries } from "./hubWireFixtures";
+import { hubInstanceEntries } from "./testing/hubWireFixtures";
 
 function hubInstances() {
   return hubInstanceEntries();

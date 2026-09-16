@@ -1,7 +1,4 @@
-import {
-  MAX_ATTACHMENTS,
-  rejectionReason,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import { MAX_ATTACHMENTS, rejectionReason } from "@evener/appwire-client";
 import type { DraftDocument } from "./draftDocument";
 
 export interface PickedImage {
