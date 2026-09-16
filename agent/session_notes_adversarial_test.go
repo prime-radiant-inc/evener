@@ -78,13 +78,20 @@ func TestCanonicalURLEncodedTraversalControls(t *testing.T) {
 
 // notesRenameFailureFS fails only the mutation's metadata rename. All reads,
 // temp writes, the concurrent autosave rename, and reload use the real disk.
+// before, when set, runs ahead of every rename decision: the save holds no
+// session lock there, so a test can stage what a concurrent publication does
+// in that window.
 type notesRenameFailureFS struct {
 	afero.Fs
-	fail bool
-	err  error
+	fail   bool
+	err    error
+	before func()
 }
 
 func (fs *notesRenameFailureFS) Rename(old, newPath string) error {
+	if fs.before != nil {
+		fs.before()
+	}
 	if fs.fail {
 		return fs.err
 	}

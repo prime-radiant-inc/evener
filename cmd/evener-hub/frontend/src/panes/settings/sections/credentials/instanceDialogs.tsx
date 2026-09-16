@@ -18,12 +18,11 @@
 // what the registry actually substitutes.
 
 import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";

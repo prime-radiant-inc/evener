@@ -126,7 +126,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
     the CSP `blob:` failure (`useAttachments.ts:188`, and see Sharp edges);
   - a toast reading `Couldn't attach dropped.png` with no parenthetical →
     the file was rejected as non-image by `rejectionReason`
-    (`attachments/limits.ts:23-29`);
+    (`appwire-client/typescript/attachmentLimits.ts:23-29`);
   - no marker and no toast → the Dropzone isn't wired to the card;
   - `onHover === atRest` → the `dragenter` handler is gone.
 - **Step 3 (submit)**: the pane navigates to `/s/local:<SID>` — the qualified
@@ -186,7 +186,7 @@ daemon running, poisoning the next run's `idle` poll.
   without inspecting `relatedTarget`, so a real cursor crossing nested children
   can flicker. Harmless for the synthetic sequence above.
 - **Caps**: 8 attachments and 8 MiB per file client-side
-  (`attachments/limits.ts:9-10`); the hub's own send path allows 8 MiB per
+  (`appwire-client/typescript/attachmentLimits.ts:9-10`); the hub's own send path allows 8 MiB per
   image and 96 MiB per request (`internal/hubcore/types.go:13-14`). The count
   cap is cumulative across paste + drop + picker in one composer session, and a
   single multi-file drop counts each file within that batch

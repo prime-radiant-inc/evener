@@ -32,9 +32,13 @@
 //     than one full line plus one clamped one.
 //   - the chevron rides INLINE at the end of the headline text - inside the
 //     intent when there is one, otherwise inside the summary - wrapping with
-//     the words it opens. The intent-only Open variant is the exception: its
-//     valid sibling order is intent, Open, chevron (never Open beyond the
-//     disclosure arrow), with one overlay trigger owning the whole line;
+//     the words it opens, glued to the final word in an atomic .intentTail
+//     unit so it can never wrap to a line by itself. The expanded summary
+//     line glues its own trailing glyphs (the "Open beside" control, the
+//     two-level body chevron) the same way, in a .summaryTail unit. The
+//     intent-only Open variant is the exception: its valid sibling order is
+//     intent, Open, chevron (never Open beyond the disclosure arrow), with
+//     one overlay trigger owning the whole line;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the intent is the agent's own stated reason for the call
@@ -63,7 +67,8 @@ import { Fragment, type ReactNode, useId, useMemo } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
-import { type EntityTextSegment, segmentEntityIds } from "./entitySegments";
+import { type EntityTextSegment, type ProtectedSpan, segmentEntityIds } from "./entitySegments";
+import { splitTrailingWord } from "./tailWord";
 import styles from "./toolcallitem.module.css";
 
 const CLASS = {
@@ -73,6 +78,10 @@ const CLASS = {
   intentOverlayTrigger: requireClass(styles.intentOverlayTrigger, "toolcallitem.module.css", "intentOverlayTrigger"),
   summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   intent: requireClass(styles.intent, "toolcallitem.module.css", "intent"),
+  intentTail: requireClass(styles.intentTail, "toolcallitem.module.css", "intentTail"),
+  intentTailText: requireClass(styles.intentTailText, "toolcallitem.module.css", "intentTailText"),
+  summaryTail: requireClass(styles.summaryTail, "toolcallitem.module.css", "summaryTail"),
+  summaryTailText: requireClass(styles.summaryTailText, "toolcallitem.module.css", "summaryTailText"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
@@ -150,6 +159,70 @@ export interface ToolRowProps {
   onToggleSummary?: () => void;
 }
 
+/** The atomic tail unit both glyph-bearing lines render through: the line's
+ * final ATOMIC segment - a text run's final word (split out by
+ * splitTrailingWord) or a whole entity id, already atomic by the segment
+ * model's own rule - and the glyphs that trail it ride inside ONE
+ * inline-flex unit, so a line that fills exactly moves the whole unit -
+ * never a glyph alone onto a wrapped line of its own (the same mechanism as
+ * NotificationCard's .secondaryTail; see the grammar above and the
+ * stylesheet). `line` picks the name pair its markup reads:
+ * .intentTail/.intentTailText on the intent line, .summaryTail/
+ * .summaryTailText on the expanded summary line. Everything before the final
+ * segment renders as it would anywhere else (summarySegmentNodes); within a
+ * final TEXT segment the head and the final word linkify independently (one
+ * occurrence each, as linkifySummary's contract pins): the split lands on
+ * whitespace, and a summaryLink is a URL - whitespace-free - so no link can
+ * straddle the boundary and be lost. A descriptor that repeated the href on
+ * both sides of the boundary would mark one occurrence per half; no
+ * descriptor does - web_fetch's summary carries the URL exactly once
+ * (webTools.test.tsx pins the rule). */
+function TailUnit({
+  line,
+  segments,
+  summaryLink,
+  children,
+}: {
+  line: "intent" | "summary";
+  segments: SummarySegment[];
+  summaryLink?: string;
+  children?: ReactNode;
+}) {
+  const [unitClass, textClass] =
+    line === "intent" ? [CLASS.intentTail, CLASS.intentTailText] : [CLASS.summaryTail, CLASS.summaryTailText];
+  const last = segments.at(-1);
+  // No text to glue to: render the glyphs bare rather than dropping them.
+  // No call site passes an empty list today (the intent's one synthetic
+  // segment, hasSummary's non-empty summary, the anchor arms' own gates),
+  // and a future one must never lose the chevron or control to it.
+  if (last === undefined) return <>{children}</>;
+  const head = segments.slice(0, -1);
+  if (last.kind === "entity") {
+    // The final segment is a whole entity card: the unit wraps it and the
+    // glyphs together - an id is the atomic unit already, no word split.
+    return (
+      <>
+        {summarySegmentNodes(head, summaryLink)}
+        <span className={unitClass}>
+          <EntityRef id={last.id} embedded />
+          {children}
+        </span>
+      </>
+    );
+  }
+  const [headText, word] = splitTrailingWord(last.text);
+  return (
+    <>
+      {summarySegmentNodes(head, summaryLink)}
+      {headText !== "" ? linkifySummary(headText, summaryLink) : null}
+      <span className={unitClass}>
+        <span className={textClass}>{linkifySummary(word, summaryLink)}</span>
+        {children}
+      </span>
+    </>
+  );
+}
+
 /** The one rule for reading a tool call's stated intent (ItemModel.description):
  * trimmed, and blank means ABSENT. Shared with the subagent activity feed
  * (tools/subagentModule.tsx), which presents the same field very differently
@@ -170,9 +243,27 @@ export function statedIntentOf(item: { description?: string }): string | undefin
  * each caller maps its segments to its own nodes. */
 type SummarySegment = EntityTextSegment;
 
-/** Splits a summary string into its text and entity segments, in order. */
-function summarySegments(text: string): SummarySegment[] {
-  return segmentEntityIds(text);
+/** The FIRST-occurrence span of the summary's URL - the one and only
+ * occurrence linkifySummary links. Entity segmentation protects exactly this
+ * span (summarySegments below), and linkifySummary renders from it, so the
+ * two can never disagree about which occurrence is the link. */
+function linkSpan(text: string, href: string | undefined): ProtectedSpan | undefined {
+  if (href === undefined) return undefined;
+  const start = text.indexOf(href);
+  return start === -1 ? undefined : { start, end: start + href.length };
+}
+
+/** Splits a summary string into its text and entity segments, in order. The
+ * summary's URL, when there is one, is a span entity segmentation must keep
+ * WHOLE: a hub URL can embed one of the session's own entity ids
+ * (".../jobs/job_<id>/log"), and an id-shaped substring inside the URL would
+ * otherwise split the URL across segments - no single segment would hold the
+ * whole URL, linkifySummary's whole-href match would find nothing in any
+ * fragment, and the link would silently drop. The id inside the URL
+ * therefore stays plain text: a card trigger nested inside the link it
+ * lives in would open a card from inside the very link the row is drawing. */
+function summarySegments(text: string, summaryLink: string | undefined): SummarySegment[] {
+  return segmentEntityIds(text, linkSpan(text, summaryLink));
 }
 
 /** A segment's length in code POINTS, never UTF-16 units: a cut through a
@@ -360,16 +451,15 @@ function summarySegmentNodes(segments: SummarySegment[], href: string | undefine
  * leaves the visible text byte-identical; toolRowGrammar.test.tsx pins
  * both. */
 function linkifySummary(text: string, href: string | undefined): ReactNode {
-  if (href === undefined) return text;
-  const start = text.indexOf(href);
-  if (start === -1) return text;
+  const span = linkSpan(text, href);
+  if (span === undefined) return text;
   return (
     <>
-      {text.slice(0, start)}
+      {text.slice(0, span.start)}
       <a href={href} target="_blank" rel="noopener noreferrer">
-        {href}
+        {text.slice(span.start, span.end)}
       </a>
-      {text.slice(start + href.length)}
+      {text.slice(span.end)}
     </>
   );
 }
@@ -460,7 +550,7 @@ export function ToolRow({
   // their cuts BETWEEN segments - an id is one node on one side, never split.
   // Memoized on `summary`, all it reads: live rows re-render per item update,
   // and this segmentation is the row's expensive derivation.
-  const segments = useMemo(() => summarySegments(summary), [summary]);
+  const segments = useMemo(() => summarySegments(summary, summaryLink), [summary, summaryLink]);
   // The cuts the summary's own rendering needs, derived in ONE measurement.
   // Only the paths that cut pay for it: a row that neither clamps (a no-intent
   // or expanded row) nor anchors a trailing control reads the full summary.
@@ -682,27 +772,60 @@ export function ToolRow({
           title={hasIntent ? summary : undefined}
         >
           {hasIntent && !expanded ? (
-            clampedSummary
-          ) : anchor !== undefined ? (
+            // Collapsed: the middle-truncating clamp is a nowrap flex line
+            // and the trailing control / body chevron ride it as flex items,
+            // so nothing here can wrap - no glue needed.
             <>
-              {summarySegmentNodes(anchor.before, summaryLink)}
-              <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
-                {trailing}
-              </span>
-              {summarySegmentNodes(anchor.after, summaryLink)}
+              {clampedSummary}
+              {hasTrailing && anchor === undefined ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+              {bodyChevronInline ? bodyChevron : null}
             </>
+          ) : anchor !== undefined ? (
+            // Expanded with the control anchored mid-summary (read_file):
+            // the control trails the file path, whose wrap point always
+            // carries the following meta onto the same line, so it has no
+            // stranding geometry of its own and stays bare; the body chevron
+            // trails the LAST text, so it glues to that text's final word.
+            // A summary ending at the anchor itself (a binary read: no
+            // lines meta) puts the control at the end of the text, where it
+            // strands together with the chevron exactly like the plain
+            // variant below - so there the anchor text's final word, the
+            // control, and the chevron are ONE unit.
+            anchor.after.length === 0 ? (
+              <TailUnit line="summary" segments={anchor.before} summaryLink={summaryLink}>
+                <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                  {trailing}
+                </span>
+                {bodyChevronInline ? bodyChevron : null}
+              </TailUnit>
+            ) : (
+              <>
+                {summarySegmentNodes(anchor.before, summaryLink)}
+                <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                  {trailing}
+                </span>
+                {bodyChevronInline ? (
+                  <TailUnit line="summary" segments={anchor.after} summaryLink={summaryLink}>
+                    {bodyChevron}
+                  </TailUnit>
+                ) : (
+                  summarySegmentNodes(anchor.after, summaryLink)
+                )}
+              </>
+            )
+          ) : hasIntent && (hasTrailing || bodyChevronInline) ? (
+            // Expanded with the glyphs at the end of a plain (wrapping)
+            // summary: glue them to the summary's final word. The
+            // .bodyTrigger overlay button (below) carries the click target;
+            // the chevron span sits inside the pointer-events-none
+            // .summary, so it never double-hits.
+            <TailUnit line="summary" segments={segments} summaryLink={summaryLink}>
+              {hasTrailing ? <span className={CLASS.summaryTrailing}>{trailing}</span> : null}
+              {bodyChevronInline ? bodyChevron : null}
+            </TailUnit>
           ) : (
             summarySegmentNodes(segments, summaryLink)
           )}
-          {hasIntent && trailing && anchor === undefined ? (
-            <span className={CLASS.summaryTrailing}>{trailing}</span>
-          ) : null}
-          {/* The two-level body chevron rides inline at the end of the summary
-              text, after the trailing control - the same end-of-text slot the
-              grammar gives every chevron. The .bodyTrigger overlay button
-              (below) carries the click target; this span sits inside the
-              pointer-events-none .summary, so it never double-hits. */}
-          {bodyChevronInline ? bodyChevron : null}
         </span>
       )}
       {/* Rows with no intent trail the control at the summary line's end. An
@@ -798,8 +921,9 @@ export function ToolRow({
           {failureNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
-            {statedIntent}
-            {chevron}
+            <TailUnit line="intent" segments={[{ kind: "text", text: statedIntent ?? "" }]}>
+              {chevron}
+            </TailUnit>
           </span>
         </button>
       ) : (

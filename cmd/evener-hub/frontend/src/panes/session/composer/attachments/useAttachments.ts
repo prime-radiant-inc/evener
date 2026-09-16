@@ -1,17 +1,18 @@
 // useAttachments orchestrates the composer's staged-image pipeline (parity-
-// m5-composer.md §G, contracts §Attachments): validate against limits.ts,
-// reserve a marker + splice it into the composer text synchronously (before
-// any async work - test-composer-image-markers.js's own "pending: true"
-// contract), re-encode to PNG via encodePng.ts, then settle the item in
-// place. By default the bag belongs to the mounted composer. A caller can
-// supply an in-memory store to retain the bag and its encode continuations
-// across remounts. Image bytes never go through localStorage.
+// m5-composer.md §G, contracts §Attachments): validate against the package's
+// attachmentLimits, reserve a marker + splice it into the composer text
+// synchronously (before any async work - test-composer-image-markers.js's
+// own "pending: true" contract), re-encode to PNG via encodePng.ts, then
+// settle the item in place. By default the bag belongs to the mounted
+// composer. A caller can supply an in-memory store to retain the bag and its
+// encode continuations across remounts. Image bytes never go through
+// localStorage.
+import { rejectionReason } from "@evener/appwire-client";
 import { type SetStateAction, useCallback, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
 import { reencodeToPng } from "./encodePng";
-import { rejectionReason } from "./limits";
 import { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 
 export interface PendingAttachment {

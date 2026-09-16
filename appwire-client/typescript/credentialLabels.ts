@@ -1,12 +1,16 @@
-// credentialLabels.ts is the pure-logic half of the Credentials section
-// (parity-m7-settings.md §7c, updated for the provider registry's instance
-// wire shape - spec docs/superpowers/specs/2026-08-28-provider-registry-
-// design.md §11.3): computing the credential display from InstanceEntry's
-// activeSource/credentialRequired/auth fields and the providerId grouping -
-// no rendering, no store access, easily unit-tested in isolation.
+// credentialLabels.ts is the pure-logic half of a credentials display, shared
+// by the web Credentials section (cmd/evener-hub/frontend/src/panes/settings/
+// sections/credentials) and native's ProvidersScreen (parity-m7-settings.md
+// §7c, updated for the provider registry's instance wire shape - spec
+// docs/superpowers/specs/2026-08-28-provider-registry-design.md §11.3):
+// computing the credential display from InstanceEntry's activeSource/
+// credentialRequired/auth fields and the providerId grouping, the words a
+// credential test result is shown with, and the endpoint-assertion refusals
+// every credential flow presents the same way - no rendering, no store
+// access, easily unit-tested in isolation.
 
-import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { WireError } from "./errors";
+import type { AuthTestResponse, InstanceEntry } from "./types.gen";
 
 const STORED_KEY_LABEL = "Configured via stored API key";
 const STORED_CREDENTIAL_JSON_LABEL = "Configured via stored credential JSON";

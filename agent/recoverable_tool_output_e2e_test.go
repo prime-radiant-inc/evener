@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -246,10 +247,10 @@ func TestRecoverableRunningJobEndToEnd(t *testing.T) {
 	if err := os.WriteFile(initialPath, []byte(initial), 0o600); err != nil {
 		t.Fatalf("write initial output: %v", err)
 	}
-	command := "cat " + shellQuote(initialPath) +
-		"; while [ ! -e " + shellQuote(appendRelease) + " ]; do sleep 0.01; done" +
+	command := "cat " + shellquote.Literal(initialPath) +
+		"; while [ ! -e " + shellquote.Literal(appendRelease) + " ]; do sleep 0.01; done" +
 		"; printf ' complete\\n'" +
-		"; while [ ! -e " + shellQuote(exitRelease) + " ]; do sleep 0.01; done"
+		"; while [ ! -e " + shellquote.Literal(exitRelease) + " ]; do sleep 0.01; done"
 	startedRes := task7ExecTool(t, s, "shell", map[string]any{"command": command, "mode": "background"})
 	var started struct {
 		JobID string `json:"job_id"`
