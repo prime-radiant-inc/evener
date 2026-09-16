@@ -31,14 +31,21 @@ the short lowercase session-state gloss a session row's second line leads
 with, the credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
 flat row builder with the path helpers both apps' path fields share, the
-model catalog view helpers both apps' model pickers are built from
-(searchable options, provider grouping, per-row metadata and the flat picker
-row list), and the doc-pane URL builders, which hang their hrefs off a base
-origin the host supplies (empty for a same-origin web page). The doc-pane
-data layer is published at the `./docContent` subpath as well, where
-`readDocFile` takes the host's `DocPort` - that base origin paired with a
-fetch: the package issues no request of its own and names neither an origin
-nor a credentials policy.
+model catalog view helpers both apps' model pickers are built from (searchable
+options, provider grouping, per-row metadata and the flat picker row list),
+the launch-config engine's pure half both apps' launch settings are built on
+(option grouping, layer filtering, the form state populate/collect pair, the
+inherited entries a collection control ghosts in, and the add-a-path decision
+every path list gates on), the built-in slash invocation matcher and argument
+lookup both composers run a draft through before sending it, the transcript
+display configuration both apps resolve (local over hub over shipped), encode
+for local storage and summarize a transcript's content level and advanced
+toggles with, and the doc-pane URL builders, which hang their hrefs off a base
+origin the host supplies (empty for a same-origin web page). The doc-pane data
+layer is published at the `./docContent` subpath as well, where `readDocFile`
+takes the host's `DocPort` - that base origin paired with a fetch: the package
+issues no request of its own and names neither an origin nor a
+credentials policy.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

@@ -215,7 +215,7 @@ export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyP
                 onFocus={() => focusHumanNote(sessionRef, owner.current)}
                 onBlur={() => blurHumanNote(sessionRef, owner.current)}
                 aria-label="Human note"
-                placeholder="Add context for the agent…"
+                placeholder="Make a note…"
                 autoGrow
                 rows={4}
               />

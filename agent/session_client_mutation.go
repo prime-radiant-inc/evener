@@ -1274,6 +1274,37 @@ func (s *clientMutationStore) committedHumanNote() string {
 	return *s.state.HumanNote
 }
 
+// steeringOrigins reports the persisted steering provenance of every journal
+// record that keeps one, keyed by client mutation id. A steering turn's own
+// provenance is its kind, but a turn written before kinds were stamped kept
+// none, and only the record of the mutation that wrote it can still say whether
+// it was a notes update or an ordinary steer. The reader takes only stateMu and
+// does not clone the journal: history escaping runs once per restore over every
+// restored steering turn, and the journal can outgrow the rest of the snapshot.
+// A record that kept neither field cannot decide anything and is left out, so
+// the caller falls back to the turn's own kind and then the write-path text
+// shape. Only the record stored under the client mutation id decides, and the
+// id's spelling is not evidence of anything.
+func (s *clientMutationStore) steeringOrigins() map[string]steeringOrigin {
+	if s == nil {
+		return nil
+	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	var origins map[string]steeringOrigin
+	for id := range s.state.Journal {
+		origin := steeringOriginFromJournal(s.state.Journal, id)
+		if origin.kind == "" && origin.method == "" {
+			continue
+		}
+		if origins == nil {
+			origins = make(map[string]steeringOrigin, len(s.state.Journal))
+		}
+		origins[id] = origin
+	}
+	return origins
+}
+
 // queueHeld reads the parked-queue flag without cloning the snapshot.
 // sessionWorkPending calls this on every WireState sample, and snapshot()
 // deep-copies the whole journal.

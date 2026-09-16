@@ -1,5 +1,5 @@
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
-import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 import { makeEditorialTranscriptModel } from "./transcript-fixture";

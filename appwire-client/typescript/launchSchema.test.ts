@@ -1,4 +1,4 @@
-import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import {
   buildFormState,
@@ -16,7 +16,8 @@ import {
   resolvedDefaultLabel,
   resolvedEmptyChoice,
   schemaPathKind,
-} from "./schema";
+} from "./launchSchema";
+import type { LaunchConfigLayer, LaunchOption } from "./types.gen";
 
 describe("globalDefaultHint", () => {
   test("undefined on the global layer (no 'default' concept there)", () => {

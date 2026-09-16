@@ -9,9 +9,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { schemaPathKind } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/launchShared/schema";
-import { friendlyErrorMessage } from "@evener/appwire-client";
-import type { LaunchOption } from "@evener/appwire-client";
+import { friendlyErrorMessage, type LaunchOption, schemaPathKind } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";

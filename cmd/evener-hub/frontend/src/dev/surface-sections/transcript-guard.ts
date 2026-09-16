@@ -1,8 +1,8 @@
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
-import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import "../../styles/global.css";
 import { makeEditorialTranscriptModel } from "./transcript-fixture";
 
