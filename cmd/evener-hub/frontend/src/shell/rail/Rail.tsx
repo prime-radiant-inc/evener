@@ -1361,8 +1361,13 @@ function NavigationRail({
             // The fan-out settles every owner, so a partial result is a commit
             // for the owners that answered: present the value the settled set
             // yields (the read side shows a favorite when any owner holds one)
-            // and name the owners still holding the old decision.
-            const result = await setFavorite(client, "project", project.key, value, project.sources);
+            // and name the owners still holding the old decision. The row's own
+            // favorite is what the settled set is derived from: it says whether
+            // any owner held one, so a clear that missed an owner of a project
+            // nobody had favorited cannot present the row as favorited.
+            const result = await setFavorite(client, "project", project.key, value, project.sources, {
+              favoritedBefore: project.favorite ?? false,
+            });
             const notice = partialFanOutNotice(result.failedSources);
             if (notice) toasts.push("warning", `Favorite not updated everywhere: ${notice}`);
             return result;

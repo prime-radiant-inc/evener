@@ -61,6 +61,30 @@ export type FavoriteFanOutReceipt = SourceFanOutReceipt<FavoriteMutationResponse
   readonly favorite: boolean;
 };
 
+/** What the caller knows about a favorite before the fan-out runs.
+ * `favoritedBefore` is the favorite the read side presented for the project
+ * when the caller decided to toggle it: the rail's own row value. */
+export interface FavoriteFanOutOptions {
+  readonly favoritedBefore: boolean;
+}
+
+/** The value the read side presents once a favorite fan-out has settled: a set
+ * is presented as soon as any owner committed it (the read side shows a
+ * favorite when any owner holds one), while a clear is presented only when
+ * every owner answered or the caller already knew that no owner held one. An
+ * owner that failed kept its decision, so a failure is not on its own a
+ * favorite: with `favoritedBefore` false the caller has the proof that no owner
+ * held one, which is what keeps clearing an unfavorited project from flipping
+ * the row back to favorited just because an owner was unreachable. */
+function settledFavorite(
+  favorited: boolean,
+  settled: SettledFanOut<FavoriteMutationResponse>,
+  favoritedBefore: boolean,
+): boolean {
+  if (favorited) return settled.answered > 0;
+  return settled.failures.length > 0 && favoritedBefore;
+}
+
 /** Classifies the owning sources a project summary carries ("local" plus
  * configured host names) for the per-source requests below. A merged project
  * reports several: it needs one request per source, and a mutation that can
@@ -164,13 +188,20 @@ export function partialFanOutNotice(failedSources: readonly string[]): string | 
  * favorited. Every owner is asked even when one rejects, and the returned
  * value is derived from the settled set: `favorite` reports what the read side
  * presents now and `failedSources` names the owners whose decision is still
- * unknown. Only a fan-out no owner answered rejects. */
+ * unknown. Only a fan-out no owner answered rejects.
+ *
+ * `sources` and `options` are both required: a derived favorite is only as
+ * truthful as the caller's knowledge of the project, and the fan-out cannot tell
+ * an owner that held a favorite from one that never did without it. Pass the
+ * summary's own sources (or undefined when it reports none) and the favorite the
+ * read side presented for the row. */
 export async function setFavorite(
   client: AppwireClientLike,
   kind: "project",
   id: string,
   favorited: boolean,
-  sources?: readonly string[],
+  sources: readonly string[] | undefined,
+  options: FavoriteFanOutOptions,
 ): Promise<FavoriteFanOutReceipt> {
   const ownership = projectOwnership(sources);
   const settled = await settleFanOut(fanOutOwners(ownership), (owner) =>
@@ -180,7 +211,7 @@ export async function setFavorite(
   return {
     ...settled.receipt,
     failedSources: settled.failures.map((failure) => ownerName(failure.owner)),
-    favorite: favorited ? settled.answered > 0 : settled.failures.length > 0,
+    favorite: settledFavorite(favorited, settled, options.favoritedBefore),
   };
 }
 
@@ -222,7 +253,14 @@ export async function deletePinSection(client: AppwireClientLike, id: string): P
  * fan-out settles every owner, and a partial result is a commit for the owners
  * that answered: the receipt converges the client and `failedSources` names the
  * owners whose decision the archive still lacks. Only a fan-out no owner
- * answered rejects. */
+ * answered rejects.
+ *
+ * workingDir names a path on the owner being asked, so it rides the local leg
+ * only: the controller resolves its own project from it, while a host's leg is
+ * validated against the path that host reported for the ID
+ * (validateHostProjectArchive) and the controller's path would fail every
+ * remote leg of a project whose owners use different paths. The (source, ID)
+ * key is what makes a remote leg unambiguous. */
 export async function setArchived(
   kind: "session" | "project",
   id: string,
@@ -240,7 +278,7 @@ export async function setArchived(
       kind,
       id,
       archived,
-      ...(workingDir === undefined ? {} : { workingDir }),
+      ...(owner === "" && workingDir !== undefined ? { workingDir } : {}),
       ...sourceParams(owner),
     }),
   );

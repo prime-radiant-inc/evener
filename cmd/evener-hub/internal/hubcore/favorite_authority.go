@@ -358,12 +358,15 @@ func classifyFavoriteProject(key ArchiveKey, projects favoriteProjectIndex) Favo
 // decision keeps addressing the controller's own project when one exists.
 //
 // When a decision carries no source and has no exact authority, it resolves
-// against the authorities for that ID across every source. The rail's project
-// favorite sends no source, so without this fallback a favorite on a
-// remote-owned project would be stored under the controller key and never match
-// the host-keyed authority. Exactly one candidate is accepted; two sources
-// claiming the ID, or any ambiguous candidate, stays unresolved so the decision
-// cannot silently borrow another host's authority.
+// against the authorities for that ID across every source. The rail now
+// qualifies its project favorites with the summary's sources, so its decisions
+// resolve exactly and this fallback is not on the rail's path: it exists for
+// decisions persisted before source qualification (and for clients that still
+// omit `source`), which would otherwise be stored under the controller key and
+// never match the host-keyed authority they were written against. Exactly one
+// candidate is accepted; two sources claiming the ID, or any ambiguous
+// candidate, stays unresolved so the decision cannot silently borrow another
+// host's authority.
 func resolveProjectAuthority(projects favoriteProjectIndex, key projectDecisionKey) (FavoriteProjectAuthority, bool, bool) {
 	if authorities := projects.byKey[key]; len(authorities) == 1 && !projects.ambiguousKeys[key] {
 		return authorities[0], true, true

@@ -206,7 +206,7 @@ func TestEnsureReplacesLinkLostChannel(t *testing.T) {
 
 	dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 	dead.markLost()
-	m.setChannel("alpha", dead)
+	m.publishChannel("alpha", dead)
 	if m.Attached("alpha") {
 		t.Fatal("link-lost channel reported attached")
 	}
@@ -218,11 +218,50 @@ func TestEnsureReplacesLinkLostChannel(t *testing.T) {
 	if ch == dead {
 		t.Fatal("Ensure reused a link-lost channel")
 	}
-	if ch.linkLost() {
+	if ch.isLost() {
 		t.Fatal("Ensure returned a channel that had already lost its link")
 	}
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("Start calls = %d, want 1 (reattach)", got)
+	}
+}
+
+// Round nine: Ensure owns the cleanup of the channel it supersedes. A link-lost
+// channel is exactly the state Ensure replaces, and its supervisor cannot do the
+// closing: it wakes only after Ensure releases the host lock, by which time the
+// map holds the replacement, so supervise's stale-channel check returns before
+// the close. Repeated connection losses would otherwise leak one ssh child and
+// transport per loss — the loop below replaces three in a row.
+func TestEnsureClosesEveryChannelItReplaces(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+	superseded := make([]*Channel, 0, 3)
+	for round := range 3 {
+		dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
+		dead.markLost()
+		m.publishChannel(host.Name, dead)
+
+		live, err := m.Ensure(context.Background(), host.Name)
+		if err != nil {
+			t.Fatalf("Ensure round %d: %v", round, err)
+		}
+		if live == dead {
+			t.Fatalf("round %d: Ensure reused the link-lost channel", round)
+		}
+		if live.isClosed() {
+			t.Fatalf("round %d: Ensure closed the channel it had just installed", round)
+		}
+		superseded = append(superseded, dead)
+	}
+	if got := len(fr.recordedStarts()); got != 3 {
+		t.Fatalf("Start calls = %d, want 3", got)
+	}
+	for round, dead := range superseded {
+		if !dead.isClosed() {
+			t.Fatalf("round %d: replaced channel left open; its ssh child and transport leak", round)
+		}
 	}
 }
 

@@ -22,6 +22,21 @@ import (
 
 type projectDeleteSkip = appwire.ProjectDeleteSkip
 
+// projectRemoteSources returns the hosts a tree project reports as owning it.
+// The tree spells the controller's own sessions with the empty string — the
+// decision store's key — so every other entry is a host that shares the
+// project's canonical ID and path. Sorted by the tree, so the refusal reads
+// deterministically.
+func projectRemoteSources(sources []string) []string {
+	var hosts []string
+	for _, source := range sources {
+		if source != "" {
+			hosts = append(hosts, source)
+		}
+	}
+	return hosts
+}
+
 func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, skipped []projectDeleteSkip, changed bool, project string) (appwire.ProjectDeleteResponse, error) {
 	navigation := s.emptyNavigationMutation()
 	if changed {
@@ -165,6 +180,18 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	}
 	if matched == nil || matched.WorkingDir != project.CanonicalPath {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key does not match workingDir")
+	}
+	// A merged project — the controller's own rows plus a host's under the same
+	// canonical ID and path — is not deletable here either. The rail refuses it
+	// before the confirmation dialog opens, and the wire must refuse it too: a
+	// request that named no source would otherwise remove the controller's
+	// sessions of a project a host also owns, leaving one project half-deleted
+	// and the UI and the API disagreeing about the same row. The tree's sources
+	// are the authority ("" is the controller), so the gate matches the
+	// ownership the client just rendered.
+	if hosts := projectRemoteSources(matched.Sources); len(hosts) > 0 {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams(
+			"project delete is local-only; this project also belongs to " + strings.Join(hosts, ", "))
 	}
 
 	// Resolve every distinct candidate path before deleting anything. This uses

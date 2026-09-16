@@ -134,7 +134,9 @@ describe("setFavorite", () => {
       return response;
     });
 
-    await expect(setFavorite(client, "project", "proj-key", false)).resolves.toEqual({
+    await expect(
+      setFavorite(client, "project", "proj-key", false, undefined, { favoritedBefore: true }),
+    ).resolves.toEqual({
       ...response,
       failedSources: [],
       favorite: false,
@@ -149,7 +151,9 @@ describe("setFavorite", () => {
     client.on("evener/favorite/set", () => {
       throw new Error("favorite store error: boom");
     });
-    await expect(setFavorite(client, "project", "x", true)).rejects.toThrow("favorite store error: boom");
+    await expect(setFavorite(client, "project", "x", true, undefined, { favoritedBefore: false })).rejects.toThrow(
+      "favorite store error: boom",
+    );
   });
 });
 
@@ -296,7 +300,7 @@ describe("source-qualified project mutations", () => {
       return response;
     });
 
-    await expect(setFavorite(client, "project", "p", true, ["host-a"])).resolves.toEqual({
+    await expect(setFavorite(client, "project", "p", true, ["host-a"], { favoritedBefore: false })).resolves.toEqual({
       ...response,
       failedSources: [],
       favorite: true,
@@ -310,7 +314,7 @@ describe("source-qualified project mutations", () => {
     const client = new FakeClient();
     client.on("evener/favorite/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
 
-    await setFavorite(client, "project", "p", false, ["local", "host-a"]);
+    await setFavorite(client, "project", "p", false, ["local", "host-a"], { favoritedBefore: true });
 
     expect(client.calls.map((call) => call.params)).toEqual([
       { kind: "project", id: "p", favorited: false },
@@ -322,14 +326,19 @@ describe("source-qualified project mutations", () => {
     const client = new FakeClient();
     client.on("evener/favorite/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
 
-    await setFavorite(client, "project", "p", true);
+    await setFavorite(client, "project", "p", true, undefined, { favoritedBefore: false });
 
     expect(client.calls).toEqual([
       { method: "evener/favorite/set", params: { kind: "project", id: "p", favorited: true } },
     ]);
   });
 
-  test("a remote-only project archive carries the owning source alongside workingDir", async () => {
+  // Round nine supersedes round eight's shape here: workingDir names a path on
+  // the owner being asked, and a host's leg is validated against the path that
+  // host reported for the ID (validateHostProjectArchive). Carrying the
+  // controller's path to a host that uses a different one failed the remote leg
+  // of every toggle, so only the local leg sends it.
+  test("a remote-only project archive carries the owning source without a workingDir", async () => {
     const client = new FakeClient();
     client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
     connectionStore.getState().connect(client);
@@ -339,7 +348,7 @@ describe("source-qualified project mutations", () => {
     expect(client.calls).toEqual([
       {
         method: "evener/archive/set",
-        params: { kind: "project", id: "p", archived: true, workingDir: "/host-a/proj", source: "host-a" },
+        params: { kind: "project", id: "p", archived: true, source: "host-a" },
       },
     ]);
   });
@@ -419,7 +428,7 @@ describe("per-source fan-out settlement", () => {
     const client = new FakeClient();
     client.on("evener/favorite/set", failing("host-a"));
 
-    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"]);
+    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"], { favoritedBefore: false });
 
     expect(result.favorite).toBe(true);
     expect(result.failedSources).toEqual(["host-a"]);
@@ -437,7 +446,7 @@ describe("per-source fan-out settlement", () => {
       return receipt;
     });
 
-    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"]);
+    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"], { favoritedBefore: false });
 
     expect(client.calls.map((call) => call.params)).toEqual([
       { kind: "project", id: "p", favorited: true },
@@ -451,7 +460,7 @@ describe("per-source fan-out settlement", () => {
     const client = new FakeClient();
     client.on("evener/favorite/set", failing("host-a"));
 
-    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"]);
+    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"], { favoritedBefore: true });
 
     expect(result.favorite).toBe(true);
     expect(result.failedSources).toEqual(["host-a"]);
@@ -463,7 +472,9 @@ describe("per-source fan-out settlement", () => {
       throw new Error("favorite store error: boom");
     });
 
-    const error = await setFavorite(client, "project", "p", true, ["local", "host-a"]).catch((cause: unknown) => cause);
+    const error = await setFavorite(client, "project", "p", true, ["local", "host-a"], {
+      favoritedBefore: false,
+    }).catch((cause: unknown) => cause);
 
     expect((error as Error).message).toContain("favorite store error: boom");
     expect((error as Error).message).toContain("local, host-a");
@@ -474,7 +485,7 @@ describe("per-source fan-out settlement", () => {
     const client = new FakeClient();
     client.on("evener/favorite/set", () => receipt);
 
-    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"]);
+    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"], { favoritedBefore: true });
 
     expect(result.failedSources).toEqual([]);
     expect(result.favorite).toBe(false);
@@ -492,9 +503,40 @@ describe("per-source fan-out settlement", () => {
 
     expect(result.failedSources).toEqual(["host-a"]);
     expect(result.navigation).toEqual(receipt.navigation);
+    // workingDir names a path on the owner being asked: the controller
+    // resolves its own project from it and a host's leg is validated against
+    // the path that host reported for the ID, so it rides the local leg only.
     expect(client.calls.map((call) => call.params)).toEqual([
       { kind: "project", id: "p", archived: true, workingDir: "/shared/proj" },
-      { kind: "project", id: "p", archived: true, workingDir: "/shared/proj", source: "host-a" },
+      { kind: "project", id: "p", archived: true, source: "host-a" },
     ]);
+  });
+
+  // Round nine: a failed leg is not a held favorite. The project the caller saw
+  // unfavorited has no owner holding one, so the owner that could not be
+  // reached was already on the value being requested — presenting it as
+  // favorited would flip the row from an unreachable leg alone.
+  test("clearing an unfavorited project with an unreachable owner stays unfavorited", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", failing("host-a"));
+
+    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"], { favoritedBefore: false });
+
+    expect(result.favorite).toBe(false);
+    expect(result.failedSources).toEqual(["host-a"]);
+    expect(result.navigation).toEqual(receipt.navigation);
+  });
+
+  test("a partial project favorite set is presented from the owner that committed it", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", (params) => {
+      if (params.source === undefined) throw new Error("local favorite store unreachable");
+      return receipt;
+    });
+
+    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"], { favoritedBefore: false });
+
+    expect(result.favorite).toBe(true);
+    expect(result.failedSources).toEqual(["local"]);
   });
 });
