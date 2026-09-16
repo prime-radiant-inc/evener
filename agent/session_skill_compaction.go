@@ -313,6 +313,14 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 	s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
 }
 
+// removedHandoff is a pending handoff a consumption took out, with the
+// position it held, so a consumption whose durability step fails can put it
+// back where it was.
+type removedHandoff struct {
+	at      int
+	receipt schema.SkillCompactionReceipt
+}
+
 // removeSkillCompactionHandoffsLocked removes the pending handoff receipts
 // identified by publication identity — the consumption that prevents repeat
 // delivery after a handoff's reload or reminder was durably admitted. Only the
@@ -321,17 +329,17 @@ func (s *Session) recordSkillCompactionHandoffLocked(receipt schema.SkillCompact
 // in publications names none of them), and the cycle's operation slot
 // (PendingCompaction) is never touched, so a concurrent newer pending
 // operation is undisturbed. Callers hold s.mu; the return reports the receipts
-// it took out, so a caller whose durability step then fails can put back
-// exactly those and nothing else.
-func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) []schema.SkillCompactionReceipt {
+// it took out in ascending position order, so a caller whose durability step
+// then fails can put back exactly those, where they were, and nothing else.
+func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bool) []removedHandoff {
 	if len(publications) == 0 || len(s.skillLifecycle.PendingHandoffs) == 0 {
 		return nil
 	}
 	kept := s.skillLifecycle.PendingHandoffs[:0]
-	var removed []schema.SkillCompactionReceipt
-	for _, handoff := range s.skillLifecycle.PendingHandoffs {
+	var removed []removedHandoff
+	for at, handoff := range s.skillLifecycle.PendingHandoffs {
 		if id := handoff.Operation.PublicationID; id != "" && publications[id] {
-			removed = append(removed, handoff)
+			removed = append(removed, removedHandoff{at: at, receipt: handoff})
 			continue
 		}
 		kept = append(kept, handoff)
@@ -341,14 +349,21 @@ func (s *Session) removeSkillCompactionHandoffsLocked(publications map[string]bo
 }
 
 // restoreSkillCompactionHandoffsLocked puts back receipts a consumption
-// removed and whose durability step then failed, disturbing nothing that
-// arrived while that step ran. Callers hold s.mu.
-func (s *Session) restoreSkillCompactionHandoffsLocked(receipts []schema.SkillCompactionReceipt) {
-	for _, receipt := range receipts {
-		if s.pendingHandoffIndexLocked(receipt.Operation.PublicationID) >= 0 {
+// removed and whose durability step then failed, each at the position it
+// held, disturbing nothing that arrived while that step ran. Slice order is
+// delivery order, so a receipt appended instead would be delivered after
+// handoffs published later than it. The held positions are still valid:
+// while the step ran without s.mu, other goroutines could only append (a
+// fold claiming its publication) or update an entry in place (coalescing,
+// the delivery flip) — every removal runs on the round loop, which is the
+// caller. Callers hold s.mu.
+func (s *Session) restoreSkillCompactionHandoffsLocked(removed []removedHandoff) {
+	for _, handoff := range removed {
+		if s.pendingHandoffIndexLocked(handoff.receipt.Operation.PublicationID) >= 0 {
 			continue
 		}
-		s.skillLifecycle.PendingHandoffs = append(s.skillLifecycle.PendingHandoffs, receipt)
+		at := min(handoff.at, len(s.skillLifecycle.PendingHandoffs))
+		s.skillLifecycle.PendingHandoffs = slices.Insert(s.skillLifecycle.PendingHandoffs, at, handoff.receipt)
 	}
 }
 
