@@ -179,6 +179,73 @@ func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
 	}
 }
 
+// TestRemoteHubAttachHandshakeTimeoutIsSessionUnavailable pins the reviewer's
+// case for component 05c. The sshconn attach handshake is bounded by its own
+// initTimeout child context, and client.Initialize returns that child's
+// context.DeadlineExceeded, which attach wraps as
+// "ErrSSHStart: ... initialize: %w". The chain therefore satisfies BOTH
+// errors.Is(err, sshconn.ErrSSHStart) and errors.Is(err, context.DeadlineExceeded).
+//
+// mapCallError short-circuits a deadline raw before transportUnavailable can
+// match ErrSSHStart, so the acquisition step of a mutation must not use it:
+// it maps through mapConnectError like call, so the chain becomes the
+// SessionUnavailable the auto-resume gate reads. The gate's consumer is
+// isSessionUnavailableError in cmd/evener-hub/app_compact.go (CodeUnavailable
+// plus ErrorSessionUnavailable); that function is in package hub, which imports
+// appsource, so this test asserts exactly the two conditions it reads rather
+// than calling across the import cycle.
+//
+// A genuine caller deadline is unaffected: the ctx.Err() guard precedes the
+// mapping on both paths, pinned by
+// TestRemoteHubMutationCallerContextStaysRaw/client acquisition deadline.
+func TestRemoteHubAttachHandshakeTimeoutIsSessionUnavailable(t *testing.T) {
+	// Built exactly as sshconn attaches it (manager.go, the Initialize error
+	// branch): fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart,
+	// host.Name, err, sink.tail()) with err == context.DeadlineExceeded from
+	// the initTimeout-bounded client.Initialize.
+	attachTimeout := fmt.Errorf("%w: host %q initialize: %w: %s",
+		sshconn.ErrSSHStart, "host", context.DeadlineExceeded, "")
+	if !errors.Is(attachTimeout, sshconn.ErrSSHStart) {
+		t.Fatal("fixture is not an ErrSSHStart chain")
+	}
+	if !errors.Is(attachTimeout, context.DeadlineExceeded) {
+		t.Fatal("fixture does not satisfy errors.Is(err, context.DeadlineExceeded); it would not pin the reviewer's chain")
+	}
+
+	assertSessionUnavailable := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("call succeeded despite a timed-out remote attach")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (an acquisition failure must not be an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+		}
+		if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+			t.Fatalf("evenerErrorInfo = %q, want %q (the marker isSessionUnavailableError reads)", got, appwire.ErrorSessionUnavailable)
+		}
+	}
+
+	t.Run("read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		assertSessionUnavailable(t, err)
+	})
+
+	t.Run("mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-attach-timeout"})
+		assertSessionUnavailable(t, err)
+	})
+}
+
 func localThreadFixture() appwire.Thread {
 	return appwire.Thread{
 		ID:     "S",
