@@ -134,7 +134,11 @@ describe("setFavorite", () => {
       return response;
     });
 
-    await expect(setFavorite(client, "project", "proj-key", false)).resolves.toEqual(response);
+    await expect(setFavorite(client, "project", "proj-key", false)).resolves.toEqual({
+      ...response,
+      failedSources: [],
+      favorite: false,
+    });
     expect(client.calls).toEqual([
       { method: "evener/favorite/set", params: { kind: "project", id: "proj-key", favorited: false } },
     ]);
@@ -159,7 +163,7 @@ describe("setArchived", () => {
     });
     connectionStore.getState().connect(client);
 
-    await expect(setArchived("session", "s1", true)).resolves.toEqual(response);
+    await expect(setArchived("session", "s1", true)).resolves.toEqual({ ...response, failedSources: [] });
     expect(client.calls).toEqual([
       { method: "evener/archive/set", params: { kind: "session", id: "s1", archived: true } },
     ]);
@@ -292,7 +296,11 @@ describe("source-qualified project mutations", () => {
       return response;
     });
 
-    await expect(setFavorite(client, "project", "p", true, ["host-a"])).resolves.toEqual(response);
+    await expect(setFavorite(client, "project", "p", true, ["host-a"])).resolves.toEqual({
+      ...response,
+      failedSources: [],
+      favorite: true,
+    });
     expect(client.calls).toEqual([
       { method: "evener/favorite/set", params: { kind: "project", id: "p", favorited: true, source: "host-a" } },
     ]);
@@ -390,6 +398,103 @@ describe("source-qualified project mutations", () => {
     await expect(deleteProject("p", "/local/proj", ["local"])).resolves.toEqual(response);
     expect(client.calls).toEqual([
       { method: "evener/project/delete", params: { key: "p", workingDir: "/local/proj" } },
+    ]);
+  });
+});
+
+// Every owner of a merged project has to be asked, and a rejection is not a
+// reason to stop asking the rest: a resolved-looking remote owner that never
+// received the request stays on its old decision, and the read side presents a
+// favorite when any owner holds one. The fan-out therefore settles every owner
+// and reports back what the settled set committed, so a partial result is
+// surfaced instead of being confused with a clean failure.
+describe("per-source fan-out settlement", () => {
+  const receipt = { ok: true as const, navigation: { generation_id: "g1", targets: [] } };
+  const failing = (unreachable: string) => (params: { source?: string }) => {
+    if (params.source === unreachable) throw new Error(`${unreachable} favorite store unreachable`);
+    return receipt;
+  };
+
+  test("a merged project fan-out carries the settling owners' value and the ones that failed", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", failing("host-a"));
+
+    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"]);
+
+    expect(result.favorite).toBe(true);
+    expect(result.failedSources).toEqual(["host-a"]);
+    expect(result.navigation).toEqual(receipt.navigation);
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", favorited: true },
+      { kind: "project", id: "p", favorited: true, source: "host-a" },
+    ]);
+  });
+
+  test("a failing controller request does not stop the remote owner from being asked", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", (params) => {
+      if (params.source === undefined) throw new Error("favorite store error: boom");
+      return receipt;
+    });
+
+    const result = await setFavorite(client, "project", "p", true, ["local", "host-a"]);
+
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", favorited: true },
+      { kind: "project", id: "p", favorited: true, source: "host-a" },
+    ]);
+    expect(result.failedSources).toEqual(["local"]);
+    expect(result.favorite).toBe(true);
+  });
+
+  test("a clear that could not reach an owner keeps the value the read side may still present", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", failing("host-a"));
+
+    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"]);
+
+    expect(result.favorite).toBe(true);
+    expect(result.failedSources).toEqual(["host-a"]);
+  });
+
+  test("a fan-out every owner rejected names each owner and rejects", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", () => {
+      throw new Error("favorite store error: boom");
+    });
+
+    const error = await setFavorite(client, "project", "p", true, ["local", "host-a"]).catch((cause: unknown) => cause);
+
+    expect((error as Error).message).toContain("favorite store error: boom");
+    expect((error as Error).message).toContain("local, host-a");
+    expect(client.calls).toHaveLength(2);
+  });
+
+  test("an all-answering fan-out reports no failed owner and the requested value", async () => {
+    const client = new FakeClient();
+    client.on("evener/favorite/set", () => receipt);
+
+    const result = await setFavorite(client, "project", "p", false, ["local", "host-a"]);
+
+    expect(result.failedSources).toEqual([]);
+    expect(result.favorite).toBe(false);
+  });
+
+  test("a partial project archive fan-out reports the owner that failed and keeps the receipt", async () => {
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      if (params.source === "host-a") throw new Error("host-a archive store unreachable");
+      return receipt;
+    });
+    connectionStore.getState().connect(client);
+
+    const result = await setArchived("project", "p", true, "/shared/proj", ["local", "host-a"]);
+
+    expect(result.failedSources).toEqual(["host-a"]);
+    expect(result.navigation).toEqual(receipt.navigation);
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", archived: true, workingDir: "/shared/proj" },
+      { kind: "project", id: "p", archived: true, workingDir: "/shared/proj", source: "host-a" },
     ]);
   });
 });

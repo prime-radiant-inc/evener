@@ -41,6 +41,26 @@ export interface ProjectOwnership {
   hosts: string[];
 }
 
+/** The settled outcome of a mutation fanned out to a project's owning sources:
+ * the receipt of the last owner that answered (what callers converge on) plus
+ * every owner the fan-out could not reach. A partial fan-out is still a
+ * commit — the owners that answered hold the decision — so callers get it
+ * back to surface instead of losing it behind the first rejection. */
+export type SourceFanOutReceipt<Receipt> = Receipt & {
+  /** Owners whose request rejected, named the way the wire spells them
+   * ("local" for this hub's own source); empty when every owner answered. */
+  readonly failedSources: readonly string[];
+};
+
+/** A favorite fan-out's settled receipt: the value the read side presents for
+ * the project now. The read side shows a favorite when any owner holds one, so
+ * a set is presented once an owner committed it, and a clear only once every
+ * owner answered — a clear that could not reach an owner leaves that owner's
+ * decision in place. */
+export type FavoriteFanOutReceipt = SourceFanOutReceipt<FavoriteMutationResponse> & {
+  readonly favorite: boolean;
+};
+
 /** Classifies the owning sources a project summary carries ("local" plus
  * configured host names) for the per-source requests below. A merged project
  * reports several: it needs one request per source, and a mutation that can
@@ -76,27 +96,92 @@ function finalReceipt<T>(receipts: readonly T[]): T {
   return receipts[receipts.length - 1] as T;
 }
 
+/** One fan-out's settlement: the last owner that answered, how many owners
+ * answered at all, and every rejection with the owner that produced it. */
+interface SettledFanOut<Receipt> {
+  receipt: Receipt | undefined;
+  answered: number;
+  failures: Array<{ owner: string; error: unknown }>;
+}
+
+/** The owners a project fan-out addresses: the controller's own source first —
+ * its requests omit the wire field, so it is the empty decision key — then
+ * every remote host that owns rows in the project. */
+function fanOutOwners(ownership: ProjectOwnership): string[] {
+  return [...(ownership.local ? [""] : []), ...ownership.hosts];
+}
+
+/** The name an owner is reported under: the controller's own source is the
+ * wire's "local", a remote owner its host name. */
+const ownerName = (owner: string) => (owner === "" ? "local" : owner);
+
+/** settleFanOut issues every owner's request and waits for all of them: a
+ * rejection is recorded against its owner rather than aborting the fan-out,
+ * so a failing controller request cannot leave a reachable remote owner
+ * unasked and an answer that committed is never lost. */
+async function settleFanOut<Receipt>(
+  owners: readonly string[],
+  request: (owner: string) => Promise<Receipt>,
+): Promise<SettledFanOut<Receipt>> {
+  const settled = await Promise.allSettled(owners.map((owner) => request(owner)));
+  const receipts: Receipt[] = [];
+  const failures: Array<{ owner: string; error: unknown }> = [];
+  owners.forEach((owner, index) => {
+    const result = settled[index];
+    if (result?.status === "fulfilled") receipts.push(result.value);
+    else if (result) failures.push({ owner, error: result.reason });
+  });
+  return { receipt: receipts.length === 0 ? undefined : finalReceipt(receipts), answered: receipts.length, failures };
+}
+
+/** The rejection a fan-out throws when no owner answered: the first owner's
+ * error, annotated with every owner that failed once there is more than one. */
+function fanOutFailure(failures: ReadonlyArray<{ owner: string; error: unknown }>): Error {
+  const [first] = failures;
+  if (first === undefined) return new Error("project fan-out: no owner was asked");
+  if (failures.length === 1) return first.error instanceof Error ? first.error : new Error(String(first.error));
+  const reason = first.error instanceof Error ? first.error.message : String(first.error);
+  return new Error(`${reason} (failed for ${failures.map((failure) => ownerName(failure.owner)).join(", ")})`, {
+    cause: first.error,
+  });
+}
+
+/** The warning a caller shows when a settled fan-out left owners behind: names
+ * them so the reader can retry, because a decision a failed owner already
+ * holds is left in place rather than compensated. Empty when every owner
+ * answered. */
+export function partialFanOutNotice(failedSources: readonly string[]): string | undefined {
+  if (failedSources.length === 0) return undefined;
+  return `${failedSources.join(", ")} did not answer; retry to update ${
+    failedSources.length === 1 ? "that owner" : "those owners"
+  }`;
+}
+
 /** Sets a project favorite through the typed hub AppWire method. A favorite is
  * keyed by (source, project ID), so a project merged across hosts gets one
  * request per owning source: the read side shows a favorite when any owner
  * holds one, and clearing it must clear every owner or the row stays
- * favorited. */
+ * favorited. Every owner is asked even when one rejects, and the returned
+ * value is derived from the settled set: `favorite` reports what the read side
+ * presents now and `failedSources` names the owners whose decision is still
+ * unknown. Only a fan-out no owner answered rejects. */
 export async function setFavorite(
   client: AppwireClientLike,
   kind: "project",
   id: string,
   favorited: boolean,
   sources?: readonly string[],
-): Promise<FavoriteMutationResponse> {
+): Promise<FavoriteFanOutReceipt> {
   const ownership = projectOwnership(sources);
-  const receipts: FavoriteMutationResponse[] = [];
-  if (ownership.local) {
-    receipts.push(await client.request("evener/favorite/set", { kind, id, favorited }));
-  }
-  for (const host of ownership.hosts) {
-    receipts.push(await client.request("evener/favorite/set", { kind, id, favorited, ...sourceParams(host) }));
-  }
-  return finalReceipt(receipts);
+  const settled = await settleFanOut(fanOutOwners(ownership), (owner) =>
+    client.request("evener/favorite/set", { kind, id, favorited, ...sourceParams(owner) }),
+  );
+  if (!settled.receipt) throw fanOutFailure(settled.failures);
+  return {
+    ...settled.receipt,
+    failedSources: settled.failures.map((failure) => ownerName(failure.owner)),
+    favorite: favorited ? settled.answered > 0 : settled.failures.length > 0,
+  };
 }
 
 export async function assignSessionPin(
@@ -133,42 +218,34 @@ export async function deletePinSection(client: AppwireClientLike, id: string): P
  * and omitted for kind="session". A project archive is keyed by (source,
  * project ID) and the tree archives a row only once every owning source has
  * archived it, so a merged project gets one request per source; a session's ID
- * is already its host-qualified ref, so it is never source-qualified here. */
+ * is already its host-qualified ref, so it is never source-qualified here. The
+ * fan-out settles every owner, and a partial result is a commit for the owners
+ * that answered: the receipt converges the client and `failedSources` names the
+ * owners whose decision the archive still lacks. Only a fan-out no owner
+ * answered rejects. */
 export async function setArchived(
   kind: "session" | "project",
   id: string,
   archived: boolean,
   workingDir?: string,
   sources?: readonly string[],
-): Promise<NavigationMutationReceipt> {
+): Promise<SourceFanOutReceipt<NavigationMutationReceipt>> {
   const client: AppwireClientLike | null = connectionStore.getState().client;
   if (!client) {
     throw new Error("archive action: no client connected; call connectionStore.connect(client) first");
   }
   const ownership = kind === "project" ? projectOwnership(sources) : { local: true, hosts: [] };
-  const receipts: NavigationMutationReceipt[] = [];
-  if (ownership.local) {
-    receipts.push(
-      await client.request("evener/archive/set", {
-        kind,
-        id,
-        archived,
-        ...(workingDir === undefined ? {} : { workingDir }),
-      }),
-    );
-  }
-  for (const host of ownership.hosts) {
-    receipts.push(
-      await client.request("evener/archive/set", {
-        kind,
-        id,
-        archived,
-        ...(workingDir === undefined ? {} : { workingDir }),
-        ...sourceParams(host),
-      }),
-    );
-  }
-  return finalReceipt(receipts);
+  const settled = await settleFanOut(fanOutOwners(ownership), (owner) =>
+    client.request("evener/archive/set", {
+      kind,
+      id,
+      archived,
+      ...(workingDir === undefined ? {} : { workingDir }),
+      ...sourceParams(owner),
+    }),
+  );
+  if (!settled.receipt) throw fanOutFailure(settled.failures);
+  return { ...settled.receipt, failedSources: settled.failures.map((failure) => ownerName(failure.owner)) };
 }
 
 /** Deletes every removable session in a path-validated local project through

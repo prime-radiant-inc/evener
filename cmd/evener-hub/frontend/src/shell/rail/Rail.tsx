@@ -67,6 +67,7 @@ import {
   deleteProject,
   deleteSession,
   type NavigationMutationReceipt,
+  partialFanOutNotice,
   projectOwnership,
   renamePinSection,
   setArchived,
@@ -1355,19 +1356,30 @@ function NavigationRail({
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
         void runAction(
-          () => setFavorite(client, "project", project.key, value, project.sources),
-          "Couldn't update favorite",
-          {
-            kind: "projectFavorite",
-            key: project.key,
-            value,
+          async () => {
+            // A merged project's favorite is one decision per owning source.
+            // The fan-out settles every owner, so a partial result is a commit
+            // for the owners that answered: present the value the settled set
+            // yields (the read side shows a favorite when any owner holds one)
+            // and name the owners still holding the old decision.
+            const result = await setFavorite(client, "project", project.key, value, project.sources);
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Favorite not updated everywhere: ${notice}`);
+            return result;
           },
+          "Couldn't update favorite",
+          (result) => ({ kind: "projectFavorite", key: project.key, value: result.favorite }),
         );
       },
       onToggleArchiveProject: (project) => {
         const value = !(project.is_archived ?? false);
         void runAction(
-          () => setArchived("project", project.key, value, project.working_dir, project.sources),
+          async () => {
+            const result = await setArchived("project", project.key, value, project.working_dir, project.sources);
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Archive state not updated everywhere: ${notice}`);
+            return result;
+          },
           "Couldn't update archive state",
           value ? { kind: "hideProject", key: project.key } : undefined,
         );

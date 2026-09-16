@@ -1858,6 +1858,52 @@ describe("resource-backed Rail", () => {
       { kind: "project", id: "p", archived: true, source: "host-a" },
     ]);
   });
+  test("asks every owner of a merged project favorite and warns about the one that failed", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/favorite/set", (params) => {
+      if (params.source === "host-a") throw new Error("host-a favorite store unreachable");
+      return { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await act(async () => undefined);
+
+    // A partial fan-out is a commit for the owners that answered: the row's
+    // decision is presented from the settled set and the failed owner is
+    // named, instead of the whole update being reported as a clean failure.
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", favorited: true },
+      { kind: "project", id: "p", favorited: true, source: "host-a" },
+    ]);
+    expect(getToasts().some((toast) => /Favorite not updated everywhere: host-a did not answer/.test(toast.text))).toBe(
+      true,
+    );
+    expect(getToasts().some((toast) => /Couldn't update favorite/.test(toast.text))).toBe(false);
+  });
+  test("warns about the owner a merged project archive could not reach", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      if (params.source === "host-a") throw new Error("host-a archive store unreachable");
+      return { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive project" }));
+    await act(async () => undefined);
+
+    expect(
+      getToasts().some((toast) => /Archive state not updated everywhere: host-a did not answer/.test(toast.text)),
+    ).toBe(true);
+  });
   test("refuses to delete a project row that a remote host also owns", async () => {
     installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
     const client = new FakeClient();
