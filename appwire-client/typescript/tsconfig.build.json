@@ -45,6 +45,7 @@
     "toolCallText.ts",
     "catalogCommands.ts",
     "slashCompletion.ts",
-    "sharedNotesAvailability.ts"
+    "sharedNotesAvailability.ts",
+    "reasoningEffort.ts"
   ]
 }

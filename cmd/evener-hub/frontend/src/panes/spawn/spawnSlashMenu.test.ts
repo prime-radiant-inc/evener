@@ -1,5 +1,5 @@
+import { effortLabel, effortOptionLevels } from "@evener/appwire-client";
 import { describe, expect, test, vi } from "vitest";
-import { effortLabel, effortOptionLevels } from "../../shell/reasoningEffort";
 import type { ModelCatalog } from "../../widgets/modelCatalog";
 import {
   PRE_SESSION_BUILTIN_IDS,
