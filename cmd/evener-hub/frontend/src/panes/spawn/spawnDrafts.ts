@@ -45,7 +45,16 @@ interface DraftFields {
   advancedErrors: Record<string, string>;
   busy: boolean;
   busyStartedAt: number | null;
+  /** The pending "Create directory and start?" confirmation, and the host that
+   * PREFLIGHTED the path it names (component 07b review, round seven). The two
+   * travel together because the confirmation is an action against one host:
+   * the dialog can outlive the selection that opened it (the manifest's
+   * `online` flag is live), and a confirm that fires against a different host
+   * is a different action than the one the user was offered. Kept in the draft
+   * rather than component state for the same reason the path is: a pane
+   * remount restores the dialog, so the binding has to survive it too. */
   createDialogPath: string | null;
+  createDialogHost: string | null;
 }
 
 function createDraft(cwd: string) {
@@ -70,6 +79,7 @@ function createDraft(cwd: string) {
       busy: false,
       busyStartedAt: null,
       createDialogPath: null,
+      createDialogHost: null,
     })),
     attachments: createAttachmentStore(),
     busyRef: { current: false },

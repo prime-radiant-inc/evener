@@ -68,7 +68,14 @@ names neither a store library nor a parser; that triple is
 `createFrameworkFreeStore`, the base every shared store here is built on; the
 disclosure store both transcripts keep a row's open/closed choice in across a
 remount (`createDisclosureStore()`, the triple plus store-bound actions, read
-reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
+reactively through the `isDisclosureOpenIn` selector); the keybindings
+overrides store both apps' shortcut settings run on
+(`createKeybindingsStore({ client, registry?, characterKeyTriggers?, drafts? })`:
+one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
+into the host's registry as a delta when it has one, with a checkpointed draft
+editor over an injected storage port for a host that edits offline; the host
+drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
+`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
@@ -91,9 +98,12 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/state/navigation` - the navigation state layer both
   apps' navigation stores are built on: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
-  merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
-  subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
-  the four modules whole.
+  merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
+  matching a hub invalidation target to a loaded resource and the revision it
+  obliges it to reach (`invalidation`), and the revalidator that re-reads
+  loaded resources on the hub's invalidations through injected request
+  callbacks (`revalidator`). The subpath resolves to
+  `state/navigation/index.ts`, a barrel that re-exports the six modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
@@ -108,7 +118,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   the instance listing and its writes, the API-key, credential-file, sign-out,
   sign-in, status (`authStatus`) and probe RPCs, and the `evener/auth/updated` refetch with its
   own-echo correlation, over a `request`/`onNotification` client port; with
-  the stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  the stale-listing refusal and its `staleListingHeld` predicate, the
+  `foreignListingChange` predicate both hosts gate a credential probe on, and
+  `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer

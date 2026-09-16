@@ -75,7 +75,9 @@
     "state/navigation/index.ts",
     "state/navigation/codec.ts",
     "state/navigation/immutable.ts",
+    "state/navigation/invalidation.ts",
     "state/navigation/merge.ts",
+    "state/navigation/revalidator.ts",
     "state/navigation/types.ts",
     "state/credentials/index.ts",
     "state/credentials/instances.ts",
@@ -90,6 +92,7 @@
     "keybindingDisplay.ts",
     "keybindingOverrides.ts",
     "keybindingRegistry.ts",
-    "keybindingValidation.ts"
+    "keybindingValidation.ts",
+    "keybindingsStore.ts"
   ]
 }

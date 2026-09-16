@@ -3,9 +3,7 @@ package agent
 import (
 	"fmt"
 	"go/ast"
-	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -14,41 +12,27 @@ import (
 )
 
 // TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot scans this
-// package's test sources (agent/*_test.go, non-recursive) for a function that
-// points the config home at a directory of its own — a Setenv of HOME or
-// XDG_CONFIG_HOME — and then constructs a session (NewSession or a
-// RestoreSessionFromMeta* entry point, directly or through test helpers)
-// without skipping the launch-time environment snapshot.
+// package's test sources for a function that isolates the config home and
+// constructs a session without skipping the launch-time environment snapshot.
 //
-// The snapshot forks `go env` through the session's execution environment
-// (probeCapabilities). The go command records telemetry under
-// os.UserConfigDir()/go/telemetry — $XDG_CONFIG_HOME on Linux,
-// $HOME/Library/Application Support on macOS — and the first time it runs in a
-// config home with no upload token it daemonizes a sidecar (Setsid, never
-// waited) that keeps creating files there after `go env` has exited. The
-// config home such a test hands out is a t.TempDir, so the sidecar races the
-// TempDir RemoveAll cleanup: its MkdirAll re-creates a subdirectory the
-// cleanup has already removed, the parent rmdir fails, and a test that passed
-// reports "TempDir RemoveAll cleanup: unlinkat …: directory not empty"
-// (#1527). Nothing can join that sidecar — it is its own session, outside the
-// process table the exec environment reaps — so the one correct move is not
-// to fork at all, which is what testConfig.skipGitSnapshot exists for: a test
-// whose contract sits below the environment-snapshot layer must not fork for
-// it.
-//
-// A function clears the audit when its body names the gate — a
-// `skipGitSnapshot: true` in its SessionConfig literal, or the newSession
-// fixture's withoutGitSnapshot() option.
+// The snapshot forks `go env` (probeCapabilities). The go command records
+// telemetry under os.UserConfigDir()/go/telemetry — $XDG_CONFIG_HOME on
+// Linux, $HOME/Library/Application Support on macOS — and the first time it
+// runs in a config home with no upload token it daemonizes a sidecar (Setsid,
+// never waited) that keeps creating files there after `go env` has exited.
+// When that config home is a t.TempDir the sidecar races the TempDir RemoveAll
+// cleanup and a test that passed fails with "unlinkat …: directory not empty".
+// Nothing can join the sidecar, so such a test must not fork at all (#1527).
 func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
 	findings, err := configHomeForkAuditFindings(".")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(findings) > 0 {
-		t.Fatalf("test(s) isolate the config home per test and construct a session whose launch snapshot forks `go env` into it:\n%s\n\n"+
-			"Fix: pass testOnly: testConfig{skipGitSnapshot: true} in the SessionConfig (or "+
-			"withoutGitSnapshot() to newSession) so the snapshot never forks go and go's "+
-			"telemetry sidecar never outlives the test's TempDir.",
+		t.Fatalf("test(s) set HOME or XDG_CONFIG_HOME (directly or through a helper) and construct a session whose launch snapshot forks `go env` into it:\n%s\n\n"+
+			"Fix: write the gate in the literal the constructor receives — SessionConfig{testOnly: testConfig{skipGitSnapshot: true}} "+
+			"(RestoreSessionConfig likewise) — or pass withoutGitSnapshot() to newSession. A config held in a variable is "+
+			"refused here even when it is gated, so a later write cannot re-enable the snapshot unseen.",
 			strings.Join(findings, "\n"))
 	}
 }
@@ -57,86 +41,93 @@ func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
 // from on the platforms CI runs: XDG_CONFIG_HOME on Linux, HOME on macOS.
 var configHomeEnvVars = map[string]bool{"HOME": true, "XDG_CONFIG_HOME": true}
 
-// sessionConstructors are the package entry points that take the launch
-// snapshot.
-var sessionConstructors = map[string]bool{
-	"NewSession":                       true,
-	"RestoreSessionFromMeta":           true,
-	"RestoreSessionFromMetaWithConfig": true,
+// sessionConstructors map each package entry point that takes the launch
+// snapshot to the index of the argument carrying its testOnly gate; -1 marks
+// an entry point that cannot be gated.
+var sessionConstructors = map[string]int{
+	"NewSession":                       3,
+	"RestoreSessionFromMeta":           -1,
+	"RestoreSessionFromMetaWithConfig": 4,
 }
 
-// launchSnapshotGates are the identifiers a test names to skip the snapshot.
-var launchSnapshotGates = map[string]bool{"skipGitSnapshot": true, "withoutGitSnapshot": true}
+// snapshotGateOption is the newSession fixture option that sets the gate.
+const snapshotGateOption = "withoutGitSnapshot"
+
+// auditFunc is one function or method declared in the test files, with the
+// bare names of everything its body calls.
+type auditFunc struct {
+	decl  *ast.FuncDecl
+	calls map[string]bool
+}
 
 // configHomeForkAuditFindings reports every function in dir's test files that
-// sets a config-home variable, reaches a session constructor, and names no
-// gate, as "file:line name" lines in sorted order.
+// isolates the config home, reaches a session constructor, and leaves any
+// construction it reaches ungated, as "file:line name" lines in sorted order.
 func configHomeForkAuditFindings(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	fset, files, err := parseAgentTestFiles(dir)
 	if err != nil {
 		return nil, err
 	}
-	fset := token.NewFileSet()
-	var decls []*ast.FuncDecl
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		file, err := parser.ParseFile(fset, path, raw, 0)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
-		}
+	var funcs []auditFunc
+	for _, file := range files {
 		for _, decl := range file.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
-				decls = append(decls, fn)
+				funcs = append(funcs, auditFunc{decl: fn, calls: calledNames(fn.Body)})
 			}
 		}
 	}
 
-	// Reach is a fixed point over the test files' own functions: a function
-	// reaches a constructor when it calls one by name, or calls a test-file
-	// function that does. Methods are keyed by bare name alongside functions;
-	// a callee name that is not a test-file declaration is ignored.
-	calls := map[*ast.FuncDecl]map[string]bool{}
-	for _, fn := range decls {
-		calls[fn] = calledNames(fn.Body)
-	}
+	// Three fixed points over the test files' own functions, keyed by bare
+	// name (a method and a function sharing a name are not distinguished; none
+	// do today): reaches a constructor, isolates the config home, and gates
+	// every construction it reaches.
 	reaches := map[string]bool{}
 	for name := range sessionConstructors {
 		reaches[name] = true
 	}
-	for changed := true; changed; {
-		changed = false
-		for _, fn := range decls {
-			if reaches[fn.Name.Name] {
-				continue
-			}
-			for callee := range calls[fn] {
-				if reaches[callee] {
-					reaches[fn.Name.Name] = true
-					changed = true
-					break
-				}
-			}
-		}
-	}
+	closeOver(reaches, funcs, callsAny)
+	isolates := map[string]bool{}
+	closeOver(isolates, funcs, func(f auditFunc, set map[string]bool) bool {
+		return setsConfigHome(f.decl.Body) || callsAny(f, set)
+	})
+	gated := map[string]bool{}
+	closeOver(gated, funcs, func(f auditFunc, set map[string]bool) bool {
+		return reaches[f.decl.Name.Name] && allConstructionsGated(f.decl.Body, reaches, set)
+	})
 
 	var findings []string
-	for _, fn := range decls {
-		if !reaches[fn.Name.Name] || !setsConfigHome(fn.Body) || namesLaunchSnapshotGate(fn.Body) {
+	for _, f := range funcs {
+		if !isolates[f.decl.Name.Name] || !callsAny(f, reaches) || allConstructionsGated(f.decl.Body, reaches, gated) {
 			continue
 		}
-		pos := fset.Position(fn.Pos())
-		findings = append(findings, fmt.Sprintf("%s:%d %s", filepath.Base(pos.Filename), pos.Line, fn.Name.Name))
+		pos := fset.Position(f.decl.Pos())
+		findings = append(findings, fmt.Sprintf("%s:%d %s", filepath.Base(pos.Filename), pos.Line, f.decl.Name.Name))
 	}
 	sort.Strings(findings)
 	return findings, nil
+}
+
+// closeOver grows set until no function outside it satisfies has, which sees
+// the set as grown so far.
+func closeOver(set map[string]bool, funcs []auditFunc, has func(auditFunc, map[string]bool) bool) {
+	for changed := true; changed; {
+		changed = false
+		for _, f := range funcs {
+			if name := f.decl.Name.Name; !set[name] && has(f, set) {
+				set[name] = true
+				changed = true
+			}
+		}
+	}
+}
+
+func callsAny(f auditFunc, set map[string]bool) bool {
+	for callee := range f.calls {
+		if set[callee] {
+			return true
+		}
+	}
+	return false
 }
 
 // calledNames returns the bare identifiers body calls directly — f(...) — plus
@@ -144,15 +135,10 @@ func configHomeForkAuditFindings(dir string) ([]string, error) {
 func calledNames(body *ast.BlockStmt) map[string]bool {
 	names := map[string]bool{}
 	ast.Inspect(body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		switch fun := call.Fun.(type) {
-		case *ast.Ident:
-			names[fun.Name] = true
-		case *ast.SelectorExpr:
-			names[fun.Sel.Name] = true
+		if call, ok := n.(*ast.CallExpr); ok {
+			if name := calleeName(call.Fun); name != "" {
+				names[name] = true
+			}
 		}
 		return true
 	})
@@ -182,15 +168,72 @@ func setsConfigHome(body *ast.BlockStmt) bool {
 	return found
 }
 
-// namesLaunchSnapshotGate reports whether body mentions one of the gate
-// identifiers anywhere.
-func namesLaunchSnapshotGate(body *ast.BlockStmt) bool {
-	found := false
+// allConstructionsGated reports whether every call in body that reaches a
+// constructor is gated at the call.
+func allConstructionsGated(body *ast.BlockStmt, reaches, gated map[string]bool) bool {
+	all := true
 	ast.Inspect(body, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok && launchSnapshotGates[id.Name] {
-			found = true
+		if call, ok := n.(*ast.CallExpr); ok {
+			if name := calleeName(call.Fun); reaches[name] && !callGated(call, name, gated) {
+				all = false
+			}
 		}
-		return !found
+		return all
 	})
-	return found
+	return all
+}
+
+// callGated decides one constructor-reaching call. A constructor is gated only
+// by a literal in its config position; a helper by a withoutGitSnapshot() call
+// or a gated literal anywhere in its arguments, or by gating every
+// construction it reaches itself.
+func callGated(call *ast.CallExpr, name string, gated map[string]bool) bool {
+	if idx, ok := sessionConstructors[name]; ok {
+		if idx < 0 || len(call.Args) <= idx {
+			return false
+		}
+		lit, ok := call.Args[idx].(*ast.CompositeLit)
+		return ok && literalGate(lit)
+	}
+	if gated[name] {
+		return true
+	}
+	carries := false
+	for _, arg := range call.Args {
+		ast.Inspect(arg, func(n ast.Node) bool {
+			switch e := n.(type) {
+			case *ast.CallExpr:
+				carries = carries || calleeName(e.Fun) == snapshotGateOption
+			case *ast.CompositeLit:
+				carries = carries || literalGate(e)
+			}
+			return !carries
+		})
+	}
+	return carries
+}
+
+// literalGate reads a SessionConfig, RestoreSessionConfig or testConfig
+// literal: the gate is its testOnly's skipGitSnapshot, or its own
+// skipGitSnapshot, and absent means false.
+func literalGate(lit *ast.CompositeLit) bool {
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "testOnly":
+			inner, ok := kv.Value.(*ast.CompositeLit)
+			return ok && literalGate(inner)
+		case "skipGitSnapshot":
+			id, ok := kv.Value.(*ast.Ident)
+			return ok && id.Name == "true"
+		}
+	}
+	return false
 }

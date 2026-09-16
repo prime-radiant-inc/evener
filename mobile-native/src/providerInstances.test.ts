@@ -53,9 +53,8 @@ function boundary() {
 }
 // Another client (or the TUI) changed a provider's credentials: the hub's
 // broadcast reaches every listener on the connection.
-function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>) {
-  for (const notify of handlers)
-    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
+function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>, provider = "test") {
+  for (const notify of handlers) notify({ method: "evener/auth/updated", params: { provider, activeSource: "oauth" } });
 }
 // answerProbeWith scripts the client so a credential test gets `probe`'s
 // answer and every listing read reports rows changed elsewhere.
@@ -118,6 +117,22 @@ it("start adopting held rows also shows the failure a background refetch left wi
   expect(model.getSnapshot().error).toBe("Could not load providers: offline");
   expect(model.getSnapshot().loading).toBe(false);
 });
+it("a replaced connection keeps the rows on screen until its own read lands", async () => {
+  vi.useFakeTimers();
+  const { model, io, requests, store, client } = boundary();
+  io.request = async () => held;
+  await model.refresh();
+  expect(model.getSnapshot().data).toEqual(held);
+  const reads = requests.length;
+  const later = { ...held, diagnostics: ["after reconnect"] };
+  io.request = async () => later;
+  store.connectionChanged({ ...client } as typeof client, "ready");
+  // No spinner, no blank: the previous connection's rows stay up.
+  expect(model.getSnapshot().data).toEqual(held);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(requests.length).toBe(reads + 1);
+  expect(model.getSnapshot().data).toEqual(later);
+});
 it("start reads when the rows the store holds belong to a replaced connection", async () => {
   const { model, io, requests, store, client } = boundary();
   io.request = async () => held;
@@ -164,7 +179,8 @@ it("refuses configuration writes while allowing independent credential repair", 
   ]);
 });
 it("does not replay a failed mutation and reconciles with a read", async () => {
-  const { model, io, requests } = boundary();
+  vi.useFakeTimers();
+  const { model, io, requests, handlers } = boundary();
   await model.refresh();
   io.request = async (method) => {
     if (method === "evener/instance/remove") throw new Error("connection lost");
@@ -174,6 +190,12 @@ it("does not replay a failed mutation and reconciles with a read", async () => {
   expect(
     requests.filter((r) => r.method === "evener/instance/remove"),
   ).toHaveLength(1);
+  // A failed reply may follow a write the hub applied; the hub's echo of that
+  // write is what re-reads, never the screen.
+  await vi.advanceTimersByTimeAsync(300);
+  expect(requests.filter((r) => r.method === "evener/instance/list")).toHaveLength(1);
+  foreignAuthChange(handlers);
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(model.getSnapshot().busy).toBe(false);
 });
@@ -292,7 +314,8 @@ it("does not echo credential test transport errors or retry the test", async () 
 });
 
 it("stores credential JSON once, reconciles a lost reply and never publishes its contents", async () => {
-  const { model, io, requests } = boundary();
+  vi.useFakeTimers();
+  const { model, io, requests, handlers } = boundary();
   await model.refresh();
   const credential = '{"type":"authorized_user","refresh_token":"fixture-sensitive"}';
   io.request = async (method) => {
@@ -306,6 +329,10 @@ it("stores credential JSON once, reconciles a lost reply and never publishes its
       params: { provider: "vertex", value: credential, originClientId: expect.stringMatching(/^native-/) },
     },
   ]);
+  // The write may have landed despite the lost reply: the hub's echo, no
+  // longer this screen's own (the refused write retired its marker), refetches.
+  foreignAuthChange(handlers, "vertex");
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-sensitive");
   expect(model.getSnapshot().busy).toBe(false);
