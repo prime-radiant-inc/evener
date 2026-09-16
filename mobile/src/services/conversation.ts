@@ -573,17 +573,6 @@ export function createConversationService(
     }
   }
 
-  // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, the service just re-throws — it does NOT refresh
-  // capabilities. The store surfaces the typed error and requests its
-  // coalesced reread of the authoritative snapshot (handleMutationError).
-  async function withCapabilityRefresh<T>(
-    _action: string,
-    fn: () => Promise<T>,
-  ): Promise<T> {
-    return fn();
-  }
-
   return {
     async open(threadRef, _cursor) {
       pendingProjection = null;
@@ -781,14 +770,12 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("send", () =>
-        client.request("turn/start", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-          input,
-        }),
-      );
+      const result = await client.request("turn/start", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+        input,
+      });
       return decodeMutationResult(
         "send",
         result,
@@ -805,22 +792,20 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("steer", () =>
-        expectedQueueRevision === undefined
-          ? client.request("turn/steer", {
-              ref: threadRef,
-              clientMutationId,
-              expectedInstanceId,
-              input,
-            })
-          : client.request("turn/drainAsSteer", {
-              ref: threadRef,
-              clientMutationId,
-              expectedInstanceId,
-              expectedQueueRevision,
-              input,
-            }),
-      );
+      const result = await (expectedQueueRevision === undefined
+        ? client.request("turn/steer", {
+            ref: threadRef,
+            clientMutationId,
+            expectedInstanceId,
+            input,
+          })
+        : client.request("turn/drainAsSteer", {
+            ref: threadRef,
+            clientMutationId,
+            expectedInstanceId,
+            expectedQueueRevision,
+            input,
+          }));
       return decodeMutationResult(
         expectedQueueRevision === undefined ? "steer" : "drain",
         result,
@@ -837,14 +822,12 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("queue", () =>
-        client.request("turn/queue", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-          input,
-        }),
-      );
+      const result = await client.request("turn/queue", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+        input,
+      });
       return decodeMutationResult(
         "queue",
         result,
@@ -861,13 +844,11 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("interrupt", () =>
-        client.request("turn/interrupt", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-        }),
-      );
+      const result = await client.request("turn/interrupt", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+      });
       return decodeMutationResult(
         "interrupt",
         result,
@@ -879,9 +860,7 @@ export function createConversationService(
     async compact() {
       requireCap("compact", "compact");
       const threadRef = requireRef();
-      await withCapabilityRefresh("compact", () =>
-        client.request("thread/compact/start", { ref: threadRef }),
-      );
+      await client.request("thread/compact/start", { ref: threadRef });
     },
 
     async clear() {
@@ -953,13 +932,11 @@ export function createConversationService(
         throw new Error("The selected message has no persisted fork position.");
       requireCap("forkFromTurn", "forkFromTurn");
       const parentRef = requireRef();
-      const response = await withCapabilityRefresh("forkFromTurn", () =>
-        client.request("thread/fork", {
-          ref: parentRef,
-          sourceTurnId: String(transcriptEntryIndex),
-          deferInput: true,
-        }),
-      );
+      const response = await client.request("thread/fork", {
+        ref: parentRef,
+        sourceTurnId: String(transcriptEntryIndex),
+        deferInput: true,
+      });
       const childRef = nonemptyString(
         response.thread?.evener?.ref,
         "fork session reference",
@@ -972,13 +949,11 @@ export function createConversationService(
     async forkAside() {
       requireCap("forkFromTurn", "forkAside");
       const parentRef = requireRef();
-      const response = await withCapabilityRefresh("forkAside", () =>
-        client.request("thread/fork", {
-          ref: parentRef,
-          sourceTurnId: "",
-          aside: true,
-        }),
-      );
+      const response = await client.request("thread/fork", {
+        ref: parentRef,
+        sourceTurnId: "",
+        aside: true,
+      });
       const childRef = nonemptyString(
         response.thread?.evener?.ref,
         "aside session reference",
@@ -991,9 +966,7 @@ export function createConversationService(
     async shutdown() {
       requireCap("shutdown", "shutdown");
       const threadRef = requireRef();
-      await withCapabilityRefresh("shutdown", () =>
-        client.request("thread/shutdown", { ref: threadRef }),
-      );
+      await client.request("thread/shutdown", { ref: threadRef });
     },
 
     async forceStop() {
@@ -1025,42 +998,34 @@ export function createConversationService(
     async changeModel(modelProvider, model) {
       requireCap("changeModel", "changeModel");
       const threadRef = requireRef();
-      await withCapabilityRefresh("changeModel", () =>
-        client.request("thread/model/set", {
-          ref: threadRef,
-          modelProvider,
-          model,
-        }),
-      );
+      await client.request("thread/model/set", {
+        ref: threadRef,
+        modelProvider,
+        model,
+      });
     },
 
     async setVisionModel(visionModel) {
       requireCap("changeVisionModel", "setVisionModel");
       const threadRef = requireRef();
-      await withCapabilityRefresh("setVisionModel", () =>
-        client.request("thread/vision-model/set", {
-          ref: threadRef,
-          visionModel,
-        }),
-      );
+      await client.request("thread/vision-model/set", {
+        ref: threadRef,
+        visionModel,
+      });
     },
 
     async setReasoningEffort(effort) {
       const threadRef = requireRef();
-      await withCapabilityRefresh("setReasoningEffort", () =>
-        client.request("thread/reasoning-effort/set", {
-          ref: threadRef,
-          reasoningEffort: effort,
-        }),
-      );
+      await client.request("thread/reasoning-effort/set", {
+        ref: threadRef,
+        reasoningEffort: effort,
+      });
     },
 
     async setGoal(objective) {
       requireCap("goal", "setGoal");
       const threadRef = requireRef();
-      const result = await withCapabilityRefresh("setGoal", () =>
-        client.request("goal/set", { ref: threadRef, objective }),
-      );
+      const result = await client.request("goal/set", { ref: threadRef, objective });
       const response = exactObject(result, ["started"], "goal result");
       if (typeof response.started !== "boolean") {
         throw new Error("ConversationService: invalid goal acknowledgment");
@@ -1070,24 +1035,20 @@ export function createConversationService(
     async rename(name) {
       requireCap("rename", "rename");
       const threadRef = requireRef();
-      await withCapabilityRefresh("rename", () =>
-        client.request("evener/thread/name/set", { ref: threadRef, name }),
-      );
+      await client.request("evener/thread/name/set", { ref: threadRef, name });
     },
 
     async cancelQueued(index, expectedEntryId, expectedInstanceId) {
       const threadRef = requireQueueInstance(expectedInstanceId);
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("cancelQueued", () =>
-        client.request("turn/cancelQueued", {
-          ref: threadRef,
-          index,
-          clientMutationId,
-          expectedEntryId,
-          expectedInstanceId,
-        }),
-      );
+      const result = await client.request("turn/cancelQueued", {
+        ref: threadRef,
+        index,
+        clientMutationId,
+        expectedEntryId,
+        expectedInstanceId,
+      });
       validateQueueAction(
         "cancel",
         result,
@@ -1104,15 +1065,13 @@ export function createConversationService(
       requireQueueRun();
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("promoteQueuedAsSteer", () =>
-        client.request("turn/promoteQueuedAsSteer", {
-          ref: threadRef,
-          index,
-          expectedEntryId,
-          expectedInstanceId,
-          clientMutationId,
-        }),
-      );
+      const result = await client.request("turn/promoteQueuedAsSteer", {
+        ref: threadRef,
+        index,
+        expectedEntryId,
+        expectedInstanceId,
+        clientMutationId,
+      });
       validateQueueAction(
         "promote",
         result,
@@ -1129,14 +1088,12 @@ export function createConversationService(
       requireQueueRun();
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("drainAsSteer", () =>
-        client.request("turn/drainAsSteer", {
-          ref: threadRef,
-          expectedQueueRevision,
-          expectedInstanceId,
-          clientMutationId,
-        }),
-      );
+      const result = await client.request("turn/drainAsSteer", {
+        ref: threadRef,
+        expectedQueueRevision,
+        expectedInstanceId,
+        clientMutationId,
+      });
       validateQueueAction(
         "drain",
         result,
