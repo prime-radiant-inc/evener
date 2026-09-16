@@ -1,5 +1,6 @@
 import type {
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchConfigResolved,
   LaunchOption,
 } from "@evener/appwire-client";
@@ -53,7 +54,7 @@ export class LaunchSettings {
   constructor(
     private client: ConversationClientLike | null,
     readonly cwd: string,
-    readonly layer: "global" | "project",
+    readonly layer: LaunchConfigLayerName,
   ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
