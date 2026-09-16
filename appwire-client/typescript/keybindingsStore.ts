@@ -847,7 +847,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // The hub says something changed and this build cannot read what: the
       // change is not dropped, the store reads the truth itself. Auto-refresh
       // is what both hosts do here - never a "refresh to inspect" prompt.
-      void refreshFor(activeEpoch);
+      void refreshFor(fence.generation);
       return;
     }
     try {
