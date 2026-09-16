@@ -157,11 +157,31 @@ export function applyTasksFetchResult(entry: TasksPanelEntry, result: TasksFetch
   }
 }
 
+interface RefreshWaiter {
+  resolve: (result: TasksFetchResult | null) => void;
+  reject: (error: unknown) => void;
+}
+
 interface RefreshRun {
   dirty: boolean;
   hasAggregate: () => boolean;
   /** One per caller, in call order; the last is the run's owner. */
-  waiters: Array<(result: TasksFetchResult | null) => void>;
+  waiters: RefreshWaiter[];
+}
+
+/** Hands the run's outcome to its callers: the owner (latest caller) gets
+ * the published result, every earlier caller null; a thrown port (a host's
+ * hasAggregate) rejects all of them. */
+function settleRun(run: RefreshRun, outcome: { published: TasksFetchResult | null } | { error: unknown }): void {
+  const waiters = run.waiters.splice(0);
+  const owner = waiters.pop();
+  if ("error" in outcome) {
+    for (const waiter of waiters) waiter.reject(outcome.error);
+    owner?.reject(outcome.error);
+    return;
+  }
+  for (const waiter of waiters) waiter.resolve(null);
+  owner?.resolve(outcome.published);
 }
 
 /** Builds an empty store that reads task lists through `listTasks`. */
@@ -219,6 +239,11 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
 
       resetForTests() {
         nextFetchID = 0;
+        // A run still reading is abandoned: its callers settle now (null)
+        // and, when the read returns, it finds itself no longer registered
+        // and publishes nothing into the reset store.
+        for (const run of runs.values()) settleRun(run, { published: null });
+        runs.clear();
         set({ entries: new Map() });
       },
     };
@@ -227,36 +252,52 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
 
   const runLoop = async (ref: string, run: RefreshRun): Promise<void> => {
     let published: TasksFetchResult | null = null;
-    do {
-      run.dirty = false;
-      const fetchID = get().beginFetch(ref);
-      let result: TasksFetchResult;
-      try {
-        result = classifyTasksResponse(await listTasks(ref));
-      } catch (err) {
-        result = classifyTasksRejection(err, run.hasAggregate());
+    let fetchID = 0;
+    try {
+      do {
+        run.dirty = false;
+        fetchID = get().beginFetch(ref);
+        let result: TasksFetchResult;
+        try {
+          result = classifyTasksResponse(await listTasks(ref));
+        } catch (err) {
+          result = classifyTasksRejection(err, run.hasAggregate());
+        }
+        // resetForTests abandoned this run while it was reading.
+        if (runs.get(ref) !== run) return;
+        // A read a newer trigger has already made stale is not shown even
+        // briefly; the loop reads again and publishes that answer instead.
+        if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
+      } while (run.dirty);
+    } catch (error) {
+      // A host port threw (hasAggregate, most likely): the callers reject,
+      // and the entry beginFetch marked loading settles as a failure so the
+      // panel shows the error with its retry instead of spinning.
+      if (runs.get(ref) === run) {
+        runs.delete(ref);
+        get().publishFetch(ref, fetchID, { kind: "failure", failure: panelLoadFailure(LOAD_FAILURE, error) });
       }
-      // A read a newer trigger has already made stale is not shown even
-      // briefly; the loop reads again and publishes that answer instead.
-      if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
-    } while (run.dirty);
+      settleRun(run, { error });
+      return;
+    }
     runs.delete(ref);
-    const owner = run.waiters.pop();
-    for (const superseded of run.waiters) superseded(null);
-    owner?.(published);
+    settleRun(run, { published });
   };
 
   const refresh: TasksPanelStore["refresh"] = (ref, hasAggregate) => {
-    let run = runs.get(ref);
-    if (run) {
-      run.dirty = true;
-      run.hasAggregate = hasAggregate;
-    } else {
-      run = { dirty: false, hasAggregate, waiters: [] };
-      runs.set(ref, run);
-      void runLoop(ref, run);
+    const inFlight = runs.get(ref);
+    if (inFlight) {
+      inFlight.dirty = true;
+      inFlight.hasAggregate = hasAggregate;
+      return new Promise((resolve, reject) => inFlight.waiters.push({ resolve, reject }));
     }
-    return new Promise((resolve) => run.waiters.push(resolve));
+    const run: RefreshRun = { dirty: false, hasAggregate, waiters: [] };
+    runs.set(ref, run);
+    // The caller is registered before the loop starts: a read that throws
+    // synchronously completes the whole run before runLoop returns.
+    const settled = new Promise<TasksFetchResult | null>((resolve, reject) => run.waiters.push({ resolve, reject }));
+    void runLoop(ref, run);
+    return settled;
   };
 
   return {
