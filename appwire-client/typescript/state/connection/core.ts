@@ -105,10 +105,7 @@ export function createConnectionStore(): ConnectionStore {
 // has no client to read once, so it reacts to the store instead. A replaced
 // client is detached so it does not keep a live subscription for the rest of
 // the store's life. Returns the disposer for both halves.
-export function onConnectionNotification(
-  store: ConnectionStore,
-  handler: (n: AnyNotification) => void,
-): () => void {
+export function onConnectionNotification(store: ConnectionStore, handler: (n: AnyNotification) => void): () => void {
   let wired: AppwireClientLike | null = null;
   let unwire: (() => void) | undefined;
   const attach = (client: AppwireClientLike | null): void => {

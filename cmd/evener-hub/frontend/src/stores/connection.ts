@@ -6,8 +6,8 @@
 import type { AnyNotification } from "@evener/appwire-client";
 import {
   type ConnectionStoreState,
-  createConnectionStore,
   onConnectionNotification as coreOnConnectionNotification,
+  createConnectionStore,
 } from "@evener/appwire-client/state/connection";
 import { useStore } from "zustand";
 
