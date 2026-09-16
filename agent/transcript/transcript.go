@@ -474,7 +474,7 @@ func (w *Writer) Header() Header {
 // the delegate-attention side-writes — uses AppendSynced, which returns an
 // error unless the line is both.
 func (w *Writer) Append(turn schema.Turn) (seq int, err error) {
-	seq, _, err = w.appendBatch([]schema.Turn{turn}, false, true)
+	seq, _, err = w.appendBatch([]schema.Turn{turn}, false, true, false)
 	return seq, err
 }
 
@@ -484,7 +484,7 @@ func (w *Writer) Append(turn schema.Turn) (seq int, err error) {
 // receiver is nil — see Append for why that makes a write into a not-yet-open
 // writer silently succeed.
 func (w *Writer) AppendDurable(turn schema.Turn) (seq int, err error) {
-	seq, _, err = w.appendBatch([]schema.Turn{turn}, true, true)
+	seq, _, err = w.appendBatch([]schema.Turn{turn}, true, true, false)
 	return seq, err
 }
 
@@ -511,31 +511,31 @@ func (w *Writer) AppendSynced(turn schema.Turn) (seq int, err error) {
 	if w == nil {
 		return 0, nil // no writer to record into — see Append's nil no-op
 	}
-	if w.closed.Load() {
-		// A closed writer records nothing; a synced owner must not read that as
-		// durable (LOW). The nil no-op is only for a writer that never existed.
-		return 0, ErrWriterClosed
-	}
-	firstSeq, retained, appendErr := w.appendBatch([]schema.Turn{turn}, true, false)
+	// failClosed=true: a closed writer records nothing, and this door must not
+	// read that as durable. The decision is made under appendBatch's lock, so a
+	// Close concurrent with this call cannot leave AppendSynced returning nil
+	// for a write that landed nowhere. The nil no-op stays only for a writer
+	// that never existed (w == nil, above).
+	firstSeq, retained, appendErr := w.appendBatch([]schema.Turn{turn}, true, false, true)
 	if appendErr != nil {
-		return 0, appendErr // not recorded
+		return 0, appendErr // not recorded (includes ErrWriterClosed)
 	}
 	if retained == nil {
 		return firstSeq, nil // recorded and its own fsync succeeded: durable
 	}
 	// Recorded but unsynced: the record is in the file, so a barrier that
 	// fsyncs the whole file settles it.
-	if barrierErr := w.EstablishDurability(); barrierErr == nil {
+	barrierErr := w.EstablishDurability()
+	if barrierErr == nil {
 		return firstSeq, nil
-	} else {
-		// The record is durable neither by its own fsync nor the barrier. It is
-		// still a record — the caller adopts it at firstSeq: queue its
-		// diagnostic for the session to surface, and report the retained error.
-		w.mu.Lock()
-		w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
-		w.mu.Unlock()
-		return firstSeq, &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 	}
+	// The record is durable neither by its own fsync nor the barrier. It is
+	// still a record — the caller adopts it at firstSeq: queue its diagnostic
+	// for the session to surface, and report the retained error.
+	w.mu.Lock()
+	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
+	w.mu.Unlock()
+	return firstSeq, &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 }
 
 // AppendBatch writes every turn as one write and one fsync, all-or-nothing:
@@ -547,7 +547,7 @@ func (w *Writer) AppendSynced(turn schema.Turn) (seq int, err error) {
 // entry to the one write primitive. No-op returning (0, nil) for a nil or
 // closed writer, matching Append.
 func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
-	firstSeq, _, err := w.appendBatch(turns, true, true)
+	firstSeq, _, err := w.appendBatch(turns, true, true, false)
 	return firstSeq, err
 }
 
@@ -556,13 +556,26 @@ func (w *Writer) AppendBatch(turns []schema.Turn) (int, error) {
 // diagnostic on the warning queue for the session to surface (the ordinary
 // doors); AppendSynced passes false and takes the diagnostic through the
 // returned error instead, so it neither queues nor drains the shared channel.
-func (w *Writer) appendBatch(turns []schema.Turn, forceSync, queueRetained bool) (firstSeq int, retained, err error) {
-	if w == nil || w.closed.Load() {
+// failClosed decides what a closed writer means to the caller. The ordinary
+// doors pass false: a closed (or nil) writer is a silent nil no-op, because a
+// session with no state directory writes into one for its whole life.
+// AppendSynced passes true: it must never read a dropped write as durable, so a
+// closed writer is ErrWriterClosed. The check is made UNDER THE LOCK, so Close
+// cannot slip in between a caller's own closed check and the append — the race
+// that let AppendSynced return nil (durable) for a write that recorded nothing.
+func (w *Writer) appendBatch(turns []schema.Turn, forceSync, queueRetained, failClosed bool) (firstSeq int, retained, err error) {
+	if w == nil {
+		// A writer that never existed (a session with no state directory) is a
+		// nil no-op for every door, synced or not — there is nothing to record
+		// and nothing to lose. Only a CLOSED writer fails closed.
 		return 0, nil, nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed.Load() {
+		if failClosed {
+			return 0, nil, ErrWriterClosed
+		}
 		return 0, nil, nil
 	}
 	return w.appendBatchLocked(turns, forceSync, queueRetained)

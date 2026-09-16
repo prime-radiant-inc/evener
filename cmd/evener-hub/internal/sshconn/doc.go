@@ -13,8 +13,11 @@
 //   - supervises the channel, reconnecting with bounded exponential backoff when
 //     the link drops, and never starting a hub on the host.
 //
-// This is the 04a slice: channel + preflight + lifecycle. Deploy, version
-// auto-match, and hub restart are 04b and deliberately absent here.
+// 04a covers the channel, preflight, and lifecycle. 04b (also here) adds deploy
+// (cross-compile the controller's tree for the host's GOOS/GOARCH, push it over
+// an atomic ssh `cat` + `mv`), version auto-match (a host build differing from
+// buildinfo.Version() is redeployed before attaching), and host hub restart
+// (supervisor-aware, with the doc's bare-process fallback).
 //
 // It does not map a channel onto an appsource.Source (component 05) or render
 // hosts (component 06).
