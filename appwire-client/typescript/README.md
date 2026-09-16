@@ -19,7 +19,10 @@ rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule,
 the slash invocation and catalog visibility rules the palette and composer
-share, the inline slash-completion token parser, menu merge, filter and
+share, the command catalog itself as a framework-free store
+(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
+and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
+beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
