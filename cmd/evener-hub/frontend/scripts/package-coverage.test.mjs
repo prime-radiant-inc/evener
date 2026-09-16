@@ -60,12 +60,21 @@ test("describeMissingCoverage fails an empty expectation rather than passing on 
   assert.match(describeMissingCoverage([], [], dir), /measuring nothing/);
 });
 
+// The package's declaration-only modules. The guard excuses them through
+// hasRuntimeExport, not through this list; the list pins which modules are
+// expected to emit nothing, so a module that loses its runtime surface by
+// accident turns this test red instead of quietly leaving the report.
+const DECLARATION_ONLY_MODULES = new Set(["clientLike.ts", "modelCatalogTypes.ts"]);
+
 test("the real build config lists the package's modules, so the expectation is not empty", () => {
   const real = fileURLToPath(new URL("../../../../appwire-client/typescript", import.meta.url));
   const modules = compiledModules(readFileSync(path.join(real, "tsconfig.build.json"), "utf8"));
   assert(modules.includes("index.ts"));
   assert(modules.includes("sharedNotesAvailability.ts"));
+  for (const file of DECLARATION_ONLY_MODULES) assert(modules.includes(file), `${file} is not in the build`);
   assert(
-    modules.every((file) => hasRuntimeExport(readFileSync(path.join(real, file), "utf8")) || file === "clientLike.ts"),
+    modules.every(
+      (file) => hasRuntimeExport(readFileSync(path.join(real, file), "utf8")) || DECLARATION_ONLY_MODULES.has(file),
+    ),
   );
 });
