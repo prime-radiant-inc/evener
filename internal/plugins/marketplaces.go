@@ -535,7 +535,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 // marketplace's plugins under the new one. Only saveRename can tell that
 // half-state from the two it rolls back to, so a caller whose rename wrote a
 // marker keeps it for that state (migrateMarketplaceName).
-var errStoreBetweenNames = errors.New("the store is left between the two names")
+var errStoreBetweenNames = fmt.Errorf("%w: the store is left between the two names", ErrStoreChanged)
 
 // errRenameRollbackIncomplete marks a move helper's failure that could not put
 // every directory back where it found it. A move writes neither store file, so
@@ -543,7 +543,7 @@ var errStoreBetweenNames = errors.New("the store is left between the two names")
 // left to resume; only one that could not leaves it between the two names. A
 // rename that wrote a marker keeps it for this state alone
 // (migrateMarketplaceName).
-var errRenameRollbackIncomplete = errors.New("a failed move could not be put back completely")
+var errRenameRollbackIncomplete = fmt.Errorf("%w: a failed move could not be put back completely", ErrStoreChanged)
 
 // saveRename records a rename in both store files, the registry first: a
 // marketplaces file naming a marketplace whose plugins are still keyed under

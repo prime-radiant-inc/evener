@@ -1595,5 +1595,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	if err := c.writeLoadable(l); err != nil {
 		return err
 	}
-	return c.reg.Reload()
+	// The new default is on disk, so a failed reload is an applied write: only
+	// the hub's own view is behind, and every other client's list is stale.
+	return writeApplied(c.reg.Reload())
 }

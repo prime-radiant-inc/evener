@@ -407,7 +407,10 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
+		// The record is saved, so this is an applied write however the read
+		// ends: the provider is named for the broadcast, the rest of the
+		// status is what could not be read (#1543's rule).
+		return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: provider}}, writeApplied(err)
 	}
 	return appwire.AuthLoginCompleteResponse{Status: status}, nil
 }
@@ -476,7 +479,11 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	}
 	status, statusErr := c.openAIInstanceStatus(name)
 	if statusErr != nil {
-		return appwire.AuthLogoutResponse{}, statusErr
+		// The credential is already removed; see LoginComplete.
+		return appwire.AuthLogoutResponse{
+			Removed: removed,
+			Status:  appwire.AuthStatusResponse{Provider: name},
+		}, writeApplied(statusErr)
 	}
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }
@@ -503,6 +510,18 @@ var credentialWriteBetween = func() {}
 // failure is not lost either: reloadRegistryLocked leaves it on the registry,
 // which is where the pane reads it (Diagnostics) and where instance writes are
 // refused until the file loads (WritesRefused, spec §10).
+// statusAfterCredentialWrite answers a credential write that has already landed
+// with the instance's status. A read that fails does not unwrite the
+// credential, so it is reported as an applied write, with the provider named
+// for the broadcast and the rest of the status left at what could not be read.
+func (c *hubAuthController) statusAfterCredentialWrite(name string) (appwire.AuthStatusResponse, error) {
+	status, err := c.Status(appwire.AuthStatusParams{Provider: name})
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
+}
+
 func (c *hubAuthController) credentialWrite(write func() error) error {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
@@ -653,7 +672,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 // ApiKeyClear removes a stored file-layer key without touching any other
@@ -686,7 +705,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
@@ -855,7 +874,12 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
+		// Authorized and applied: the record is saved. The state is what the
+		// handler reads to tell this from a pending poll, which writes nothing.
+		return appwire.AuthDevicePollResponse{
+			State:  "authorized",
+			Status: &appwire.AuthStatusResponse{Provider: provider},
+		}, writeApplied(err)
 	}
 	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, nil
 }
@@ -1175,7 +1199,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 // requiresGCPADC returns an InvalidParams error when the named instance does
