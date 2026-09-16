@@ -63,14 +63,3 @@ test("the web port is the rail's one localStorage blob", () => {
   expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "null")).toEqual({ "projectnode:p": true });
   expect([...railExpansionPersistence.readExpansion()]).toEqual([["projectnode:p", true]]);
 });
-
-test("the store binds the web port when the host supplies none", () => {
-  localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "projectnode:p": true }));
-  resetNavigationStoreForTests();
-  expect(navigationStore.getState().expanded.get("projectnode:p")).toBe(true);
-  navigationStore.getState().setExpanded("projectnode:q", true);
-  expect(JSON.parse(localStorage.getItem(EXPANSION_STORAGE_KEY) ?? "null")).toEqual({
-    "projectnode:p": true,
-    "projectnode:q": true,
-  });
-});

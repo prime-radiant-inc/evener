@@ -183,26 +183,9 @@ export interface NavigationStoreState {
 }
 
 const initialAttention = { changed: [], summary: null };
-const initial = (
-  persistence: NavigationPersistence,
-): Omit<
-  NavigationStoreState,
-  | "loadManifest"
-  | "loadSection"
-  | "loadCatalog"
-  | "loadPinCatalog"
-  | "loadPinCatalogPages"
-  | "loadPinSection"
-  | "trackPinSection"
-  | "loadProject"
-  | "loadProjectPage"
-  | "lookupLocation"
-  | "setExpanded"
-  | "toggleExpanded"
-  | "awaitNavigationTargets"
-  | "awaitNavigationInvalidation"
-  | "applyNavigationMutation"
-> => ({
+/** The store's whole state: what the host persisted, plus the actions bound
+ * to the port that persisted it. */
+const navigationState = (persistence: NavigationPersistence): NavigationStoreState => ({
   capability: null,
   mode: "unknown",
   clientGenerationID: "",
@@ -212,11 +195,6 @@ const initial = (
   expanded: persistence.readExpansion(),
   attention: initialAttention,
   protocolError: null,
-});
-/** The store's whole state: what the host persisted, plus the actions bound
- * to the port that persisted it. */
-const navigationState = (persistence: NavigationPersistence): NavigationStoreState => ({
-  ...initial(persistence),
   ...actions(persistence),
 });
 export const navigationStore = createStore<NavigationStoreState>(() => navigationState(railExpansionPersistence));
@@ -505,6 +483,17 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
   if (gone) revalidator?.force([projectResourceKey]);
   return load<NavigationProjectResource>(projectResourceKey);
 }
+/** The one ordered sequence behind both expansion actions: publish, then
+ * persist, then hydrate what the row just revealed. Persistence is
+ * best-effort and must never cost the caller the in-memory change, so the
+ * store publishes before it hands the map to the host. */
+function commitExpansion(persistence: NavigationPersistence, projectKey: string, expanded: boolean): void {
+  const next = new Map(navigationStore.getState().expanded);
+  next.set(projectKey, expanded);
+  navigationStore.setState({ expanded: next });
+  persistence.writeExpansion(next);
+  if (expanded && navigationStore.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
+}
 function actions(persistence: NavigationPersistence) {
   return {
     loadManifest: () => load<NavigationManifest>({ kind: "manifest" }),
@@ -571,21 +560,9 @@ function actions(persistence: NavigationPersistence) {
       revalidator.forceLocations();
       return revalidator.waitForTargets(mutation.targets, mutation.generation_id);
     },
-    setExpanded: (projectKey: string, expanded: boolean) => {
-      const expandedMap = new Map(navigationStore.getState().expanded);
-      expandedMap.set(projectKey, expanded);
-      navigationStore.setState({ expanded: expandedMap });
-      persistence.writeExpansion(expandedMap);
-      const mode = navigationStore.getState().mode;
-      if (expanded && mode === "v2") void hydrateProject(projectKey, bootEpoch);
-    },
-    toggleExpanded: (projectKey: string) => {
-      const m = new Map(navigationStore.getState().expanded);
-      m.set(projectKey, !(m.get(projectKey) ?? false));
-      persistence.writeExpansion(m);
-      navigationStore.setState({ expanded: m });
-      if (m.get(projectKey) && navigationStore.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
-    },
+    setExpanded: (projectKey: string, expanded: boolean) => commitExpansion(persistence, projectKey, expanded),
+    toggleExpanded: (projectKey: string) =>
+      commitExpansion(persistence, projectKey, !(navigationStore.getState().expanded.get(projectKey) ?? false)),
   };
 }
 function nonemptyCatalogs(manifest: NavigationManifest): Array<(typeof NAVIGATION_CATALOGS)[number]> {
