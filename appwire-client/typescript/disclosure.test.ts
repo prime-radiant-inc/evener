@@ -1,39 +1,29 @@
 import { describe, expect, test, vi } from "vitest";
 import { createDisclosureStore, type DisclosureState, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 
-const scoped = (scope: string, id: string): string => scopedDisclosureId(scope, id);
-
 describe("two stores share nothing", () => {
-  test("an open in one store leaves the other on its fallback", () => {
-    const first = createDisclosureStore();
-    const second = createDisclosureStore();
-    first.setOpen("a", true);
-    expect(first.isOpen("a", false)).toBe(true);
-    expect(second.isOpen("a", false)).toBe(false);
-  });
-
-  test("a baseline in one store leaves the other's defaults untouched", () => {
-    const first = createDisclosureStore();
-    const second = createDisclosureStore();
-    first.beginBaseline("live", ["tool"], true);
-    expect(first.defaultFor("live", "tool", false)).toBe(true);
-    expect(first.isOpen(scoped("live", "tool"), false)).toBe(true);
-    expect(second.defaultFor("live", "tool", false)).toBe(false);
-    expect(second.isOpen(scoped("live", "tool"), false)).toBe(false);
-  });
-
-  test("clearScope on one store leaves the other's scope intact", () => {
+  test("an open, a baseline and a clearScope in one store leave the other on its fallbacks", () => {
     const first = createDisclosureStore();
     const second = createDisclosureStore();
     for (const store of [first, second]) {
-      store.beginBaseline("live", ["shared"], true);
-      store.setOpen(scoped("live", "shared"), false);
+      store.beginBaseline("shared", ["row"], true);
+      store.setOpen(scopedDisclosureId("shared", "row"), false);
     }
-    first.clearScope("live");
-    expect(first.isOpen(scoped("live", "shared"), false)).toBe(false);
-    expect(first.defaultFor("live", "shared", false)).toBe(false);
-    expect(second.isOpen(scoped("live", "shared"), true)).toBe(false);
-    expect(second.defaultFor("live", "shared", false)).toBe(true);
+
+    first.setOpen("a", true);
+    first.beginBaseline("live", ["tool"], true);
+    first.clearScope("shared");
+
+    expect(first.isOpen("a", false)).toBe(true);
+    expect(second.isOpen("a", false)).toBe(false);
+    expect(first.defaultFor("live", "tool", false)).toBe(true);
+    expect(first.isOpen(scopedDisclosureId("live", "tool"), false)).toBe(true);
+    expect(second.defaultFor("live", "tool", false)).toBe(false);
+    expect(second.isOpen(scopedDisclosureId("live", "tool"), false)).toBe(false);
+    expect(first.defaultFor("shared", "row", false)).toBe(false);
+    expect(first.isOpen(scopedDisclosureId("shared", "row"), false)).toBe(false);
+    expect(second.defaultFor("shared", "row", false)).toBe(true);
+    expect(second.isOpen(scopedDisclosureId("shared", "row"), true)).toBe(false);
   });
 });
 
@@ -58,33 +48,31 @@ describe("store shape", () => {
     const store = createDisclosureStore();
     const initial = store.getInitialState();
     store.beginBaseline("live", ["tool"], true);
-    store.setOpen(scoped("live", "tool"), false);
+    store.setOpen(scopedDisclosureId("live", "tool"), false);
     expect(store.getState()).not.toBe(initial);
     store.setState(initial);
-    expect(store.getState().open.size).toBe(0);
-    expect(store.getState().baselines.size).toBe(0);
-    expect(store.getState().revision).toBe(0);
-    expect(store.isOpen(scoped("live", "tool"), true)).toBe(true);
+    expect(store.getState()).toEqual(initial);
+    expect(store.isOpen(scopedDisclosureId("live", "tool"), true)).toBe(true);
     expect(store.getInitialState()).toBe(initial);
   });
 
   test("isDisclosureOpenIn over a snapshot answers what the store-bound isOpen answers", () => {
     const store = createDisclosureStore();
     store.beginBaseline("live", ["tool", "thought"], false);
-    store.setOpen(scoped("live", "tool"), true);
+    store.setOpen(scopedDisclosureId("live", "tool"), true);
     const snapshot = store.getState();
     for (const id of ["tool", "thought", "unlisted"]) {
       for (const fallback of [true, false]) {
-        expect(isDisclosureOpenIn(snapshot, scoped("live", id), fallback)).toBe(
-          store.isOpen(scoped("live", id), fallback),
+        expect(isDisclosureOpenIn(snapshot, scopedDisclosureId("live", id), fallback)).toBe(
+          store.isOpen(scopedDisclosureId("live", id), fallback),
         );
       }
     }
-    expect(isDisclosureOpenIn(snapshot, scoped("live", "tool"), false)).toBe(true);
+    expect(isDisclosureOpenIn(snapshot, scopedDisclosureId("live", "tool"), false)).toBe(true);
     // A closed baseline defers to the fallback, which callers take from defaultFor.
-    expect(isDisclosureOpenIn(snapshot, scoped("live", "thought"), store.defaultFor("live", "thought", true))).toBe(
-      false,
-    );
-    expect(isDisclosureOpenIn(snapshot, scoped("live", "unlisted"), true)).toBe(true);
+    expect(
+      isDisclosureOpenIn(snapshot, scopedDisclosureId("live", "thought"), store.defaultFor("live", "thought", true)),
+    ).toBe(false);
+    expect(isDisclosureOpenIn(snapshot, scopedDisclosureId("live", "unlisted"), true)).toBe(true);
   });
 });

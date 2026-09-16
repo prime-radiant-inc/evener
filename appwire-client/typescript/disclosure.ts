@@ -3,11 +3,10 @@
 // remount that kills a component-local state (a virtual list unmounting
 // off-window rows, a layout change unmounting the whole pane tree).
 // createDisclosureStore is a factory - each app builds the one instance it
-// wraps in its own view-layer hook, and tests build their own - and the store
-// is the getState/setState/subscribe triple plus getInitialState, the shape
-// React's useSyncExternalStore (and zustand's useStore over it) binds to
-// without the package depending on either, plus the store-bound actions.
-// Pure logic - no DOM, no React.
+// wraps in its own view-layer hook, and tests build their own - returning the
+// store triple plus the store-bound actions. Pure logic - no DOM, no React.
+
+import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 
 export interface DisclosureState {
   /** Explicit reader choices. Defaults are kept separately so a display
@@ -30,21 +29,7 @@ export interface DisclosureBaseline {
   readonly startedRevision: number;
 }
 
-/** Runs after every state change with the new state and the one it replaced
- * - the listener shape zustand's useStore subscribes with. */
-export type DisclosureListener = (state: DisclosureState, previous: DisclosureState) => void;
-
-export interface DisclosureStore {
-  getState(): DisclosureState;
-  /** The state the store was created with: the snapshot a view binding
-   * (React's useSyncExternalStore, zustand's useStore) reads before its first
-   * subscription, and what setState takes to reset the store. */
-  getInitialState(): DisclosureState;
-  /** Shallow-merges the partial (or the updater's result) into the state and
-   * notifies every subscriber, even when nothing changed. */
-  setState(partial: Partial<DisclosureState> | ((state: DisclosureState) => Partial<DisclosureState>)): void;
-  /** Returns the unsubscribe function. */
-  subscribe(listener: DisclosureListener): () => void;
+export interface DisclosureStore extends FrameworkFreeStore<DisclosureState> {
   /** Whether this id is open: an explicit choice first, then its scope's
    * baseline, then the fallback. The reactive form is isDisclosureOpenIn
    * over a subscribed snapshot. */
@@ -78,7 +63,10 @@ export function scopedDisclosureId(scope: string, id: string): string {
 export function isDisclosureOpenIn(state: DisclosureState, id: string, fallback: boolean): boolean {
   const explicit = state.open.get(id);
   if (explicit !== undefined) return explicit.open;
-  const baseline = baselineForId(state.baselines, id);
+  return baselineAnswer(baselineForId(state.baselines, id), id, fallback);
+}
+
+function baselineAnswer(baseline: DisclosureBaseline | undefined, id: string, fallback: boolean): boolean {
   if (baseline?.open === true) return true;
   if (baseline?.ids.has(id)) return baseline.open;
   return fallback;
@@ -99,18 +87,15 @@ function baselineForId(baselines: ReadonlyMap<string, DisclosureBaseline>, id: s
 
 /** Builds an empty disclosure store. */
 export function createDisclosureStore(): DisclosureStore {
-  const listeners = new Set<DisclosureListener>();
-  const initialState: DisclosureState = { open: new Map(), baselines: new Map(), revision: 0 };
-  let state = initialState;
-  const get = (): DisclosureState => state;
-  const set: DisclosureStore["setState"] = (partial) => {
-    const previous = state;
-    state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
-    for (const listener of listeners) listener(state, previous);
-  };
+  const store = createFrameworkFreeStore<DisclosureState>(() => ({
+    open: new Map(),
+    baselines: new Map(),
+    revision: 0,
+  }));
+  const { getState, setState } = store;
 
   const setOpen: DisclosureStore["setOpen"] = (id, open) => {
-    set((s) => {
+    setState((s) => {
       const next = new Map(s.open);
       const baseline = baselineForId(s.baselines, id);
       const revision = s.revision + 1;
@@ -120,27 +105,19 @@ export function createDisclosureStore(): DisclosureStore {
   };
 
   return {
-    getState: get,
-    getInitialState: () => initialState,
-    setState: set,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    ...store,
 
-    isOpen: (id, fallback) => isDisclosureOpenIn(state, id, fallback),
+    isOpen: (id, fallback) => isDisclosureOpenIn(getState(), id, fallback),
 
     setOpen,
 
     toggle(id, fallback) {
-      const current = state.open.get(id)?.open ?? fallback;
+      const current = getState().open.get(id)?.open ?? fallback;
       setOpen(id, !current);
     },
 
     beginBaseline(scope, ids, open) {
-      set((s) => {
+      setState((s) => {
         const previous = s.baselines.get(scope);
         const enteringOpenBaseline = open && previous?.open !== true;
         const generation = enteringOpenBaseline ? (previous?.generation ?? 0) + 1 : (previous?.generation ?? 0);
@@ -163,7 +140,7 @@ export function createDisclosureStore(): DisclosureStore {
     },
 
     clearScope(scope) {
-      set((s) => {
+      setState((s) => {
         const prefix = `${scope}${SCOPE_SEPARATOR}`;
         const open = new Map(s.open);
         for (const id of open.keys()) if (id.startsWith(prefix)) open.delete(id);
@@ -173,11 +150,6 @@ export function createDisclosureStore(): DisclosureStore {
       });
     },
 
-    defaultFor(scope, id, fallback) {
-      const baseline = state.baselines.get(scope);
-      if (baseline?.open === true) return true;
-      if (baseline?.ids.has(id)) return baseline.open;
-      return fallback;
-    },
+    defaultFor: (scope, id, fallback) => baselineAnswer(getState().baselines.get(scope), id, fallback),
   };
 }

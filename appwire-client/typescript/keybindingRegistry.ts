@@ -2,10 +2,11 @@
 // (action id -> run functions), the binding entries, and the scope stack the
 // dispatcher evaluates top-down. createKeybindingsRegistry is a factory - each
 // app builds the one instance it wires up, and tests build their own - and the
-// store is the getState/setState/subscribe triple plus getInitialState, the
-// shape React's useSyncExternalStore (and zustand's useStore over it) binds to
-// without the package depending on either. Pure logic - no DOM, no React.
+// store is frameworkFreeStore's triple, the shape each app's view binding
+// takes without the package depending on React or zustand. Pure logic - no
+// DOM, no React.
 
+import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import { type KeybindingParser, type KeySequence, parseChord, serializeChord } from "./keybindingChord";
 
 /** The implicit bottom of every scope stack: bindings with no `scope` land here. */
@@ -80,21 +81,9 @@ export interface KeybindingsState {
   popScope(scope: string): boolean;
 }
 
-/** Runs after every state change with the new state and the one it replaced
- * - the listener shape zustand's useStore subscribes with. */
-export type KeybindingsListener = (state: KeybindingsState, previous: KeybindingsState) => void;
+export type KeybindingsListener = StoreListener<KeybindingsState>;
 
-export interface KeybindingsRegistry {
-  getState(): KeybindingsState;
-  /** The state the registry was created with: the snapshot a view binding
-   * (React's useSyncExternalStore, zustand's useStore) reads before its first
-   * subscription. */
-  getInitialState(): KeybindingsState;
-  /** Shallow-merges the partial (or the updater's result) into the state and
-   * notifies every subscriber, even when nothing changed. */
-  setState(partial: Partial<KeybindingsState> | ((state: KeybindingsState) => Partial<KeybindingsState>)): void;
-  /** Returns the unsubscribe function. */
-  subscribe(listener: KeybindingsListener): () => void;
+export interface KeybindingsRegistry extends FrameworkFreeStore<KeybindingsState> {
   /** The parser every string chord registered here goes through; the
    * parse-taking helpers (defaults, display, validation) borrow it so one
    * registry parses consistently everywhere. */
@@ -104,15 +93,7 @@ export interface KeybindingsRegistry {
 /** Builds an empty registry whose string chords parse through `parse`
  * (tinykeys' parseKeybinding on both apps). */
 export function createKeybindingsRegistry(parse: KeybindingParser): KeybindingsRegistry {
-  const listeners = new Set<KeybindingsListener>();
-  let state: KeybindingsState;
-  const get = (): KeybindingsState => state;
-  const set: KeybindingsRegistry["setState"] = (partial) => {
-    const previous = state;
-    state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
-    for (const listener of listeners) listener(state, previous);
-  };
-  state = {
+  const store = createFrameworkFreeStore<KeybindingsState>((set, get) => ({
     actions: new Map(),
     bindings: [],
     scopeStack: [],
@@ -191,18 +172,6 @@ export function createKeybindingsRegistry(parse: KeybindingParser): KeybindingsR
       set({ scopeStack: [...stack.slice(0, index), ...stack.slice(index + 1)] });
       return true;
     },
-  };
-  const initialState = state;
-  return {
-    getState: get,
-    getInitialState: () => initialState,
-    setState: set,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    parseKeybinding: parse,
-  };
+  }));
+  return { ...store, parseKeybinding: parse };
 }

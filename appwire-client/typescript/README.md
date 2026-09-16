@@ -51,12 +51,11 @@ its registry is a framework-free store factory, `createKeybindingsRegistry(parse
 returning a `getState`/`setState`/`subscribe` triple each app wraps for its
 own view layer, and its chord parsing goes through a `KeybindingParser` port
 the host supplies (tinykeys' `parseKeybinding` in both apps), so the package
-names neither a store library nor a parser; the disclosure store both
-transcripts keep a row's open/closed choice in across a remount,
-`createDisclosureStore()` returning that same triple plus its store-bound
-actions (`isOpen`, `setOpen`, `toggle`, `beginBaseline`, `clearScope`,
-`defaultFor`) and the `isDisclosureOpenIn` selector each app's hook reads a
-subscribed snapshot through - and the doc-pane URL builders, which hang
+names neither a store library nor a parser; that triple is
+`createFrameworkFreeStore`, the base every shared store here is built on; the
+disclosure store both transcripts keep a row's open/closed choice in across a
+remount (`createDisclosureStore()`, the triple plus store-bound actions, read
+reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
