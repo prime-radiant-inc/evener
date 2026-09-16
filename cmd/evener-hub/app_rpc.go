@@ -1112,14 +1112,14 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
@@ -1129,21 +1129,21 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeySet(params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.ApiKeyClear(params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
 		resp, err := authController.CredentialJsonSet(params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
@@ -1172,54 +1172,43 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Create(params); err != nil {
-			return appwire.InstanceListResponse{}, err
+	// Every instance write answers the same way: a write that applied is
+	// announced, whether or not the step after it failed (writeDidApply), and
+	// the error still goes back to the client that asked, which is the only
+	// one that can act on what was left behind.
+	instanceWrite := func(apply func() error) (appwire.InstanceListResponse, error) {
+		err := apply()
+		if writeDidApply(err) {
+			notifyInstanceUpdated(server)
 		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Edit(params); err != nil {
-			// A rename that persisted before it failed leaves every other
-			// client's list as stale as a clean one does, so it is announced
-			// too; the error still goes back to the client that asked, which
-			// is the only one that can act on the leftover credential.
-			if _, persisted := errors.AsType[renamePersistedError](err); persisted {
-				notifyInstanceUpdated(server)
-			}
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Remove(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetDefault(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetModelDisabled(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		resp, err := instancesController.RefreshModels(ctx, params)
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		notifyInstanceUpdated(server)
+		return instancesController.List(), nil
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Create(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Edit(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Remove(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetDefault(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		resp, err := instancesController.RefreshModels(ctx, params)
+		if writeDidApply(err) {
+			notifyInstanceUpdated(server)
+		}
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
 		return resp, nil
 	})
 }
@@ -1238,14 +1227,14 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.SetLayer(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, params.Layer)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchTrustRepo(launchController, ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
 		return resp, err
@@ -1261,28 +1250,28 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.AddMarketplace(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.RemoveMarketplace(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.RefreshMarketplace(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.EditMarketplace(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			// An edit can re-key installed plugins, so both lists refresh.
 			notifyMarketplaceUpdated(server)
 			notifyPluginUpdated(server)
@@ -1300,42 +1289,42 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Install(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Upgrade(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Remove(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Enable(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Disable(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.SetAutoUpgrade(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err

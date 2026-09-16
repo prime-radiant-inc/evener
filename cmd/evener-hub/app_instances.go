@@ -877,7 +877,10 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		// so the file this call just overwrote is restored instead and the
 		// refusal names what could not load.
 		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+			// The entry this call wrote is still in the file, so the change
+			// stands and every other client's list is stale: an applied write,
+			// which the handler still broadcasts (#1543).
+			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
 		}
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return appwire.InvalidParams(fmt.Sprintf("instance %q cannot be loaded: %v", name, err))
@@ -1094,7 +1097,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 			// Everything this rename writes is already written, so it is as
 			// persisted as one that ended cleanly and is announced the same
 			// way.
-			return renamePersistedError{err}
+			return writeApplied(err)
 		}
 		return moveErr
 	}
@@ -1118,27 +1121,14 @@ func (c *hubInstancesController) credentialsUnder(name string) []string {
 	return held
 }
 
-// renamePersistedError is a rename that reached the file: providers.toml
-// carries the new name, and what is unfinished is either the credential move
-// or the reload that would refresh the hub's own view of what the move
-// changed. Every other client's instance list is stale by exactly as much as
-// it would be after a clean rename, so the RPC handler broadcasts on it and
-// still returns it, leaving the client that asked with the leftover to deal
-// with.
-type renamePersistedError struct{ err error }
-
-func (e renamePersistedError) Error() string { return e.err.Error() }
-
-func (e renamePersistedError) Unwrap() error { return e.err }
-
 // moveCredentials carries an instance's stored key and OAuth record to its
 // new name after a rename. It runs once providers.toml is written and
 // reloaded, with credMu held by the caller: the config is already renamed, so
 // a failure here is reported as what was left behind rather than undone — the
 // list stays consistent with the file, and a leftover stays reachable under
 // the old name through evener/auth/apiKey/clear or the state directory. That
-// report is a renamePersistedError, which is what tells the RPC handler the
-// rename is on disk however this call ends.
+// report is an applied write, which is what tells the RPC handler the rename
+// is on disk however this call ends.
 // Nothing it calls takes credMu, which the caller still holds.
 func (c *hubInstancesController) moveCredentials(oldName, newName string) error {
 	var problems []string
@@ -1164,7 +1154,7 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		}
 	}
 	if len(problems) > 0 {
-		return renamePersistedError{fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; "))}
+		return writeApplied(fmt.Errorf("renamed %q to %q, but: %s", oldName, newName, strings.Join(problems, "; ")))
 	}
 	return nil
 }
@@ -1295,9 +1285,12 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// once this removal is reported as standing. No reload: the failure
 			// above already left the registry on the implicit-only view a load
 			// of this file produces, and writing is what is broken, not loading.
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			// The removal stands in the file, so it is an applied write
+			// however this call ends: the other clients are still listing an
+			// instance that is gone (#1543).
+			return writeApplied(c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
-				"the entry is gone from the config")
+				"the entry is gone from the config"))
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1492,7 +1485,9 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 	}
 	if err := c.reg.Reload(); err != nil {
 		if restoreErr := c.write(before); restoreErr != nil {
-			return fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr)
+			// The layer this call wrote is still in the file, like Create's
+			// failed rollback: an applied write, still broadcast (#1543).
+			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
 		}
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
 		return appwire.InvalidParams(fmt.Sprintf("this %s would leave %q unable to load: %v", verb, name, err))

@@ -256,7 +256,7 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 	if _, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source)); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
-	return c.listMarketplaces(ctx)
+	return c.marketplaceListAfterWrite(ctx)
 }
 
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
@@ -265,7 +265,7 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
-	return c.listMarketplaces(ctx)
+	return c.marketplaceListAfterWrite(ctx)
 }
 
 // RefreshMarketplace pulls a marketplace's latest catalog and returns the
@@ -275,7 +275,7 @@ func (c *hubPluginsController) RefreshMarketplace(ctx context.Context, params ap
 	if err := c.mgr.RefreshMarketplace(ctx, params.Name); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
-	return c.listMarketplaces(ctx)
+	return c.marketplaceListAfterWrite(ctx)
 }
 
 // EditMarketplace renames a marketplace and/or replaces its source and
@@ -290,7 +290,7 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 	if _, err := c.mgr.EditMarketplace(ctx, params.Name, params.NewName, src); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
-	return c.listMarketplaces(ctx)
+	return c.marketplaceListAfterWrite(ctx)
 }
 
 // Browse returns a marketplace's plugin catalog. Like ListMarketplaces, this
@@ -348,13 +348,35 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 	return appwire.PluginListResponse{Plugins: entries}, nil
 }
 
+// pluginWriteBetween runs after a plugin or marketplace write has applied and
+// before the listing that answers it. It is the one point a test can reach to
+// break that listing: a manager whose write succeeds and whose next read fails
+// cannot be produced from outside the call. Mirrors credentialWriteBetween.
+var pluginWriteBetween = func() {}
+
+// pluginListAfterWrite and marketplaceListAfterWrite answer a write that has
+// applied. The listing is a read of what the write just did, so its failure
+// does not unapply anything: the caller is told what failed, and the error
+// says the write stands so the handler still broadcasts (#1572).
+func (c *hubPluginsController) pluginListAfterWrite(ctx context.Context) (appwire.PluginListResponse, error) {
+	pluginWriteBetween()
+	resp, err := c.listPlugins(ctx)
+	return resp, writeApplied(err)
+}
+
+func (c *hubPluginsController) marketplaceListAfterWrite(ctx context.Context) (appwire.MarketplaceListResponse, error) {
+	pluginWriteBetween()
+	resp, err := c.listMarketplaces(ctx)
+	return resp, writeApplied(err)
+}
+
 // Install installs a plugin from a marketplace's catalog and returns the
 // updated list.
 func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if _, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
 
 // Upgrade re-resolves an installed plugin against its marketplace and returns
@@ -363,7 +385,7 @@ func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.Plugi
 	if _, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
 
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)
@@ -372,7 +394,7 @@ func (c *hubPluginsController) Remove(ctx context.Context, params appwire.Plugin
 	if err := c.mgr.Remove(ctx, params.Plugin, params.Marketplace); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
 
 // Enable flips an installed plugin's enabled flag on and returns the updated
@@ -381,7 +403,7 @@ func (c *hubPluginsController) Enable(ctx context.Context, params appwire.Plugin
 	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, true); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
 
 // Disable flips an installed plugin's enabled flag off and returns the
@@ -390,7 +412,7 @@ func (c *hubPluginsController) Disable(ctx context.Context, params appwire.Plugi
 	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, false); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
 
 // SetAutoUpgrade flips an installed plugin's auto-upgrade flag and returns
@@ -399,5 +421,5 @@ func (c *hubPluginsController) SetAutoUpgrade(ctx context.Context, params appwir
 	if err := c.mgr.SetAutoUpgrade(ctx, params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
 		return appwire.PluginListResponse{}, err
 	}
-	return c.listPlugins(ctx)
+	return c.pluginListAfterWrite(ctx)
 }
