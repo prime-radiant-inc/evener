@@ -22,7 +22,6 @@
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { sessionControls } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -30,6 +29,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -513,9 +513,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
-              !sessionControls(model.status.type, model.capabilities, model.queue?.depth ?? 0).send && (
-                <SessionChrome ref={ref} placement="menu" discoverActivity />
-              )}
+              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}

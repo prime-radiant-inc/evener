@@ -2028,6 +2028,85 @@ test("stop and steer both render and both work during the window after status fl
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
 
+// A press is judged on the session's controls at the moment it lands, not on
+// the render that offered the button. Here the status frame and the press
+// share one task (no render between them), so the render-time verdict still
+// says active while the store says idle; the handler has to ask the store.
+function foldStatusFrame(fake: FakeClient, statusType: string): void {
+  fake.emitNotification({
+    method: "thread/status/changed",
+    params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: statusType } },
+  });
+  expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe(statusType);
+}
+
+test("Steer pressed after an idle frame folded in the same task is refused on the live status", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.type(textarea(), "hi");
+  const steer = steerButton();
+  foldStatusFrame(fake, "idle");
+  fireEvent.click(steer);
+  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+});
+
+test("Stop pressed after an idle frame folded in the same task is refused on the live status", async () => {
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  const stop = stopButton();
+  foldStatusFrame(fake, "idle");
+  fireEvent.click(stop);
+  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
+  expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
+});
+
+test("submit after an active frame folded in the same task routes to queue on the live status", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  for (const method of ["turn/start", "turn/queue"] as const) {
+    fake.on(method, (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thread_a",
+        projectionState: "reflected",
+      },
+    }));
+  }
+  await user.type(textarea(), "hi");
+  const submit = submitButton();
+  foldStatusFrame(fake, "active");
+  fireEvent.click(submit);
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
+});
+
 // Shift+Enter reaches the steer handler directly off the keydown event, so
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"

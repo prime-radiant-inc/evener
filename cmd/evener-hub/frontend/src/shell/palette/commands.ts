@@ -15,12 +15,12 @@ import {
   effortLabel,
   effortOptionLevels,
   NO_ACTIVE_TURN,
-  sessionControls,
   slashCommandInvocation,
   visibleCatalogCommands,
 } from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { controlsFor } from "../../stores/liveControls";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
@@ -153,12 +153,9 @@ export interface ScopedCommand extends Command {
 // (mid-turn /clear) as much as it is for a cold or foreign-source one.
 export const UNAVAILABLE_REASON = "not available right now";
 
-// The session's controls (@evener/appwire-client's submitRouting module
-// sessionControls) as the palette's availability rules: each returns the
-// reason the action is refused, or undefined.
-function controlsFor(model: ThreadModel) {
-  return sessionControls(model.status.type, model.capabilities, model.queue?.depth ?? 0);
-}
+// The session's controls (stores/liveControls.ts controlsFor, the web's one
+// derivation) as the palette's availability rules: each returns the reason
+// the action is refused, or undefined.
 const stopAvailable = (model: ThreadModel) => controlsFor(model).reason.stop;
 const steerAvailable = (model: ThreadModel) => controlsFor(model).reason.steer;
 const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;

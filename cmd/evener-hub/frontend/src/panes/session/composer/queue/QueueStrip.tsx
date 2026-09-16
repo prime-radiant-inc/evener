@@ -9,15 +9,10 @@
 // integration merge (T6), not here.
 
 import type { InputItem } from "@evener/appwire-client";
-import {
-  canonicalSkillNames,
-  errorText,
-  STEER_UNAVAILABLE,
-  sessionActionError,
-  sessionControls,
-} from "@evener/appwire-client";
+import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
+import { controlsFor, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
@@ -201,7 +196,7 @@ export function QueueStrip({
 
   // Drain and promote read the session's controls (submitRouting.ts
   // sessionControls: harness steer, and a running turn or a queue a Stop parked).
-  const controls = sessionControls(model.status.type, model.capabilities, depth);
+  const controls = controlsFor(model);
 
   const ids = queue?.ids;
   const texts = queue?.texts;
@@ -220,8 +215,11 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
-    if (!controls.drain) {
-      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
+    // Judged on the store's live controls at the press, not the render's
+    // (stores/liveControls.ts): the turn can have ended in between.
+    const refusal = pressRefusal(sessionRef, "drain");
+    if (refusal !== undefined) {
+      toasts.push("error", refusal);
       return;
     }
     setRowBusy(entryId, true);
@@ -279,8 +277,9 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    if (!controls.drain) {
-      toasts.push("error", controls.reason.drain ?? STEER_UNAVAILABLE);
+    const refusal = pressRefusal(sessionRef, "drain");
+    if (refusal !== undefined) {
+      toasts.push("error", refusal);
       return;
     }
     const { text, attachments, hasPending, skillNames } = getComposerText();

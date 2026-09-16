@@ -747,6 +747,46 @@ describe("promote", () => {
   });
 });
 
+// A press is judged on the session's controls at the moment it lands, not on
+// the render that offered the button. The status frame and the press share one
+// task here (no render between them), so the render-time verdict still says
+// active while the store says awaiting; the handler has to ask the store.
+describe("press-time controls", () => {
+  const QUEUED = { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] };
+  function foldAwaiting(fake: FakeClient): void {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("awaiting");
+  }
+
+  test("drain pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
+    applied(fake, "turn/drainAsSteer");
+    renderStrip(defaultProps());
+    const drain = await screen.findByRole("button", { name: /steer queue now/i });
+    foldAwaiting(fake);
+    fireEvent.click(drain);
+    await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
+    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+  });
+
+  test("promote pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
+    applied(fake, "turn/promoteQueuedAsSteer");
+    renderStrip(defaultProps());
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const promote = within(row).getByRole("button", { name: /steer now/i });
+    foldAwaiting(fake);
+    fireEvent.click(promote);
+    await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
+  });
+});
+
 describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
     const fake = connectFakeClient();
