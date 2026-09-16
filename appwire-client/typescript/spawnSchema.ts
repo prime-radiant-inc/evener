@@ -3,12 +3,7 @@
 // "evener/launch/schema" (LaunchOptionSchemaResponse); the collected overrides
 // go to thread/start as launchOverrides and to "evener/launch/resolve" for the
 // "show resolved config" preview.
-import type {
-  LaunchConfigLayer,
-  LaunchOption,
-  LaunchOptionSchemaResponse,
-  MCPServerSpec,
-} from "@evener/appwire-client";
+import type { LaunchConfigLayer, LaunchOption, LaunchOptionSchemaResponse, MCPServerSpec } from "./types.gen";
 
 // The per-field working value the advanced UI holds, keyed by the option's
 // wireField (the LaunchConfigLayer key). `value` is a string for scalar controls

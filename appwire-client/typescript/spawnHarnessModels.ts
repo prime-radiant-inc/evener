@@ -2,7 +2,7 @@
 // whose models the model chip + sticky-default + stale-model logic apply to
 // (kind "evener"); other harnesses (for example, kind "external") carry the
 // model through unmanaged. The generic HarnessDescriptor kind remains opaque.
-import type { HarnessDescriptor } from "@evener/appwire-client";
+import type { HarnessDescriptor } from "./types.gen";
 
 export function harnessUsesEvenerModels(harnessId: string, harnesses: HarnessDescriptor[]): boolean {
   // The default (unset) harness is evener.

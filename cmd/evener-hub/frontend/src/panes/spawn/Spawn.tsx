@@ -8,12 +8,21 @@ import {
   effortLabel,
   filterSlashMenuItems,
   friendlyLaunchErrorMessage,
+  harnessSupportsPluginSelection,
+  harnessUsesEvenerModels,
   mergeSlashCommands,
+  type PluginSelectionState,
   parseSlashToken,
+  perLaunchEvenerOptions,
+  pluginSelectionIssues,
+  reconcilePluginSelection,
+  resolveScalars,
   type SlashMenuItem,
   type SlashToken,
+  selectedPluginNames,
   slashCommandInvocation,
   spliceSlashCommand,
+  withPluginSelection,
 } from "@evener/appwire-client";
 import { type JSX, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -62,19 +71,10 @@ import {
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
-import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
-import {
-  type PluginSelectionState,
-  pluginSelectionIssues,
-  reconcilePluginSelection,
-  selectedPluginNames,
-  withPluginSelection,
-} from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
-import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
 import {
   getGlobalLastWorkingDir,
@@ -278,7 +278,7 @@ function SpawnForm({
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useDraftField(draft, "advancedOverrides");
   // The model that will actually launch: an Advanced-options override first,
-  // then the top-level chip, then the hub's resolved default (schema.ts's
+  // then the top-level chip, then the hub's resolved default (spawnSchema's
   // resolveScalars). Derived once here so the requirement check, the effort
   // ladder, and submission all judge the same value.
   const advancedModel = typeof advancedOverrides.model === "string" ? advancedOverrides.model.trim() : "";
@@ -922,7 +922,7 @@ function SpawnForm({
           // would overwrite what it actually launches with.
           //
           // And only while the top-level chip is what launches: an Advanced-
-          // options model override wins at submit (floor §1.11, schema.ts's
+          // options model override wins at submit (floor §1.11, spawnSchema's
           // resolveScalars), so with one set the chip does not launch -
           // substituting it would display a model that does not launch. The
           // override the user configured stays visible in Advanced options,
@@ -952,7 +952,7 @@ function SpawnForm({
   }, [cwd, draft, advancedOverrides, advancedModel, resolveConfig, loadModels, setModel, harness, usesEvenerModels]);
 
   // The Effort ladder belongs to the model that will actually launch, in the
-  // same precedence thread/start applies (floor §1.11, schema.ts's
+  // same precedence thread/start applies (floor §1.11, spawnSchema's
   // resolveScalars): an Advanced-options model override first, then the
   // top-level chip, then the hub's resolved default for this cwd.
   // advancedModel itself is derived above, next to the override state.

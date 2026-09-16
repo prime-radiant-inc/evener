@@ -1,10 +1,10 @@
 // The advanced launch-config panel (floor §1.11): renders the schema-driven,
 // per-launch options as design-system controls, collects them into
-// launchOverrides via schema.ts's collectAdvancedOverrides, validates path-kind
+// launchOverrides via the package's collectAdvancedOverrides, validates path-kind
 // inputs live, and previews the fully resolved config. Collapsed by default and
 // wire-free (the parent injects validatePath/resolveConfig/loadCatalog closures
 // over the appwire client). The pure collect/precedence logic is fully in
-// schema.ts.
+// the package's spawnSchema module.
 //
 // Every model-valued field here renders the SAME searchable ModelCatalog
 // picker as the top-level Model field - the modelPicker kind (model,
@@ -15,9 +15,12 @@
 // reason.
 
 import {
+  type AdvancedFieldValue,
+  type AdvancedValues,
   asEnvEntries,
   asMcpList,
   asStringList,
+  collectAdvancedOverrides,
   inheritedItems,
   type LaunchConfigLayer,
   type LaunchConfigResolved,
@@ -35,7 +38,6 @@ import { ModelCatalog } from "../../widgets/modelCatalog";
 import type { PathFieldKind } from "../../widgets/pathfield";
 import { PathField } from "../../widgets/pathfield";
 import styles from "./advancedOptions.module.css";
-import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
 
 const BOOLEAN_DEFAULT = "(default)";
 

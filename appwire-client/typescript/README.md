@@ -36,12 +36,16 @@ model catalog view helpers both apps' model pickers are built from
 row list), the launch-config engine's pure half both apps' launch settings
 are built on (option grouping, layer filtering, the form state
 populate/collect pair, the inherited entries a collection control ghosts in,
-and the add-a-path decision every path list gates on), and the doc-pane URL
-builders, which hang their hrefs off a base origin the host supplies (empty
-for a same-origin web page). The doc-pane data layer is published at the
-`./docContent` subpath as well, where `readDocFile` takes the host's
-`DocPort` - that base origin paired with a fetch: the package issues no
-request of its own and names neither an origin
+and the add-a-path decision every path list gates on), the new-session
+form's pure trio both apps' spawn surfaces share (the per-launch option
+filter and override collection with the schema-wins model/effort precedence,
+the plugin selection state and its launchOverrides merge, and the harness
+rules: which harnesses take evener models and which take a plugin
+selection), and the doc-pane URL builders, which hang their hrefs off a base
+origin the host supplies (empty for a same-origin web page). The doc-pane
+data layer is published at the `./docContent` subpath as well, where
+`readDocFile` takes the host's `DocPort` - that base origin paired with a
+fetch: the package issues no request of its own and names neither an origin
 nor a credentials policy.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar

@@ -61,6 +61,9 @@
     "taskListTime.ts",
     "launchSchema.ts",
     "launchInherited.ts",
-    "launchPathListAdd.ts"
+    "launchPathListAdd.ts",
+    "spawnSchema.ts",
+    "spawnPluginSelectionState.ts",
+    "spawnHarnessModels.ts"
   ]
 }

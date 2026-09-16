@@ -226,6 +226,9 @@ const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Ski
 assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
 assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
 client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
+assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
+assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
+assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
