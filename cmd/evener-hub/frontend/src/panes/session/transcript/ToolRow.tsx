@@ -68,6 +68,7 @@ import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../wid
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
 import { type EntityTextSegment, segmentEntityIds } from "./entitySegments";
+import { splitTrailingWord } from "./tailWord";
 import styles from "./toolcallitem.module.css";
 
 const CLASS = {
@@ -156,20 +157,6 @@ export interface ToolRowProps {
    * controlling `summaryOpen`, and a separate .bodyTrigger chevron controls
    * `expanded`. Intent-less rows are unchanged regardless. */
   onToggleSummary?: () => void;
-}
-
-/** Splits `text` into everything up to and including the whitespace before
- * its final word, and that final word - the two pieces ToolRow renders around
- * the atomic .intentTail unit that keeps the trailing chevron and the word it
- * opens on one line. A single-word (or empty) text returns ["", text].
- * Mirrors NotificationCard's own splitTrailingWord (same mechanism, same
- * edge cases); local rather than shared for the same reason that file's
- * other copies are - the two surfaces own their presentation independently. */
-function splitTrailingWord(text: string): [leading: string, trailing: string] {
-  const match = /^(.*\s)(\S+)$/.exec(text);
-  const leading = match?.[1];
-  const trailing = match?.[2];
-  return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
 }
 
 /** The atomic tail unit both glyph-bearing lines render through: the line's

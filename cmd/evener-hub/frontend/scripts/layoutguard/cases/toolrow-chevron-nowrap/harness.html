@@ -83,8 +83,10 @@ function tail(word, glyphs, glued, unitClass, textClass) {
     : `${word}${glyphs}`;
 }
 
-// splitTrailingWord, exactly as ToolRow.tsx implements it: everything up to
-// and including the whitespace before the final word, and that final word.
+// splitTrailingWord, exactly as tailWord.ts implements it (the harness cannot
+// import the module, so the copy stays local and this comment is the tie):
+// everything up to and including the whitespace before the final word, and
+// that final word.
 function splitTrailingWord(text) {
   const match = /^(.*\s)(\S+)$/.exec(text);
   return match ? [match[1], match[2]] : ["", text];
