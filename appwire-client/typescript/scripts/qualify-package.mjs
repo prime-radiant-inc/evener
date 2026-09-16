@@ -233,6 +233,9 @@ const taskRows = client.parseTaskListData([
 assert.deepEqual(taskRows.map((row) => row.id), [1, 2]);
 assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks left");
 assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
+const tasksPanel = client.createTasksPanelStore(async () => [{ id: 3, type: "verify", description: "c", prompt: "", status: "open" }]);
+tasksPanel.refresh("local:smoke", () => false).then((result) => { assert.equal(result.kind, "rows"); assert.deepEqual(tasksPanel.getState().entries.get("local:smoke").rows.map((row) => row.id), [3]); });
+assert.equal(client.classifyTasksRejection(new client.WireError("thread not found: x", -32000, { evenerErrorInfo: "sessionUnavailable" }), false).kind, "empty");
 assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
 assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
 const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Skill directories", group: "Resources", kind: "pathList" };

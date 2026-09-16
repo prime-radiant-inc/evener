@@ -83,8 +83,9 @@ export interface TasksPanelStore {
   /**
    * Loads the session's task list through the read port and publishes the
    * outcome. Overlapping calls for one ref coalesce: a call that arrives
-   * while a run is in flight marks it dirty, and the run reads once more
-   * after the current read settles instead of issuing a concurrent request.
+   * while a run is in flight marks it dirty, and the run drops the answer
+   * to the now-stale read and reads once more after it settles instead of
+   * issuing a concurrent request.
    * Resolves to the published result for the caller that started the run,
    * and to null for a caller folded into an in-flight run or whose result
    * was superseded - so exactly one caller can react (toast) to a failure.
@@ -260,7 +261,9 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
         } catch (err) {
           result = classifyTasksRejection(err, run.hasAggregate());
         }
-        published = get().publishFetch(ref, fetchID, result) ? result : null;
+        // A read a newer trigger has already made stale is not shown even
+        // briefly; the loop reads again and publishes that answer instead.
+        if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
       } while (run.dirty);
       runs.delete(ref);
       return published;

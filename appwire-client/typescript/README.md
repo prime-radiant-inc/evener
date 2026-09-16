@@ -23,7 +23,11 @@ share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
-tasks panel and native tasks sheet render from, the display formatters
+tasks panel and native tasks sheet render from, and the tasks-panel store
+both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
+coalescing `refresh` and a notification-following `watch`, over a
+`TasksListRead` port so the web's reconnect-waiting read and native's direct
+one both fit), the display formatters
 both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,

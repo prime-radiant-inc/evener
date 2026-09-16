@@ -38,7 +38,8 @@ function boundary() {
     return io.read();
   });
   const notify = (ref = "local:test", threadId = "thread") => {
-    for (const handler of handlers) handler({ method: "evener/task/updated", params: { ref, threadId, total: 1, done: 0 } });
+    for (const handler of handlers)
+      handler({ method: "evener/task/updated", params: { ref, threadId, total: 1, done: 0 } });
   };
   const entry = () => store.getState().entries.get("local:test");
   return { store, requests, io, notify, notifications, handlers, entry };
@@ -87,6 +88,8 @@ test("watch loads once, coalesces matching invalidations into one follow-up read
   const stop = store.watch(notifications, "local:test", "thread", () => true);
   expect(requests).toHaveLength(1);
   expect(entry()?.loading).toBe(true);
+  const publishedRows: Array<number[] | null> = [];
+  store.subscribe((s) => publishedRows.push(s.entries.get("local:test")?.rows?.map((item) => item.id) ?? null));
   notify("other:test");
   notify("local:test", "other-thread");
   notify();
@@ -99,6 +102,8 @@ test("watch loads once, coalesces matching invalidations into one follow-up read
   expect(requests).toHaveLength(2);
   expect(entry()?.rows?.map((item) => item.id)).toEqual([2]);
   expect(entry()?.loading).toBe(false);
+  // The answer to the read the notifications made stale was never shown.
+  expect(publishedRows).not.toContainEqual([1]);
   stop();
   expect(handlers.size).toBe(0);
   notify();
@@ -109,7 +114,8 @@ test("a thread/resync for the watched session refreshes too", async () => {
   const { store, requests, notifications, handlers, entry } = boundary();
   const stop = store.watch(notifications, "local:test", "thread", () => true);
   await vi.waitFor(() => expect(entry()?.loading).toBe(false));
-  for (const handler of handlers) handler({ method: "evener/thread/resync", params: { ref: "local:test", threadId: "thread" } });
+  for (const handler of handlers)
+    handler({ method: "evener/thread/resync", params: { ref: "local:test", threadId: "thread" } });
   expect(requests).toHaveLength(2);
   await vi.waitFor(() => expect(entry()?.loading).toBe(false));
   stop();
@@ -185,4 +191,3 @@ test("the pure classifiers and the entry transition are exposed for a caller tha
   expect(applyTasksFetchResult(loaded, { kind: "daemon-gone" })).toMatchObject({ rows: [], daemonGone: true });
   expect(applyTasksFetchResult(loaded, { kind: "unsupported" })).toMatchObject({ rows: null, unsupported: true });
 });
-

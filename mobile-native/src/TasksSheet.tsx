@@ -15,10 +15,14 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { TaskRow } from "@evener/appwire-client";
-import { absoluteTime, groupTasks } from "@evener/appwire-client";
+import {
+  absoluteTime,
+  createTasksPanelStore,
+  EMPTY_TASKS_PANEL_ENTRY,
+  groupTasks,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarkdownResponse } from "./MarkdownResponse";
-import { TaskList } from "./taskList";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const statusLabel = {
@@ -49,31 +53,35 @@ export function TasksSheet({
   const colors = useColors();
   const wasConnected = useRef(connected);
   const aggregate = useRef(hasTasks);
-  const retainedRows = useRef<TaskRow[] | null>(null);
   aggregate.current = hasTasks;
-  const list = useMemo(
+  // One store for the sheet's lifetime, reading through whichever client is
+  // current: a replacement connection after a reconnect refreshes the same
+  // entry, so the last loaded list stays on screen when that refresh fails.
+  const currentClient = useRef(client);
+  currentClient.current = client;
+  const store = useMemo(
     () =>
-      new TaskList(
-        client,
-        sessionRef,
-        threadId,
-        () => aggregate.current,
-        retainedRows.current,
+      createTasksPanelStore(
+        async (ref) =>
+          (await currentClient.current.request("evener/tasks/list", { ref }))
+            .data,
       ),
-    [client, sessionRef, threadId],
+    [],
   );
+  useEffect(
+    () => store.watch(client, sessionRef, threadId, () => aggregate.current),
+    [store, client, sessionRef, threadId],
+  );
+  const state =
+    useSyncExternalStore(store.subscribe, () =>
+      store.getState().entries.get(sessionRef),
+    ) ?? EMPTY_TASKS_PANEL_ENTRY;
   useEffect(() => {
-    list.start();
-    return () => list.dispose();
-  }, [list]);
-  const state = useSyncExternalStore(list.subscribe, list.getSnapshot);
-  useEffect(() => {
-    retainedRows.current = state.rows;
-  }, [state.rows]);
-  useEffect(() => {
-    if (connected && !wasConnected.current) void list.refresh();
+    if (connected && !wasConnected.current)
+      void store.refresh(sessionRef, () => aggregate.current);
     wasConnected.current = connected;
-  }, [connected, list]);
+  }, [connected, store, sessionRef]);
+  const error = state.failure?.sentence ?? null;
   const [settled, setSettled] = useState(false);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [prompts, setPrompts] = useState<Set<number>>(new Set());
@@ -239,14 +247,16 @@ export function TasksSheet({
                     color={colors.accent}
                   />
                 ) : null}
-                <ErrorMessage message={state.error} />
-                {state.error && state.rows ? (
+                <ErrorMessage message={error} />
+                {error && state.rows ? (
                   <Copy muted>Showing the last list that loaded.</Copy>
                 ) : null}
-                {state.error ? (
+                {error ? (
                   <Action
                     disabled={state.loading || !connected}
-                    onPress={() => void list.refresh()}
+                    onPress={() =>
+                      void store.refresh(sessionRef, () => aggregate.current)
+                    }
                   >
                     Try again
                   </Action>
@@ -261,7 +271,7 @@ export function TasksSheet({
                   <Copy muted>Tasks are not available for this session.</Copy>
                 ) : null}
                 {!state.loading &&
-                !state.error &&
+                !error &&
                 !state.unsupported &&
                 !state.daemonGone &&
                 state.rows?.length === 0 ? (

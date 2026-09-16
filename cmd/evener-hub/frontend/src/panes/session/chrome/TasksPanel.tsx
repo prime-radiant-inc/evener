@@ -73,21 +73,15 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import {
   absoluteTime,
-  errorText,
+  EMPTY_TASKS_PANEL_ENTRY,
   groupTasks,
-  isActionUnavailable,
-  isThreadNotFound,
-  parseTaskListData,
   relativeTime,
-  sessionActionError,
-  sessionActionHeadline,
   type TaskRow,
   type TaskStatus,
   taskAggregateLabel,
 } from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
-import { threadsStore } from "../../../stores/threads";
+import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
@@ -192,34 +186,6 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
   // ("4 of 7 tasks left"), so a prefix would stutter ("Tasks 4 of 7 tasks
   // left"). Bare "Tasks" remains the pre-aggregate fallback.
   return tasks ? taskAggregateLabel(tasks) : "Tasks";
-}
-
-// The one name this panel's failure goes by. Both reports of it - the toast
-// and the inline state - are built from this and from the same discriminator
-// (protocol/errors.ts), so a failed session resume takes over both or
-// neither; the panel can never say two different things about one failure.
-const LOAD_FAILURE = "Couldn't load tasks";
-
-// One failure, in the two shapes this panel needs to render it: `headline`
-// and `detail` for the EmptyState, which lays a title and a hint out in
-// separate slots, and `sentence` for the single-string cases - the toast and
-// the stale notice. A rejection carrying no text of its own leaves the
-// detail out entirely, the same way sessionActionError drops the separator.
-//
-// All three come off the same rejection through protocol/errors.ts, and the
-// toast renders `sentence` itself rather than recomputing it, so the panel's
-// reports of one failure cannot drift apart.
-interface LoadFailure {
-  headline: string;
-  detail?: string;
-  sentence: string;
-}
-
-function loadFailure(err: unknown): LoadFailure {
-  const headline = sessionActionHeadline(LOAD_FAILURE, err);
-  const sentence = sessionActionError(LOAD_FAILURE, err);
-  const detail = errorText(err).trim();
-  return detail ? { headline, detail, sentence } : { headline, sentence };
 }
 
 // Scopes a task row's disclosure state to this session: task ids restart at
@@ -479,48 +445,17 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
   // stable, module-level function underneath.
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
-    const fetchID = tasksPanelStore.getState().beginFetch(sessionRef);
-    threadsStore
-      .getState()
-      .listTasks(sessionRef)
-      .then((data) => {
-        const parsed = parseTaskListData(data);
-        tasksPanelStore
-          .getState()
-          .publishFetch(
-            sessionRef,
-            fetchID,
-            parsed === null ? { kind: "unsupported" } : { kind: "rows", rows: parsed },
-          );
-      })
-      .catch((err) => {
-        if (isActionUnavailable(err)) {
-          tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "unsupported" });
-          return;
-        }
-        if (isThreadNotFound(err)) {
-          if (model.tasks === null) {
-            // Never had a live aggregate pushed - genuinely "no tasks", not
-            // merely "can't ask any more" (see the header comment above).
-            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "empty" });
-          } else {
-            // The trigger is already on screen claiming tasks exist; rows
-            // is left untouched so a retained list survives this rejection
-            // instead of being replaced by "No tasks yet".
-            tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "daemon-gone" });
-          }
-          return;
-        }
-        // `rows` is deliberately left alone: whatever the last fetch that
-        // did resolve put there stays on screen under the stale notice.
-        // Only a panel that has never had a list renders the error state on
-        // its own, and that is exactly the `rows === null` case below.
-        const failure = loadFailure(err);
-        const accepted = tasksPanelStore.getState().publishFetch(sessionRef, fetchID, { kind: "failure", failure });
-        // A rejected (obsolete) failure must not toast either: a newer fetch
-        // already superseded this one, possibly with rows now on screen.
-        if (accepted && mountedRef.current && currentSessionRef.current === sessionRef) {
-          toasts.push("error", failure.sentence);
+    // The store classifies the outcome (unsupported / empty / daemon gone /
+    // failure - see this file's header and taskPanelState.ts) and keeps the
+    // retained rows under a failure or a gone daemon. It resolves the result
+    // only to the caller whose fetch published it: a superseded or coalesced
+    // fetch gets null, so an obsolete failure never toasts over rows a newer
+    // fetch has since put on screen.
+    void tasksPanelStore
+      .refresh(sessionRef, () => model.tasks !== null)
+      .then((result) => {
+        if (result?.kind === "failure" && mountedRef.current && currentSessionRef.current === sessionRef) {
+          toasts.push("error", result.failure.sentence);
         }
       });
   }, [model.tasks, sessionRef, reloads]);
