@@ -6516,13 +6516,22 @@ test("a remote host submission is not blocked by controller-local plugin issues"
   });
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
 
-  // The same controller-local issue must not gate a remote launch.
+  // The same controller-local issue must not gate a remote launch. Re-pinned to
+  // component 07b's host-catalog gate: a host switch first asks the new host for
+  // its harnesses/schema and Start stays blocked until those answers settle, so
+  // each verdict below is read once the selected host's discovery has landed
+  // (that window is pinned by the sibling "Start is blocked only until the
+  // selected host's catalog answers settle" test - not by these assertions).
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  // Drain the local host's own catalog round-trip first: while it is in flight
+  // Start is blocked by that window, not by the controller-local plugin issue
+  // this assertion is about.
+  await settled();
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
   await user.type(promptField(), "run remotely");
   await user.click(screen.getByTestId("spawn-submit"));
@@ -7521,6 +7530,32 @@ const REMOTE_SOURCES: NavigationManifest["sources"] = [
   { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
 ];
 
+// buildbox's own credentialed provider instance, the same shape readyClient
+// gives the controller. answerRemoteHost's default is an EMPTY registry (what the
+// provider-setup tests want: "configure one on that host to use a model"), so a
+// host that is launch-ready has to say so itself - otherwise providerRequired
+// holds Start disabled and nothing can be submitted.
+const REMOTE_CREDENTIALED_INSTANCE = {
+  name: "anthropic",
+  providerId: "anthropic",
+  protocol: "anthropic",
+  auth: "bearer",
+  implicit: false,
+  isDefault: true,
+  activeSource: "store",
+  hasStoredOAuth: false,
+  credentialRequired: true,
+};
+
+function readyRemoteHost(fake: FakeClient, overrides: Record<string, unknown> = {}): void {
+  answerRemoteHost(fake, {
+    overrides: {
+      "evener/instance/list": { instances: [REMOTE_CREDENTIALED_INSTANCE], availableProviders: [] },
+      ...overrides,
+    },
+  });
+}
+
 // A remote host's catalog describes only that host. The controller's persisted
 // spawn defaults are controller-scoped: sweeping them against another machine's
 // model list would permanently delete models the controller still offers, and
@@ -7741,4 +7776,142 @@ test("switching hosts with the same directory drops the previous host's default-
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
 
   await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+});
+
+// The draft's launch config is chosen from the SELECTED host's catalogs, and the
+// draft store carries it across a host switch. Left alone, a harness that exists
+// only on the host that produced it still rides thread/start - and the form
+// cannot even show the mismatch, because an empty harness catalog renders the
+// "evener" fallback label. buildbox offers only "evener".
+test("switching to a host that does not offer the draft's harness drops it from the launch", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => readyRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-harness");
+  setDraftField(draft, "harness", "external");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-harness");
+  renderSpawn(fake);
+  await settled();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  // The controller offered "external"; buildbox does not, so the draft's
+  // selection drops back to the host's own default.
+  await waitFor(() => expect(draft.fields.getState().harness).toBe(""));
+
+  // And the launch carries no harness: the host resolves its own default rather
+  // than being handed a harness only the controller has.
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const started = fake.calls.find((entry) => entry.method === "thread/start");
+  expect(started?.params).toMatchObject({ model: "openai/gpt-4o" });
+  expect(started?.params).not.toHaveProperty("harness");
+});
+
+// The same defect class for Advanced options: the override map is keyed by the
+// schema field names the selected host exposes, and an empty schema renders no
+// Advanced fields at all - so a stale override would ride thread/start with
+// nothing on screen to account for it.
+test("switching to a host whose schema lacks the draft's advanced options drops them", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const controllerOption: LaunchOption = {
+    field: "agent",
+    wireField: "agent",
+    label: "Agent",
+    group: "general",
+    kind: "text",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({ options: [controllerOption] }));
+    // buildbox's own schema (answerRemoteHost) exposes nothing.
+    readyRemoteHost(f);
+  });
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-schema");
+  setDraftField(draft, "advancedOverrides", { agent: "controller-agent" });
+  setDraftField(draft, "advancedValues", { agent: { value: "controller-agent" } });
+  window.history.pushState({}, "", "/new?dir=/tmp/host-schema");
+  renderSpawn(fake);
+  await settled();
+  expect(draft.fields.getState().advancedOverrides).toEqual({ agent: "controller-agent" });
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+
+  await waitFor(() => expect(draft.fields.getState().advancedOverrides).toEqual({}));
+  expect(draft.fields.getState().advancedValues).toEqual({});
+});
+
+// Until the SELECTED host's catalogs answer, the form has no authority about
+// what that host offers - and the draft's launch config has not been reconciled
+// against them. A submit through that window could carry a value the host does
+// not have, so Start is blocked until the answers land (either way: an empty
+// catalog is an answer, so a host that refuses one can never hold Start
+// hostage).
+test("Start is blocked only until the selected host's catalog answers settle", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  let releaseHarnesses!: (result: HostForwardedResult) => void;
+  const fake = readyClient((f) =>
+    readyRemoteHost(f, {
+      "evener/harnesses/list": new Promise<HostForwardedResult>((resolve) => {
+        releaseHarnesses = resolve;
+      }),
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  // A chosen model keeps modelRequired out of the picture, so the only thing
+  // that can disable Start here is the catalog block itself (buildbox's
+  // evener/launch/resolve reports no default model).
+  const draft = selectSpawnDirectory("/tmp/host-pending");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-pending");
+  renderSpawn(fake);
+  await settled();
+  // Nothing about the controller's own catalogs is pending.
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await settled();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  act(() => releaseHarnesses({ data: [{ id: "evener", label: "evener", kind: "evener" }] }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+});
+
+// The persisted defaults a submit writes are controller-scoped localStorage. A
+// remote launch's cwd and model belong to the selected host, so a later LOCAL
+// spawn must not inherit them - while the remote project's own per-cwd layer is
+// still remembered.
+test("a remote submit never writes the controller's global spawn defaults", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => readyRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/remote-submit");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/srv/remote-submit");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const started = fake.calls.find((entry) => entry.method === "thread/start");
+  expect(started?.params).toMatchObject({ source: "buildbox" });
+
+  // Re-pinned to main's landed round-eight rule: the blob is keyed by the cwd
+  // alone, and that path is often also a local checkout, so the selected host's
+  // own model is never written into it - and with the model as this draft's only
+  // per-cwd value, no blob is written at all. (The host-generic half that IS
+  // still remembered is pinned by spawnDefaults.test.ts's round-eight/nine
+  // tests.) The controller-wide scalars a local Spawn reads are untouched.
+  expect(localStorage.getItem("evener-hub.spawn-defaults./srv/remote-submit")).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBeNull();
 });
