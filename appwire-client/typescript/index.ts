@@ -110,6 +110,7 @@ export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
   ItemImage,
