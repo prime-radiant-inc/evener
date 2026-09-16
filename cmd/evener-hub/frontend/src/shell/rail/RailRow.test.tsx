@@ -228,6 +228,13 @@ function apiProject(overrides: Partial<RailProject> = {}): RailProject {
   };
 }
 
+/** A project summary stamped with the owning sources the navigation read model
+ * carries (component 06a's field; RailProject's own interface on this branch
+ * predates it, so the row reads it structurally). */
+function withSources(project: RailProject, sources: string[]): RailProject {
+  return { ...project, sources } as RailProject;
+}
+
 function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
   return { id: session.row_id, kind: "session", session, expanded: false, children: [], ...overrides };
 }
@@ -2116,6 +2123,66 @@ describe("project row", () => {
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
+  });
+
+  // Deletion is local-only (cmd/evener-hub/project_delete.go refuses any
+  // non-local or unknown source), so a row a remote host also owns must not
+  // offer the item: a source-less request addresses THIS hub's own project of
+  // the same ID or path, which is a different project. Component 06a's
+  // round-six finding left this rail half here (round ten).
+  test("menu omits 'Delete project…' for a project row a remote host also owns", async () => {
+    const acts = actions();
+    const project = apiProject({
+      sessions: [
+        apiNode({ row_id: "project:p1:local:a" }),
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "Delete project…" })).toBeNull();
+    // The rest of the project menu is untouched - and the row is still a
+    // project row with its own actions.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+    expect(acts.onDeleteProjectRequest).not.toHaveBeenCalled();
+  });
+
+  test("menu omits 'Delete project…' for a remote-only project row", async () => {
+    const project = apiProject({
+      sessions: [
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "Delete project…" })).toBeNull();
+  });
+
+  // The other reading of the same verdict: the navigation summary's own owning
+  // sources, which a controller-only project omits. RailProject's interface on
+  // this branch predates that field (component 06a's read model), so the test
+  // stamps it the way the wire will.
+  test("menu omits 'Delete project…' when the summary names a remote owner", async () => {
+    const project = withSources(apiProject(), ["local", "buildbox"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "Delete project…" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' when the summary names only this controller as an owner", async () => {
+    const project = withSources(apiProject(), ["local"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' for a project row only this controller owns", async () => {
+    const project = apiProject({ sessions: [apiNode({ row_id: "project:p1:local:a" })] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
   });
 
   test("a childless project renders no chevron; a parent project's chevron trails its name", () => {

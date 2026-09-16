@@ -7080,3 +7080,170 @@ test("the host picker keeps its host while the manifest revalidates", async () =
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params.source).toBe("buildbox");
 });
+
+// --- remote target: target-mode changes (Component 06b, round ten) -----------
+
+// The stale-model sweep judges a draft's model against THIS controller's
+// model/list. A remote launch runs on the selected source's own hub, which
+// resolves its own model, so a model this catalog does not list can be
+// perfectly valid there - and the sweep must not erase it. The target mode is
+// re-read when the response lands, so a draft that switches hosts while the
+// request is in flight (the sequence below) is not judged by the run it
+// started as local. The local half is unchanged and stays pinned by the
+// existing sweep tests above.
+test("a remote target keeps the draft's model this controller's catalog calls stale", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-stale-model");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/remote-stale-model",
+    JSON.stringify({ model: "openai/retired" }),
+  );
+  const global = deferred<ModelListResponse>();
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) =>
+      harness === "evener" && cwd === undefined ? global.promise : { data: [{ provider: "openai", model: "gpt-5" }] },
+    ),
+  );
+  renderSpawn(fake);
+  await settled();
+  // The sticky model is in the draft, and the controller's global catalog - the
+  // one whose verdict sweeps a local draft - has not answered yet.
+  expect(modelValue().textContent).toContain("openai/retired");
+
+  // The draft moves to the remote host while that request is in flight.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => global.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+
+  // The catalog's verdict is a fact about THIS controller, so it neither
+  // removes the model nor claims it was discarded for a host's launch.
+  expect(modelValue().textContent).toContain("openai/retired");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+
+  // A remote launch forwards the model for the selected host to resolve.
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.model).toBe("openai/retired");
+});
+
+// The same skip applies to a draft that is ALREADY on a remote host when a
+// fresh catalog lands (a remount, or a provider refresh under a remote draft):
+// nothing is registered to sweep it at all. The first mount parks its own
+// request so the model is still in the draft, and the remount's request - the
+// registration the fix has to refuse - answers immediately.
+test("a draft already on a remote host is never swept by the controller's catalog", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-remount-model");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/remote-remount-model",
+    JSON.stringify({ model: "openai/retired" }),
+  );
+  const parked = deferred<ModelListResponse>();
+  let globalRequests = 0;
+  const fake = readyClient((f) =>
+    f.on("model/list", ({ harness, cwd }) => {
+      if (harness !== "evener" || cwd !== undefined) return { data: [{ provider: "openai", model: "gpt-5" }] };
+      globalRequests += 1;
+      return globalRequests === 1 ? parked.promise : { data: [{ provider: "openai", model: "gpt-5" }] };
+    }),
+  );
+  const mounted = renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await act(async () => parked.resolve({ data: [{ provider: "openai", model: "gpt-5" }] }));
+  expect(modelValue().textContent).toContain("openai/retired");
+
+  // Remount: the draft (and its host) persist, so the fresh mount's own
+  // catalog request resolves under a remote target from its first render.
+  mounted.unmount();
+  renderSpawn(fake);
+  await settled();
+  await act(async () => {});
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(globalRequests).toBe(2);
+  expect(modelValue().textContent).toContain("openai/retired");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+});
+
+// A path-kind field's `invalid` flag (and its message) records what THIS
+// controller could see at the moment the value changed, and
+// collectAdvancedOverrides drops a flagged field from launchOverrides. Moving
+// the Host picker to a remote source changes who judges the path - the host
+// does, at start - but nothing re-validated the stored value, so a remote-only
+// path typed while local stayed dropped and kept showing the controller's
+// stale error. The mode change re-validates the stored value (round ten).
+test("a path marked invalid while local reaches the launch after switching host without re-typing", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-switch-path");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  // Local: the controller's verdict marks the field invalid, shows the reason,
+  // and excludes the value from the launch.
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+
+  // The Host picker moves to the remote source WITHOUT re-typing the value.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect(screen.queryByText("no such file or directory")).toBeNull());
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("host-only-agent");
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
+      agent: "host-only-agent",
+    }),
+  );
+
+  // Back to local, the controller is the judge again: the same stored value is
+  // re-marked and dropped rather than left silently flagged or silently kept.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-switch-path").fields.getState().advancedOverrides).toEqual({
+      agent: "host-only-agent",
+    }),
+  );
+
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.launchOverrides).toMatchObject({ agent: "host-only-agent" });
+});

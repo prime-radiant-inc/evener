@@ -1603,9 +1603,11 @@ describe("resource-backed Rail", () => {
     navigationStore.setState({ applyNavigationMutation });
     const client = new FakeClient();
     client.on("evener/archive/set", (params) => {
-      // The canonical ref, not the bare session ID: a remote row's archive
-      // decision is read back under its host-qualified ref, and "local:a"
-      // normalizes server-side to the bare ID local decisions already use.
+      // The canonical session ref, not the bare session_id (round ten, on
+      // component 06a's round-six finding): a remote row's decision lands under
+      // the host-qualified identity its read path consults, and a "local:<id>"
+      // ref normalizes back to the bare ID server-side, so this local row's
+      // decision is the same one it always was.
       expect(params).toEqual({ kind: "session", id: "local:a", archived: true });
       return {
         ok: true,
@@ -1622,6 +1624,33 @@ describe("resource-backed Rail", () => {
     resolveConvergence();
     await act(async () => undefined);
     expect(screen.getByText("Archivable")).toBeTruthy();
+  });
+  // Component 06a's round-six finding (its rail half is this component's): the
+  // archive mutation addressed the bare session_id, so a REMOTE row's decision
+  // landed on an identity nothing consults - the row is read under its
+  // host-qualified ref. The row menu now sends that canonical ref.
+  test("a remote row's archive addresses the host-qualified ref its decision is read under", async () => {
+    installState([
+      sectionResource("live", [
+        summary({ ref: "buildbox:t1", host_id: "buildbox", session_id: "t1", title: "Remote row" }),
+      ]),
+    ]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn(() => Promise.resolve()) });
+    const archiveParams: unknown[] = [];
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      archiveParams.push(params);
+      return {
+        ok: true,
+        navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
+      };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for remote row/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await act(async () => undefined);
+    expect(archiveParams).toEqual([{ kind: "session", id: "buildbox:t1", archived: true }]);
   });
   test("rolls back a rejected AppWire archive and leaves the row visible with an error toast", async () => {
     installState([sectionResource("live", [summary({ title: "Rejectable" })])]);

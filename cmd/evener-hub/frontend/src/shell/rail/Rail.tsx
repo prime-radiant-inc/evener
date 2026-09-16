@@ -1320,10 +1320,11 @@ function NavigationRail({
       onToggleArchiveSession: (session) => {
         const archiving = session.tier !== "archived";
         return runAction(
-          // The canonical ref, not the bare session ID: a remote row's ref is
-          // host-qualified and is the identity its archive decision is read
-          // back under, while "local:<id>" refs normalize server-side to the
-          // bare ID local decisions already use.
+          // The canonical ref, not the bare session ID (component 06a's round
+          // six left this half to the rail): a remote row's ref is the
+          // host-qualified identity its archive decision is read back under,
+          // while "local:<id>" refs still normalize to the bare local ID
+          // server-side, so every local decision is unchanged.
           () => setArchived("session", session.ref, archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,

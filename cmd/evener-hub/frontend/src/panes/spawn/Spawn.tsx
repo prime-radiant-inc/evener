@@ -4,7 +4,9 @@
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
+  type AdvancedValues,
   basename,
+  collectAdvancedOverrides,
   effortLabel,
   filterSlashMenuItems,
   findBuiltinArgument,
@@ -13,12 +15,14 @@ import {
   harnessUsesEvenerModels,
   matchBuiltinInvocation,
   mergeSlashCommands,
+  type PathValidation,
   type PluginSelectionState,
   parseSlashToken,
   perLaunchEvenerOptions,
   pluginSelectionIssues,
   reconcilePluginSelection,
   resolveScalars,
+  schemaPathKind,
   type SlashMenuItem,
   type SlashToken,
   selectedPluginNames,
@@ -655,6 +659,11 @@ function SpawnForm({
   // remote hub's own thread/start error is the authority. (Source-aware
   // discovery needs the evener/host/request proxy, which is not in this branch.)
   const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
+  // The live target mode, for async callbacks that outlive the render they were
+  // registered in: a request started while this draft was local must not act
+  // once the picker has moved it to a remote host (round ten), and vice versa.
+  const remoteLaunchRef = useRef(remoteLaunch);
+  remoteLaunchRef.current = remoteLaunch;
   // The selected target's own label for the disclosure below; falls back to the
   // raw source id only while no manifest has ever named the host (the display
   // view keeps the label across a revalidation, when the settled list is empty).
@@ -782,7 +791,7 @@ function SpawnForm({
   // completing a REMOTE path's children - needs the evener/host/request proxy,
   // absent from this branch.)
   const validatePath = useCallback(
-    (path: string, kind: string) => {
+    (path: string, kind: string): Promise<PathValidation> => {
       if (remoteLaunch) return Promise.resolve({ valid: true, path });
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
@@ -808,6 +817,80 @@ function SpawnForm({
     },
     [client, remoteLaunch, remoteSourceLabel, toasts],
   );
+  // A path-kind value's verdict belongs to the TARGET it was judged for, but
+  // the record the advanced panel keeps carries no target with it: `invalid`
+  // in advancedValues (and its message in advancedErrors) says "the controller
+  // cannot see this path", which is a fact about THIS host only. Because the
+  // verdict is made at the moment the field's value changes, a later switch of
+  // the Host picker leaves it asserting a fact about the wrong host: a path
+  // typed while local stays marked "no such file or directory" after a remote
+  // source is selected, so collectAdvancedOverrides (schema.ts:41) keeps
+  // dropping it from launchOverrides even though the disclosure below says the
+  // selected host resolves these paths (round ten). Re-validate the stored
+  // values whenever the target mode changes - the first run counts, so a
+  // remount under a remote target clears a flag a local era left behind - so
+  // the flag, the message and the collected overrides always describe the
+  // CURRENT target: to remote it is the host's business (validatePath's own
+  // short-circuit: valid, no reason to show), and a switch back to local asks
+  // this controller again, so a path this host really cannot see is dropped
+  // only while this host is the judge. The write is the same one the panel's
+  // own updateScalar makes (values + errors + the collected overrides), so a
+  // field the reader is looking at updates in place.
+  const pathValidationMode = useRef<boolean | null>(null);
+  useEffect(() => {
+    const previous = pathValidationMode.current;
+    pathValidationMode.current = remoteLaunch;
+    const modeChanged = previous !== remoteLaunch;
+    // A pass that is not a mode change still matters for a remote target: the
+    // verdict there is one this controller can state without asking anyone
+    // (validatePath short-circuits before the wire), so a flag the local era
+    // left on a draft the schema is only now revealing - or on a draft this
+    // pane switched to - is retired as soon as it becomes visible. A local
+    // pass must ask the controller, and only a mode change makes that
+    // necessary; it is skipped otherwise.
+    if (!modeChanged && !remoteLaunch) return;
+    const stored = readAdvancedValues();
+    const storedErrors = draft.fields.getState().advancedErrors;
+    for (const option of schemaOptions) {
+      if (!option.pathKind) continue;
+      const field = stored[option.wireField];
+      if (!field) continue;
+      const value = field.value;
+      if (typeof value !== "string" || value.trim() === "") continue;
+      // Nothing for a later pass to retire: the record already reads as the
+      // remote target's (no flag, no message), so it is left alone.
+      if (!modeChanged && field.invalid !== true && (storedErrors[option.wireField] ?? "") === "") continue;
+      validatePath(value, schemaPathKind(option.pathKind)).then(
+        (result) => {
+          // A later edit owns this field now, even if it returned to the same
+          // text - and a second mode change owns the verdict: its own run has
+          // already re-stamped the mode this one was registered under, so this
+          // response no longer describes the target in front of the reader.
+          if (pathValidationMode.current !== remoteLaunch) return;
+          const current = readAdvancedValues();
+          if (current[option.wireField] !== field) return;
+          const next: AdvancedValues = { ...current, [option.wireField]: { value, invalid: !result.valid } };
+          setAdvancedValues(next);
+          setAdvancedOverrides(collectAdvancedOverrides(schemaOptions, next));
+          setAdvancedErrors((prev) => ({
+            ...prev,
+            [option.wireField]: result.valid ? "" : (result.error ?? "invalid path"),
+          }));
+        },
+        // A failing validator never blocks (fail-open), matching the panel.
+        () => {},
+      );
+    }
+  }, [
+    draft,
+    remoteLaunch,
+    schemaOptions,
+    validatePath,
+    readAdvancedValues,
+    setAdvancedValues,
+    setAdvancedOverrides,
+    setAdvancedErrors,
+  ]);
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
       client.request("evener/launch/resolve", {
@@ -914,12 +997,22 @@ function SpawnForm({
   // Validate each entered draft independently of storage: an earlier sweep may
   // already have deleted its saved model while the live draft still retains it.
   // Navigation does not cancel origin-owned validation; provider refresh does.
+  //
+  // A REMOTE target is not judged by this catalog at all (round ten, matching
+  // the round-seven default-model fallback above): the launch runs on the
+  // selected source's own hub, which resolves its own model, and a model that
+  // is valid there can be one this controller's model/list does not list. So
+  // the sweep is skipped for a remote target - and the target mode is
+  // re-checked when the response lands, because a draft that switches hosts
+  // while the request is in flight still has that request registered against
+  // it. Local targets keep every check unchanged.
   useEffect(() => {
-    if (!globalModelRequest || !usesEvenerModels) return;
+    if (!globalModelRequest || !usesEvenerModels || remoteLaunch) return;
     const initial = draft.fields.getState();
     if (!initial.model) return;
     globalModelRequest.promise.then(
       (r) => {
+        if (remoteLaunchRef.current) return;
         const current = draft.fields.getState();
         if (!globalModelRequest.active || current.model !== initial.model || current.harness !== initial.harness)
           return;
@@ -930,7 +1023,7 @@ function SpawnForm({
       },
       () => {},
     );
-  }, [draft, globalModelRequest, usesEvenerModels]);
+  }, [draft, globalModelRequest, usesEvenerModels, remoteLaunch]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
   // same model/list catalog the pickers load on demand. Reloads with the

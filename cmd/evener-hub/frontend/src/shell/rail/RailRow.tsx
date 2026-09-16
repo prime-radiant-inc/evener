@@ -388,6 +388,29 @@ function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
+// Whether this project row is owned by a remote host as well as (or instead
+// of) this controller. Deletion is LOCAL-ONLY: cmd/evener-hub/project_delete.go
+// refuses any non-local or unknown source, so a row a remote host owns must
+// not offer the item at all - a source-less request would address THIS hub's
+// own project of the same ID or path, which is a different project.
+// Component 06a's round-six finding left that half to the rail.
+//
+// Two readings of ownership, unioned because either one settles it: the row's
+// own sessions, each of which names the host it belongs to (the signal this
+// tree carries today), and the summary's own `sources` - the field the
+// navigation read model carries alongside its summary shape, omitted for a
+// controller-only project, which RailProject's own interface does not declare
+// on this branch yet and so is read structurally.
+function ownedByRemoteHost(project: RailProject): boolean {
+  const sources = (project as { sources?: unknown }).sources;
+  if (
+    Array.isArray(sources) &&
+    sources.some((source) => typeof source === "string" && source.trim() !== "" && source.trim() !== "local")
+  )
+    return true;
+  return project.sessions.some((session) => session.host_id !== "" && session.host_id !== "local");
+}
+
 function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
@@ -406,11 +429,17 @@ function projectMenuItems(project: RailProject, actions: RailRowActions): MenuIt
       label: project.is_archived ? "Unarchive project" : "Archive project",
       onSelect: () => actions.onToggleArchiveProject(project),
     },
-    {
-      id: "delete",
-      label: "Delete project…",
-      onSelect: () => actions.onDeleteProjectRequest(project),
-    },
+    // Offered only where the request can actually address the row: a
+    // controller-only project keeps it, a merged or remote-only row does not.
+    ...(ownedByRemoteHost(project)
+      ? []
+      : [
+          {
+            id: "delete",
+            label: "Delete project…",
+            onSelect: () => actions.onDeleteProjectRequest(project),
+          },
+        ]),
   ];
 }
 
@@ -961,8 +990,9 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   const nextProject = next.node.project;
   // Keep this list in lockstep with ProjectRow, projectMenuItems, and
   // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
-  // presentation or action inputs, so they deliberately do not cross this
-  // memo boundary.
+  // presentation or action inputs, so they deliberately do not cross this memo
+  // boundary; the ownership verdict below is the one thing derived from them,
+  // compared as a verdict rather than as the lists it is read from.
   return (
     previous.node.id === next.node.id &&
     previous.node.displayName === next.node.displayName &&
@@ -974,7 +1004,12 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
     previousProject.rollup_state === nextProject.rollup_state &&
     previousProject.rollup_attn === nextProject.rollup_attn &&
     previousProject.favorite === nextProject.favorite &&
-    previousProject.is_archived === nextProject.is_archived
+    previousProject.is_archived === nextProject.is_archived &&
+    // The project menu reads remote ownership from the row (see
+    // ownedByRemoteHost): the item list changes only when that verdict does, so
+    // an unrelated descendant rebuild still leaves the row alone - and a
+    // rebuilt session list that turns the row remote does not.
+    ownedByRemoteHost(previousProject) === ownedByRemoteHost(nextProject)
   );
 }
 
