@@ -828,6 +828,86 @@ func TestEstimateMessagesInputTokensForResolved_ChatRowDoesNotApplyTheRowsImageD
 	}
 }
 
+// The chat builder strips a tool-result image unless the row declares
+// MultimodalToolResults (chatcompletions/messages.go), so nothing about the image
+// reaches the wire and the estimate must not bill one: overcounting fails the
+// budget early and compacts a request the provider would have taken. The
+// Anthropic and Responses builders emit the image regardless of the cap, so only
+// a row whose adapter actually drops it changes the count.
+func TestEstimateMessagesInputTokensForResolved_BillsToolResultImagesOnlyWhenTheyRide(t *testing.T) {
+	toolResult := func(withImage bool) []Message {
+		result := &ToolResultData{ToolCallID: "call1", Name: "screenshot", Content: "ok"}
+		if withImage {
+			result.ImageData, result.ImageMediaType = testPNG1024(), "image/png"
+		}
+		return []Message{{Role: RoleTool, Content: []ContentPart{{Kind: ContentToolResult, ToolResult: result}}}}
+	}
+	// The image's own cost, priced by the row's image rule on an ordinary content
+	// part, is what a riding tool-result image must add.
+	imageCost := func(row registry.Resolved) int {
+		plain := []Message{{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{Data: testPNG1024(), MediaType: "image/png"}},
+		}}}
+		return EstimateMessagesInputTokensForResolved(row, plain).Tokens
+	}
+	textOnly := func(row registry.Resolved) int {
+		return EstimateMessagesInputTokensForResolved(row, toolResult(false)).Tokens
+	}
+
+	declared, undeclared := true, false
+	chat := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: registry.ProtocolOpenAIChat}
+	withCap, withoutCap := chat, chat
+	withCap.Caps = registry.Caps{MultimodalToolResults: &declared}
+	withoutCap.Caps = registry.Caps{MultimodalToolResults: &undeclared}
+
+	if got, want := EstimateMessagesInputTokensForResolved(withoutCap, toolResult(true)).Tokens, textOnly(withoutCap); got != want {
+		t.Fatalf("undeclared-cap chat tool-result image = %d, want the text-only estimate %d: the builder strips the image", got, want)
+	}
+	if got, want := EstimateMessagesInputTokensForResolved(withCap, toolResult(true)).Tokens, textOnly(withCap)+imageCost(withCap); got != want {
+		t.Fatalf("declared-cap chat tool-result image = %d, want %d: the declared cap keeps the image on the wire", got, want)
+	}
+	for _, protocol := range []string{registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses} {
+		row := registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: protocol}
+		if got, want := EstimateMessagesInputTokensForResolved(row, toolResult(true)).Tokens, textOnly(row)+imageCost(row); got != want {
+			t.Fatalf("%s tool-result image = %d, want %d: the adapter emits it regardless of the cap", protocol, got, want)
+		}
+	}
+	if got := EstimateMessagesInputTokens(toolResult(true)).Tokens; got <= EstimateMessagesInputTokens(toolResult(false)).Tokens {
+		t.Fatalf("name-based tool-result image = %d, want more than the text-only estimate: names carry no cap to read", got)
+	}
+}
+
+// A low-detail image costs a fixed 85 tokens: OpenAI never reads its dimensions,
+// so an image whose dimensions cannot be decoded locally (a remote URL) is still
+// estimable when the detail that rides the wire is low. The undecoded fallback
+// here would fail the budget on a request the provider bills at 85 tokens.
+func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetailWithoutDimensions(t *testing.T) {
+	low := "low"
+	const url = "https://images.test/cat.png"
+	remote := func(detail string) []Message {
+		return []Message{{Role: RoleUser, Content: []ContentPart{
+			{Kind: ContentImage, Image: &ImageData{URL: url, MediaType: "image/png", Detail: detail}},
+		}}}
+	}
+	row := func(protocol string, detail *string) registry.Resolved {
+		return registry.Resolved{Instance: "gateway", ModelID: "gpt-4o", Protocol: protocol, Caps: registry.Caps{ImageDetail: detail}}
+	}
+	fallback := fallbackMediaTokens + len(url)/4 + len("image/png")/4
+
+	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIResponses, &low), remote("")).Tokens; got != 85 {
+		t.Fatalf("low-detail row remote image = %d, want the fixed low-detail cost 85", got)
+	}
+	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIResponses, nil), remote("")).Tokens; got != fallback {
+		t.Fatalf("row without a configured detail = %d, want the undecoded fallback %d", got, fallback)
+	}
+	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIResponses, nil), remote("low")).Tokens; got != 85 {
+		t.Fatalf("image's own low detail = %d, want 85: both builders send the image's own detail", got)
+	}
+	if got := EstimateMessagesInputTokensForResolved(row(registry.ProtocolOpenAIChat, &low), remote("")).Tokens; got != fallback {
+		t.Fatalf("chat row remote image = %d, want the undecoded fallback %d: the chat builder never injects the row's detail", got, fallback)
+	}
+}
+
 // A resolved row knows which adapter will build the request, so every thinking
 // shape is billed by what that adapter puts on the wire:
 //

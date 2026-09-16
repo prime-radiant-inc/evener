@@ -232,7 +232,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			if p.ToolResult != nil {
 				chars += len(p.ToolResult.ToolCallID)
 				chars += len(p.ToolResult.Name)
-				if len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "" {
+				if !t.dropsToolResultImages && (len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "") {
 					tokens += estimateImageTokens(t, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
 				}
 				switch x := p.ToolResult.Content.(type) {
@@ -410,8 +410,11 @@ type targetInfo struct {
 	// reasoningOff marks a row that declares reasoning = false: the chat adapter
 	// keeps the reasoning fields and the reasoning_details array off the wire
 	// (chatcompletions/messages.go).
-	reasoningOff     bool
-	unsignedThinking bool
+	reasoningOff bool
+	// dropsToolResultImages marks a resolved row whose adapter leaves a
+	// tool-result image off the wire entirely (dropsToolResultImages).
+	dropsToolResultImages bool
+	unsignedThinking      bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A
@@ -540,9 +543,28 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		provider: provider, model: model,
 		protocol: res.Protocol, surface: res.Surface, family: res.Model.Family,
 		resolved: true, providerFromCaller: providerFromCaller,
-		imageDetail:      registry.StringValue(res.Caps.ImageDetail),
-		reasoningOff:     res.Caps.ReasoningDisabled(),
-		unsignedThinking: unsignedThinkingReplayed(res, fallbackProvider, model),
+		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
+		reasoningOff:          res.Caps.ReasoningDisabled(),
+		dropsToolResultImages: dropsToolResultImages(res),
+		unsignedThinking:      unsignedThinkingReplayed(res, fallbackProvider, model),
+	}
+}
+
+// dropsToolResultImages reports whether the resolved row's adapter leaves a
+// tool-result image off the wire. The Anthropic and Responses builders always
+// emit one, cap or no cap. The chat builder strips the image when the row does
+// not declare MultimodalToolResults (chatcompletions/messages.go), and the
+// Google builder refuses such a request outright (google/request.go) -- either
+// way the wire carries nothing of the image, so the estimate must not bill one.
+func dropsToolResultImages(res registry.Resolved) bool {
+	if registry.BoolValue(res.Caps.MultimodalToolResults) {
+		return false
+	}
+	switch res.Protocol {
+	case registry.ProtocolOpenAIChat, registry.ProtocolGoogle:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -617,19 +639,20 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	if img == nil {
 		return 0
 	}
+	family := t.mediaFamily()
+	detail := effectiveImageDetail(t, img)
+	if family == "openai" && strings.EqualFold(strings.TrimSpace(detail), "low") {
+		// OpenAI bills a low-detail image a fixed 85 tokens without reading its
+		// dimensions, so an image whose dimensions cannot be decoded locally (a
+		// remote URL) is still estimable -- and exactly -- when the detail that
+		// rides the wire is low. The undecoded fallback below would overbill it.
+		return 85
+	}
 	width, height, ok := imageDimensions(img)
 	if !ok {
 		return fallbackMediaTokens + len(img.URL)/4 + len(img.MediaType)/4 + len(img.Detail)/4
 	}
-	detail := img.Detail
-	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
-		// Only the Responses builder injects the row's configured detail (and a
-		// "high" default when the row sets none); the chat builder sends the
-		// image's own detail or nothing at all (chatcompletions/messages.go), so
-		// a chat row's image_detail never reaches the wire.
-		detail = t.imageDetail
-	}
-	switch t.mediaFamily() {
+	switch family {
 	case "google":
 		return estimateGoogleImageTokens(width, height)
 	case "anthropic":
@@ -639,6 +662,21 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
+}
+
+// effectiveImageDetail is the detail the target's adapter puts on the wire for
+// the image: the image's own detail when it carries one, and otherwise the row's
+// configured image_detail for the one builder that injects it. Only the Responses
+// builder applies the row's detail (and a "high" default when the row sets none);
+// the chat builder sends the image's own detail or nothing at all
+// (chatcompletions/messages.go), so a chat row's image_detail never reaches the
+// wire.
+func effectiveImageDetail(t targetInfo, img *ImageData) string {
+	detail := img.Detail
+	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
+		detail = t.imageDetail
+	}
+	return detail
 }
 
 func imageDimensions(img *ImageData) (int, int, bool) {
