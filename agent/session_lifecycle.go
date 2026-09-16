@@ -80,8 +80,9 @@ type retryTracker struct {
 // SessionEnd hooks, emits EventSessionEnd with the final state, closes
 // subagents, the MCP manager, and the transcript, closes the root-owned artifact
 // store after descendant shutdown, exports the ATIF trajectory when configured
-// for the root session, removes any embedded skills directory, waits for
-// in-flight event emitters to finish, and closes the events channel.
+// for the root session, waits for in-flight event emitters to finish, and closes
+// the events channel. The bundled skills live in a content-addressed cache
+// shared with every other process, so Close leaves it in place.
 func (s *Session) Close() {
 	s.close(context.Background(), closeOptions{cleanupEnv: true})
 }

@@ -309,7 +309,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 		OK:                    true,
 	}}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true }
+	r.SetProcessAlive(func(int) bool { return true })
 	r.Refresh()
 
 	metas := []schema.SessionMeta{
@@ -322,7 +322,7 @@ func TestBuildTreeCrashedParentDoesNotShowItsSubagentRunning(t *testing.T) {
 
 	// kill -9 the parent: its probe fails and the process is confirmed gone.
 	prober.result = ProbeResult{}
-	r.procAlive = func(int) bool { return false }
+	r.SetProcessAlive(func(int) bool { return false })
 	r.Refresh()
 	parent, ok := r.Find("01PARENT")
 	if !ok || !parent.Crashed || !slices.Contains(parent.RunningSubagentIDs, "01CHILD") {

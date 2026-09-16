@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/rendezvous"
@@ -127,4 +128,17 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+}
+
+// DaemonTarget is the daemon a rendezvous entry names, as the process verifier
+// wants it: the session id (the thread id for an entry that carries none),
+// the state directory whose API log the daemon holds, and the start the
+// process must not postdate.
+func DaemonTarget(entry rendezvous.Entry) daemonprocess.Target {
+	return daemonprocess.Target{
+		PID:       entry.PID,
+		SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID),
+		StateDir:  entry.StateDir,
+		StartedAt: entry.StartedAt,
+	}
 }

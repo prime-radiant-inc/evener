@@ -92,6 +92,29 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
 	}, client)
 }
 
+// AnnounceDaemonGone tells the subscribers of the daemon that wrote entry that
+// it has left for good: the roster saw its process or its rendezvous file go.
+// The daemon's own close frame is not guaranteed to reach them (it may be
+// revoked with the connection), and nothing else would. A daemon nobody is
+// relaying has nobody to tell. sessionID is the session the roster resolved
+// for the entry - a legacy entry names none of its own, and its relay session
+// is keyed by the resolved one.
+func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID string) {
+	if sessionID != "" {
+		entry.SessionID = sessionID
+	}
+	ref, err := s.relaySessionRef(entry)
+	if err != nil {
+		return
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session != nil {
+		session.publishDaemonGoneResync()
+	}
+}
+
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
 	if sourceID == "" {
 		sourceID = "local"
@@ -1010,15 +1033,22 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 		if item.ReadOnlyAlias && !allowReadOnlyAlias {
 			continue
 		}
-		entry := localDaemonRendezvousEntry(item)
-		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
-			return item, nil
-		}
-		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
+		if s.localEntryNamesRef(item, requestedRef, threadID) {
 			return item, nil
 		}
 	}
 	return LocalDaemonEntry{}, appwire.SessionUnavailable("thread not found: " + threadID)
+}
+
+// localEntryNamesRef reports whether an entry is the one a ref (or, without a
+// ref, a thread id) addresses: by its workspace ref, its thread id or its
+// session id.
+func (s *LocalDaemonSource) localEntryNamesRef(item LocalDaemonEntry, requestedRef, threadID string) bool {
+	entry := localDaemonRendezvousEntry(item)
+	if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
+		return true
+	}
+	return localDaemonThreadID(item) == threadID || entry.SessionID == threadID
 }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {

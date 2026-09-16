@@ -254,7 +254,7 @@ func TestFailedProbeClearsReusedEntryLifecycleFreshness(t *testing.T) {
 		OK:             true,
 	}}
 	r := NewRoster(dir, prober)
-	r.procAlive = func(int) bool { return true }
+	r.SetProcessAlive(func(int) bool { return true })
 	r.Refresh()
 
 	// Control: a successful probe reports fresh lifecycle for a visible row.
