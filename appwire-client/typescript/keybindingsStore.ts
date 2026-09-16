@@ -684,8 +684,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // revision - applyHubOverrides' stale guard would otherwise reject that
     // authoritative payload on every refresh, leaving the old hub's shortcuts
     // live and editing silently disabled (roborev PR #884 round 11).
+    // A checkpointed write still in flight is fenced out with the generation:
+    // its reply will land nothing, so `saving` ends here (a host that reuses
+    // the instance across a reconnect would otherwise stay uneditable) and
+    // the write's outcome is UNKNOWN - exactly what writeUncertain means,
+    // and what its checkpoint already says on disk. The next generation's
+    // authoritative read settles it.
     const state = getState();
-    if (state.loaded || state.revision !== 0) setState({ loaded: false, revision: 0 });
+    if (state.loaded || state.revision !== 0 || state.saving)
+      setState({ loaded: false, revision: 0, ...(state.saving ? { saving: false, writeUncertain: true } : {}) });
   }
 
   function beginReadyGeneration(): void {

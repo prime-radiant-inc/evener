@@ -219,6 +219,65 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.load()).toMatchObject({ writeUncertain: false });
   });
 
+  /** A store whose ready generation ends while a checkpointed write is in
+   * flight, then begins a new one on the same instance (the web adapter's
+   * singleton does exactly this across a reconnect). */
+  async function saveAcrossGenerationEnd(settle: "resolve" | "reject") {
+    const drafts = memoryDraftStorage();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/keybindings/get", () => payload(3, []));
+    let finish: () => void = () => {};
+    client.on(
+      "evener/settings/keybindings/patch",
+      () =>
+        new Promise<KeybindingsOverrides>((resolve, reject) => {
+          finish = () => (settle === "resolve" ? resolve(payload(4, rules)) : reject(new Error("lost reply")));
+        }),
+    );
+    const store = createKeybindingsStore({ client, drafts: drafts.storage });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    const rules = [{ action: ACTIONS.paletteOpen, chord: "Meta+P" }];
+    const save = store.getState().saveDraft(rules);
+    expect(store.getState().saving).toBe(true);
+    // The fake defers its handler by a microtask; the reply must be on the wire
+    // before the generation ends.
+    await vi.waitFor(() =>
+      expect(client.calls.some((c) => c.method === "evener/settings/keybindings/patch")).toBe(true),
+    );
+
+    store.endReadyGeneration();
+    finish();
+    await save.then(
+      () => undefined,
+      () => undefined,
+    );
+    return { store, drafts, save };
+  }
+
+  test("a generation ending mid-write leaves the write uncertain, not saving, and the next read settles it", async () => {
+    const { store, drafts } = await saveAcrossGenerationEnd("resolve");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, loaded: false });
+
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, loaded: true });
+    expect(drafts.load()).toMatchObject({ writeUncertain: false });
+    expect(() => store.getState().editDraft([])).not.toThrow();
+  });
+
+  test("a write rejecting after its generation ended writes nothing back and the store stays editable after reconnect", async () => {
+    const { store, save } = await saveAcrossGenerationEnd("reject");
+    await expect(save).rejects.toThrow("lost reply");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftError: null });
+
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState().saving).toBe(false);
+    expect(() => store.getState().editDraft([])).not.toThrow();
+  });
+
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
     const drafts = memoryDraftStorage();
     const rules = [{ action: ACTIONS.paletteOpen, chord: "Meta+P" }];
