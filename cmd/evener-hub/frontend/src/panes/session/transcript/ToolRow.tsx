@@ -243,9 +243,18 @@ export function statedIntentOf(item: { description?: string }): string | undefin
  * each caller maps its segments to its own nodes. */
 type SummarySegment = EntityTextSegment;
 
-/** Splits a summary string into its text and entity segments, in order. */
-function summarySegments(text: string): SummarySegment[] {
-  return segmentEntityIds(text);
+/** Splits a summary string into its text and entity segments, in order. The
+ * summary's URL, when there is one, is a span entity segmentation must keep
+ * WHOLE: a hub URL can embed one of the session's own entity ids
+ * (".../jobs/job_<id>/log"), and an id-shaped substring inside the URL would
+ * otherwise split the URL across segments - no single segment would hold the
+ * whole URL, so linkifySummary's first-occurrence match would find nothing
+ * and the link would silently drop. The id inside the URL therefore stays
+ * plain text: a card trigger nested inside the link it lives in would open a
+ * card from inside the very link the row is drawing. */
+function summarySegments(text: string, summaryLink: string | undefined): SummarySegment[] {
+  const start = summaryLink === undefined ? -1 : text.indexOf(summaryLink);
+  return start === -1 ? segmentEntityIds(text) : segmentEntityIds(text, { start, end: start + summaryLink.length });
 }
 
 /** A segment's length in code POINTS, never UTF-16 units: a cut through a
@@ -533,7 +542,7 @@ export function ToolRow({
   // their cuts BETWEEN segments - an id is one node on one side, never split.
   // Memoized on `summary`, all it reads: live rows re-render per item update,
   // and this segmentation is the row's expensive derivation.
-  const segments = useMemo(() => summarySegments(summary), [summary]);
+  const segments = useMemo(() => summarySegments(summary, summaryLink), [summary, summaryLink]);
   // The cuts the summary's own rendering needs, derived in ONE measurement.
   // Only the paths that cut pay for it: a row that neither clamps (a no-intent
   // or expanded row) nor anchors a trailing control reads the full summary.
