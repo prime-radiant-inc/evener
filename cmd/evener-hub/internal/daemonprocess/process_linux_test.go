@@ -122,7 +122,7 @@ func TestLinuxStartOffsetLargeTicks(t *testing.T) {
 		{name: "tick overflow", ticks: 1<<64 - 1, hz: 100, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := linuxStartOffset(tc.ticks, tc.hz)
+			_, got, err := linuxStartOffsetBounds(tc.ticks, tc.hz)
 			if tc.wantError {
 				if err == nil {
 					t.Fatalf("accepted overflowing offset %d", got)
@@ -137,7 +137,7 @@ func TestLinuxStartOffsetLargeTicks(t *testing.T) {
 }
 
 func TestLinuxLargeStartTicksRefuseNewerProcess(t *testing.T) {
-	offset, err := linuxStartOffset(20_000_000_000, 100)
+	_, offset, err := linuxStartOffsetBounds(20_000_000_000, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +155,16 @@ func TestLinuxLargeStartTicksRefuseNewerProcess(t *testing.T) {
 	}
 	if k.signals != 0 {
 		t.Fatal("signaled a newer process")
+	}
+}
+
+// The tick's two bounds: ticks/hz and (ticks+1)/hz.
+func TestLinuxStartOffsetBounds(t *testing.T) {
+	lower, upper, err := linuxStartOffsetBounds(150, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lower != 1500*time.Millisecond || upper != 1510*time.Millisecond {
+		t.Fatalf("bounds = %v..%v, want 1.5s..1.51s", lower, upper)
 	}
 }
