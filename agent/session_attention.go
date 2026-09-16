@@ -962,13 +962,14 @@ func (s *Session) rearmRootDelegateAttentionFromTranscript(entries []transcript.
 	}
 	ids := fold.pendingIDs()
 	// A pending attention's model-visible turn can be missing from the
-	// resumed history: attention turns carry no fold-publication rewrite
-	// (they are deliberately excluded from the pair log — their durability
-	// is attention-owned), so ResumeHistory's last-marker anchor drops any
-	// recorded before a compaction marker, and the attention would re-arm
-	// with no content explaining what must be addressed. The attention
-	// machinery owns its restart story, so restore the durable content here,
-	// before arming the wake: retain is ID-keyed
+	// resumed history: a fold record only names the turns its published
+	// history kept, and an attention turn recorded before a compaction and
+	// summarized out of the fold's tail is named by no record — its
+	// durability is attention-owned, not fold-owned — so ResumeHistory would
+	// not restore it and the attention would re-arm with no content
+	// explaining what must be addressed. The attention machinery owns its
+	// restart story, so restore the durable content here, before arming the
+	// wake: retain is ID-keyed
 	// and idempotent — a still-resident turn is replaced in place (no
 	// duplicate on a boundary-free restart), a missing one is re-appended,
 	// and resolved attentions are never pending, so nothing resurrects.

@@ -177,6 +177,12 @@ func lastFoldRecordIndex(entries []transcript.Entry) int {
 // entry recorded after the record. Absent a record, the legacy last-marker
 // anchor (or the whole transcript) does, contiguously from lastMarkerAnchor.
 func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int) {
+	appendEntry := func(i int) {
+		t := entries[i].Turn
+		t.Seq = entries[i].Seq // seed the durable per-line id the fold names retained turns by
+		turns = append(turns, t)
+		origins = append(origins, i)
+	}
 	if recordIdx := lastFoldRecordIndex(entries); recordIdx >= 0 {
 		rec := entries[recordIdx].Turn.Fold
 		bySeq := make(map[int]int, len(entries))
@@ -185,10 +191,7 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 		}
 		add := func(seq int) {
 			if i, ok := bySeq[seq]; ok {
-				t := entries[i].Turn
-				t.Seq = entries[i].Seq
-				turns = append(turns, t)
-				origins = append(origins, i)
+				appendEntry(i)
 			}
 		}
 		for _, seq := range rec.Layers {
@@ -204,10 +207,7 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 			if entries[i].Turn.Kind == schema.TurnFoldRecord {
 				continue
 			}
-			t := entries[i].Turn
-			t.Seq = entries[i].Seq
-			turns = append(turns, t)
-			origins = append(origins, i)
+			appendEntry(i)
 		}
 		return turns, origins
 	}
@@ -215,10 +215,7 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 	from := lastMarkerAnchor(entries)
 	turns = make([]schema.Turn, 0, len(entries)-from)
 	for i := from; i < len(entries); i++ {
-		t := entries[i].Turn
-		t.Seq = entries[i].Seq // seed the durable per-line id the fold names retained turns by
-		turns = append(turns, t)
-		origins = append(origins, i)
+		appendEntry(i)
 	}
 	return turns, origins
 }
