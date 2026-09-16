@@ -90,6 +90,14 @@ export {
 } from "./credentialLabels";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
+export type {
+  DisclosureBaseline,
+  DisclosureListener,
+  DisclosureState,
+  DisclosureStore,
+  ExplicitChoice,
+} from "./disclosure";
+export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
   firstLine,
   formatCharCount,
