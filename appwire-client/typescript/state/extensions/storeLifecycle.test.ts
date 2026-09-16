@@ -13,7 +13,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FrameworkFreeStore } from "../../frameworkFreeStore";
 import { deferRequest, FakeClient } from "../../testing/fakeClient";
-import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
+import type { LaunchConfigLayer, MarketplaceEntry, PluginEntry } from "../../types.gen";
+import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
 import type { StoreLifecycle } from "./storeLifecycle";
@@ -89,6 +90,31 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   mutate: (state) => state.removePlugin("linter", "acme"),
   loading: (state) => state.pluginsLoading,
   initial: { plugins: null, pluginsLoading: false, pluginsError: null, pluginRevision: 0 },
+};
+
+const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
+  create: () => {
+    const fake = new FakeClient("ready");
+    return { fake, store: createLaunchLayerStore(fake) };
+  },
+  debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
+  notifyUpdated: (fake) =>
+    fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } }),
+  notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
+  answerList: (fake) => fake.on("evener/launch/getLayer", () => ({})),
+  listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/launch/getLayer").length,
+  deferList: (fake) => {
+    const release = deferRequest<LaunchConfigLayer>(fake, "evener/launch/getLayer");
+    return () => release({});
+  },
+  deferMutation: (fake) => {
+    const release = deferRequest<{ effective: LaunchConfigLayer }>(fake, "evener/launch/setLayer");
+    return () => release({ effective: {} });
+  },
+  fetch: (state) => state.fetchLaunchLayer(),
+  mutate: (state) => state.setLaunchLayer({ pluginDirs: ["/opt/plugins"] }),
+  loading: (state) => state.launchLayerLoading,
+  initial: { launchLayer: null, launchLayerLoading: false, launchLayerError: null },
 };
 
 function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
@@ -201,3 +227,4 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
 runLifecycleSuite("marketplaces", MARKETPLACES);
 runLifecycleSuite("plugins", PLUGINS);
+runLifecycleSuite("launch layer", LAUNCH_LAYER);

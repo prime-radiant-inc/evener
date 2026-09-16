@@ -426,9 +426,12 @@ const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient);
 const revision: ListRevision = createListRevision(); void plugins; void revision;
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins() }); void lifecycle;`,
+const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins() }); void lifecycle;
+const layerClient: LaunchLayerClient = marketplacesClient;
+const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
-const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;`,
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
@@ -440,6 +443,9 @@ assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline);
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
+const layerStore = client.createLaunchLayerStore(offline);
+assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(layerStore.getState().launchLayer, null);
 const listRevision = client.createListRevision();
 const first = listRevision.next();
 listRevision.fence();
@@ -461,7 +467,15 @@ marketplacesStore
     assert.equal(pluginsStore.getState().pluginsError, "offline");
     return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
   })
-  .then(() => pluginsStore.dispose())
+  .then(() => {
+    pluginsStore.dispose();
+    return layerStore.getState().fetchLaunchLayer();
+  })
+  .then(() => {
+    assert.equal(layerStore.getState().launchLayerError, "offline");
+    return assert.rejects(layerStore.getState().setLaunchLayer({ pluginDirs: [] }), /offline/);
+  })
+  .then(() => layerStore.dispose())
   .catch((err) => {
     console.error(err);
     process.exit(1);
