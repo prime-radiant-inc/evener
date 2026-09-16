@@ -21,19 +21,23 @@
 // (managed by the character-key setting, per shell/cheatsheet/
 // cheatsheetController.ts) renders read-only with a note.
 
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
-import { useStore } from "zustand";
-import { type Chord, chordDisplayKeys, modifierDisplayKey, serializeChord } from "../../../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../../../keybindings/defaults";
-import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import {
   ACTION_DISPLAY_ROWS,
+  type Binding,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  type Chord,
+  chordDisplayKeys,
   displayBindingFor,
   displayBindingsFor,
   isActionCustomized,
-} from "../../../keybindings/display";
-import { type Binding, keybindingsRegistry } from "../../../keybindings/registry";
-import type { OverrideRule } from "../../../keybindings/validation";
+  modifierDisplayKey,
+  type OverrideRule,
+  serializeChord,
+} from "@evener/appwire-client";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+import { keybindingsRegistry } from "../../../keybindings/appRegistry";
+import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { KeyHint, Switch } from "../../../widgets";

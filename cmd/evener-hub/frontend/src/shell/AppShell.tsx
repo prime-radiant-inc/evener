@@ -4,11 +4,10 @@
 // place for a path urlToPane() can't resolve at all.
 
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
-import { AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
+import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { ACTIONS } from "../keybindings/actions";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
-import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";

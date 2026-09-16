@@ -1,7 +1,7 @@
+import { createKeybindingsRegistry, type KeybindingsRegistry } from "@evener/appwire-client";
 import { parseKeybinding } from "tinykeys";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createKeybindingDispatcher, type KeybindingDispatcher } from "./dispatcher";
-import { createKeybindingsRegistry, type KeybindingsRegistry } from "./registry";
 
 // jsdom resolves tinykeys' "$mod" to "Control" on every host, so every Mod
 // chord in this file is pressed with ctrlKey and the tests stay

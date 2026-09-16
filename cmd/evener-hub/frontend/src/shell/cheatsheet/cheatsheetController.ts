@@ -23,13 +23,19 @@
 // registry mutation is complete, so the reconcile always sees the final
 // shape.
 
+import {
+  ACTIONS,
+  actionDisplayLabel,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  chordsOverlap,
+  DEFAULT_BINDINGS,
+  GLOBAL_SCOPE,
+  parseChord,
+  type ValidationWarning,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { ACTIONS } from "../../keybindings/actions";
-import { chordsOverlap, parseChord } from "../../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS } from "../../keybindings/defaults";
-import { GLOBAL_SCOPE, keybindingsRegistry } from "../../keybindings/registry";
-import { actionDisplayLabel, type ValidationWarning } from "../../keybindings/validation";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { keybindingsStore } from "../../stores/keybindings";
 import { prefsStore } from "../../stores/prefs";
 

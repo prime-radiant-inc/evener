@@ -1,19 +1,20 @@
 import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-client";
+import {
+  ACTIONS,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  DEFAULT_BINDINGS,
+  parseChord,
+  registerDefaultBindings,
+  SETTINGS_SCOPE,
+  serializeChord,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { parseKeybinding } from "tinykeys";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { ACTIONS } from "../../../keybindings/actions";
-import { parseChord, serializeChord } from "../../../keybindings/chord";
-import {
-  CHARACTER_KEY_TRIGGER_BINDING_ID,
-  DEFAULT_BINDINGS,
-  registerDefaultBindings,
-  SETTINGS_SCOPE,
-} from "../../../keybindings/defaults";
+import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
-import { keybindingsRegistry } from "../../../keybindings/registry";
 import { connectionStore } from "../../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";

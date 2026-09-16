@@ -19,9 +19,9 @@
 // scopes come and go with their components. Vitest file isolation gives each
 // test file a fresh module registry, so the singleton never crosses files.
 
-import { registerDefaultBindings } from "../keybindings/defaults";
+import { registerDefaultBindings } from "@evener/appwire-client";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { createKeybindingDispatcher, isModalOpenTarget } from "../keybindings/dispatcher";
-import { keybindingsRegistry } from "../keybindings/registry";
 import { installCharacterKeyTriggerReconcile } from "./cheatsheet/cheatsheetController";
 import { paletteStore } from "./palette/paletteController";
 

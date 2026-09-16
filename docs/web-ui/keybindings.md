@@ -119,7 +119,7 @@ pane instead of a captured selection (see below).
 
 ## Default binding map (final since Phase 4a)
 
-Every entry of `DEFAULT_BINDINGS` (`src/keybindings/defaults.ts`), in map
+Every entry of `DEFAULT_BINDINGS` (`appwire-client/typescript/keybindingDefaults.ts`), in map
 order. Chords are rendered the way `KeyHint`/`formatChord` render them:
 `$mod` reads as ⌘ on Apple platforms and Ctrl elsewhere, every other key
 name is verbatim. "Policy" lists only the flags that differ from the
@@ -329,7 +329,7 @@ overrides store:
 its EFFECTIVE chord, grouped Sessions / Transcript / Composer / General
 (anything the grouping doesn't name — including a future action — lands
 in General, so a new action can never silently vanish). Both the row list
-and the chords are live reads (`keybindings/display.ts` over the
+and the chords are live reads (the package's `keybindingDisplay.ts` over the
 registry), so hub-synced overrides and unbound actions render truthfully
 — an action with no effective binding shows "Unbound".
 
@@ -402,8 +402,8 @@ listeners and renders no chips.
 ## Registering an action and a binding
 
 ```ts
-import { ACTIONS } from "../keybindings/actions";
-import { keybindingsRegistry } from "../keybindings/registry";
+import { ACTIONS } from "@evener/appwire-client";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { installKeybindings } from "./installKeybindings";
 
 // In a component effect; the disposer runs on unmount.
@@ -508,7 +508,7 @@ default.
   optimism. A state file that fails the raw-shape re-check on load falls
   back to shipped defaults and the store goes read-only (patches are
   rejected) until the file is fixed.
-- **Frontend — semantics** (`src/keybindings/validation.ts`): action ids
+- **Frontend — semantics** (`appwire-client/typescript/keybindingValidation.ts`): action ids
   against the default map, chord parseability, the survey's platform-split
   never-use list (chords the browser will never deliver to the page), and
   conflicts against a simulation of the FINAL effective map the payload
@@ -583,7 +583,7 @@ Whenever the hub advertises `features.keybindingsSettings`
 `unsupported` hub keeps the read-only listing and its status text — the
 overrides layer is hub-only by design, so there is nothing to edit
 against. The rows themselves are unchanged from Phase 4a: one per action
-from `DEFAULT_BINDINGS` via `keybindings/display.ts` (never a
+from `DEFAULT_BINDINGS` via the package's `keybindingDisplay.ts` (never a
 hand-maintained copy), the chord rendered with the `KeyHint` widget from
 the live registry, a "Customized" marker on actions whose effective
 bindings differ from the default map (including unbound actions; the `?`

@@ -14,14 +14,21 @@
 // crash startup on malformed persisted data.
 
 import type { AnyNotification, AppwireClientLike, KeybindingsOverrides } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import {
+  type Binding,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  type OverrideRule,
+  rebindAction,
+  removeActionBindings,
+  restoreDefaultBinding,
+  serializeChord,
+  type ValidationWarning,
+  validateOverrideRules,
+  WireError,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { serializeChord } from "../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../keybindings/defaults";
-import { rebindAction, removeActionBindings, restoreDefaultBinding } from "../keybindings/overrides";
-import { type Binding, keybindingsRegistry } from "../keybindings/registry";
-import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "../keybindings/validation";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
 

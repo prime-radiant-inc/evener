@@ -20,13 +20,11 @@
 // an affordance that is not mounted (the rail's toggle exists in exactly one
 // of its two states) simply renders no chip.
 
+import { ACTIONS, chordDisplayKeys, displayBindingFor, type KeySequence, serializeChord } from "@evener/appwire-client";
 import { Fragment, type ReactNode, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useStore } from "zustand";
-import { ACTIONS } from "../../keybindings/actions";
-import { chordDisplayKeys, type KeySequence, serializeChord } from "../../keybindings/chord";
-import { displayBindingFor } from "../../keybindings/display";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { workspaceStore } from "../workspace";

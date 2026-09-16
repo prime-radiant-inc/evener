@@ -1,14 +1,12 @@
 import {
+	ACTION_DISPLAY_ROWS,
+	createKeybindingsRegistry,
 	DEFAULT_BINDINGS,
-	registerDefaultBindings,
-} from "../../cmd/evener-hub/frontend/src/keybindings/defaults";
-import { ACTION_DISPLAY_ROWS } from "../../cmd/evener-hub/frontend/src/keybindings/display";
-import { createKeybindingsRegistry } from "../../cmd/evener-hub/frontend/src/keybindings/registry";
-import {
 	type KeybindingsPlatform,
+	type KeybindingsRule,
+	registerDefaultBindings,
 	validateOverrideRules,
-} from "../../cmd/evener-hub/frontend/src/keybindings/validation";
-import type { KeybindingsRule } from "@evener/appwire-client";
+} from "@evener/appwire-client";
 import { parseKeybinding } from "tinykeys";
 
 const actionIds = new Set(ACTION_DISPLAY_ROWS.map((row) => row.actionId));
