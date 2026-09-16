@@ -5,6 +5,7 @@
 
 import type { EvenerDelegateInfo } from "@evener/appwire-client";
 import {
+  delegateTiming,
   formatElapsed,
   type ItemModel,
   parseJSONObject,
@@ -121,27 +122,6 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
   return out;
 }
 
-// Only the stable projection supplies a child's run window. The launch call's
-// timestamps measure the invocation, not the child's runtime.
-function cardClock(
-  stable: EvenerDelegateInfo | undefined,
-  displayKind: SubagentRowKind,
-  nowMs: number,
-): string | undefined {
-  let startMs: number | undefined;
-  let endMs: number | undefined;
-  if (stable !== undefined) {
-    const stableStart = Date.parse(stable.runStartedAt ?? "");
-    if (Number.isNaN(stableStart)) return undefined;
-    startMs = stableStart;
-    const stableEnd = Date.parse(stable.runEndedAt ?? "");
-    if (!Number.isNaN(stableEnd)) endMs = stableEnd;
-  } else return undefined;
-  if (endMs !== undefined && endMs >= startMs) return formatElapsed(endMs - startMs);
-  if (displayKind !== "running") return undefined;
-  return formatElapsed(nowMs - startMs);
-}
-
 // Stable exhaustion evidence belongs in the expanded region.
 function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDelegateInfo | undefined }) {
   const resumable = stable ? (stable.exhaustionResumable ?? stable.resumable) : row.resumable;
@@ -230,7 +210,9 @@ function SubagentCard({
   if (usage) statsSegments.push(usage);
 
   const nowMs = useSessionNow();
-  const clock = cardClock(stable, displayKind, nowMs);
+  // Only the stable projection supplies a child's run window: the launch
+  // call's timestamps measure the invocation, not the child's runtime.
+  const clockMs = stable === undefined ? undefined : delegateTiming(stable, nowMs).durationMs;
 
   // Deterministic scoping preserves disclosure state across virtualization.
   const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
@@ -274,7 +256,7 @@ function SubagentCard({
               ],
         )}
         <span className={CLASS.statsSpring} />
-        {clock && <span className={CLASS.clock}>{clock}</span>}
+        {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
         <IconButton
           label={open ? "Hide recent activity" : "Show recent activity"}
           title={open ? "Hide recent activity" : "Show recent activity"}

@@ -3,7 +3,7 @@ import {
   parseSlashToken,
   spliceSlashCommand,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import { builtinComposerItems, composerCommand } from "./composerCommand";
 
 it.each([
@@ -37,7 +37,7 @@ function conversation(
   status = "idle",
   depth = 0,
 ) {
-  return { capabilities, status, queue: { revision: 0, depth } };
+  return { capabilities, status: { type: status }, queue: { revision: 0, depth } };
 }
 
 function ids(items: ReturnType<typeof builtinComposerItems>) {

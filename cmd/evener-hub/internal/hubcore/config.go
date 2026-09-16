@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
@@ -73,6 +75,23 @@ type WebConfig struct {
 	// the tree read path never blocks on a network hop. Nil in tests, which
 	// fall back to the old synchronous walk (see remoteTreeThreads).
 	RemoteThreadCache *RemoteThreadCache
+
+	// RemoteHosts are the validated [[hosts]] entries (component 03) in
+	// config order. newHubSourceRegistry registers one
+	// appsource.RemoteHubSource per entry.
+	RemoteHosts []hostreg.Host
+	// RemoteHostClient returns an attached, initialized AppWire client for a
+	// remote host, attaching over SSH on first use (component 04). nil
+	// disables remote hosts (tests).
+	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostFacts returns the component-04 preflight facts (protocol
+	// version, hub version, OS/arch, advertised features) for the AppWire
+	// connection behind client, the exact generation RemoteHostClient resolved
+	// for the capability probe; an implementation must answer from that same
+	// generation rather than racing a reconnect. The capability probe combines
+	// the facts with its AppWire reads. nil leaves the preflight-owned fields
+	// zero-valued (tests).
+	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

@@ -1,4 +1,28 @@
-import type { ActivityDelegate } from "@evener/appwire-client";
+// Delegate timing and model derivations both apps' delegate details render
+// from. The wire carries a delegate in two shapes - the activity tree's
+// ActivityDelegate and the thread snapshot's EvenerDelegateInfo - with the same
+// timing and model fields, so each helper takes only the fields it reads and
+// either shape satisfies it.
+//
+// Timing trusts the run window only for a terminal delegate: a resumed run can
+// carry the previous run's runEndedAt and outcome, so a non-terminal delegate
+// always measures live from runStartedAt. The quiet anchor is the newer of
+// latestActivityAt and runStartedAt, and exists only when the daemon sent
+// quiet evidence of its own (a latestActivityAt or a quietForMs): a snapshot
+// with runStartedAt alone gets no quiet age, not a number the daemon declined
+// to compute. Every live measurement falls back to the snapshot's frozen value
+// only when no anchor parses or the clock is not a finite number.
+import type { ActivityDelegate } from "./activityData";
+
+export type DelegateTimingFields = Pick<
+  ActivityDelegate,
+  "runStartedAt" | "runEndedAt" | "latestActivityAt" | "runningForMs" | "quietForMs" | "durationMs" | "terminal"
+>;
+
+export type DelegateModelFields = Pick<
+  ActivityDelegate,
+  "resolvedModel" | "model" | "requestedModel" | "reasoningEffort"
+>;
 
 export interface DelegateTiming {
   startedAt?: string;
@@ -16,12 +40,8 @@ function timestamp(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function snapshotDuration(
-  value: number | null | undefined,
-): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
-    ? value
-    : undefined;
+function snapshotDuration(value: number | null | undefined): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function elapsed(now: number, then: number): number | undefined {
@@ -29,10 +49,7 @@ function elapsed(now: number, then: number): number | undefined {
   return Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, now - then));
 }
 
-export function delegateTiming(
-  delegate: ActivityDelegate,
-  now: number,
-): DelegateTiming {
+export function delegateTiming(delegate: DelegateTimingFields, now: number): DelegateTiming {
   const started = timestamp(delegate.runStartedAt);
   const ended = timestamp(delegate.runEndedAt);
   const terminal = delegate.terminal === true;
@@ -45,11 +62,9 @@ export function delegateTiming(
   if (terminal && ended !== undefined) result.endedAt = delegate.runEndedAt;
 
   if (terminal) {
-    if (started !== undefined && ended !== undefined && ended >= started)
-      result.durationMs = ended - started;
+    if (started !== undefined && ended !== undefined && ended >= started) result.durationMs = ended - started;
 
-    if (result.durationMs === undefined)
-      result.durationMs = snapshotDuration(delegate.durationMs);
+    if (result.durationMs === undefined) result.durationMs = snapshotDuration(delegate.durationMs);
     return result;
   }
 
@@ -62,8 +77,10 @@ export function delegateTiming(
   }
 
   const latest = timestamp(delegate.latestActivityAt);
-  const quietAnchor =
-    latest !== undefined && started !== undefined
+  const hasQuietEvidence = delegate.latestActivityAt !== undefined || delegate.quietForMs != null;
+  const quietAnchor = !hasQuietEvidence
+    ? undefined
+    : latest !== undefined && started !== undefined
       ? Math.max(latest, started)
       : (latest ?? started);
   if (quietAnchor !== undefined) {
@@ -80,7 +97,7 @@ function nonblank(value: string | undefined): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
-export function delegateModel(delegate: ActivityDelegate): {
+export function delegateModel(delegate: DelegateModelFields): {
   model?: string;
   requestedModel?: string;
   reasoning?: string;
@@ -89,14 +106,11 @@ export function delegateModel(delegate: ActivityDelegate): {
   const model = nonblank(delegate.model);
   const requestedModel = nonblank(delegate.requestedModel);
   const selected = resolvedModel ?? model ?? requestedModel;
+  const reasoning = nonblank(delegate.reasoningEffort);
   return {
     ...(selected ? { model: selected } : {}),
-    ...(requestedModel !== undefined && requestedModel !== selected
-      ? { requestedModel }
-      : {}),
-    ...(nonblank(delegate.reasoningEffort) !== undefined
-      ? { reasoning: nonblank(delegate.reasoningEffort) }
-      : {}),
+    ...(requestedModel !== undefined && requestedModel !== selected ? { requestedModel } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }
 
@@ -105,8 +119,7 @@ export function delegatePacket(
   structured = false,
 ): { text: string; format: "markdown" | "json" } | undefined {
   if (typeof value === "undefined") return undefined;
-  if (typeof value === "string" && !structured)
-    return { text: value, format: "markdown" };
+  if (typeof value === "string" && !structured) return { text: value, format: "markdown" };
   try {
     const text = JSON.stringify(value, null, 2);
     return text === undefined ? undefined : { text, format: "json" };

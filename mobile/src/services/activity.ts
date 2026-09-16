@@ -13,11 +13,12 @@ import type {
   EvenerDelegateInfo,
   EvenerDiagnostics,
   EvenerJobInfo,
+  EvenerThread,
+  EvenerUsage,
   TaskAggregate,
   Thread,
+  ThreadCapabilities,
 } from "@evener/appwire-client";
-import type { MobileCapabilities, MobileUsage } from "../conversation/model";
-import { projectUsage } from "../conversation/project";
 
 // --- view model types --------------------------------------------------------
 
@@ -69,16 +70,29 @@ export interface WorkEntry {
   readonly diagnostics?: RedactedDiagnostic;
 }
 
-// UsageSummary is MobileUsage plus the work duration the activity sheet shows.
-// The token/cost/context fields are the same ones projectUsage produces, so they
-// are inherited rather than restated.
-export type UsageSummary = Readonly<MobileUsage> & { readonly durationMs?: number };
+// UsageSummary is the activity sheet's session accounting: EvenerThread's token
+// aggregate, cost and context fields plus the work duration. Values pass
+// straight through — an absent wire field stays undefined rather than becoming
+// a 0 that would read as a real measurement. The package's ThreadModel keeps
+// these as separate fields (usage/cost/contextUsed/...) and the web derives its
+// summary app-side (decision 4); D18 reconciles the two derivations.
+export type UsageSummary = Readonly<
+  EvenerUsage &
+    Pick<
+      EvenerThread,
+      | "cost"
+      | "contextUsed"
+      | "contextWindow"
+      | "contextRemaining"
+      | "contextPressure"
+    > & { durationMs?: number }
+>;
 
 export interface ActivityView {
   readonly tasks: TaskGroup[];
   readonly work: WorkEntry[];
   readonly usage: UsageSummary;
-  readonly capabilities: MobileCapabilities;
+  readonly capabilities: ThreadCapabilities;
   readonly reasoningEffort?: string;
   readonly reasoningEffortLevels?: string[];
   readonly supportsReasoning?: boolean;
@@ -427,15 +441,15 @@ export function deriveOpenTaskCount(counts: {
 // --- usage projection --------------------------------------------------------
 
 function projectUsageSummary(evener: Thread["evener"]): UsageSummary {
-  return { ...projectUsage(evener), durationMs: evener.workMillis };
-}
-
-// --- capabilities projection -------------------------------------------------
-
-function projectCapabilities(
-  caps: Thread["evener"]["capabilities"],
-): MobileCapabilities {
-  return { ...caps };
+  return {
+    ...evener.usage,
+    cost: evener.cost,
+    contextUsed: evener.contextUsed,
+    contextWindow: evener.contextWindow,
+    contextRemaining: evener.contextRemaining,
+    contextPressure: evener.contextPressure,
+    durationMs: evener.workMillis,
+  };
 }
 
 // --- top-level projection ----------------------------------------------------
@@ -448,7 +462,7 @@ export function createActivityService(): ActivityService {
         tasks: projectTasks(evener.tasks),
         work: projectWork(evener.diagnostics),
         usage: projectUsageSummary(evener),
-        capabilities: projectCapabilities(evener.capabilities),
+        capabilities: evener.capabilities,
         reasoningEffort: evener.reasoningEffort,
         reasoningEffortLevels: evener.reasoningEffortLevels,
         supportsReasoning: evener.supportsReasoning,
@@ -456,6 +470,3 @@ export function createActivityService(): ActivityService {
     },
   };
 }
-
-// Re-export MobileUsage for convenience; UsageSummary is a superset shape.
-export type { MobileUsage };

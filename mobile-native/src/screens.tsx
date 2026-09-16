@@ -1082,7 +1082,7 @@ export function ConversationScreen({
 				? new ApprovalControls(
 						client,
 						route.params.ref,
-						() => store.getState().conversation?.pendingApprovals ?? [],
+						() => store.getState().conversation?.pendingEscalations ?? [],
 						() =>
 							connectionReady.current &&
 							navigation.isFocused() &&
@@ -1113,7 +1113,7 @@ export function ConversationScreen({
 	const hasConversation = snapshot.conversation !== null;
 	const deletionAvailable =
 		!!localSessionId(route.params.ref) &&
-		snapshot.conversation?.status === "notLoaded";
+		snapshot.conversation?.status.type === "notLoaded";
 	const openSessionDestination = useCallback(
 		(destination: SessionDestination) => {
 			setSessionMenuOpen(false);
@@ -1121,12 +1121,12 @@ export function ConversationScreen({
 			const current = store.getState().conversation;
 			if (!current) return;
 			if (destination === "delete") {
-				if (!localSessionId(route.params.ref) || current.status !== "notLoaded")
+				if (!localSessionId(route.params.ref) || current.status.type !== "notLoaded")
 					return;
 				navigation.navigate("SessionDeletion", {
 					hubId: route.params.hubId,
 					ref: route.params.ref,
-					title: current.name ?? route.params.title,
+					title: current.name || route.params.title,
 				});
 				return;
 			}
@@ -1146,7 +1146,7 @@ export function ConversationScreen({
 			const context = {
 				hubId: route.params.hubId,
 				ref: route.params.ref,
-				threadId: current.id,
+				threadId: current.threadId,
 				hubName: activeProfile?.name ?? "Hub",
 				client,
 			};
@@ -1456,7 +1456,7 @@ export function ConversationScreen({
 	const canCompose =
 		(!conversation ||
 			(!conversation.resumeRequired &&
-				conversation.status !== "restartRequired")) &&
+				conversation.status.type !== "restartRequired")) &&
 		(!conversation || canComposeFor(conversation));
 	const slashToken =
 		composerSelection.start === composerSelection.end &&
@@ -1592,7 +1592,7 @@ export function ConversationScreen({
 										: {
 												hubId: route.params.hubId,
 												ref: route.params.ref,
-												threadId: current.id,
+												threadId: current.threadId,
 												hasTasks: current.tasks != null,
 												hubName: activeProfile?.name ?? "Hub",
 												client,
@@ -1719,7 +1719,7 @@ export function ConversationScreen({
 			if (kind !== "interrupt") {
 				const submit = (
 					kind === "steer" &&
-					(store.getState().conversation?.queue.depth ?? 0) > 0
+					(store.getState().conversation?.queue?.depth ?? 0) > 0
 						? document.submitWithQueue
 						: document.submit
 				).bind(document);
@@ -1764,7 +1764,7 @@ export function ConversationScreen({
 						imageState.busy ||
 						(!draft.record.draft.trim() &&
 							!draft.record.images?.length &&
-							!(kind === "steer" && conversation.queue.depth > 0))
+							!(kind === "steer" && (conversation.queue?.depth ?? 0) > 0))
 					}
 					onPress={() => {
 						void mutate(kind);
@@ -1777,7 +1777,7 @@ export function ConversationScreen({
 
 	const settingsOwnRow =
 		fontScale > 1.4 ||
-		conversation?.status === "active" ||
+		conversation?.status.type === "active" ||
 		draft.submitting ||
 		commandPending ||
 		!connected ||
@@ -1873,7 +1873,7 @@ export function ConversationScreen({
 		>
 			{sessionMenuOpen ? (
 				<SessionMenu
-					title={conversation?.name ?? route.params.title}
+					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
 					connected={connected}
 					deletionAvailable={deletionAvailable}
@@ -1911,7 +1911,7 @@ export function ConversationScreen({
 			))}
 			{approvalsOpen && conversation && approvalControls ? (
 				<ApprovalSheet
-					approvals={conversation.pendingApprovals}
+					approvals={conversation.pendingEscalations}
 					controls={approvalControls}
 					hubName={activeProfile?.name ?? "Hub"}
 					close={() => setApprovalsOpen(false)}
@@ -1938,7 +1938,7 @@ export function ConversationScreen({
 					key={`${route.params.hubId}:${route.params.ref}`}
 					client={client ?? taskContext.client}
 					sessionRef={route.params.ref}
-					threadId={conversation?.id ?? taskContext.threadId}
+					threadId={conversation?.threadId ?? taskContext.threadId}
 					hasTasks={
 						conversation ? conversation.tasks != null : taskContext.hasTasks
 					}
@@ -1954,7 +1954,7 @@ export function ConversationScreen({
 					key={`${route.params.hubId}:${route.params.ref}`}
 					client={client ?? activityContext.client}
 					sessionRef={route.params.ref}
-					threadId={conversation?.id ?? activityContext.threadId}
+					threadId={conversation?.threadId ?? activityContext.threadId}
 					connected={connected}
 					hubName={activityContext.hubName}
 					close={() => setActivityContext(null)}
@@ -2027,7 +2027,7 @@ export function ConversationScreen({
 							data={timelineRows}
 							ListFooterComponent={
 								presentation.usage ? (
-									<TranscriptUsage usage={presentation.usage} />
+									<TranscriptUsage {...presentation.usage} />
 								) : null
 							}
 							CellRendererComponent={readerCellRenderer}
@@ -2351,7 +2351,7 @@ export function ConversationScreen({
 									{`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
 								</Action>
 							) : null}
-							{conversation?.pendingApprovals.length ? (
+							{conversation?.pendingEscalations.length ? (
 								<Action
 									disabled={!ready || !approvalControls}
 									expanded={approvalsOpen}
@@ -2359,13 +2359,13 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										setApprovalsOpen(true);
 									}}
-								>{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
+								>{`${conversation.pendingEscalations.length} ${conversation.pendingEscalations.length === 1 ? "approval" : "approvals"} needed`}</Action>
 							) : null}
-							{conversation?.queue.depth || conversation?.goal ? (
+							{conversation?.queue?.depth || conversation?.goal ? (
 								<View
 									style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}
 								>
-									{conversation.queue.depth ? (
+									{conversation.queue?.depth ? (
 										<Action
 											tone="quiet"
 											expanded={queueOpen}
@@ -2374,7 +2374,7 @@ export function ConversationScreen({
 												setQueueOpen(true);
 											}}
 										>
-											{`${conversation.queue.depth} queued`}
+											{`${conversation.queue?.depth} queued`}
 										</Action>
 									) : null}
 									{conversation.goal ? (

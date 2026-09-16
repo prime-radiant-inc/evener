@@ -1,4 +1,4 @@
-import type { MobileApproval } from "../../mobile/src/conversation/model";
+import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 /** Decisions belong to the displayed approval and one live session binding. */
@@ -13,7 +13,7 @@ export class ApprovalControls {
   constructor(
     private client: ConversationClientLike,
     private ref: string,
-    private approvals: () => MobileApproval[],
+    private approvals: () => SandboxEscalationRequested[],
     private current: () => boolean,
     private refreshSession: () => Promise<void>,
   ) {}
@@ -60,7 +60,7 @@ export class ApprovalControls {
       return;
     await this.refreshAuthoritative();
   }
-  async resolve(displayed: MobileApproval, approve: boolean) {
+  async resolve(displayed: SandboxEscalationRequested, approve: boolean) {
     if (
       this.disposed ||
       !this.current() ||
@@ -69,16 +69,16 @@ export class ApprovalControls {
       this.state.error !== null
     )
       return;
-    const pending = this.approvals().find((value) => value.id === displayed.id);
+    const pending = this.approvals().find((value) => value.escalationId === displayed.escalationId);
     if (!pending || JSON.stringify(pending) !== JSON.stringify(displayed))
       return;
-    this.publish({ pending: displayed.id, refreshing: false, error: null });
+    this.publish({ pending: displayed.escalationId, refreshing: false, error: null });
     try {
       const receipt = await this.client.request(
         "evener/sandbox/escalation/resolve",
         {
           ref: this.ref,
-          escalationId: displayed.id,
+          escalationId: displayed.escalationId,
           approve,
         },
       );

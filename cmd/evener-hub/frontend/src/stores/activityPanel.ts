@@ -5,6 +5,7 @@ import {
   defaultExpandedIDs,
   fenceRootSession,
   graftContinuationTree,
+  type PanelLoadFailure,
   reconcileActivityState,
 } from "@evener/appwire-client";
 
@@ -14,7 +15,6 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
-import type { PanelLoadFailure } from "./tasksPanel";
 
 export type ActivityLoadState =
   | { kind: "idle" }

@@ -214,8 +214,8 @@ func TestNotificationWakeFirstRequestReflectsURLRemoval(t *testing.T) {
 	if !ok {
 		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
 	}
-	if !s.acceptSteeringCarrierInput(t.Context(), turnID) {
-		t.Fatalf("acceptSteeringCarrierInput stood down with a steer queued")
+	if err := s.acceptSteeringCarrierInput(t.Context(), queuedClientMutationIdentity{ClientMutationID: "carrier-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput with a steer queued: %v", err)
 	}
 	s.mu.Lock()
 	var texts []string
