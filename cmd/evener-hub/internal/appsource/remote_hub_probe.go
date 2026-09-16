@@ -58,13 +58,13 @@ type HostFactsFunc func(ctx context.Context, host string, client *appwire.Client
 // channel captured when it attached, and reports false when no live channel is
 // installed or when the installed channel is not the one client belongs to. It
 // never dials. The capability probe reads ProtocolVersion, ServerInfo (hub
-// name/version), SourceID, and Features through it: appwire keeps the client's
-// Features copy privately, and the connection-scoped initialize cannot be
-// re-run on the already-initialized channel component 04 handed over. client is
-// the exact generation the probe resolved and ran its other reads on, so an
-// implementation must answer from that generation or report false rather than
-// race a reconnect. It is backed by sshconn.Manager.HandshakeIfAttached plus
-// the channel-identity check.
+// name/version), SourceID, and Features through it: those four are
+// handshake-only, because the connection-scoped initialize cannot be re-run on
+// the already-initialized channel component 04 handed over and no other wire
+// call reports them. client is the exact generation the probe resolved and ran
+// its other reads on, so an implementation must answer from that generation or
+// report false rather than race a reconnect. It is backed by
+// sshconn.Manager.HandshakeIfAttached plus the channel-identity check.
 type HostHandshakeFunc func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 
 // remoteHubProbe is one successful probe cached against the client it ran on.

@@ -316,6 +316,22 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 	return s.transportUnavailable(err)
 }
 
+// MapAttachError classifies one attach/connect failure exactly as this source's
+// own call and resolveClient path does. A caller that had to attach the host
+// before calling this source — the explicit thread/list fan-out, which dials
+// through the Ensure-backed RemoteHostClient and then lets the source's
+// attached-only resolver serve the list — reports the failure through this so
+// sshconn's transient attach failures (ErrSSHStart, ErrRestart) and transport
+// losses reach it as the typed SessionUnavailable the auto-resume/refusal gates
+// match, rather than as a raw transport error. The caller's own context ending
+// stays raw, exactly as call leaves it.
+func (s *RemoteHubSource) MapAttachError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return s.mapConnectError(err)
+}
+
 // transportUnavailable maps a non-wire transport failure. Caller cancellation
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.

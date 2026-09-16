@@ -72,8 +72,9 @@ func TestRemoteHubSourceUnattachedCallIsUnavailableWithoutDialing(t *testing.T) 
 
 // The capability probe reads ProtocolVersion/ServerInfo/SourceID/Features from
 // the attach handshake seam and OS/Arch from the preflight seam, over the
-// attached-only client: component 05, §"Capability probe". appwire.Client keeps
-// its Features copy privately, so the probe must not look for one on the client.
+// attached-only client: component 05, §"Capability probe". Those four are
+// handshake-only — the connection-scoped initialize cannot be re-run on the
+// already-initialized channel, and no other wire call reports them.
 func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
 	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {

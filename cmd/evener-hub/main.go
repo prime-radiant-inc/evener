@@ -471,15 +471,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// The attached-only lookup every non-explicit read path resolves
 		// through, so none can implicitly attach a dormant host.
 		RemoteHostClientIfAttached: sshManager.ClientIfAttached,
-		RemoteHostFacts: func(_ context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
-			// Non-dialing: read one installed channel and refuse unless it is the
-			// very channel client belongs to, so the facts can never describe a
-			// different generation than the probe's wire reads.
-			ch, ok := sshManager.ChannelIfAttached(host)
-			if !ok {
-				return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
-			}
-			return remoteHostFactsForChannel(ch, host, client)
+		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
+			return remoteHostFactsIfAttached(ctx, host, client, func(host string) (attachedChannelView, bool) {
+				// Non-dialing: read one installed channel and refuse unless it is
+				// the very channel client belongs to, so the facts can never
+				// describe a different generation than the probe's wire reads.
+				ch, ok := sshManager.ChannelIfAttached(host)
+				if !ok {
+					return nil, false
+				}
+				return ch, true
+			})
 		},
 		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
 			ch, ok := sshManager.ChannelIfAttached(host)
@@ -752,6 +754,28 @@ func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appw
 		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
 	}
 	return remoteHostFacts(ch.Preflight(), client.Features()), nil
+}
+
+// remoteHostFactsIfAttached is the RemoteHostFacts seam: it looks host up
+// through lookup (a non-dialing attached-only channel lookup) and answers the
+// facts for client's own generation.
+//
+// A caller cancellation or deadline is the caller's own context ending, not
+// host unavailability, so it is returned raw before the lookup runs — exactly
+// as the capability probe leaves a canceled context raw and resolveClient/call
+// leave it raw. Reporting it as the typed SessionUnavailable would fire the
+// auto-resume/refusal gates for a request the caller abandoned. A host whose
+// channel is gone or is a different generation is the typed SessionUnavailable
+// those gates act on.
+func remoteHostFactsIfAttached(ctx context.Context, host string, client *appwire.Client, lookup func(string) (attachedChannelView, bool)) (appsource.HostFacts, error) {
+	if err := ctx.Err(); err != nil {
+		return appsource.HostFacts{}, err
+	}
+	ch, ok := lookup(host)
+	if !ok {
+		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
+	}
+	return remoteHostFactsForChannel(ch, host, client)
 }
 
 // remoteHostHandshakeForChannel returns the attach handshake ch captured, but

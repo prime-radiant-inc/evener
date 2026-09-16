@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -227,5 +229,77 @@ func TestRemoteHostFactsAndHandshakeUseTheProbesGeneration(t *testing.T) {
 	hs, ok := remoteHostHandshakeForChannel(installed, probeClient)
 	if !ok || hs.ProtocolVersion != "v4" || hs.SourceID != "local" {
 		t.Fatalf("handshake = %+v, %v; want the installed channel's handshake", hs, ok)
+	}
+}
+
+// An explicit host-targeted thread/list attaches the host before calling the
+// source, whose own resolver is attached-only. When that attach fails, the
+// error must be classified through the source exactly as its own call path
+// classifies a connect failure: sshconn's transient attach failure reaches the
+// caller as the typed SessionUnavailable the auto-resume/refusal gates match,
+// not as the raw transport error no gate can attribute to the host.
+func TestHubThreadListExplicitAttachFailureIsSessionUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		attachErr error
+	}{
+		{
+			name:      "ssh start chain",
+			attachErr: fmt.Errorf("%w: host %q link dropped before the channel was usable", sshconn.ErrSSHStart, "alpha"),
+		},
+		{
+			name:      "deadline exceeded chain",
+			attachErr: fmt.Errorf("attach alpha: %w", context.DeadlineExceeded),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := hubcore.WebConfig{
+				RemoteHosts: []hostreg.Host{{Name: "alpha"}},
+				RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+					return nil, tc.attachErr
+				},
+				RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return nil, false },
+			}
+			sources := appsource.NewRegistry()
+			// A real remote hub source: the classification under test is the
+			// mapping its own call path uses.
+			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
+
+			_, err := hubThreadListWithSourceTimeout(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"alpha"}}, time.Second)
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("explicit attach failure %T=%v, want a typed WireError", err, err)
+			}
+			data, _ := wire.Data.(appwire.ErrorData)
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+				t.Fatalf("explicit attach failure wire=%+v, want session unavailable", wire)
+			}
+			if !strings.Contains(wire.Message, "alpha") {
+				t.Fatalf("attach failure message %q does not name host alpha", wire.Message)
+			}
+		})
+	}
+}
+
+// A caller cancellation racing the facts lookup is the caller's own context
+// ending, not host unavailability: RemoteHostFacts must return the ctx error
+// raw rather than the typed SessionUnavailable the auto-resume gate acts on.
+// The lookup must not even run once the context is done.
+func TestRemoteHostFactsReturnsCallerCancellationRaw(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	lookedUp := false
+	_, err := remoteHostFactsIfAttached(ctx, "alpha", &appwire.Client{}, func(string) (attachedChannelView, bool) {
+		lookedUp = true
+		return nil, false
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled-context facts error %T=%v, want context.Canceled", err, err)
+	}
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
+		t.Fatalf("canceled context classified as host unavailability: %+v", wire)
+	}
+	if lookedUp {
+		t.Fatal("the facts lookup ran after the caller canceled")
 	}
 }

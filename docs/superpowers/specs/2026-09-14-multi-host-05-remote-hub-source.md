@@ -387,9 +387,8 @@ The source's optional seams are installed once at registration, all from
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
   probe needs (`HostFacts`, `remote_hub_probe.go`), backed by
-  `Manager.PreflightIfAttached` (component 04, §"Go surface"): the non-dialing,
-  attached-only preflight accessor mirroring `ClientIfAttached` and
-  `HandshakeIfAttached`. `cmd/evener-hub/main.go` reads one
+  `Manager.ChannelIfAttached` (component 04, §"Go surface").
+  `cmd/evener-hub/main.go` reads one
   `Manager.ChannelIfAttached` value and takes the preflight from the same
   channel whose client is the probe's `client`, refusing with a typed
   `SessionUnavailable` when it is a different generation — the attached-only
@@ -772,7 +771,7 @@ The capability probe reads its handshake facts (`ProtocolVersion`, `ServerInfo`,
 `SourceID`, `Features`) through `hubcore.WebConfig.RemoteHostHandshake` /
 `SetHostHandshake` (backed by `Manager.HandshakeIfAttached`) and its preflight
 facts through `RemoteHostFacts` / `SetHostFacts` (backed by
-`Manager.PreflightIfAttached`).
+`Manager.ChannelIfAttached`).
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote

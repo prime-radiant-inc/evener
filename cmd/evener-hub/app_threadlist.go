@@ -37,6 +37,18 @@ type threadListBudgetSource interface {
 	ThreadListBudget() time.Duration
 }
 
+// attachErrorClassifier is a source that can classify one attach/connect
+// failure into the same typed transport-unavailable error its own call path
+// produces. The explicit thread/list fan-out attaches a host-targeted remote
+// source before calling it, and routes that attach failure through this so it
+// reaches the caller as the typed SessionUnavailable rather than the raw
+// transport error. A source that does not implement it leaves the error raw,
+// preserving every other source's behavior. *appsource.RemoteHubSource
+// implements it.
+type attachErrorClassifier interface {
+	MapAttachError(err error) error
+}
+
 // threadListTimeoutFor returns the deadline one source's ListThreads runs
 // under: the budget the source reports, or fallback (the local-daemon budget)
 // for every source that reports none. Local daemons never attach, so their
@@ -113,6 +125,18 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 					if _, isRemote := remoteHosts[source.ID()]; isRemote &&
 						sourceExplicitlyRequestedForList(source.ID(), params) && cfg.RemoteHostClient != nil {
 						if _, err := cfg.RemoteHostClient(sourceCtx, source.ID()); err != nil {
+							// Classify the attach failure through the source exactly as
+							// its own call path classifies a connect failure: sshconn's
+							// transient attach failures and transport losses become the
+							// typed SessionUnavailable the auto-resume/refusal gates
+							// match, instead of surfacing here as a raw transport error.
+							// The caller's own context ending stays raw, matching
+							// RemoteHubSource.call.
+							if cerr := ctx.Err(); cerr != nil {
+								err = cerr
+							} else if classifier, ok := source.(attachErrorClassifier); ok {
+								err = classifier.MapAttachError(err)
+							}
 							results <- sourceResult{index: index, err: err}
 							cancel()
 							continue

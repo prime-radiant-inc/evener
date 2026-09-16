@@ -367,9 +367,10 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
-   `ch.Client()`), `RemoteHostFacts` (`sshManager.PreflightIfAttached` — the
-   non-dialing, attached-only preflight accessor mirroring
-   `ClientIfAttached`/`HandshakeIfAttached`; component 04, §"Go surface"), and
+   `ch.Client()`), `RemoteHostFacts` (a non-dialing, attached-only lookup that
+   reads one `sshManager.ChannelIfAttached` value and takes the preflight from
+   that channel only when its client is the exact generation the probe
+   resolved; component 04, §"Go surface"), and
    `RemoteHostOnline` (`sshManager.Attached`), `RemoteHostClientIfAttached`
    (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
    lookup component 05's notification rebind and component 06's snapshot use),
@@ -388,7 +389,7 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    and `hostreg.New`, the `sshconn` manager, and the `hubcore.WebConfig`
    `RemoteHosts` / `RemoteHostClient` / `RemoteHostFacts` / `RemoteHostOnline`
    fields landed with components 03/04; the attached-only additions this section
-   names (`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached` /
+   names (`Manager.ChannelIfAttached` / `Manager.HandshakeIfAttached` /
    `Manager.ClientIfAttached`, wired through `RemoteHostFacts` /
    `RemoteHostHandshake` / `RemoteHostClientIfAttached`) landed with the
    attached-only enforcement PR. `RemoteHostFacts` is non-dialing and
