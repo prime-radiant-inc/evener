@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -78,6 +79,9 @@ type relayPublishJob struct {
 	fence         *relayPublicationFence
 	notifications []appwire.Notification
 	done          chan struct{}
+	// daemonGone marks the relay's own daemon-gone announcement; it reaches
+	// listeners as RelayDelivery.DaemonGone.
+	daemonGone bool
 }
 
 type relayPublicationFence struct {
@@ -501,12 +505,51 @@ func (s *relaySession) publishPendingResync(params appwire.ThreadReadParams) {
 		return
 	}
 	s.resyncPending = false
+	s.queueResyncLocked(params)
+	s.mu.Unlock()
+}
+
+// publishDaemonGoneResync tells listeners to re-read: the roster has seen
+// the daemon this session relayed leave for good. A disconnect revokes
+// whatever the daemon said last and was still unpublished (its own close
+// frame included), counting on the reconnect to carry the resync - and a
+// daemon that exited never reconnects, so without this the listener keeps the
+// state from before the exit indefinitely. The pending resync is left armed:
+// a daemon that comes back is a new generation and still owes its own re-read.
+//
+// The job is queued with no epoch and no fence, so it is not revoked by the
+// epoch advance a later reconnect attempt makes: recovery keeps trying after
+// the announcement, and a listener busy with an earlier delivery would
+// otherwise lose the one instruction that tells it the daemon is gone. That
+// is safe where a daemon frame would not be: this frame belongs to no daemon
+// generation, and being re-read late costs one extra read.
+func (s *relaySession) publishDaemonGoneResync() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.enqueuePublishJob(relayPublishJob{notifications: []appwire.Notification{DaemonGoneResync()}, daemonGone: true})
+	s.mu.Unlock()
+}
+
+// DaemonGoneResync is the re-read instruction recovery publishes once the
+// daemon a session relayed has left the roster for good. It names no ref: a
+// read-only child alias shares the root's relay session, and nothing else will
+// ever tell that subscriber its daemon is gone, so the hub's relay fans this
+// out to every route it serves and stamps each route's own identity in. The
+// delivery is marked DaemonGone; the hub keys the fan-out on that mark, not
+// on the absent ref, which a malformed daemon frame could share.
+func DaemonGoneResync() appwire.Notification {
+	return appwire.Notification{Method: appwire.NotifyEvenerThreadResync, Params: json.RawMessage("{}")}
+}
+
+func (s *relaySession) queueResyncLocked(params appwire.ThreadReadParams) {
 	resync := *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
 		ThreadID: params.ThreadID,
 		Ref:      params.Ref,
 	}).Notification
 	s.queuePublishLocked(s.epoch, []appwire.Notification{resync}, nil)
-	s.mu.Unlock()
 }
 
 func (s *relaySession) recoverCanonicalFeed() {
@@ -670,12 +713,17 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 }
 
 func (s *relaySession) queuePublishLocked(epoch uint64, notifications []appwire.Notification, done chan struct{}) {
-	job := relayPublishJob{
+	s.enqueuePublishJob(relayPublishJob{
 		epoch:         epoch,
 		fence:         s.publicationFence,
 		notifications: append([]appwire.Notification(nil), notifications...),
 		done:          done,
-	}
+	})
+}
+
+// enqueuePublishJob appends one job to the FIFO and wakes the publisher. A job
+// with no epoch and no fence is dispatched whatever epoch is current.
+func (s *relaySession) enqueuePublishJob(job relayPublishJob) {
 	s.publishMu.Lock()
 	s.publishJobs = append(s.publishJobs, job)
 	s.publishMu.Unlock()
@@ -707,7 +755,7 @@ func (s *relaySession) publishLoop() {
 				s.publishMu.Unlock()
 				pending = s.pruneDeliveryWaits(pending)
 				for _, notification := range job.notifications {
-					pending = append(pending, s.publishNotification(job.epoch, job.fence, notification)...)
+					pending = append(pending, s.publishNotification(job, notification)...)
 				}
 				if job.done != nil {
 					waits := append([]relayDeliveryWait(nil), pending...)
@@ -722,7 +770,7 @@ func (s *relaySession) publishLoop() {
 	}
 }
 
-func (s *relaySession) publishNotification(epoch uint64, fence *relayPublicationFence, notification appwire.Notification) []relayDeliveryWait {
+func (s *relaySession) publishNotification(job relayPublishJob, notification appwire.Notification) []relayDeliveryWait {
 	s.mu.Lock()
 	listeners := make([]*relayListener, 0, len(s.listeners))
 	for _, listener := range s.listeners {
@@ -732,7 +780,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 
 	waits := make([]relayDeliveryWait, 0, len(listeners))
 	for _, listener := range listeners {
-		published, wait := s.dispatchToListenerAtEpoch(epoch, fence, listener, notification)
+		published, wait := s.dispatchToListenerAtEpoch(job, listener, notification)
 		if wait != nil {
 			waits = append(waits, *wait)
 		}
@@ -744,7 +792,7 @@ func (s *relaySession) publishNotification(epoch uint64, fence *relayPublication
 }
 
 func (s *relaySession) publishToListener(listener *relayListener, notification appwire.Notification) bool {
-	published, wait := s.dispatchToListenerAtEpoch(0, nil, listener, notification)
+	published, wait := s.dispatchToListenerAtEpoch(relayPublishJob{}, listener, notification)
 	if wait != nil {
 		return s.waitForDelivery(*wait)
 	}
@@ -752,8 +800,7 @@ func (s *relaySession) publishToListener(listener *relayListener, notification a
 }
 
 func (s *relaySession) dispatchToListenerAtEpoch(
-	epoch uint64,
-	fence *relayPublicationFence,
+	job relayPublishJob,
 	listener *relayListener,
 	notification appwire.Notification,
 ) (bool, *relayDeliveryWait) {
@@ -763,13 +810,14 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	var proceedOnce sync.Once
 	delivery := RelayDelivery{
 		Notification: notification,
+		DaemonGone:   job.daemonGone,
 		Acknowledge: func() {
 			ackOnce.Do(func() { close(ack) })
 		},
 		Proceed: func() { proceedOnce.Do(func() { close(proceed) }) },
 	}
 	s.publishBoundary.RLock()
-	if epoch != 0 && (s.publicationEpoch != epoch || s.publicationFence != fence) {
+	if job.epoch != 0 && (s.publicationEpoch != job.epoch || s.publicationFence != job.fence) {
 		s.publishBoundary.RUnlock()
 		return false, nil
 	}
@@ -785,7 +833,7 @@ func (s *relaySession) dispatchToListenerAtEpoch(
 	case <-listener.done:
 		s.publishBoundary.RUnlock()
 		return false, nil
-	case <-fenceRevoked(fence):
+	case <-fenceRevoked(job.fence):
 		s.publishBoundary.RUnlock()
 		return false, nil
 	case <-s.ctx.Done():

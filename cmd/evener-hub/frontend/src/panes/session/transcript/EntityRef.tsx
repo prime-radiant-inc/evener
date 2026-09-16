@@ -12,7 +12,7 @@ import {
   stableDelegateDisplayStatus,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { HoverCard } from "../../../widgets/hovercard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenButton } from "../../../widgets/openbutton";
@@ -232,8 +232,8 @@ function EntityCard({ view }: { view: EntityView }) {
 }
 
 export function EntityRef({ view, id, display, triggerOnly, embedded }: EntityRefProps) {
-  const context = useTranscriptRenderContext();
-  const resolved = view ?? context.entities?.get(id);
+  const entities = useEntityViews();
+  const resolved = view ?? entities?.get(id);
   const text = display ?? id;
   if (!resolved) return <span>{text}</span>;
 

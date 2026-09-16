@@ -16,7 +16,7 @@ import {
   friendlyLaunchErrorMessage,
   type ModelCatalogEntry,
   type ModelCatalog as ModelCatalogShape,
-  pickableRows,
+  pickableModelRows,
 } from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 // Import siblings directly, never through the widgets barrel: this module is
@@ -152,7 +152,7 @@ export function ModelCatalogPanel({
   // FocusScope (the first tabbable option).
   const query = isSheet ? "" : (typed ?? "");
   const rows = useMemo(() => buildPickerRows(catalog, query), [catalog, query]);
-  const picks = useMemo(() => pickableRows(rows), [rows]);
+  const picks = useMemo(() => pickableModelRows(rows), [rows]);
   const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
   // The current model can appear TWICE (once under Recent, once under its
   // provider group), but a single-select listbox may have exactly one

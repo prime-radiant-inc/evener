@@ -201,7 +201,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			_ = newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
 			runDir := t.TempDir()
 			_, _ = rendezvous.Write(runDir, rendezvous.Entry{PID: 7, Address: "127.0.0.1:1", ThreadID: "thread"})
-			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+			runRegistry := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir, Roster: rosterOverRunDir(t, runDir)})
 			if local, ok := runRegistry.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}

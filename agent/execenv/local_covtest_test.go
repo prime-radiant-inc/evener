@@ -118,7 +118,7 @@ func TestCovShellEscapeArgs(t *testing.T) {
 		{name: "simple", args: []string{"echo", "hello"}, want: "echo hello"},
 		{name: "empty argument", args: []string{""}, want: "''"},
 		{name: "space", args: []string{"echo", "hello world"}, want: "echo 'hello world'"},
-		{name: "single quote", args: []string{"it's"}, want: `'it'"'"'s'`},
+		{name: "single quote", args: []string{"it's"}, want: `'it'\''s'`},
 		{name: "shell syntax", args: []string{"$(rm -rf /)"}, want: "'$(rm -rf /)'"},
 		{name: "no arguments", args: nil, want: ""},
 		{name: "multiple arguments", args: []string{"git", "commit", "-m", "fix: issue #42"}, want: "git commit -m 'fix: issue #42'"},

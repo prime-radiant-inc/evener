@@ -26,6 +26,7 @@ import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { seedCurrentDelegate } from "./tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests } from "./tools/subagentModuleStore";
+import { textAround } from "./transcriptTestUtils";
 
 // The expand/collapse state now lives in the shared disclosureStore keyed by
 // item.id (yt2q), so it MUST be reset between tests - every test's default
@@ -1175,14 +1176,16 @@ test("a delegate_send card's Open transcript control rides inline between the de
   renderTools(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const trailing = screen.getByTestId("tool-row-trailing");
   expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
-  expect(trailing.previousSibling?.textContent).toBe("Sent a message to delegate dlg_abc123");
-  expect(trailing.nextSibling?.textContent).toBe(" · running");
+  const [before, after] = textAround(trailing);
+  expect(before).toBe("Sent a message to delegate dlg_abc123");
+  expect(after).toBe(" · running");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Sent a message to delegate dlg_abc123 · running");
   cleanup();
   render(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const openTrailing = screen.getByTestId("tool-row-trailing");
-  expect(openTrailing.previousSibling?.textContent).toBe("Sent a message to delegate dlg_abc123");
-  expect(openTrailing.nextSibling?.textContent).toBe(" · running");
+  const [openBefore, openAfter] = textAround(openTrailing);
+  expect(openBefore).toBe("Sent a message to delegate dlg_abc123");
+  expect(openAfter).toBe(" · running");
 });
 
 // --- summarySuffix (kata h70z): a descriptor may append text to the

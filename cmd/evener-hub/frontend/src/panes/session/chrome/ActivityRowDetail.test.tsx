@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { ActivityRowDetail } from "./ActivityRowDetail";
 import { detailLineByText } from "./detailLine.testFixture";
 
@@ -98,9 +99,9 @@ function delegateRow(
 
 // The id the strip's delegate line names, and the view the session's entity
 // map holds for it. buildEntityView is the chrome's own builder (useEntityView
-// wraps it), so this is the same map ActivityPanelBody hands the tree; the
-// tests below pass it in explicitly because the strip itself lives outside the
-// transcript subtree that carries the render context's map.
+// wraps it), so this is the same map ActivityPanelBody provides to the tree;
+// the tests below wrap the strip in EntityViewsProvider because the strip
+// lives outside the transcript subtree that provides the same map there.
 const DELEGATE_ID = "dlg_034HQ2kSDXfKFq1mm3idL1";
 
 function delegateEntities(id: string, task: string) {
@@ -120,6 +121,16 @@ function delegateEntities(id: string, task: string) {
     task,
   };
   return buildEntityView({ sessionRef: "ref_root", delegates: [delegate], turns: [], stale: false, ended: false });
+}
+
+// Every provider-wrapped delegate-line case below renders the same strip over
+// the same fixture map; only the assertions differ.
+function renderDelegateStrip() {
+  return render(
+    <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+    </EntityViewsProvider>,
+  );
 }
 
 // setupJobOutput spies the store method (not the module) so the preview's
@@ -212,17 +223,14 @@ describe("ActivityRowDetail", () => {
   // the row's own treeitem control - ruling R13), and it adds no second open
   // control to a row that already carries one.
   test("the delegate id renders as an embedded entity card trigger, not plain text", () => {
-    const { container } = render(
-      <ActivityRowDetail
-        row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })}
-        now={NOW}
-        entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}
-      />,
-    );
+    const { container } = renderDelegateStrip();
 
     const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
     const trigger = within(line).getByTestId("entity-trigger");
     expect(trigger.textContent).toBe(DELEGATE_ID);
+    // The provider is the only path that can mint the trigger (the strip takes
+    // no `entities` prop), and it mints exactly one for the whole document.
+    expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
     expect(trigger.getAttribute("tabindex")).toBeNull();
     expect(within(line).queryByRole("button")).toBeNull();
   });
@@ -232,13 +240,7 @@ describe("ActivityRowDetail", () => {
   test("the delegate id's trigger opens the entity card", () => {
     vi.useFakeTimers();
     try {
-      render(
-        <ActivityRowDetail
-          row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })}
-          now={NOW}
-          entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}
-        />,
-      );
+      renderDelegateStrip();
 
       fireEvent.focus(screen.getByTestId("entity-trigger"));
       act(() => {
@@ -251,6 +253,18 @@ describe("ActivityRowDetail", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // No provider owns the map in a bare render (a direct strip, or the chrome
+  // before its body mounts): the id stays the plain text it always was.
+  test("with no entity provider the delegate id stays plain text", () => {
+    const { container } = render(
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />,
+    );
+
+    const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
+    expect(within(line).queryByTestId("entity-trigger")).toBeNull();
+    expect(line.textContent).toContain(DELEGATE_ID);
   });
 
   test("live job row meta says running with quiet age, output bytes, and started time", () => {

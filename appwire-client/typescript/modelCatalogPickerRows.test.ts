@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
-import { buildPickerRows, pickableRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+import { buildPickerRows, pickableModelRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
 import type { ModelCatalog, ModelCatalogEntry } from "./modelCatalogTypes";
 
 function entry(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
@@ -94,13 +94,13 @@ describe("buildPickerRows", () => {
   });
 });
 
-describe("pickableRows", () => {
+describe("pickableModelRows", () => {
   test("keeps only model rows - group heads and unavailable lines are not options", () => {
     const rows = buildPickerRows(
       catalog({ recent: [GPT5], diagnostics: [{ provider: "ollama", message: "connection refused" }] }),
       "",
     );
-    expect(pickableRows(rows).map((r) => r.option.qualified)).toEqual([
+    expect(pickableModelRows(rows).map((r) => r.option.qualified)).toEqual([
       "openai/gpt-5",
       "anthropic/claude-sonnet-4-5",
       "openai/gpt-5",

@@ -24,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -1909,7 +1910,16 @@ func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, pa
 	if maxResults <= 0 {
 		maxResults = 100
 	}
-	res, err := e.ExecCommand(ctx, rg+" "+shellEscapeArgs(args...), 10_000, e.RootDir, nil)
+	// ExecArgv, not ExecCommand: ripgrep gets a real argument vector, so no
+	// shell ever parses the pattern, directory, or glob filter. The old
+	// ExecCommand string rendered each token with shellquote.Literal (POSIX
+	// single quoting), but on Windows ExecCommand runs the line through
+	// cmd.exe, which treats a single quote as ordinary text and offers no
+	// reliable way to neutralize '&' or '%'. A pattern like "foo&whoami" or
+	// "%VAR%" therefore stayed live there. Portable and shell-free beats
+	// platform-specific quoting: with argv in hand there is nothing to
+	// escape on any platform.
+	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
 		// Best-effort cap: keep first maxResults lines.
 		lines := strings.Split(res.Stdout, "\n")
@@ -2744,33 +2754,23 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 	return out
 }
 
-// ShellEscapeArgs joins args into a single shell command string, quoting each
-// token so it survives the shell word-splitting ExecCommand performs. It is the
-// argv-discipline helper the native worktree tools use to assemble git commands
-// (spec §2 "name validation": "Do not hand-build shell command strings"), so a
-// worktree name or path can never inject shell metacharacters.
-func ShellEscapeArgs(args ...string) string { return shellEscapeArgs(args...) }
-
-func shellEscapeArgs(args ...string) string {
-	var b strings.Builder
-	for i, a := range args {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		b.WriteString(shellEscape(a))
-	}
-	return b.String()
-}
-
-func shellEscape(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if strings.IndexFunc(s, func(r rune) bool {
-		return r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '\\' || r == '$' || r == '`' || r == '!' || r == '(' || r == ')' || r == ';' || r == '|' || r == '&' || r == '<' || r == '>' || r == '*' || r == '?' || r == '[' || r == ']' || r == '{' || r == '}' || r == '~' || r == '#'
-	}) == -1 {
-		return s
-	}
-	// Single-quote escape strategy for bash.
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
+// ShellEscapeArgs joins args into a single POSIX-shell command string, quoting
+// each token so it survives the shell word-splitting ExecCommand performs for a
+// POSIX shell. It is the argv-discipline helper used to assemble shell command
+// strings (spec §2 "name validation": "Do not hand-build shell command
+// strings"), so on that path a worktree name or path cannot inject a shell
+// metacharacter. The quoting itself lives in internal/shellquote so the whole
+// product shares one implementation; this name is kept for its callers, and
+// each argument is rendered with shellquote.Literal.
+//
+// It is NOT cmd.exe quoting, and Windows callers must not build an ExecCommand
+// string with it. ExecCommand runs the rendered line through cmd.exe on Windows
+// (shellCommand), where a single quote is an ordinary character rather than a
+// delimiter: 'a & calc &' still runs calc, and the '%' shellquote leaves bare
+// still expands as %VAR%. The shared helper keeps high bytes (non-ASCII) and
+// the caret bare so the bytes cmd.exe receives match the pre-consolidation
+// rendering, but that is byte-compatibility on the existing fallback path, not
+// safety. A Windows caller gets shell-free safety only from an argument vector
+// (ExecArgv); RunGit already prefers ExecArgv and reaches this fallback only
+// for environments that are not argv-capable.
+func ShellEscapeArgs(args ...string) string { return shellquote.Args(args...) }

@@ -1,5 +1,5 @@
 import { createStore } from "zustand/vanilla";
-import { MAX_ATTACHMENTS } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import { MAX_ATTACHMENTS } from "@evener/appwire-client";
 import {
   markerText,
   stripMarker,

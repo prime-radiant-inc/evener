@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -960,7 +961,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: "touch " + shellQuote(marker),
+		Command: "touch " + shellquote.Literal(marker),
 		Timeout: 5,
 	})
 	sess.hookRunner = runner
@@ -984,7 +985,7 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 		"hooks": {
 			"SubagentStop": [{
 				"matcher": "*",
-				"hooks": [{"type": "command", "command": "touch ` + shellQuote(marker) + `"}]
+				"hooks": [{"type": "command", "command": "touch ` + shellquote.Literal(marker) + `"}]
 			}]
 		}
 	}`

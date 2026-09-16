@@ -5,7 +5,7 @@
 // LaunchModelPicker only map rows to markup. Why rows and not nested groups:
 // the panel is an ARIA listbox whose options must be linearly navigable by
 // ArrowUp/Down. A flat array with a `kind` discriminant makes "skip the
-// heads and the unavailable lines" a filter (pickableRows) instead of a
+// heads and the unavailable lines" a filter (pickableModelRows) instead of a
 // tree walk.
 import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
 import {
@@ -89,7 +89,7 @@ export function buildPickerRows(catalog: ModelCatalog | null, query: string): Pi
   // A model row's registry warnings render as their own dim in-place line
   // directly beneath it, so an uncallable row is visibly flagged without the
   // note becoming a second listbox option. Same shape as an unavailable line:
-  // informational text, skipped by pickableRows.
+  // informational text, skipped by pickableModelRows.
   const pushWarnings = (option: CatalogOption, prefix: string) => {
     for (const [i, text] of (option.entry.warnings ?? []).entries()) {
       rows.push({ kind: "warning", key: `warning:${rows.length}:${prefix}:${option.qualified}:${i}`, text });
@@ -137,6 +137,6 @@ export function buildPickerRows(catalog: ModelCatalog | null, query: string): Pi
 
 /** The rows the keyboard walks and a click can pick: models only. Group heads
  * and unavailable lines are text, not options. */
-export function pickableRows(rows: PickerRow[]): PickerModelRow[] {
+export function pickableModelRows(rows: PickerRow[]): PickerModelRow[] {
   return rows.filter((row): row is PickerModelRow => row.kind === "model");
 }
