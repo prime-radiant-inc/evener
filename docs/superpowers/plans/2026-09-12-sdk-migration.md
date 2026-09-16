@@ -431,6 +431,7 @@ before acting on it.
 | C6 | #1227 | **merged** as `2b1e02939` — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts` |
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
+| C22 | #1411 | open — `widgets/pathfield/pathRows.ts` → `appwire-client/typescript/pathRows.ts` (name kept: nothing at the root exported `basename`, `parentOf`, `childrenPrefix`, `isDirEntry`, `buildPathRows` or `pickableRows`); its 337-line test moves with it, all five importers (three web, two native) move to the package name, qualification smoke-calls `buildPathRows` and `pickableRows`, no stub at the old path |
 | C14 | #1401 | open — `shell/rail/sessionState.ts` → `appwire-client/typescript/railSessionState.ts` (renamed: a bare `sessionState` beside `sessionErrors` in the package root is ambiguous); `humanizeState` gets its first test, both importers move to the package name, no stub at the old path |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
 | C16 | #1404 | open — `shell/reasoningEffort.ts` → `appwire-client/typescript/reasoningEffort.ts`, with the oracle test the module never had; nine importers (five web, four native) take the package-name import |

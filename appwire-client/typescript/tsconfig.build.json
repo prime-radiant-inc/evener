@@ -50,6 +50,7 @@
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
     "reasoningEffort.ts",
-    "credentialLabels.ts"
+    "credentialLabels.ts",
+    "pathRows.ts"
   ]
 }
