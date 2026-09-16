@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 
@@ -59,6 +61,53 @@ func TestProbe_HTTP_ValidInitialize_Available(t *testing.T) {
 	}
 	if got.Error != "" {
 		t.Errorf("Error = %q, want empty on success", got.Error)
+	}
+}
+
+// A healthy server must still read "available" when some other component
+// closes http.DefaultTransport's idle connections mid-handshake — which every
+// httptest.Server.Close in the process does, and which the parallel tests in
+// this file therefore do to each other (#1486). The probe's connections must
+// not live in a pool it doesn't own.
+//
+// The dangerous window is net/http's: after a bodyless response (the 202 to
+// "notifications/initialized") the readLoop returns the connection to the
+// idle pool BEFORE handing the response to roundTrip. A CloseIdleConnections
+// landing in that gap closes the conn, and roundTrip — woken by the close,
+// with the response not yet on its channel — reports the request as
+// "connection broken: http: CloseIdleConnections called". The SDK does not
+// retry a POST with a body, so Connect fails and the probe reads unreachable.
+//
+// httptrace.PutIdleConn fires on the readLoop exactly inside that gap, so the
+// hook closes a decoy server there; the Gosched lets roundTrip observe the
+// closed conn before the readLoop reaches its response send (measured on the
+// unfixed probe: 3/50 failures without the yield, 47/50 with it). With the
+// probe owning its transport the decoy's reap never touches its connections,
+// so the outcome no longer depends on scheduling.
+func TestProbe_HTTP_ProcessWideIdleConnClose_Available(t *testing.T) {
+	t.Parallel()
+	srv := newMCPTestServer(t, nil)
+	decoy := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(decoy.Close)
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		PutIdleConn: func(err error) {
+			if err != nil {
+				return
+			}
+			decoy.Close() // reaps http.DefaultTransport's idle connections
+			runtime.Gosched()
+		},
+	})
+
+	results := mcpprobe.Probe(ctx, []mcpconfig.ServerConfig{
+		{Name: "good", Type: "http", URL: srv.URL},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if got := results[0]; got.Status != "available" || got.Error != "" {
+		t.Errorf("Status/Error = %q/%q, want available with no error", got.Status, got.Error)
 	}
 }
 
