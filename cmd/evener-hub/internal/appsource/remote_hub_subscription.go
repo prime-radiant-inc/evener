@@ -12,6 +12,24 @@ import (
 // the same scheduling jitter before the relay's consumer has to be reading.
 const remoteHubSubBuffer = 128
 
+// remoteHubDrainReadAheadCap bounds the drain's read-ahead FIFO (see
+// drainLoop). It sizes each subscription's own read-ahead buffer (sub.in): while
+// one thread's consumer is backpressured the drain may hold at most this many
+// read-ahead notifications for THAT subscription before it treats the consumer
+// as stalled and resets the subscription. The bound is generous enough to cover
+// a large initial-turn replay (~160 messages, see appwire.NotificationBufferCap)
+// plus scheduling jitter while a consumer is briefly behind, yet small enough
+// that a permanently-stuck consumer — a relay that has not noticed a dead or
+// slow browser, with sub.in and sub.out full — cannot grow the controller's heap
+// without limit.
+//
+// The bound is per subscription, not shared across the drain's client. A shared
+// FIFO let one backpressured thread's backlog evict other healthy threads'
+// notifications (round six, medium: cross-thread contamination). Per-subscription
+// buffers isolate that: a saturated subscription can only ever exhaust its own
+// capacity.
+const remoteHubDrainReadAheadCap = remoteHubSubBuffer * 4
+
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
 //
@@ -24,7 +42,11 @@ const remoteHubSubBuffer = 128
 // cancellation.
 type remoteHubSubscription struct {
 	threadID string
-	// in is the drain's delivery slot. It is NEVER closed.
+	// in is the drain's delivery slot and this subscription's bounded
+	// read-ahead buffer (remoteHubDrainReadAheadCap). It is NEVER closed, so a
+	// delivery can never race a close; a full in means exactly this consumer has
+	// stalled past the cap, which routeNotification answers by resetting this
+	// subscription rather than dropping terminal state.
 	in chan appwire.Notification
 	// out is returned to the relay and closed ONLY by the pump.
 	out chan appwire.Notification
@@ -58,7 +80,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	subCtx, cancel := context.WithCancel(ctx)
 	sub := &remoteHubSubscription{
 		threadID: ref.ThreadID,
-		in:       make(chan appwire.Notification, remoteHubSubBuffer),
+		in:       make(chan appwire.Notification, remoteHubDrainReadAheadCap),
 		out:      make(chan appwire.Notification, remoteHubSubBuffer),
 		pumpDone: make(chan struct{}),
 		cancel:   cancel,
@@ -151,22 +173,67 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 	defer func() {
 		s.subMu.Lock()
 		delete(s.drains, client)
+		var orphaned []*remoteHubHostSubscription
+		for sub := range s.hostSubs {
+			if sub.client == client {
+				delete(s.hostSubs, sub)
+				orphaned = append(orphaned, sub)
+			}
+		}
 		s.subMu.Unlock()
+		// Signal teardown on a dedicated channel and never close in: in stays
+		// the drain goroutine's alone, so a host-fan-out send can never race a
+		// close, and a pump parked on a full out is still unblocked (it selects
+		// on clientDone) so the consumer observes the close and re-subscribes
+		// against the next client.
+		for _, sub := range orphaned {
+			close(sub.clientDone)
+		}
 	}()
+	// The drain never blocks on a thread consumer. Each subscription carries its
+	// own bounded read-ahead buffer (sub.in, remoteHubDrainReadAheadCap) and
+	// routeNotification delivers with a non-blocking send, so a healthy consumer
+	// keeps pace and a stalled one fills only its own buffer. Because this
+	// goroutine always returns immediately to the client's own stream — no
+	// thread send can park it — a client teardown is still observed and the
+	// deferred cleanup above always runs, which is round four's property. A
+	// per-subscription bound is also what keeps one stalled thread from evicting
+	// another healthy thread's notifications: there is no shared FIFO left to
+	// overflow into (round six, medium). Overflow is not a silent drop; see
+	// routeNotification.
 	for {
 		notification, ok := <-client.Notifications()
 		if !ok {
 			return
 		}
+		// Host-level consumers see the notifications their filter accepts;
+		// delivery is scoped to the owning client so one connection's traffic
+		// never reaches another's subscriptions. It is prompt (non-blocking) and
+		// stays in read order: it happens before this notification's thread
+		// routing.
+		s.publishHostNotification(client, notification)
 		s.routeNotification(notification)
 	}
 }
 
 // routeNotification delivers one remote notification to the subscription for
-// its (translated) thread. It observes the subscriber under the lock and sends
-// outside it; a stale reference is harmless because in is never closed.
-// Blocking rather than dropping is deliberate: a dropped turn/completed is
-// exactly the failure this component exists to prevent.
+// its (translated) thread with a non-blocking send into that subscription's own
+// bounded read-ahead buffer (sub.in). It observes the subscriber under the lock
+// and sends outside it; a stale reference is harmless because in is never closed.
+//
+// The send is non-blocking deliberately. Blocking would park the shared drain on
+// one slow consumer; read-ahead to hide that parking was what forced a shared
+// FIFO, whose overflow dropped other threads' notifications. With a
+// per-subscription buffer, a full in means exactly one consumer has stalled past
+// remoteHubDrainReadAheadCap — and a silently dropped turn/completed is the
+// failure this component exists to prevent. So instead of dropping while keeping
+// the subscription open (which left the browser stuck on a turn the remote had
+// already completed), the drain resets THAT subscription: it cancels its
+// context, so the pump closes out and the controller relay observes subscription
+// end and runs its recovery path — a fresh thread read plus an
+// evener/thread/resync broadcast (app_relay.go). Every other subscription keeps
+// flowing untouched, and the drain still never blocks, so a client teardown is
+// never hidden behind a stalled send.
 func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {
@@ -180,7 +247,30 @@ func (s *RemoteHubSource) routeNotification(notification appwire.Notification) {
 	}
 	select {
 	case sub.in <- translated:
+		return
 	case <-sub.pumpDone:
+		// The pump already gave up on this subscription; there is nothing left
+		// to recover and no buffer to protect.
+		return
+	default:
+	}
+	// sub.in is full: this consumer has stalled past its whole read-ahead
+	// buffer. Count the overflow (the frame that did not fit is lost) and reset
+	// the subscription so its relay re-reads the thread snapshot instead of
+	// being left silently behind.
+	s.threadReadAheadDropped.Add(1)
+	sub.reset()
+}
+
+// reset tears down one saturated subscription so its consumer recovers through
+// the relay's subscription-end path instead of silently losing terminal state.
+// It cancels the subscription's own context — the pump then closes out and
+// pumpDone and unregisters, and app_relay.go re-subscribes with a fresh thread
+// read. Cancelling only this subscription's context isolates the reset: no other
+// thread's subscription, and no other client, is affected.
+func (sub *remoteHubSubscription) reset() {
+	if sub.cancel != nil {
+		sub.cancel()
 	}
 }
 

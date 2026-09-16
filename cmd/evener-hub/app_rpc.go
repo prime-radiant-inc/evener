@@ -384,6 +384,22 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
+	// Component 07a: the remote-admin proxy and its host-tagged config
+	// notification fan-out. Nothing here reads or writes a credential.
+	//
+	// The fan-out is a server-lifetime worker, not a per-connection one: it must
+	// stay subscribed while no browser is connected so that a host's config
+	// change is still relayed when one returns, and it re-subscribes itself
+	// across client reconnects. Its context is the RPC server's own lifetime
+	// handle (round eight), which Shutdown cancels when shutdown begins. Bound
+	// this way the fan-out stops with the server it belongs to: a hub server
+	// recreated in-process no longer leaves the previous server's fan-outs
+	// subscribed forever (one goroutine per remote host, each still holding the
+	// old server's sources and broadcaster, which would also duplicate every
+	// host notification once a replacement subscribed too). Pinned by
+	// TestHostAdminFanOutStopsWhenServerShutdown here and by
+	// TestHostAdminFanOutStopsWhenContextCanceled at the controller level.
+	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
 	return server
 }
 
