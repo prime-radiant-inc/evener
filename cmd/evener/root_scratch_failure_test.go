@@ -10,7 +10,9 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/llm"
 )
 
 // provisionScratchOwningEnv gives env the owned session scratch a sandboxed
@@ -135,6 +137,46 @@ func TestServeRetainsReferencedScratchWhenRootConstructionFailsAfterRetention(t 
 	}, deps)
 	if err == nil || !strings.Contains(err.Error(), "unknown context strategy") {
 		t.Fatalf("serve error = %v, want the post-retention context-strategy failure", err)
+	}
+
+	assertRetainedScratchStillIntact(t, stateDir, provisioned)
+}
+
+// TestRunServeClearRetainsReferencedScratchWhenConstructionFailsAfterRetention
+// is the thread/clear half of the same regression. The clear path builds its
+// replacement through the same agent.NewSession, which publishes the root's
+// durable scratch retention partway through construction, and then reaches its
+// own bare clearEnv.DisposeUnadoptedScratch. A failure after that publish would
+// os.RemoveAll a directory the manifest still references; references are
+// append-only with no unpin API, so the root's retirement preparation and any
+// cold resume would then be refused forever. The cleanup owes the same
+// retention-aware settling the fresh-session path already does.
+func TestRunServeClearRetainsReferencedScratchWhenConstructionFailsAfterRetention(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	var provisioned *execenv.LocalExecutionEnvironment
+	var stateDir string
+	deps.provisionSandbox = func(env *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		provisioned = env
+		if cfg != nil {
+			stateDir = cfg.StateDir
+		}
+		return provisionScratchOwningEnv(env)
+	}
+	buildClearSession := deps.newClearSession
+	deps.newClearSession = func(c *llm.Client, p *provider.Profile, e execenv.ExecutionEnvironment, cfg agent.SessionConfig) (*agent.Session, error) {
+		// Fail AFTER installScratchRetention published the retained allocation,
+		// which is the same late failure the run and serve-fresh regression
+		// tests drive: the strategy is resolved after retention is published.
+		cfg.ContextStrategy = "definitely-not-a-strategy"
+		return buildClearSession(c, p, e, cfg)
+	}
+
+	obs := runClearAttempt(t, deps, state, args, nil)
+	if obs.clearErr == nil || !strings.Contains(obs.clearErr.Error(), "unknown context strategy") {
+		t.Fatalf("thread/clear error = %v, want the post-retention context-strategy failure", obs.clearErr)
+	}
+	if stateDir == "" || provisioned == nil {
+		t.Fatal("the clear construction never provisioned, so the failed cleanup observed nothing")
 	}
 
 	assertRetainedScratchStillIntact(t, stateDir, provisioned)

@@ -35,7 +35,7 @@ func (s *Server) daemonLifecycleHooks() (func() appwire.DaemonLifecycle, func(co
 func DaemonLifecycleFromSnapshot(snap agent.RetirementSnapshot) appwire.DaemonLifecycle {
 	out := appwire.DaemonLifecycle{
 		Phase:         snap.Phase,
-		TimeoutMillis: snap.Timeout.Milliseconds(),
+		TimeoutMillis: appwire.DurationMillis(snap.Timeout),
 		Blockers:      make([]appwire.DaemonBlocker, 0, len(snap.Blockers)),
 		Failure:       snap.Failure,
 	}

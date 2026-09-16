@@ -309,3 +309,23 @@ func TestDaemonLostRetireResponseIsNotProofOfExit(t *testing.T) {
 		t.Fatalf("daemon did not return to resident: %+v", resp.Lifecycle)
 	}
 }
+
+// TestDaemonLifecycleFromSnapshotKeepsASubMillisecondDeadlineArmed pins the
+// wire half of the sub-millisecond conversion at the daemon-status boundary.
+// Zero is the value this contract and the Hub UI read as "retirement
+// disabled", so a positive deadline below one millisecond must not truncate
+// into it and render an armed daemon as though retirement were off.
+func TestDaemonLifecycleFromSnapshotKeepsASubMillisecondDeadlineArmed(t *testing.T) {
+	sub := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{Timeout: 500 * time.Microsecond})
+	if sub.TimeoutMillis != 1 {
+		t.Fatalf("TimeoutMillis = %d for a 500us deadline, want 1; 0 would read as disabled", sub.TimeoutMillis)
+	}
+	// Zero is still exactly the disabled value.
+	if disabled := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{}); disabled.TimeoutMillis != 0 {
+		t.Fatalf("TimeoutMillis = %d for a zero deadline, want 0 (disabled)", disabled.TimeoutMillis)
+	}
+	// An ordinary deadline is unchanged by the rounding.
+	if hour := DaemonLifecycleFromSnapshot(agent.RetirementSnapshot{Timeout: time.Hour}); hour.TimeoutMillis != 3600000 {
+		t.Fatalf("TimeoutMillis = %d for a one-hour deadline, want 3600000", hour.TimeoutMillis)
+	}
+}

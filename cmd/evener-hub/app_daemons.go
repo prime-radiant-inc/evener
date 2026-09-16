@@ -125,7 +125,7 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 	// server always rejects.
 	canRetire := strongOwnershipAvailable()
 	response := appwire.DaemonListResponse{
-		DefaultTimeoutMillis: cfg.DaemonIdleTimeout.Milliseconds(),
+		DefaultTimeoutMillis: appwire.DurationMillis(cfg.DaemonIdleTimeout),
 		Daemons:              []appwire.DaemonResident{},
 	}
 	seen := make(map[string]bool)
