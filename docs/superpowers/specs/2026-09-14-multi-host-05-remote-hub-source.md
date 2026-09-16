@@ -691,11 +691,16 @@ a host nobody asked for. Component 04 must therefore also provide an
 client only while a live channel is installed, and reports "not attached"
 without dialing (e.g. `ClientIfAttached(host) (*appwire.Client, bool)`) — and
 component 06's snapshot must use that, not the `Ensure`-backed resolver, so the
-check and the request cannot disagree. **Implementation status:** both the gate
-and the attached-only lookup are the implementing PR's requirement; the shipped
-`refreshRemoteThreadSnapshot` (`web_api_tree.go`) iterates `s.sources.All()` with
-no attachment gate, and `RemoteHubClientFunc` is wired to `Ensure`, so neither
-exists yet.
+check and the request cannot disagree. **Implementation status:** shipped.
+`sshconn.Manager.ClientIfAttached` exists (component 04a) and is installed on
+the source through `hubcore.WebConfig.RemoteHostClientIfAttached` /
+`SetHostClientIfAttached`; `refreshRemoteThreadSnapshot`
+(`web_api_tree.go`), and its synchronous `remoteThreadFetch` fallback, gate on
+it and skip an unattached host without a call, carrying the host's
+last-known-good rows forward instead of blanking them. `RemoteHubClientFunc` is
+no longer what the source resolves calls through — the source resolves every
+call through the attached-only lookup (see the next section) — so the gate and
+the request cannot disagree.
 
 **The same gate applies to the primary `thread/list` fan-out, not only the
 snapshot.** A **non-explicit** fleet-wide `thread/list` (empty `SourceIDs`) must
@@ -712,7 +717,12 @@ manager (component 04, §"Channel lifecycle states"), the attachment-based
 that explicit list is one of the intended attach triggers (alongside component
 06's Connect action), the opposite of the implicit empty-filter fan-out. So the
 rule is: empty filter ⇒ attached-only, no dial; explicit host in `SourceIDs` ⇒
-may attach.
+may attach. **Implementation status:** shipped. `hubThreadListWithSourceTimeout`
+(`app_threadlist.go`) skips a remote source for an empty filter when the
+attached-only lookup reports it not attached, and attaches an explicitly named
+remote host (`RemoteHostClient`, the `Ensure`-backed dial) before calling the
+source — the only remaining attach trigger besides the not-yet-shipped
+component-06 Connect action.
 
 **Every other remote call is non-dialing, not just the snapshot and the
 non-explicit list.** The gate above covers the background snapshot and the
@@ -741,10 +751,17 @@ first-attach bootstrap those two drive (component 04 §5). In particular a spawn
 on an offline host is refused, not attached: component 06 disables an offline
 host for a spawn and offers the Connect action instead, so `thread/start` never
 reaches `Ensure` either. **Implementation status:** `ClientIfAttached` exists on
-the manager (04a), but the shipped `RemoteHubClientFunc` is wired to
-`Ensure` + `ch.Client()` for *all* calls (`remote_hub_source.go`), so the
-attached-only resolution for direct calls is the implementing PR's requirement,
-not a present fact.
+the manager (04a) and is now the source's resolver for *all* calls:
+`RemoteHubSource.resolveClient` (`remote_hub_source.go`) answers from
+`SetHostClientIfAttached` when installed (production), returning
+`appwire.SessionUnavailable("remote hub unavailable: <host>")` for a host with
+no live channel, and never dials. The wired `RemoteHubClientFunc` is only the
+fallback for tests that inject a client function without the attached-only seam.
+The capability probe reads its handshake facts (`ProtocolVersion`, `ServerInfo`,
+`SourceID`, `Features`) through `hubcore.WebConfig.RemoteHostHandshake` /
+`SetHostHandshake` (backed by `Manager.HandshakeIfAttached`) and its preflight
+facts through `RemoteHostFacts` / `SetHostFacts` (backed by
+`Manager.PreflightIfAttached`).
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote

@@ -360,7 +360,7 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      §Open questions item 4); until then a multi-hop cycle is not refused and
      configuration is acyclic by convention only.
 
-4. **Wiring** (design settled; **implementation pending merge, not on `main`**):
+4. **Wiring** (design settled; **shipped**):
    `cmd/evener-hub/main.go` converts `cfg.Hosts` into `[]hostreg.Host` and calls
    `hostreg.New` once at startup, then builds the component-04 manager over that
    registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
@@ -379,12 +379,20 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
-   implemented shape.) **Implementation status:** the `hostreg` package and
-   `hostreg.New` are on `main`; the `sshconn` manager and the
-   `hubcore.WebConfig` `RemoteHosts`/`RemoteHost{Client,Facts,Online}` fields are
-   implemented on the component branches (`multi-host-pr04a-ssh-channel`,
-   `multi-host-pr06a-fleet-view-go`) and are **pending merge** — they do not
-   exist on `main`, so this wiring must not be read as shipped.
+   implemented shape.) **Implementation status:** shipped. The `hostreg` package
+   and `hostreg.New`, the `sshconn` manager, and the `hubcore.WebConfig`
+   `RemoteHosts` / `RemoteHostClient` / `RemoteHostFacts` / `RemoteHostOnline`
+   fields landed with components 03/04; the attached-only additions this section
+   names (`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached` /
+   `Manager.ClientIfAttached`, wired through `RemoteHostFacts` /
+   `RemoteHostHandshake` / `RemoteHostClientIfAttached`) landed with the
+   attached-only enforcement PR. `RemoteHostFacts` is the non-dialing
+   `PreflightIfAttached` accessor, so the capability probe and the fleet snapshot
+   cannot attach a dormant host through it; `RemoteHostClient` remains the
+   `Ensure`-backed dial reserved for the explicit attach triggers (an explicit
+   host in `thread/list`'s `SourceIDs`, and the not-yet-shipped component-06
+   Connect action). The `Channel` handshake is reached by host name through
+   `Manager.HandshakeIfAttached` (`Channel.Handshake()` backs it).
 
 ## Data flow
 

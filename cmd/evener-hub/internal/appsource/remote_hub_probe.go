@@ -54,6 +54,15 @@ type HostFacts struct {
 // mixing two connections' worth of state into one snapshot.
 type HostFactsFunc func(ctx context.Context, host string, client *appwire.Client) (HostFacts, error)
 
+// HostHandshakeFunc returns the InitializeResponse the named remote host's
+// channel captured when it attached, and reports false when no live channel is
+// installed. It never dials. The capability probe reads ProtocolVersion,
+// ServerInfo (hub name/version), SourceID, and Features through it: appwire
+// keeps the client's Features copy privately, and the connection-scoped
+// initialize cannot be re-run on the already-initialized channel component 04
+// handed over. It is backed by sshconn.Manager.HandshakeIfAttached.
+type HostHandshakeFunc func(host string) (appwire.InitializeResponse, bool)
+
 // remoteHubProbe is one successful probe cached against the client it ran on.
 // Keeping the client pointer lets HostCapabilities re-probe automatically when
 // a component-04 reconnect hands back a new client.
@@ -75,7 +84,7 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	if err := ctx.Err(); err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
 	}
@@ -88,6 +97,7 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	// probe below runs without probeMu so it holds no lock across wire I/O.
 	s.probeMu.Lock()
 	factsFn := s.facts
+	handshakeFn := s.handshake
 	s.probeMu.Unlock()
 
 	var caps HostCapabilities
@@ -134,7 +144,22 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		caps.Arch = facts.Arch
 		caps.Features = facts.Features
 	}
-	caps.HubSourceID = remoteHubNamespace
+	// The attach handshake carries the connection's own ProtocolVersion,
+	// ServerInfo (hub name/version), SourceID, and Features. When component 04
+	// exposed it, those four are authoritative — they describe this exact
+	// generation — while OS/Arch stay preflight-owned. Without the seam the
+	// preflight-owned fields above stand and the remote namespace is fixed.
+	if handshakeFn != nil {
+		if hs, ok := handshakeFn(s.id); ok {
+			caps.ProtocolVersion = hs.ProtocolVersion
+			caps.HubVersion = hs.ServerInfo.Version
+			caps.HubSourceID = hs.SourceID
+			caps.Features = hs.Features
+		}
+	}
+	if caps.HubSourceID == "" {
+		caps.HubSourceID = remoteHubNamespace
+	}
 	caps.Roots = append([]string(nil), s.roots...)
 
 	s.probeMu.Lock()

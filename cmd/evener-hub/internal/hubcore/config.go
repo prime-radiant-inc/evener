@@ -85,14 +85,28 @@ type WebConfig struct {
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).
 	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostClientIfAttached returns the current attached AppWire client for
+	// a remote host ONLY while a live channel is installed, without dialing
+	// (component 04's Manager.ClientIfAttached). The non-explicit read paths —
+	// every RemoteHubSource call, the empty-filter thread/list fan-out, and the
+	// background snapshot — resolve through this seam rather than
+	// RemoteHostClient, so none can eagerly attach a dormant host or re-dial one
+	// that dropped. nil leaves those paths on the dialing RemoteHostClient
+	// (tests).
+	RemoteHostClientIfAttached func(host string) (*appwire.Client, bool)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
 	// version, hub version, OS/arch, advertised features) for the AppWire
-	// connection behind client, the exact generation RemoteHostClient resolved
-	// for the capability probe; an implementation must answer from that same
-	// generation rather than racing a reconnect. The capability probe combines
-	// the facts with its AppWire reads. nil leaves the preflight-owned fields
-	// zero-valued (tests).
+	// connection behind client: the non-dialing, attached-only accessor
+	// sshconn.Manager.PreflightIfAttached, which answers from the installed
+	// channel alone. The capability probe combines the facts with its AppWire
+	// reads. nil leaves the preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
+	// ServerInfo, SourceID, Features) captured when a remote host's channel
+	// attached, ONLY while a live channel is installed, without dialing
+	// (component 04's Manager.HandshakeIfAttached). The capability probe reads
+	// those four fields through it. nil leaves them zero-valued (tests).
+	RemoteHostHandshake func(host string) (appwire.InitializeResponse, bool)
 	// controller-to-host channel (component 06). Nil leaves every remote host
 	// online (tests).
 	RemoteHostOnline func(host string) bool

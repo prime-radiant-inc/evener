@@ -64,6 +64,8 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
 	allSources := sources.All()
+	remoteHosts := remoteHostNames(cfg)
+	explicit := len(params.SourceIDs) > 0
 	type sourceResult struct {
 		index int
 		resp  appwire.ThreadListResponse
@@ -72,6 +74,15 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	allowed := make([]int, 0, len(allSources))
 	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
+			continue
+		}
+		// A non-explicit (empty-filter) fan-out must not force attachment: a
+		// remote host with no live channel is skipped without a call, so simply
+		// opening the hub and listing the fleet cannot dial every configured host
+		// (component 05, §"The same gate applies to the primary thread/list
+		// fan-out"). A source named explicitly in SourceIDs is a deliberate,
+		// host-targeted request and may attach (below).
+		if !explicit && !remoteSourceAttached(cfg, remoteHosts, source.ID()) {
 			continue
 		}
 		allowed = append(allowed, index)
@@ -95,6 +106,18 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 					// budget that call needs, and every other source keeps the
 					// local-daemon deadline the caller passed.
 					sourceCtx, cancel := context.WithTimeout(ctx, threadListTimeoutFor(source, sourceTimeout))
+					// The explicit host-targeted request is one of the two intended
+					// attach triggers: attach before calling the source, whose own
+					// resolver is attached-only and so never dials. A non-explicit
+					// request never reaches here for an unattached host.
+					if _, isRemote := remoteHosts[source.ID()]; isRemote &&
+						sourceExplicitlyRequestedForList(source.ID(), params) && cfg.RemoteHostClient != nil {
+						if _, err := cfg.RemoteHostClient(sourceCtx, source.ID()); err != nil {
+							results <- sourceResult{index: index, err: err}
+							cancel()
+							continue
+						}
+					}
 					resp, err := source.ListThreads(sourceCtx, params)
 					cancel()
 					results <- sourceResult{index: index, resp: resp, err: err}
@@ -251,6 +274,38 @@ func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool
 
 func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadListParams) bool {
 	return slices.Contains(params.SourceIDs, sourceID)
+}
+
+// remoteHostNames is the set of configured remote host names, so the fan-out can
+// tell a remote source (which must gate on attachment) from the local one.
+func remoteHostNames(cfg hubcore.WebConfig) map[string]struct{} {
+	if len(cfg.RemoteHosts) == 0 {
+		return nil
+	}
+	names := make(map[string]struct{}, len(cfg.RemoteHosts))
+	for _, host := range cfg.RemoteHosts {
+		names[host.Name] = struct{}{}
+	}
+	return names
+}
+
+// remoteSourceAttached reports whether a source is safe for a non-explicit
+// fan-out to call: a local source always is, and a remote source only while the
+// attached-only lookup finds a live channel. It is a skip, never a dial: the
+// lookup is Manager.ClientIfAttached, so an unattached host is skipped without a
+// call and a host that drops between this check and the source's own
+// (attached-only) resolution is reported unavailable rather than re-attached.
+// With no lookup wired (tests) it reports attached, preserving the pre-gate
+// behavior.
+func remoteSourceAttached(cfg hubcore.WebConfig, remoteHosts map[string]struct{}, sourceID string) bool {
+	if _, isRemote := remoteHosts[sourceID]; !isRemote {
+		return true
+	}
+	if cfg.RemoteHostClientIfAttached == nil {
+		return true
+	}
+	_, ok := cfg.RemoteHostClientIfAttached(sourceID)
+	return ok
 }
 
 // mergePastMetadataForList enriches live with its past-persisted metadata.

@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -3368,6 +3369,109 @@ func TestClientIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 	if client, ok := m.ClientIfAttached("alpha"); ok || client != nil {
 		t.Fatalf("ClientIfAttached(a closed manager) = %v, %v; want nil, false", client, ok)
+	}
+}
+
+// PreflightIfAttached is the attached-only accessor behind
+// hubcore.WebConfig.RemoteHostFacts: it answers from the installed channel's
+// captured preflight alone, never preflighting or attaching a dormant host, and
+// stops answering the moment that channel drops or the manager closes.
+func TestPreflightIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(unattached) = %+v, true; want zero, false", pf)
+	}
+	if pf, ok := m.PreflightIfAttached("ghost"); ok {
+		t.Fatalf("PreflightIfAttached(unknown host) = %+v, true; want zero, false", pf)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("PreflightIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	pf, ok := m.PreflightIfAttached("alpha")
+	if !ok {
+		t.Fatalf("PreflightIfAttached(attached) = %+v, false; want the live preflight, true", pf)
+	}
+	if !reflect.DeepEqual(pf, ch.Preflight()) {
+		t.Fatalf("PreflightIfAttached = %+v; want the installed channel's %+v", pf, ch.Preflight())
+	}
+	if pf, ok := m.PreflightIfAttached("  alpha  "); !ok || !reflect.DeepEqual(pf, ch.Preflight()) {
+		t.Fatalf("PreflightIfAttached did not normalize the name: %+v, %v", pf, ok)
+	}
+
+	ch.markLost()
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(a dropped channel) = %+v, true; want zero, false", pf)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(a closed manager) = %+v, true; want zero, false", pf)
+	}
+}
+
+// HandshakeIfAttached is the attached-only accessor behind
+// hubcore.WebConfig.RemoteHostHandshake: component 05's capability probe reads
+// ProtocolVersion/ServerInfo/SourceID/Features through it, so it must offer the
+// InitializeResponse captured at attach for a live channel and never dial.
+func TestHandshakeIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(unattached) = %+v, true; want zero, false", hs)
+	}
+	if hs, ok := m.HandshakeIfAttached("ghost"); ok {
+		t.Fatalf("HandshakeIfAttached(unknown host) = %+v, true; want zero, false", hs)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("HandshakeIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	hs, ok := m.HandshakeIfAttached("alpha")
+	if !ok {
+		t.Fatalf("HandshakeIfAttached(attached) = %+v, false; want the captured handshake, true", hs)
+	}
+	if hs.ProtocolVersion != appwire.ProtocolVersion {
+		t.Fatalf("HandshakeIfAttached ProtocolVersion = %q, want %q", hs.ProtocolVersion, appwire.ProtocolVersion)
+	}
+	if !reflect.DeepEqual(hs, ch.Handshake()) {
+		t.Fatalf("HandshakeIfAttached = %+v; want the installed channel's %+v", hs, ch.Handshake())
+	}
+	if hs, ok := m.HandshakeIfAttached("  alpha  "); !ok || !reflect.DeepEqual(hs, ch.Handshake()) {
+		t.Fatalf("HandshakeIfAttached did not normalize the name: %+v, %v", hs, ok)
+	}
+
+	ch.markLost()
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(a dropped channel) = %+v, true; want zero, false", hs)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(a closed manager) = %+v, true; want zero, false", hs)
 	}
 }
 

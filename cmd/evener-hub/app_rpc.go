@@ -49,7 +49,13 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		} else {
 			for _, host := range cfg.RemoteHosts {
 				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
+				// The non-dialing seams every non-explicit read path resolves
+				// through: the attached-only client lookup and the attach
+				// handshake facts (component 05, §"Registration and
+				// default-source selection").
+				source.SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)
 				source.SetHostFacts(cfg.RemoteHostFacts)
+				source.SetHostHandshake(cfg.RemoteHostHandshake)
 				source.SetHostOnline(func() bool {
 					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
 				})
