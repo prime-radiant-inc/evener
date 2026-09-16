@@ -562,6 +562,44 @@ describe("ConversationService", () => {
       });
     });
 
+    // A replayed input image reaches a page with no bytes and no stamped url,
+    // only its content sha; the package resolves it to the hub's
+    // /s/{session}/images/{sha} route, so the page must hydrate under the real
+    // thread id — a placeholder id would name a session the hub cannot serve.
+    it("routes an older page's sha-only image through the real thread id", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const sha = "a".repeat(64);
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [
+              {
+                id: "turn-older",
+                itemsView: "fragment",
+                status: "completed",
+                items: [
+                  {
+                    id: "u-older",
+                    type: "userMessage",
+                    text: "see attached",
+                    images: [{ type: "image", name: "shot.png", metadata: { sha } }],
+                  },
+                ] as ThreadItem[],
+              },
+            ],
+          }) as ThreadTurnsListResponse,
+      );
+
+      const result = await service.loadOlder("opaque-cursor");
+      expect(result.items[1]).toMatchObject({
+        kind: "attachments",
+        id: "u-older:attachments",
+        items: [{ id: "u-older:0", src: `/s/thread-1/images/${sha}`, name: "shot.png" }],
+      });
+    });
+
     it("preserves fragment completeness metadata for the page boundary", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
