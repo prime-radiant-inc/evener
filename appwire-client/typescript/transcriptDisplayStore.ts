@@ -430,9 +430,20 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     return getState().hubSupport === "supported";
   }
 
-  /** A direct write's reply is its own to land: live hub, and no later write
-   * on its layout or payload retirement has superseded it. */
-  function patchStillMine(generation: number, layout: ViewportClass, token: number): boolean {
+  /** Takes the layout for this write. A layer carries ONE hub value, so the
+   * later write on it owns the outcome and every earlier reply for that layer
+   * is superseded - whichever path either write came from. Payload retirement
+   * takes every layout the same way. */
+  function claimLayoutWrite(layout: ViewportClass): number {
+    const token = ++patchSerial;
+    patchTokens.set(layout, token);
+    return token;
+  }
+
+  /** A write's reply is its own to land: live hub, and no later write on its
+   * layout or payload retirement has superseded it. Both write paths fence
+   * here. */
+  function writeStillMine(generation: number, layout: ViewportClass, token: number): boolean {
     return fence.liveHub(generation) && patchTokens.get(layout) === token;
   }
 
@@ -442,9 +453,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * in-flight flags end here. A checkpointed write caught mid-flight has an
    * UNKNOWN outcome - exactly what writeUncertain means, and what its
    * checkpoint already says on disk; the next authoritative read settles it.
-   * A direct write's preview stays up: its outcome is as unknown as the
+   * A direct write's preview stays up for a retirement that keeps the HUB
+   * (a transient disconnect, same hub): its outcome is as unknown as the
    * checkpointed write's, and the host shows it until a confirmed value
-   * replaces it. `extra` is the site's own addition in the same publish. */
+   * replaces it. The sites that discard the hub identity instead - detachHub
+   * and a support drop - clear it with the rest, because a preview describes
+   * a write sent to a hub this store has left and says nothing about the next
+   * one's value. `extra` is the site's own addition in the same publish. */
   function retirePayload(extra: Partial<TranscriptDisplayStoreFields> = {}): void {
     fence.supersede();
     for (const layout of LAYOUTS) patchTokens.set(layout, ++patchSerial);
@@ -463,16 +478,18 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * current generation has confirmed state, a revision at or below the held
    * one is stale and ignored; a new generation's first payload is
    * authoritative at ANY revision, because revision numbering is the hub's
-   * and a reconnect can be a hub restart. That exception is the PAYLOAD's,
-   * not one layer's: `authoritative` defaults to the store's own confirmed
-   * state and a caller applying several layouts of one payload pins it once
-   * up front, so the first layer's apply does not fence the rest. `extra`
-   * lands in the same publish. Returns false for an ignored payload. */
+   * and a reconnect can be a hub restart. That exception belongs to the
+   * authoritative READ and to its whole payload: only `refreshFor` passes
+   * `authoritative`, once for every layer it applies, so the first layer's
+   * apply does not fence the rest. A broadcast, a relayed change and a
+   * write's reply are never a generation's first payload and never confirm
+   * it - `loaded` rides the read's own publish. `extra` lands in the same
+   * publish. Returns false for an ignored payload. */
   function applyHubDefault(
     layout: ViewportClass,
     value: HubTranscriptDisplayDefault,
     extra: Partial<TranscriptDisplayStoreFields> = {},
-    authoritative: boolean = !getState().loaded,
+    authoritative = false,
   ): boolean {
     const state = getState();
     const previous = state.hub[layout];
@@ -483,7 +500,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const hub = { ...state.hub, [layout]: value };
     setState({
       hub,
-      loaded: true,
       draftConflict: staleDraft(state.draft, hub),
       ...extra,
     });
@@ -538,7 +554,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // nothing left to retire and would publish a fresh `hub` identity per
       // tick.
       if (state.hubSupport === support) return;
-      retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {} });
+      retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {}, drafts: {} });
       return;
     }
     // The unknown window is the transient-disconnect case: the payload keeps
@@ -574,6 +590,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     applyHubDefault(change.layout, { revision: change.revision, config: change.config });
   }
 
+  /** A change the HOST relayed rather than the store's own subscription (the
+   * web's one client feeds several stores). Like a notification it is not
+   * this generation's confirmation: it merges into `hub` under the ordinary
+   * stale guard and leaves the authoritative read to confirm. */
   function applyHubChange(change: TranscriptDisplayChange): void {
     if (!isViewportClass(change.layout) || !isRevision(change.revision)) return;
     let config: TranscriptDisplayConfigV1;
@@ -624,14 +644,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // one hub, so whether this generation's confirmed state exists yet is
       // read ONCE: the desktop apply flips `loaded`, and without the pin the
       // mobile layer would then be fenced by the previous hub's revision.
-      const authoritative = !getState().loaded;
+      const authoritative = fence.awaitingFirstPayload;
       applyHubDefault("desktop", defaults.desktop, {}, authoritative);
       applyHubDefault(
         "mobile",
         defaults.mobile,
-        { hubLoading: false, ...settledWrite(writeSerialAtStart) },
+        { loaded: true, hubLoading: false, ...settledWrite(writeSerialAtStart) },
         authoritative,
       );
+      fence.firstPayloadApplied();
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state and THIS get's response may predate it. One
@@ -662,7 +683,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // refresh lands they must not present as current or as a base for a
     // write. hubSupport is connection-sourced, not hub state, so it is left
     // to setSupport.
-    retirePayload({ hub: {}, hubError: null, hubErrors: {} });
+    retirePayload({ hub: {}, hubError: null, hubErrors: {}, drafts: {} });
   }
 
   function layoutError(layout: ViewportClass, message: string | undefined): Partial<TranscriptDisplayStoreFields> {
@@ -681,10 +702,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     }
     const config = normalizeConfig(input);
     const confirmed = state.hub[layout] ?? shippedDefault(layout);
-    const token = ++patchSerial;
-    patchTokens.set(layout, token);
+    const token = claimLayoutWrite(layout);
     fence.claimWrite();
-    const stillMine = () => patchStillMine(generation, layout, token);
+    const stillMine = () => writeStillMine(generation, layout, token);
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
     const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
       const drafts = { ...getState().drafts };
@@ -728,6 +748,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       });
       throw error;
     }
+  }
+
+  /** The states in which touching the local proposal at all is unsafe: a
+   * write is in flight or its outcome is unknown, the port cannot be reached,
+   * or the store is finished. Nothing here is about the HUB - composing
+   * against confirmed state is the editor's extra requirement, not this one. */
+  function assertDiscardable(): void {
+    const state = getState();
+    if (fence.disposed || state.saving || state.writeUncertain || state.storageUnavailable)
+      throw new Error(UNAVAILABLE_MESSAGE);
   }
 
   /** The draft editor's gate: a confirmed, supported, idle hub state with a
@@ -789,9 +819,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const revision = existing?.layout === layout ? existing.revision : confirmed.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ layout, baseRevision: revision, config, writeUncertain: true });
-    const token = fence.claimWrite();
+    fence.claimWrite();
+    const token = claimLayoutWrite(layout);
     const generation = fence.generation;
-    const stillMine = () => fence.writeStillMine(generation, token);
+    const stillMine = () => writeStillMine(generation, layout, token);
     setState({ saving: true, draft: { layout, revision, config }, draftError: null });
     let result: unknown;
     try {
@@ -873,8 +904,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     return value;
   }
 
+  /** Throwing a proposal away composes nothing and sends nothing, so it needs
+   * no confirmed hub state - only that the proposal is not mid-flight and the
+   * port is usable. Gating it on the editor's full contract would strand a
+   * restored draft on a store whose hub read failed. */
   function discardDraft(): void {
-    assertEditable();
+    assertDiscardable();
     try {
       const checkpoint = drafts.load();
       if (checkpoint) drafts.removeIf(checkpoint);

@@ -1064,6 +1064,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return result;
   }
 
+  /** The states in which touching the local proposal at all is unsafe: a
+   * write is in flight or its outcome is unknown, the port cannot be reached,
+   * or the store is finished. Nothing here is about the HUB - composing
+   * against confirmed state is the editor's extra requirement, not this one. */
+  function assertDiscardable(): void {
+    const state = getState();
+    if (fence.disposed || state.saving || state.writeUncertain || state.storageUnavailable)
+      throw new Error(UNAVAILABLE_MESSAGE);
+  }
+
   /** The draft editor's gate: a confirmed, supported, idle hub state with a
    * usable draft port. Returns the confirmed payload the edit composes
    * against. */
@@ -1195,8 +1205,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return value;
   }
 
+  /** Throwing a proposal away composes nothing and sends nothing, so it needs
+   * no confirmed hub state - only that the proposal is not mid-flight and the
+   * port is usable. Gating it on the editor's full contract would strand a
+   * restored draft on a store whose hub read failed. */
   function discardDraft(): void {
-    assertEditable();
+    assertDiscardable();
     try {
       const checkpoint = drafts.load();
       if (checkpoint) drafts.removeIf(checkpoint);

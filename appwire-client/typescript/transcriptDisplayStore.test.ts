@@ -226,6 +226,24 @@ describe("hub defaults", () => {
     expect(store.getState().hub.mobile).toEqual(hubDefault(1, proposed));
     expect(store.getState().loaded).toBe(true);
   });
+  test("a broadcast relayed before the generation's first read does not make that read stale", async () => {
+    const client = serving(hubDefault(7, desktopConfig), hubDefault(7, mobileConfig));
+    const store = await readyStore(client);
+    store.endReadyGeneration();
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(1, proposed)),
+      mobile: toWireDefault(hubDefault(1, proposed)),
+    }));
+    store.beginReadyGeneration();
+    // The host relays a change it holds from before this generation's read
+    // went out. It is not this generation's confirmation, so the read that
+    // follows is still the authoritative first payload.
+    store.getState().applyHubChange({ layout: "desktop", revision: 9, config: desktopConfig });
+
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.desktop).toEqual(hubDefault(1, proposed));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, proposed));
+  });
 });
 
 describe("the direct write", () => {
@@ -285,6 +303,75 @@ describe("the direct write", () => {
     // hub's refresh - a restart numbering from 1 - is eaten by the stale guard.
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
     expect(store.getState().loaded).toBe(false);
+  });
+
+  test("a later checkpointed write on the same layout supersedes an earlier direct write's reply", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<TranscriptDisplayPatchResponse>();
+    const second = deferred<TranscriptDisplayPatchResponse>();
+    let sends = 0;
+    client.on(patchMethod, () => (++sends === 1 ? first.promise : second.promise));
+
+    const direct = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(sends).toBe(1));
+    const checkpointed = store.getState().saveDraft("mobile", mobileConfig);
+    await vi.waitFor(() => expect(sends).toBe(2));
+
+    // The direct write's reply is now the OLDER write on this layout: a later
+    // write took the layout, so this reply may not land its value.
+    first.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await direct;
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+
+    second.resolve(patchAnswer("mobile", hubDefault(3, mobileConfig)));
+    await checkpointed;
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, mobileConfig));
+  });
+
+  test("a preview survives a transient disconnect and is dropped when the hub identity is", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    // Same hub, momentarily unreachable: the value the user asked for may
+    // well have been applied, so the host keeps showing it.
+    store.endReadyGeneration();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+
+    // A DIFFERENT hub: the preview describes a write sent to the old one and
+    // says nothing about this one's value.
+    store.detachHub();
+    expect(store.getState().drafts.mobile).toBeUndefined();
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(1, proposed)),
+      mobile: toWireDefault(hubDefault(1, mobileConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().drafts.mobile).toBeUndefined();
+
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await write;
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig));
+  });
+
+  test("an unsupported transition drops the preview with the rest of the hub identity", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => deferred<TranscriptDisplayPatchResponse>().promise);
+    void store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    store.setSupport("unsupported");
+    expect(store.getState().drafts.mobile).toBeUndefined();
   });
 
   test("a malformed success changes no hub state and reports it", async () => {
@@ -466,6 +553,29 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
     expect(store.getState().storageUnavailable).toBe(true);
     expect(store.getState().draftError).toMatch(/restore/);
+  });
+
+  test("a restored proposal is discardable while the hub read has failed", async () => {
+    const drafts = memoryDrafts({
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().loaded).toBe(false);
+    expect(store.getState().draft?.config).toEqual(proposed);
+
+    // Throwing away a proposal needs no confirmed hub state: it composes
+    // nothing and sends nothing.
+    store.getState().discardDraft();
+    expect(store.getState().draft).toBeNull();
+    expect(drafts.current()).toBeNull();
   });
 
   test("discardDraft drops the proposal and its checkpoint", async () => {
