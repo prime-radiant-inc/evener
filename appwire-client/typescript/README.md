@@ -115,7 +115,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   the instance listing and its writes, the API-key, credential-file, sign-out,
   sign-in, status (`authStatus`) and probe RPCs, and the `evener/auth/updated` refetch with its
   own-echo correlation, over a `request`/`onNotification` client port; with
-  the stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  the stale-listing refusal and its `staleListingHeld` predicate, the
+  `foreignListingChange` predicate both hosts gate a credential probe on, and
+  `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
