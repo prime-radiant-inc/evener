@@ -35,6 +35,9 @@ func TestResumeUsesRetainedCurrentSessionAndReservesAliases(t *testing.T) {
 			if err := locks.PersistForceStop(aliases, "z-current"); err != nil {
 				t.Fatal(err)
 			}
+			if err := locks.ConfirmForceStop("z-current"); err != nil {
+				t.Fatal(err)
+			}
 			finish(true)
 			if recreated {
 				locks, err = hubcore.NewPersistentResumeLocks(root)
@@ -97,6 +100,9 @@ func TestResumeMissingMarkerUsesDurableRecoveryTarget(t *testing.T) {
 				}
 				finish := locks.BeginForceStop(aliases)
 				if err := locks.PersistForceStop(aliases, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := locks.ConfirmForceStop(target); err != nil {
 					t.Fatal(err)
 				}
 				finish(true)
@@ -349,6 +355,9 @@ func TestResumeUsesDurableTargetWhenAllRetainedClaimsExited(t *testing.T) {
 	}
 	finish := locks.BeginForceStop([]string{"stable", "current"})
 	if err := locks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop("current"); err != nil {
 		t.Fatal(err)
 	}
 	finish(true)

@@ -106,7 +106,7 @@ interface PendingRequest {
   method: MethodName;
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
@@ -351,6 +351,9 @@ export class AppwireClient {
       }
       this.retryNow();
       await connected;
+      clearTimeout(timeout);
+      stopReady();
+      stopState();
       return await this.request("thread/resume", { ref });
     } finally {
       clearTimeout(timeout);
@@ -400,13 +403,19 @@ export class AppwireClient {
     if (!socket) {
       return Promise.reject(new Error(`AppwireClient: cannot call "${method}"; not connected`));
     }
-    const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // Restore completion is not a transport deadline. Keep its correlation
+    // until the hub replies or the connection ends; an explicit caller budget
+    // still wins. Every other method retains its ordinary request deadline.
+    const timeoutMs = opts?.timeoutMs ?? (method === "thread/resume" ? undefined : DEFAULT_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              this.pending.delete(id);
+              reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
       try {
         socket.send(JSON.stringify({ id, method, params }));
@@ -672,7 +681,9 @@ export class AppwireClient {
 
   private hasPendingOrdinaryRequest(): boolean {
     for (const slot of this.pending.values()) {
-      if (slot.method !== "ping") return true;
+      // The hub answers ping outside its serial queue. A pending Resume must
+      // not suppress silent-drop detection for its completion-owned lifetime.
+      if (slot.method !== "ping" && slot.method !== "thread/resume") return true;
     }
     return false;
   }

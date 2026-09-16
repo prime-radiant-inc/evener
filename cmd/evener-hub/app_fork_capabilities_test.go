@@ -454,6 +454,9 @@ func TestHubExplicitResumeResponseAdvertisesClearedForkFence(t *testing.T) {
 	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
 		t.Fatal(err)
 	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
 	finish(true)
 	cfg.ResumeLocks = locks
 

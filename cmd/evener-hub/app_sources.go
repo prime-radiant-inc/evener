@@ -51,7 +51,11 @@ func withDeletionTargetOwnership[R any](
 	action func() (R, error),
 ) (R, error) {
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, ref, threadID)
-	unlock := lockDeletionTarget(cfg, ref, threadID)
+	unlock, err := lockDeletionTarget(ctx, cfg, ref, threadID)
+	if err != nil {
+		var zero R
+		return zero, err
+	}
 	defer unlock()
 	if err := deletionFenceError(cfg, ref, threadID, clientMutationID); err != nil {
 		var zero R
@@ -107,17 +111,19 @@ func daemonOwnershipMayHaveChanged(err error) bool {
 	return isSessionUnavailableError(err) || errors.As(err, &mismatch) || errors.As(err, &initialization)
 }
 
-func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {
+func lockDeletionTarget(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) (func(), error) {
 	if cfg.ResumeLocks == nil {
-		return func() {}
+		return func() {}, nil
 	}
 	threadID = deletionThreadID(ref, threadID)
 	if threadID == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	lock := cfg.ResumeLocks.For(threadID)
-	lock.Lock()
-	return lock.Unlock
+	if err := lock.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	return lock.Unlock, nil
 }
 
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {

@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -221,6 +220,9 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 			releaseOwnership()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return appwire.ProjectDeleteResponse{}, err
+	}
 	if len(ownedTargets) == 0 {
 		return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
 	}
@@ -326,7 +328,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 ) (func(), *projectDeletionOwnershipError) {
 	targets := append([]hubcore.DeletionTarget(nil), record.Targets...)
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ThreadID < targets[j].ThreadID })
-	var locks []*sync.Mutex
+	var locks []*hubcore.ResumeMutex
 	var owners []*llm.APILogger
 	release := func() {
 		for _, owner := range slices.Backward(owners) {
@@ -338,7 +340,10 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 	}
 	for _, target := range targets {
 		lock := s.lockForSession(target.ThreadID)
-		lock.Lock()
+		if err := lock.LockContext(ctx); err != nil {
+			release()
+			return nil, &projectDeletionOwnershipError{ThreadID: target.ThreadID, Err: err}
+		}
 		locks = append(locks, lock)
 		if s.cfg.Roster != nil {
 			if err := s.cfg.Roster.OwnershipError(); err != nil {
