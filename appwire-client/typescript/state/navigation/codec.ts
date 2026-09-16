@@ -1,10 +1,14 @@
+// Navigation snapshot and delta decoding: validates a hub navigation response
+// against the resource key that asked for it, normalizes the entities and
+// order containers into a deep-frozen graph, and materializes that graph back
+// into the rows a view renders.
 import type {
   NavigationDelta,
   NavigationEntityRecord,
   NavigationOrderContainer,
   NavigationReadBase,
   NavigationSnapshot,
-} from "@evener/appwire-client";
+} from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
   NavigationBaseInvalidError,

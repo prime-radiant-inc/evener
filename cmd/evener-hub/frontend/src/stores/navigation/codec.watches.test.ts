@@ -10,17 +10,19 @@
 
 import type { NavigationSnapshot, NavigationWatchSummary } from "@evener/appwire-client";
 import { buildWatchRows } from "@evener/appwire-client";
-import { expect, test } from "vitest";
-import { armedWatchCount } from "../../shell/rail/railNodes";
-import { decodeNavigationResponse, materializeNavigationResource, normalizedGraphFromSnapshot } from "./codec";
-import { applyDelta } from "./merge";
-import { selectRailModel } from "./selectors";
 import {
+  applyDelta,
+  decodeNavigationResponse,
+  materializeNavigationResource,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
+  normalizedGraphFromSnapshot,
   type ResourceKey,
-} from "./types";
+} from "@evener/appwire-client/state/navigation";
+import { expect, test } from "vitest";
+import { armedWatchCount } from "../../shell/rail/railNodes";
+import { selectRailModel } from "./selectors";
 
 const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
 const base = { generationId: "g", revision: 1, etag: "tag-1" };

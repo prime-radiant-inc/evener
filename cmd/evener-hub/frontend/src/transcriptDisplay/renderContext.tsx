@@ -1,6 +1,4 @@
 import type { EntityView, ThreadModel } from "@evener/appwire-client";
-import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
-import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import {
   type ContentVector,
   configFingerprint,
@@ -8,7 +6,9 @@ import {
   normalizeConfig,
   presetContent,
   type TranscriptDisplayConfigV1,
-} from "./config";
+} from "@evener/appwire-client";
+import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
+import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import { EntityViewsProvider } from "./entityViews";
 import type { TranscriptMetadataVisibility, TranscriptProjection } from "./projector";
 

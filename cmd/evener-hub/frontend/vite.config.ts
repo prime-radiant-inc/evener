@@ -49,11 +49,12 @@ export default defineConfig({
   // so the alias is what the bundler, the dev server, Vitest and the five
   // browser guards all resolve through. The targets are the package's
   // TypeScript sources, never dist/: dist/ is gitignored and never built in a
-  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the two
+  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the
   // specific entries have to come first or the root entry swallows them.
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
       "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
       // Resolution runs from the importer, and the package's test files sit

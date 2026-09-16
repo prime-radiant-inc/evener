@@ -644,7 +644,7 @@ test("file links out of scope keep text but offer no affordance", () => {
 test("live-empty session shows an empty editor with placeholder", () => {
   openPanel(testModel());
   expect(editor().value).toBe("");
-  expect(editor().placeholder).toMatch(/Add context/);
+  expect(editor().placeholder).toMatch(/Make a note/);
   expect(screen.getByTestId("shared-notes-agent-empty")).toBeTruthy();
   expect(screen.getByTestId("shared-notes-urls-empty")).toBeTruthy();
 });

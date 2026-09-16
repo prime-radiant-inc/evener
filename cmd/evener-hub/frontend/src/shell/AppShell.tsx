@@ -5,6 +5,7 @@
 
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
 import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
+import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-client/state/navigation";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
@@ -20,7 +21,6 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
-import { isNavigationUnavailable, isSettledGone, keyID } from "../stores/navigation/types";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";

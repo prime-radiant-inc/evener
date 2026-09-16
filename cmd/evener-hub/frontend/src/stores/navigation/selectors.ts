@@ -1,18 +1,17 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "@evener/appwire-client";
-import { navigationStore } from "./store";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
   keyID,
+  type NormalizedResource,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
   nextNavigationOffset,
   type ResourceKey,
   type ResourceState,
-} from "./types";
-
-export { nextNavigationOffset } from "./types";
+} from "@evener/appwire-client/state/navigation";
+import { navigationStore } from "./store";
 
 /** Relative display age for a session's updated_at, mirroring the rail's
  * long-standing row contract (now/m/h/d). Computed at adapter time like the
@@ -315,7 +314,6 @@ export function selectSessionOmittedArmedWatches(
 }
 
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
-import type { NormalizedResource } from "./codec";
 
 type NormalizedSessionCacheEntry = Readonly<{
   childContainer: object | undefined;

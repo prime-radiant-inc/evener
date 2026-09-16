@@ -1,7 +1,7 @@
+import { resolveEffectiveConfig, type ViewportClass } from "@evener/appwire-client";
 import type { RefObject } from "react";
 import { useRef } from "react";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { resolveEffectiveConfig, type ViewportClass } from "../../../transcriptDisplay/config";
 import { Button, Dialog, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";

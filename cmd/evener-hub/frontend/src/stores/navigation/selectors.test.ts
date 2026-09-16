@@ -1,6 +1,16 @@
 import type { NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
+import {
+  isSettledGone,
+  keyID,
+  type NormalizedResource,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  normalizedGraphFromSnapshot,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
 import { expect, test } from "vitest";
-import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
 import {
   relativeAge,
   resetSessionWatchesCacheForTests,
@@ -11,15 +21,6 @@ import {
   sessionWatchesCacheSizeForTests,
 } from "./selectors";
 import { navigationStore } from "./store";
-import {
-  isSettledGone,
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-  type ResourceState,
-} from "./types";
 
 test.each([
   [

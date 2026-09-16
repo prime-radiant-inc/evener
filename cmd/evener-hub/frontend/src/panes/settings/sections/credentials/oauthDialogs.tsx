@@ -12,10 +12,10 @@
 // React's own idiomatic mechanism instead of a hand-rolled flag.
 
 import type { AuthDevicePollResponse } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
-import { credentialsStore } from "../../../../stores/credentials";
+import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { copyText } from "./clipboard";
@@ -66,6 +66,21 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
       onSuccess();
     } catch (err) {
       if (!active.current) return;
+      // A completion the store refused because the listing on screen belongs to
+      // a replaced connection (requireWritableClient): the flow this editor is
+      // completing was started on the connection that is gone, so nothing was
+      // sent. The pasted URL is not a secret and is kept, so Finish is the
+      // retry once this connection's listing lands; what it must not do is show
+      // the store's own words or report a failed sign-in.
+      if (isStaleListingRefusal(err)) {
+        setError(CONNECTION_REPLACED_ERROR);
+        toast.push("warning", CONNECTION_REPLACED_ERROR);
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
       const message = errorText(err);
       setError(message);
       toast.push("error", `Sign-in failed: ${message}`);
@@ -134,12 +149,22 @@ export function DeviceCodeDialog({
   const [copyFailed, setCopyFailed] = useState(false);
   const [expired, setExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // True while this connection's listing is what the store is waiting for: the
+  // poll is being refused, not answered, and the status line says so.
+  const [waitingForConnection, setWaitingForConnection] = useState(false);
   const toast = useToasts();
   const active = useEditorLifetime();
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The refusal clears when a listing this connection read is applied, and the
+    // usual one is the reconnect's own restore read. One ask is not enough: that
+    // read can fail too (the connection dropped again while it was in flight),
+    // and a latch that never re-asks would leave every later tick refused with
+    // nothing on screen to say so. The in-flight flag keeps a slow read from
+    // being asked for twice; the next refused tick asks again.
+    let askInFlight = false;
     const delayMs = Math.max(1, intervalSeconds || 5) * 1000;
 
     async function tick(): Promise<void> {
@@ -147,6 +172,32 @@ export function DeviceCodeDialog({
       try {
         resp = await credentialsStore.getState().devicePoll(name, flowId);
       } catch (err) {
+        // A poll the store refused because the rows it read on screen belong to
+        // a replaced connection (requireWritableClient) is not a poll outcome:
+        // the flow lives on the hub, not in this client, and the refusal is the
+        // store holding the client back until the replacement's own listing
+        // lands. Retry on the normal cadence - the auth state the hub reports
+        // once the listing is back is the authority on whether the flow
+        // survived - rather than ending a flow that may still be authorizable
+        // with "Start again".
+        if (isStaleListingRefusal(err)) {
+          if (!askInFlight) {
+            askInFlight = true;
+            void credentialsStore
+              .getState()
+              .fetch()
+              .catch(() => {})
+              .finally(() => {
+                askInFlight = false;
+              });
+          }
+          // The wait is named rather than silent: the poll keeps retrying, but
+          // "Waiting for you to authorize…" would claim the hub is being polled
+          // when this client cannot reach it yet.
+          if (!cancelled) setWaitingForConnection(true);
+          if (!cancelled && active.current) timer = setTimeout(() => void tick(), delayMs);
+          return;
+        }
         // Mirrors the verified legacy behavior exactly (templates/partials/
         // credentials.html:83-89): a poll-request error attaches its message
         // and does NOT reschedule - polling stops here, same as "expired".
@@ -154,6 +205,9 @@ export function DeviceCodeDialog({
         return;
       }
       if (cancelled || !active.current) return;
+      // The hub answered, so this client is polling the connection again and
+      // the status line goes back to what the flow itself is doing.
+      setWaitingForConnection(false);
       if (resp.state === "authorized") {
         await refreshListingAfterMutation();
         if (cancelled || !active.current) return;
@@ -207,9 +261,11 @@ export function DeviceCodeDialog({
   const done = expired || error !== null;
   const statusText =
     error ??
-    (copyFailed
-      ? "Couldn't copy automatically — select the code above and copy it, then continue."
-      : "Waiting for you to authorize…");
+    (waitingForConnection
+      ? "Waiting for the connection to be restored…"
+      : copyFailed
+        ? "Couldn't copy automatically — select the code above and copy it, then continue."
+        : "Waiting for you to authorize…");
 
   return (
     <Dialog open onClose={onCancel} title={`Sign in to ${name}`}>

@@ -1,15 +1,15 @@
+import {
+  configFingerprint,
+  type HubTranscriptDisplayDefault,
+  shippedDefault,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
 import {
   initTranscriptDisplay,
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import {
-  configFingerprint,
-  type HubTranscriptDisplayDefault,
-  shippedDefault,
-  type TranscriptDisplayConfigV1,
-} from "../../../transcriptDisplay/config";
 import { Button } from "../../../widgets/button";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { useToasts } from "../../../widgets/toast";

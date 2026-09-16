@@ -11,12 +11,12 @@ import type {
   NavigationSectionResource,
   NavigationSessionSummary,
 } from "@evener/appwire-client";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect } from "react";
 import { ClientProvider } from "../../shell/clientContext";
 import { Rail } from "../../shell/rail/Rail";
 import { navigationStore } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 

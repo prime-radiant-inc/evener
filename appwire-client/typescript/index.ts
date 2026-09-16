@@ -63,6 +63,8 @@ export type { RejectableFile } from "./attachmentLimits";
 export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
+export type { BuiltinMatch } from "./builtinInvocation";
+export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
@@ -72,6 +74,7 @@ export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerI
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,
+  CONNECTION_REPLACED_ERROR,
   credentialLayers,
   ENDPOINT_CHANGED_TEST_MESSAGE,
   FINGERPRINT_UNAVAILABLE_ERROR,
@@ -262,6 +265,19 @@ export {
   parseSlashToken,
   spliceSlashCommand,
 } from "./slashCompletion";
+export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
+export type { PluginSelectionState } from "./spawnPluginSelectionState";
+export {
+  pluginSelectionIssues,
+  reconcilePluginSelection,
+  selectAllPlugins,
+  selectedPluginNames,
+  selectNoPlugins,
+  setPluginSelected,
+  withPluginSelection,
+} from "./spawnPluginSelectionState";
+export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
+export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
@@ -286,6 +302,81 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
+// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) and
+// TranscriptDisplayAdvanced (the local advanced block, not yet V1-suffixed)
+// are deliberately absent: the root publishes the wire types of those names
+// from types.gen, which they would shadow.
+export type {
+  ContentLevel,
+  ContentSelection,
+  ContentVector,
+  EffectiveConfigSources,
+  HookExitDetail,
+  HubTranscriptDisplayDefault,
+  LegacyPreferenceKey,
+  LegacyPreferenceValues,
+  LegacyPreferenceWrites,
+  TranscriptDisplayCategory,
+  TranscriptDisplayConfigV1,
+  TranscriptHookExitDetail,
+  TranscriptLevel,
+  TranscriptViewportClass,
+  ViewportClass,
+  VisibleCategoryInventory,
+} from "./transcriptDisplayConfig";
+export {
+  accessibleConfigSummary,
+  advancedEnabledCount,
+  CONTENT_LEVELS,
+  categoryInventory,
+  configFingerprint,
+  configFromLegacyPrefs,
+  configSummary,
+  configToWire,
+  contentSummary,
+  decodeConfig,
+  decodeLocal,
+  decodeLocalConfig,
+  defaultsToWire,
+  defaultToWire,
+  dualWriteLegacyPreferences,
+  encodeConfig,
+  encodeLocal,
+  encodeLocalConfig,
+  fingerprintConfig,
+  fromWireConfig,
+  fromWireDefault,
+  fromWireDefaults,
+  fromWireTranscriptDisplayConfig,
+  HOOK_EXIT_DETAILS,
+  LEGACY_PREF_KEYS,
+  legacyConfigFromValues,
+  legacyPrefsFromConfig,
+  legacyWritesFromConfig,
+  makeTranscriptDisplayConfig,
+  migrateLegacyConfig,
+  normalizeConfig,
+  normalizeContent,
+  parseLocalConfig,
+  presetContent,
+  resolveEffectiveConfig,
+  SHIPPED_DEFAULTS,
+  SHIPPED_DESKTOP_CONFIG,
+  SHIPPED_MOBILE_CONFIG,
+  shippedConfig,
+  shippedDefault,
+  shippedDefaults,
+  shippedDesktopConfig,
+  shippedMobileConfig,
+  toWireConfig,
+  toWireDefault,
+  toWireDefaults,
+  toWireTranscriptDisplayConfig,
+  visibleCategoryInventory,
+  wireToConfig,
+  wireToDefault,
+  wireToDefaults,
+} from "./transcriptDisplayConfig";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
