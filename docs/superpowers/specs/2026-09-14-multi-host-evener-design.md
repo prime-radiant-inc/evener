@@ -333,12 +333,18 @@ exact scope. None is a present fact.
   (`SandboxEscalationRequested.Ref`) on every thread snapshot and the top-level
   `Ref` of the `evener/sandbox/escalation/{requested,resolved}` payloads, beside
   the `JobActivityTree`/`EvenerDiagnostics` walk; `ThreadID` stays bare.
-- **[05] `JobsListResponse.Data` decoding (round 14)** — `evener/jobs/list`
-  defines `JobsListResponse.Data any` (`appwire/types.go`), so ref rewriting must
-  first decode a decode-compatible `Data` payload into `appwire.JobActivityTree`
-  (or the wire field is made typed) and pass an unrecognized payload through
-  untouched; a typed recursive walk over a generic map silently rewrites nothing.
-  Verified through the actual stream client.
+- **[05] `JobsListResponse.Data` decoding (round 14; recognition tightened in
+  round 24)** — `evener/jobs/list` defines `JobsListResponse.Data any`
+  (`appwire/types.go`), so ref rewriting must first **recognize** an
+  activity-tree payload — a JSON object carrying the required `root` key (the
+  Go encoder emits `revision` and `root` unconditionally), or the wire field is
+  made typed (`Data appwire.JobActivityTree`) — and walk only a recognized
+  tree. "Unmarshals without error" is not recognition: `{}` and unrelated
+  objects decode into a zero-value `appwire.JobActivityTree`, so a decode-only
+  test rewrites payloads the source does not understand instead of passing them
+  through untouched (and a typed recursive walk over a generic map silently
+  rewrites nothing). Tests: empty, unknown, legacy (flat array), minimal tree,
+  and forward-compatible tree. Verified through the actual stream client.
 - **[06] source-qualified session pins (round 14)** — `hubcore.PinSectionStore`
   (`cmd/evener-hub/internal/hubcore/pin_section.go`, `session_pin.session_id`),
   the `SessionPinAssign`/`SessionPinUnpin` handlers (`app_pin_section.go`), and
@@ -537,8 +543,15 @@ exact scope. None is a present fact.
   plus an AppWire image-fetch request on the owning host's client, and a
   rewrite of every image URL the remote hub stamped (`/s/<id>/images/<sha>`,
   `/doc/image?session=<id>&path=…`) in outbound thread translation and
-  notification translation, so no remote-stamped URL reaches the controller's
-  local handlers (a colliding local session id would otherwise be read).
+  notification translation through **one shared image visitor** over the
+  `Thread`/`Turn`/`ThreadItem` types — both `Images[].URL` and
+  `OutputImages[].URL`, on every response and notification carrier, not just
+  the thread-snapshot `OutputImages` field — **and the exact host-qualified
+  route pair those URLs are rewritten to** (`/s/<host>:<session>/images/<sha>`,
+  `/doc/image?session=<host>:<session>&path=<rel>`; the non-`local` route-id
+  branch of the existing `/s/` and `/doc/image` handlers), so no
+  remote-stamped URL reaches the controller's local handlers (a colliding
+  local session id would otherwise be read).
   Scope: `appwire/protocol.go` + `appwire/types.go` (the new hub-scoped method
   and params, regenerated bindings); the host-side handler in
   `cmd/evener-hub/app_rpc.go` (byte resolution mirroring `handleSessionImage`
@@ -639,9 +652,13 @@ exact scope. None is a present fact.
   set, `SessionImageResponse{MediaType, Size, SHA, Data}`, sha-pattern and
   session-relative-containment validation (`fspaths.ResolveInRoot`), the
   `outputImageMaxBytes` (8 MiB) bound, media type re-derived with
-  `supportedOutputImageMedia`, `InvalidParams`/`ResourceNotFound` mapping, a
-  refusal for a remote-originated (`origin` non-empty) caller, and no HTTP
-  route. Scope: `appwire/protocol.go`, `appwire/types.go`, the host handler
+  `supportedOutputImageMedia`, `InvalidParams`/`ResourceNotFound` mapping, and
+  no HTTP route. **No `origin` refusal (round 24):** the call arrives over the
+  attach bridge, so it is remote-originated by construction — refusing that
+  role rejects the one request this path exists to make, while the loop guard
+  refuses fan-out from a remote-originated request to a *further* remote source
+  and `SessionImageParams` carries no source selector to fan out with, so the
+  guard is satisfied without a refusal here. Scope: `appwire/protocol.go`, `appwire/types.go`, the host handler
   (`cmd/evener-hub/app_rpc.go`), the controller route/handler
   (`cmd/evener-hub/web.go`, `image_serve.go`, `doc_serve.go`), and the
   controller-side client call. Mirrors component-05 §"Image URLs are host-scoped

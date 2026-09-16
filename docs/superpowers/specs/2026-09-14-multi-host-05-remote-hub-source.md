@@ -891,17 +891,29 @@ Ref translation detail (`remote_hub_refs.go`):
     (`appwire/types.go`), not `appwire.JobActivityTree`; a typed recursive walk
     over a generic map would rewrite nothing in a real response, and the
     `evener/jobs/list` client decodes remote data into generic maps. The
-    requirement is therefore: before walking nested refs, decode a `Data`
-    payload the response actually carries into `appwire.JobActivityTree` and
-    walk the typed tree — **preserving any payload that does not decode** as an
-    `any` it passes through untouched (an unrecognized/forward-compatible
-    shape is not blanked or dropped). Either decode-compatible-payloads plus
-    pass-through, or make the wire field itself typed (`Data
-    appwire.JobActivityTree`) and regenerate the bindings, is acceptable; what
-    is not acceptable is a typed walk that silently no-ops because the runtime
-    value is a `map[string]any`. This must be tested **through the actual stream
-    client** (`appwire.Client.Request` decoding a real JSON response), not only
-    against a Go value that was already the typed struct.
+    requirement is therefore: before walking nested refs, **recognize** an
+    activity-tree payload and walk only a recognized tree — **preserving every
+    other payload as the `any` value it arrived as** (an
+    unrecognized/forward-compatible shape is not blanked, dropped, or replaced
+    with a zero-value tree). "It unmarshalled without error" is not
+    recognition: `{}` and any unrelated JSON object decode into a zero-value
+    `appwire.JobActivityTree` with no error, so a decode-only test would
+    silently rewrite payloads the source does not understand. Recognition is
+    semantic and anchored on required fields: an activity-tree payload is a
+    JSON object carrying the required `root` key (the Go encoder emits both
+    `revision` and `root` unconditionally — neither `JobActivityTree.Root` nor
+    `.Revision` carries `omitempty` — and `root` in turn carries `sessionId`/
+    `ref`); a legacy flat array, an empty object, and an unknown object all
+    fail that test. Either semantic recognition plus pass-through, or making
+    the wire field itself typed (`Data appwire.JobActivityTree`) and
+    regenerating the bindings, is acceptable; what is not acceptable is a typed
+    walk that silently no-ops because the runtime value is a `map[string]any`,
+    or one that rewrites (and replaces) a payload it did not recognize. This
+    must be tested **through the actual stream client**
+    (`appwire.Client.Request` decoding a real JSON response), not only against
+    a Go value that was already the typed struct, with an empty object, a
+    legacy flat array, an unknown object, a minimal (zero-value) tree, and a
+    forward-compatible tree carrying an extra field.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
@@ -1023,11 +1035,36 @@ session with the same id, resolves against the **wrong session** (the
 file-backed form would read a controller-local file relative to that session's
 CWD). The remote path must therefore:
 
-- rewrite every image URL a remote hub stamped — `OutputImages[].URL` on thread
-  snapshots in `ReadThread`/`ListThreads` and on any notification payload that
-  carries item descriptors — to a host-qualified controller route that names
-  `s.id` and the remote session/thread, so the browser never requests a
-  remote-stamped URL from the controller;
+- rewrite every image URL a remote hub stamped, through **one shared image
+  visitor** applied at every seam that returns or relays a hub payload, not a
+  pass over one field. The remote hub stamps two fields, so both are in scope:
+  `ThreadItem.OutputImages[].URL` (tool-result thumbnails) and
+  `ThreadItem.Images[].URL` (replayed user-input images, sha-addressed by
+  `stampInputImageURLs`); `stampSessionImageURLs` walks both
+  (`cmd/evener-hub/output_images.go`). Every structure that embeds a `Thread`,
+  `Turn`, or `ThreadItem` is a carrier (`appwire/types.go`):
+  - RPC responses: `ThreadReadResponse` (thread/read),
+    `ThreadListResponse.Data` (thread/list), `ThreadTurnsListResponse.Data`
+    (thread/turns/list), `ThreadStartResponse`/`ThreadResumeResponse`/
+    `ThreadForkResponse`/`ThreadClearResponse` (thread/start|resume|fork|clear),
+    `TurnStartResponse` (turn/start),
+    `EvenerSubagentPreviewResponse.Items` (evener/subagent/preview), and
+    `ThreadTurnItemsListResponse.Data` (thread/turns/items/list —
+    `ScopeUnimplemented`, served by no evener router today, but the visitor
+    covers the type);
+  - notifications: `ThreadStartedParams.Thread` (thread/started),
+    `TurnStartedParams.Turn` (turn/started), `TurnCompletedParams.Turn`
+    (turn/completed), and `ItemLifecycleParams.Item` (item/started,
+    item/completed).
+  All of these are the same `Thread`/`Turn`/`ThreadItem` types, so the visitor
+  is defined once over those types and applied at each seam rather than
+  per-payload: a new carrier, or a new image field on an existing one, inherits
+  the rule instead of being silently missed. An `Images[].URL` left
+  remote-stamped reaches the browser unresolved exactly like an
+  `OutputImages[].URL` one: it resolves against the controller's own state,
+  404s, or reads the wrong machine. Each URL is rewritten to a host-qualified
+  controller route that names `s.id` and the remote session/thread, so the
+  browser never requests a remote-stamped URL from the controller;
 - serve that route by fetching the bytes from the owning host over the attached
   channel. The host hub's HTTP endpoint is dialed over loopback by the bridge
   and is not reachable from the controller, so the controller must proxy the
@@ -1035,19 +1072,82 @@ CWD). The remote path must therefore:
   (`Manager.ClientIfAttached`, §"Every other remote call is non-dialing, not just
   the snapshot and the non-explicit list"), so an
   unattached or unknown host is refused typed (`appwire.SessionUnavailable`) and
-  never falls back to a local read. The proxy is one new AppWire request,
-  specified in full here because it is the one path by which a hub reads bytes
-  out of another hub's filesystem:
+  never falls back to a local read. The browser-facing route and the AppWire
+  request it maps onto are specified in full here — the rewrite rule above is
+  only usable if the URL it produces has an exact shape and behavior, and this
+  is the one path by which a hub reads bytes out of another hub's filesystem:
+
+  - **Route shape and encoding.** The rewritten URL keeps each stamped form's
+    shape and **host-qualifies the route id** with the controller's own source
+    id for the host (`s.id + ":" + <remote session id>`, the `appwire.Ref`
+    form): `/s/<s.id>:<session>/images/<sha>` and
+    `/doc/image?session=<s.id>:<session>&path=<rel>`. That route id is already
+    the web layer's model of a remote session — `isLocalRouteID` is false for a
+    `<sourceID>:<threadID>` id and `appRefFromRouteID` preserves it
+    (`web.go`, `web_test.go`'s external-ref case). Encoding is the stamping
+    functions' own: `url.PathEscape` for the route id in its path segment (the
+    sha is fixed-shape lowercase hex and needs none), `url.QueryEscape` for
+    `session` and `path` (`:` survives a path segment, so the id on the wire
+    reads `alpha:02wM…`; the query form arrives as `alpha%3A02wM…`, decoded by
+    `r.URL.Query()`) — exactly how
+    `sessionImageURL` and `resolveOutputImageFile` write the local forms
+    (`output_images.go`). The browser's existing item renderers consume these
+    URLs unchanged, so no client-side URL shape is introduced.
+  - **Registration, precedence, and HTTP behavior.** No new mux pattern: the
+    two existing registrations carry it — `mux.HandleFunc("/s/", s.handleSession)`
+    (whose `images/<sha>` branch calls `handleSessionImage`) and
+    `mux.HandleFunc("/doc/image", s.handleDocImage)` (`web.go`). Each handler
+    branches on the route id: a `local` (or bare, legacy local) id resolves
+    exactly as today; a non-`local` id is the host-qualified form and is served
+    by the proxy, and must never fall through to the local resolution, so a
+    remote-stamped URL can never read controller-local state. Both routes are
+    GET-only (`405` otherwise, matching `handleDocImage`'s existing check). A malformed sha on
+    the sha branch is `400` exactly as `handleSessionImage` answers, and a
+    missing `session`/`path` on the file-backed branch is `404` exactly as
+    `handleDocImage` answers. A proxy outcome maps to HTTP as: host
+    `InvalidParams` → `400`, host `ResourceNotFound` → `404` (the host's own
+    containment refusal included — containment is resolved against the *owning*
+    session's working directory, never the controller's), and an
+    unattached/unknown host or a transport failure → `503` with a short text
+    body; a refusal never falls back to a local read.
+  - **Authentication and cache.** The same access model as the local image
+    routes: a same-origin browser GET on the controller's own listener with no
+    extra credential (`<img>` carries no header), with the *host*-side read
+    authenticated by the proxy's attached AppWire client. The same cache headers
+    as the local answers: sha branch `Cache-Control: public, max-age=86400,
+    immutable` with `ETag: "<sha>"` (content-addressed), file-backed branch
+    `Cache-Control: private, max-age=60` with an `ETag` of the response's own
+    `SHA` (`SessionImageResponse.SHA`). Neither branch revalidates
+    conditionally beyond what `handleSessionImage`/`handleDocImage` do today.
+  - **Mapping to the proxy request.** The route decodes back into exactly one
+    AppWire call on the owning host's attached client: the route id's `s.id`
+    selects the client (it is never a param field), `SessionID` is the remote
+    session id with the `s.id` prefix stripped, and the sha branch sets `SHA`
+    while the file-backed branch passes `Path` through as the session-relative
+    path verbatim (`rel` is forwarded as decoded; the *host* cleans and
+    contains it). Exactly one of `SHA`/`Path` is set by construction — the
+    method's own `InvalidParams` precondition.
 
   - **Catalog entry.** Method `MethodEvenerSessionImage = "evener/session/image"`,
     scope `ScopeHub`, registered in `appwire/protocol.go`'s `Methods` with its
     params/result types so the host hub's router serves it and the catalog↔router
     cross-check covers it, plus the regenerated Go and TypeScript bindings. It
     is an AppWire method, **not** an HTTP route: it must not be added to the
-    hub's loopback mux, and a request whose connection role is
-    remote-originated (`origin` non-empty) is refused — a hub federated to
-    another hub must not chain image reads out of its own filesystem (the
-    component-05 loop guard).
+    hub's loopback mux. **No `origin`-based refusal applies to it.** The proxy
+    request arrives over the attach bridge, so it is remote-originated by
+    construction (component 02, §Contract "Bridge marker"); refusing that role
+    would reject exactly the request this path exists to make, and every remote
+    image load would fail. The component-05 loop guard is still satisfied
+    without a refusal here: its rule refuses a remote-originated request routed
+    to **another remote source**, and this method has no source selector to fan
+    out with — `SessionImageParams` carries only `SessionID`/`SHA`/`Path`, so it
+    can only ever resolve against the recipient hub's own local state. If the
+    params ever gain a host/source selector, the guard's real rule attaches to
+    it: refuse resolution via another remote source, never a remote-originated
+    caller as such. **Implementation status:** the method, the request-context
+    `origin` role the guard reads, and this controller route are all tracked
+    follow-ups (keystone, round-21/round-22 image items), so this bullet pins
+    the contract, not shipped behavior.
   - **Params.** `SessionImageParams{SessionID string (json:"sessionId"); SHA string (json:"sha,omitempty"); Path string (json:"path,omitempty")}`.
     Exactly one selector must be set, matching the two stamped URL forms: `SHA`
     for the sha-addressed replay form (`/s/<session>/images/<sha>`), `Path` for
@@ -1313,7 +1413,9 @@ network.
     Feed the `ListJobs` response through the **actual stream client**
     (`appwire.Client.Request` over a `StreamTransport` answering with the real
     JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
-    assert an unrecognized `Data` payload passes through untouched.
+    assert a recognized tree is walked and an unrecognized `Data` payload —
+    an empty object, an unrelated object, or a legacy flat array — passes
+    through untouched as the value it received.
 14. **Remote item paging round trip.** Over the scripted (or in-process) remote
     hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
     packed first page whose `OlderCursor` is the controller cursor — **not** the
@@ -1327,15 +1429,24 @@ network.
     before the retained window was rewritten (rotation) is refused rather than
     splicing two projections. With the fallback path this test fails with the
     identity error, so it is the regression guard.
-15. **Remote image URL translation.** A remote read/list snapshot carrying
-    `OutputImages[].URL` of each stamped form (`/s/<id>/images/<sha>`,
-    `/doc/image?session=<id>&path=…`) reaches the caller rewritten to the
-    host-qualified controller route, and a notification payload carrying item
-    descriptors is rewritten the same way; assert the typed `URL` fields (a
-    `local:`-style substring scan does not pin them). Assert the rewritten
-    route is served by proxying the fetch to the owning host's client and never
-    by the controller's local `handleSessionImage`/`handleDocImage` resolution
-    (a colliding local session id must not be read), and that the controller's
+15. **Remote image URL translation.** A remote payload carrying an
+    `OutputImages[].URL` **and** one carrying an `Images[].URL` of each stamped
+    form (`/s/<id>/images/<sha>`, `/doc/image?session=<id>&path=…`) reach the
+    caller rewritten to the host-qualified controller route, on every carrier
+    the shared visitor covers: a `ReadThread`/`ListThreads` snapshot and a
+    `thread/started` notification, a `thread/turns/list` result, the
+    `thread/start`/`thread/resume`/`thread/fork`/`thread/clear` and `turn/start`
+    responses, an `evener/subagent/preview` item list, and the `turn/started`,
+    `turn/completed`, `item/started`, and `item/completed` notifications.
+    Assert the typed `URL` fields (a `local:`-style substring scan does not pin
+    them), and assert **both** an input-image and an output-image field per
+    carrier — an `OutputImages`-only walk silently drops every replayed
+    user-input image. Assert the rewritten route's exact shape
+    (`/s/<host>:<session>/images/<sha>`,
+    `/doc/image?session=<host>:<session>&path=<rel>`), that a non-`local` route
+    id is served by proxying the fetch to the owning host's client and never by
+    the controller's local `handleSessionImage`/`handleDocImage` resolution (a
+    colliding local session id must not be read), and that the controller's
     file-backed enrichment pass does not run for a remote source
     (`EnrichThreadFileBackedImages`/`threadReadLocalImagePolicy` gate), so no
     controller-local path is probed from remote data.
@@ -1380,10 +1491,13 @@ network.
   (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), and
   through `Thread.Evener.PendingEscalations[].Ref`, so no nested remote
   `local:<id>` reaches the controller unrewritten. Because
-  `JobsListResponse.Data` is `any` today, the translation first decodes a
-  decode-compatible `Data` payload into `appwire.JobActivityTree` (or the wire
-  field is made typed) and passes any unrecognized payload through untouched,
-  verified through the actual stream client.
+  `JobsListResponse.Data` is `any` today, the translation first **recognizes**
+  an activity-tree payload by its required `root` key (or the wire field is
+  made typed) and walks only a recognized tree; every payload that is not
+  recognized — an empty object, an unknown object, a legacy flat array —
+  passes through untouched as the value it received. "Decodes without error" is
+  not recognition: `{}` and unrelated objects decode into a zero-value
+  `appwire.JobActivityTree`. Verified through the actual stream client.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
 - The loop guard's origin signal comes from the explicit, cooperative bridge marker
@@ -1403,11 +1517,12 @@ network.
   (`ItemCandidatesFromRead`) and `ItemCandidateSource`
   (`ReadItemCandidates`/`ListItemCandidates`) with a controller-minted identity
   and `RebaseCursor` translation).
-- Image URLs stamped by the remote hub are rewritten to the host-qualified
-  controller route in reads, lists, and notification payloads; that route
-  proxies the bytes from the owning host over the attached channel and never
-  reaches the controller's local image resolution, which would read a local
-  session with a colliding id.
+- Image URLs stamped by the remote hub (`OutputImages[].URL` and
+  `Images[].URL` alike) are rewritten to the host-qualified controller route on
+  every carrier above — reads, lists, previews, and notification payloads; that
+  route proxies the bytes from the owning host over the attached channel and
+  never reaches the controller's local image resolution, which would read a
+  local session with a colliding id.
 
 ## PR size estimate (LOC)
 
