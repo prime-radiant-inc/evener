@@ -73,7 +73,7 @@ export function linkActivitySummary(link: ActivitySummaryLink): () => void {
 // and a queued root refresh asleep. That is a wiring mistake, so it says so.
 function requireSummaryLink(): ActivitySummaryLink {
   if (!summaryLink) {
-    throw new Error("activityPanel store: no summary link registered; import ./activitySummary first");
+    throw new Error("activityPanel store: no summary link registered; call initActivitySummary() first");
   }
   return summaryLink;
 }
