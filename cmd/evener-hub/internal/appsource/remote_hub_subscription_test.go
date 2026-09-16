@@ -1041,7 +1041,10 @@ func TestRemoteHubFailedReplacementForwardsBufferedNotifications(t *testing.T) {
 		_, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
 		done <- err
 	}()
-	waitForRemoteSubscribeCall(t, remote)
+	// Two subscribed reads now exist (the live subscription's and the
+	// replacement's), so waiting for the first one would let the push below race
+	// the replacement's install and land in the live subscription instead.
+	waitForRemoteSubscribeCalls(t, remote, 2)
 
 	// A delta arrives while the replacement owns routing; it buffers in the
 	// replacement until its subscribe answers.
@@ -2206,8 +2209,20 @@ func recvOrFatal(t *testing.T, out <-chan appwire.Notification) appwire.Notifica
 // probe subscription before it stages a concurrent replacement.
 func waitForRemoteSubscribeCall(t *testing.T, remote *pushableRemote) {
 	t.Helper()
+	waitForRemoteSubscribeCalls(t, remote, 1)
+}
+
+// waitForRemoteSubscribeCalls blocks until the remote has recorded n subscribed
+// thread/read calls. The request is issued only after installSubscriber published
+// the subscription, so a recorded call proves the install happened: a test that
+// stacks a replacement on top of a live subscription must wait for the
+// replacement's own call, not the live one's, before it stages anything that
+// depends on routing having moved.
+func waitForRemoteSubscribeCalls(t *testing.T, remote *pushableRemote, n int) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
+		seen := 0
 		for _, call := range remote.calls() {
 			if call.method != appwire.MethodThreadRead {
 				continue
@@ -2217,11 +2232,14 @@ func waitForRemoteSubscribeCall(t *testing.T, remote *pushableRemote) {
 				t.Fatalf("decode forwarded thread/read params: %v", err)
 			}
 			if params.Subscribe {
-				return
+				seen++
 			}
 		}
+		if seen >= n {
+			return
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no subscribed thread/read recorded; calls = %+v", remote.calls())
+			t.Fatalf("%d subscribed thread/read calls recorded, want %d; calls = %+v", seen, n, remote.calls())
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -2461,6 +2479,333 @@ func TestRemoteHubRetireKeepsCanonicalRemoteRefForSameClientReplacement(t *testi
 		for _, call := range remote.calls() {
 			if call.method == appwire.MethodThreadUnsubscribe {
 				t.Fatalf("predecessor unsubscribed the live replacement's remote ref: %s", string(call.params))
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// attachDeadlineTransport records whether the subscribed thread/read was sent on
+// a context carrying a local deadline. The context a request is sent on is what
+// bounds its life, so a local deadline is the difference between "settled by the
+// remote's answer or the connection ending" and "abandoned by a timer the remote
+// cannot see".
+type attachDeadlineTransport struct {
+	appwire.Transport
+	seen chan bool
+}
+
+func (t *attachDeadlineTransport) Send(ctx context.Context, msg appwire.Message) error {
+	if msg.Request != nil && msg.Request.Method == appwire.MethodThreadRead {
+		_, hasDeadline := ctx.Deadline()
+		select {
+		case t.seen <- hasDeadline:
+		default:
+		}
+	}
+	return t.Transport.Send(ctx, msg)
+}
+
+// The attach request must live exactly until it is settled, and a local deadline
+// is not settlement: the remote never sees it, so it can still install the
+// subscription after cleanup has sent thread/unsubscribe, leaving a remote feed
+// with no local owner for the rest of the connection's life. The request is
+// therefore issued with no deadline at all — its outcome is delivered by the
+// remote's own answer, or by the connection ending.
+func TestRemoteHubAttachRequestHasNoLocalDeadline(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	ctx := t.Context()
+
+	go func() {
+		for {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil || msg.Request.Method != appwire.MethodThreadRead {
+				continue
+			}
+			data, _ := json.Marshal(appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+			}})
+			if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
+				return
+			}
+		}
+	}()
+
+	transport := &attachDeadlineTransport{
+		Transport: appwire.NewStreamTransport(clientConn),
+		seen:      make(chan bool, 1),
+	}
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	out, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S", IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "S", "host:S")
+
+	select {
+	case hadDeadline := <-transport.seen:
+		if hadDeadline {
+			t.Fatal("the attach request carried a local deadline: the remote cannot observe it, so the request can be abandoned while the remote is still installing the subscription")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the subscribed thread/read was never sent")
+	}
+}
+
+// The attach snapshot is read for its thread identity alone: settleSubscriber
+// keys routing by it and canonicalizes the remote ref from it, and the leading
+// resync makes the relay re-read the turns itself. Forwarding the caller's
+// IncludeTurns made the remote assemble a full turn/item page before it could
+// answer, widening the interval between the remote's install and the response
+// the cleanup release orders itself behind.
+func TestRemoteHubSubscribeThreadAttachRequestOmitsTurnPayload(t *testing.T) {
+	remote := newPushableRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+		}}}
+	})
+
+	out, err := remote.source.SubscribeThread(t.Context(), appwire.ThreadReadParams{
+		Ref: "host:S", IncludeTurns: true, ItemsView: "full", ItemLimit: 25,
+	})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	expectResync(t, out, "S", "host:S")
+
+	params := forwardedReadParams(t, remote)
+	if !params.Subscribe {
+		t.Fatalf("attach params = %+v, want a subscribed read", params)
+	}
+	if params.IncludeTurns || params.ItemsView != "" || params.ItemLimit != 0 {
+		t.Fatalf("attach params = %+v, want no turn payload: the snapshot's thread identity is all this source reads", params)
+	}
+}
+
+// A successful subscribe that a concurrent replacement displaces before
+// settlement must still record the canonical remote ref the snapshot named.
+// The caller-derived provisional target can be a thread ID the remote
+// canonicalizes to its stable ref, so cleanup that released the provisional
+// target names a subscription the remote never held and leaves the stable-ref
+// subscription active with no local owner. Displaced settlement returned before
+// recording the snapshot identity.
+func TestRemoteHubDisplacedSettleUnsubscribesCanonicalRef(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadRead {
+			<-release
+			return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID: "current", Source: "local", Evener: appwire.EvenerThread{Ref: "local:stable"},
+			}}}
+		}
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+
+	type subscribeResult struct {
+		out <-chan appwire.Notification
+		err error
+	}
+	done := make(chan subscribeResult, 1)
+	go func() {
+		out, err := remote.source.SubscribeThread(context.Background(), appwire.ThreadReadParams{
+			Ref: "host:stable", ThreadID: "current",
+		})
+		done <- subscribeResult{out: out, err: err}
+	}()
+	waitForRemoteSubscribeCall(t, remote)
+
+	// A replacement installs itself at the provisional routing key while the
+	// subscribe is still in flight, so settlement finds itself displaced.
+	replacement := &remoteHubSubscription{
+		threadID: "stable",
+		in:       make(chan appwire.Notification, 1),
+		out:      make(chan appwire.Notification, 1),
+		pumpDone: make(chan struct{}),
+		cancel:   func() {},
+		client:   remote.client,
+	}
+	if previous := remote.source.installSubscriber(replacement); previous == nil {
+		t.Fatal("no in-flight subscription displaced; the race was not staged")
+	}
+
+	unblock()
+	got := <-done
+	if got.err == nil {
+		t.Fatalf("SubscribeThread returned a channel (%v) for a displaced subscription instead of an error", got.out)
+	}
+
+	// The subscribe succeeded, so the remote keyed a subscription under the
+	// snapshot's canonical ref; the caller-derived target names a subscription
+	// the remote canonicalized away and must not be what cleanup releases.
+	waitForRemoteUnsubscribe(t, remote, "local:stable")
+	if sawRemoteUnsubscribe(t, remote, "local:current") {
+		t.Fatalf("cleanup unsubscribed the caller-derived target, which the remote canonicalizes away: %+v", remote.calls())
+	}
+}
+
+// A replacing subscribe that fails while a third subscription has already
+// installed itself at the same key must not leave the predecessor it displaced
+// stranded. The third subscription owns the routing slot, so the predecessor
+// cannot be restored — and if it is left neither restored nor cancelled its pump
+// blocks forever, its out never closes, and the relay never observes
+// subscription end. It must be retired like any other displaced subscription,
+// and its remote ref must stay with the live third subscription.
+//
+// The three-way interleaving needs the failing replacement's read parked while
+// the third subscription's read is answered, which the serial scripted server
+// cannot do, so this test drives its own per-request server loop.
+func TestRemoteHubDiscardSubscriberRetiresUnrestorablePrevious(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	server := appwire.NewStreamTransport(serverConn)
+
+	ctx := t.Context()
+
+	replacementSeen := make(chan struct{})
+	releaseReplacement := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(releaseReplacement) }) }
+	defer unblock()
+
+	var unsubscribedMu sync.Mutex
+	var unsubscribed []string
+	accepts := 0
+
+	go func() {
+		for {
+			msg, err := server.Recv(ctx)
+			if err != nil {
+				return
+			}
+			if msg.Request == nil {
+				continue
+			}
+			req := *msg.Request
+			index := accepts
+			accepts++
+			go func() {
+				switch req.Method {
+				case appwire.MethodThreadRead:
+					if index == 1 {
+						// The failing replacement: parked until the third
+						// subscription has installed itself over it.
+						close(replacementSeen)
+						select {
+						case <-releaseReplacement:
+						case <-ctx.Done():
+							return
+						}
+						_ = server.Send(ctx, appwire.ErrorMessage(req.ID, appwire.InvalidParams("subscribe refused")))
+						return
+					}
+					data, _ := json.Marshal(appwire.ThreadReadResponse{Thread: appwire.Thread{
+						ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+					}})
+					_ = server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data)))
+				case appwire.MethodThreadUnsubscribe:
+					var params appwire.ThreadUnsubscribeParams
+					_ = json.Unmarshal(req.Params, &params)
+					unsubscribedMu.Lock()
+					unsubscribed = append(unsubscribed, params.Ref)
+					unsubscribedMu.Unlock()
+					data, _ := json.Marshal(appwire.EmptyResponse{})
+					_ = server.Send(ctx, appwire.ResponseMessage(req.ID, json.RawMessage(data)))
+				}
+			}()
+		}
+	}()
+
+	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+	client.Start(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	// The initial subscription is live and installed under "S".
+	out1, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("first SubscribeThread: %v", err)
+	}
+	expectResync(t, out1, "S", "host:S")
+
+	// A replacement attaches (displacing the live subscription) and its read is
+	// parked, so it is still in flight when the third subscription installs.
+	replacement := make(chan error, 1)
+	go func() {
+		_, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+		replacement <- err
+	}()
+	select {
+	case <-replacementSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the failing replacement's subscribe never reached the remote")
+	}
+
+	// The third subscription installs itself at the same key and settles, so the
+	// failing replacement can no longer be restored over anything.
+	out3, err := source.SubscribeThread(t.Context(), appwire.ThreadReadParams{Ref: "host:S"})
+	if err != nil {
+		t.Fatalf("third SubscribeThread: %v", err)
+	}
+	expectResync(t, out3, "S", "host:S")
+
+	// Now let the replacement's subscribe fail.
+	unblock()
+	if err := <-replacement; err == nil {
+		t.Fatal("the failing replacement SubscribeThread succeeded")
+	}
+
+	// The predecessor the failed replacement displaced must observe subscription
+	// end: its relay is blocked on out1, and out1 must close so the relay's
+	// recovery path re-attaches instead of waiting on a pump that never delivers.
+	select {
+	case n, ok := <-out1:
+		if ok {
+			t.Fatalf("the retired predecessor delivered %+v instead of closing", n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the displaced predecessor's out never closed: its relay never observes subscription end")
+	}
+
+	// The third subscription owns routing and keeps delivering.
+	if err := server.Send(ctx, appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID: "S", Ref: "local:S",
+	})); err != nil {
+		t.Fatalf("push status: %v", err)
+	}
+	status := decodeNotificationParams[appwire.ThreadStatusChangedParams](t, recvOrFatal(t, out3))
+	if status.Ref != "host:S" {
+		t.Fatalf("third subscription received ref %q, want host:S", status.Ref)
+	}
+
+	// Retiring the predecessor must not unsubscribe the remote ref the live
+	// third subscription holds: the remote keeps one subscription per
+	// (connection, thread), and dropping it would silence that subscription.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		unsubscribedMu.Lock()
+		refs := append([]string(nil), unsubscribed...)
+		unsubscribedMu.Unlock()
+		for _, ref := range refs {
+			if ref == "local:S" {
+				t.Fatalf("the retired predecessor unsubscribed the live third subscription's remote ref: %+v", refs)
 			}
 		}
 		time.Sleep(10 * time.Millisecond)

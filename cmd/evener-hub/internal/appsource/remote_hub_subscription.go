@@ -22,13 +22,6 @@ const remoteHubSubBuffer = 128
 // subscription path) open indefinitely.
 const remoteHubUnsubscribeTimeout = 2 * time.Second
 
-// remoteHubSubscribeTimeout bounds the detached subscribe request a cancelled
-// SubscribeThread leaves running. It is the longest this source waits for a
-// remote subscribe to complete before issuing its cleanup unsubscribe, so a
-// remote that never answers cannot leak the request goroutine forever. A live
-// hub answers far inside it; the bound exists only for a wedged one.
-const remoteHubSubscribeTimeout = 30 * time.Second
-
 // remoteHubSubscription is one controller relay's live view of one remote
 // thread.
 //
@@ -157,6 +150,18 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// while their local routing entries stayed live. Remote subscriptions are
 	// managed independently here, one per remote thread identity.
 	remote.ReplaceSubscription = false
+	// The attach is deliberately minimal. The snapshot's own thread identity is
+	// the only thing this source reads from it (settleSubscriber keys routing by
+	// it and canonicalizes the remote ref from it), and the leading resync makes
+	// the relay re-read the turns itself, so the request asks for no turn
+	// payload. Forwarding the caller's IncludeTurns made the remote assemble a
+	// full turn/item page before it could answer, which widens the interval
+	// between the remote installing the subscription and the response that
+	// confirms it — the interval the cleanup release must never cut short (see
+	// requestSubscribe).
+	remote.IncludeTurns = false
+	remote.ItemsView = ""
+	remote.ItemLimit = 0
 
 	// Register before the request goes out, so a notification the remote emits
 	// immediately after attaching cannot be missed. installSubscriber does not
@@ -166,7 +171,9 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	// The request is issued on a context detached from the caller's, so a
 	// cancellation cannot lose its outcome: the remote may have installed a
 	// subscription the cleanup path must not unsubscribe before the subscribe
-	// itself has finished. See requestSubscribe.
+	// itself has finished. See requestSubscribe — the outcome is the only thing
+	// that may release the remote side, so nothing local may cut the request
+	// short.
 	outcome := s.requestSubscribe(subCtx, client, remote)
 
 	select {
@@ -229,11 +236,21 @@ type subscribeOutcome struct {
 // survive the cancellation that ends the caller's wait. It still observes the
 // client closing, because appwire fails a pending request when its read loop
 // exits.
+//
+// There is deliberately no local deadline. A local deadline cancels only this
+// wait: the remote may still be working the request and can install its
+// subscription after cleanup has already sent thread/unsubscribe, leaving a
+// remote feed with no local owner for the rest of the connection's life. The
+// outcome this channel carries is the only release trigger, and it is settled
+// by the remote's own answer or by the connection ending — the one cancellation
+// the remote hub actually observes (it reaps a connection's subscriptions when
+// that connection goes away). That is the attachment's bound: a wedged remote
+// holds one cleanup goroutine and one routing entry until its connection dies,
+// never a subscription the remote created after this side gave up.
 func (s *RemoteHubSource) requestSubscribe(subCtx context.Context, client *appwire.Client, remote appwire.ThreadReadParams) <-chan subscribeOutcome {
 	outcome := make(chan subscribeOutcome, 1)
-	reqCtx, reqCancel := context.WithTimeout(context.WithoutCancel(subCtx), remoteHubSubscribeTimeout)
+	reqCtx := context.WithoutCancel(subCtx)
 	go func() {
-		defer reqCancel()
 		var snapshot appwire.ThreadReadResponse
 		err := client.Request(reqCtx, appwire.MethodThreadRead, remote, &snapshot)
 		outcome <- subscribeOutcome{snapshot: snapshot, err: err}
@@ -324,6 +341,15 @@ func (s *RemoteHubSource) settleSubscriber(sub *remoteHubSubscription, snapshot 
 	s.remoteMu.Lock()
 	s.subMu.Lock()
 	if s.subs[sub.threadID] != sub {
+		// A concurrent replacement owns this thread's routing slot. The subscribe
+		// still succeeded and the remote keyed it under the snapshot's canonical
+		// ref, so record that identity before the caller's cleanup releases: the
+		// caller-derived provisional target may be a thread ID the remote
+		// canonicalizes away, and unsubscribing it would leave the stable-ref
+		// subscription active with no local owner.
+		if canonical != "" {
+			sub.remoteRef = canonical
+		}
 		s.subMu.Unlock()
 		s.remoteMu.Unlock()
 		return false
@@ -478,12 +504,22 @@ func (s *RemoteHubSource) installSubscriber(sub *remoteHubSubscription) *remoteH
 // shared drain delivered the thread's in-flight deltas to sub.in; restoring the
 // previous without forwarding them would lose those deltas with no resync to
 // cover the gap.
+//
+// A restore is only possible while sub still owns this thread's routing slot. A
+// third subscription can install itself at sub's key while sub's own subscribe
+// is in flight (installSubscriber does not cancel what it displaces); that
+// subscription owns the slot now, so previous has been superseded and restoring
+// it would hand the relay a subscription nothing routes to. previous is then
+// retired like any other displaced subscription: without the gate it is neither
+// restored nor cancelled, and its relay waits forever on an out nothing will
+// ever close, never observing subscription end.
 func (s *RemoteHubSource) discardSubscriber(sub, previous *remoteHubSubscription) {
 	close(sub.pumpDone)
 	s.remoteMu.Lock()
 	s.subMu.Lock()
-	restore := previous != nil && previous != sub && s.subscriberLiveLocked(previous)
-	if s.subs[sub.threadID] == sub {
+	installed := s.subs[sub.threadID] == sub
+	restore := installed && previous != nil && previous != sub && s.subscriberLiveLocked(previous)
+	if installed {
 		if restore {
 			s.subs[sub.threadID] = previous
 		} else {
