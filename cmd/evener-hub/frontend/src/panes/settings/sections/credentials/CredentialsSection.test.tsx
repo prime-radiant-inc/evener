@@ -96,7 +96,7 @@ test("Settings Connect provider opens discovery and retains management on cancel
   render(<CredentialsSection sectionId="credentials" />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: "Connect provider" }));
-  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(await screen.findByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect(await screen.findByText("work")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);

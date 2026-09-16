@@ -16,7 +16,7 @@ import {
   isStaleListingRefusal,
   useCredentialsStore,
 } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
+import { Button, Chevron, Dialog, Disclosure, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
@@ -109,18 +109,65 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
 
+/**
+ * One tappable row per provider, drawn with the app's list-of-selectable-
+ * things row (panes/settings/sections/marketplacesPlugins/InstalledSection.tsx
+ * and MarketplacesSection.tsx: a full-width button carrying a surface, an
+ * edge and a trailing chevron) rather than a box per provider. The whole row
+ * is the target and a real <button>, so it is a tab stop whose accessible
+ * name is exactly the provider's label - the same label the list has always
+ * printed (help metadata first, then the registry's name, then the id).
+ */
+function ProviderChoices({
+  rows,
+  disabled,
+  onSelect,
+}: {
+  rows: ProviderDescriptor[];
+  disabled: boolean;
+  onSelect(row: ProviderDescriptor): void;
+}) {
+  return (
+    <ul aria-label="Providers" className={styles.providers}>
+      {rows.map((row) => (
+        <li key={row.id}>
+          <button type="button" className={styles.provider} disabled={disabled} onClick={() => onSelect(row)}>
+            <span className={styles.providerLabel}>{HELP[row.id]?.label || row.name || row.id}</span>
+            <span className={styles.providerChevron} aria-hidden="true">
+              <Chevron direction="right" />
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ProviderConnection(props: ProviderConnectionProps) {
   const store = useCredentialsStore();
   const [selected, setSelected] = useState<ProviderDescriptor | null>(null);
   const selectProvider = useCallback((row: ProviderDescriptor) => setSelected(row), []);
   const clearSelection = useCallback(() => setSelected(null), []);
-  const [all, setAll] = useState(false);
+  // The popular set is what a new account needs first; the rest of the
+  // catalogue is one disclosure away. Both lists are the same widget, so the
+  // reveal swaps one for the other rather than stacking them - the popular
+  // providers are in the full catalogue already, and rendering them twice
+  // would put two same-named buttons (and two same-named tab stops) on
+  // screen.
+  const [showAll, setShowAll] = useState(false);
   const [search, setSearch] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
   useConnectedEffect(store.fetch, [store.fetch]);
   useEffect(() => {
     if (store.error) errorRef.current?.focus();
   }, [store.error]);
+  const popular = store.availableProviders.filter((row) => Object.hasOwn(HELP, row.id));
+  // The search matches the same three fields it always has: the id, the
+  // registry's display name, and the help label the row prints.
+  const matching = store.availableProviders.filter((row) =>
+    `${row.id} ${row.name ?? ""} ${HELP[row.id]?.label ?? ""}`.toLowerCase().includes(search.toLowerCase()),
+  );
+  const listingUnavailable = store.loading || !!store.error;
   if (selected)
     return <SelectedConnection key={selected.id} provider={selected} {...props} onChange={clearSelection} />;
   return (
@@ -138,39 +185,23 @@ export function ProviderConnection(props: ProviderConnectionProps) {
             </Button>
           </div>
         )}
-        <div className={styles.actions}>
-          <Button variant="quiet" onClick={() => setAll(false)}>
-            Popular providers
-          </Button>
-          <Button variant="quiet" onClick={() => setAll(true)}>
-            All providers
-          </Button>
-        </div>
-        {all && (
-          <FormRow label="Search providers" htmlFor="provider-search">
-            <Input id="provider-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
-          </FormRow>
-        )}
-        <div className={styles.grid}>
-          {store.availableProviders
-            .filter((row) =>
-              all
-                ? `${row.id} ${row.name ?? ""} ${HELP[row.id]?.label ?? ""}`
-                    .toLowerCase()
-                    .includes(search.toLowerCase())
-                : Object.hasOwn(HELP, row.id),
-            )
-            .map((row) => (
-              <Button
-                key={row.id}
-                variant="secondary"
-                disabled={store.loading || !!store.error}
-                onClick={() => selectProvider(row)}
-              >
-                {HELP[row.id]?.label || row.name || row.id}
-              </Button>
-            ))}
-        </div>
+        {!showAll && <ProviderChoices rows={popular} disabled={listingUnavailable} onSelect={selectProvider} />}
+        {/* A disclosure, not a second mode: one focusable control opens the
+            catalogue and closes it again, so there is no "back to popular"
+            control to keep in sync with it. */}
+        <Disclosure
+          open={showAll}
+          onOpenChange={setShowAll}
+          summary="Show all providers"
+          data-testid="show-all-providers"
+        >
+          <div className={styles.catalogue}>
+            <FormRow label="Search providers" htmlFor="provider-search">
+              <Input id="provider-search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </FormRow>
+            <ProviderChoices rows={matching} disabled={listingUnavailable} onSelect={selectProvider} />
+          </div>
+        </Disclosure>
         <details>
           <summary>Already configured access on this host?</summary>
           <Button variant="quiet" onClick={props.onOpenSettings}>

@@ -1333,7 +1333,7 @@ test("missing credentials surface setup in the composer without opening a dialog
     await vi.dynamicImportSettled();
   });
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(screen.getByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("draft-sentinel");
   expectWorkingDir("/tmp/my-project");
@@ -1391,7 +1391,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   available = true;
   await user.click(await screen.findByRole("button", { name: "Check connection" }));
@@ -1669,7 +1669,7 @@ test("successful keyless testing refreshes availability without an auth notifica
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;

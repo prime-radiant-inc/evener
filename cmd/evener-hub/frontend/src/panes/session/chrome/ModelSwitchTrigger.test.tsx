@@ -419,13 +419,13 @@ test("connect another provider refreshes the actual instance catalog without swi
   renderTrigger({ loadCatalog, onPick });
   await user.click(screen.getByTestId("trigger"));
   await openConnectDialog(user);
-  expect(await screen.findByRole("button", { name: "All providers" })).toBeTruthy();
+  expect(await screen.findByText("Show all providers")).toBeTruthy();
   await user.keyboard("{Escape}");
   expect(onPick).not.toHaveBeenCalled();
   expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   await user.click(screen.getByTestId("trigger"));
   await openConnectDialog(user);
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   loadCatalog.mockResolvedValue({
     models: [{ provider: "team-local", model: "served", displayName: "Team served" }],

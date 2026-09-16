@@ -190,7 +190,7 @@ test("keyless connection refreshes the warmed real session catalog without switc
   await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
   expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
   await openConnectDialog(user);
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   await user.click(await screen.findByRole("button", { name: "Check connection" }));
   await user.click(await screen.findByRole("button", { name: "Continue" }));
