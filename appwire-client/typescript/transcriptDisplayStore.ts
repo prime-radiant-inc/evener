@@ -129,8 +129,6 @@ export interface TranscriptDisplayStoreFields {
    * on it: a PATCH composed against a previous hub's revision would overwrite
    * the new hub's default on a revision collision. */
   loaded: boolean;
-  /** Bumps on every applied payload for the current generation. */
-  appliedSerial: number;
   /** The direct write's preview per layout while its request is out. */
   drafts: Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
   /** The offline editor's proposal. Restored from the draft port at creation. */
@@ -224,7 +222,6 @@ function initialState(): TranscriptDisplayStoreFields {
     hubErrors: {},
     hub: {},
     loaded: false,
-    appliedSerial: 0,
     drafts: {},
     draft: null,
     saving: false,
@@ -494,7 +491,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     setState({
       hub,
       loaded: true,
-      appliedSerial: state.appliedSerial + 1,
       draftConflict: staleDraft(state.draft, hub),
       ...extra,
     });
@@ -545,6 +541,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // settings: the shipped defaults are in effect. The payload state goes
       // with it - a retained revision could be HIGHER than a returning hub's
       // (a restored backup, a reset state file) and would eat its refresh.
+      // Only the TRANSITION retires, as only the transition into supported
+      // refreshes: the host re-resolves support on every connection publish,
+      // and while unsupported every confirm path is gated, so a repeat has
+      // nothing left to retire and would publish a fresh `hub` identity per
+      // tick.
+      if (state.hubSupport === support) return;
       retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {} });
       return;
     }

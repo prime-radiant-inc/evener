@@ -789,8 +789,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // defaults are in effect". The registry must match that claim. Un-apply
       // BEFORE the setState - the character-key reconcile subscribes to the
       // store and must see the final registry shape (see unapplyAll).
+      const retryingUnapply = unapplyRolledBack;
       unrestored = !reconciler.unapplyAll();
       unapplyRolledBack = unrestored;
+      // Only the TRANSITION publishes, as only the transition into supported
+      // refreshes: the host re-resolves support on every connection publish,
+      // and while unsupported every confirm path is gated, so a repeat has
+      // nothing left to retire. The rolled-back un-apply is the exception -
+      // the applied map survives a rollback, so this call is the retry that
+      // clears the wedge, and its outcome publishes.
+      if (state.hubSupport === support && !retryingUnapply) return;
     }
     // The unsupported drop also discards the hub PAYLOAD state: retaining
     // loaded/revision/rawOverrides across a flap would let a later supported
