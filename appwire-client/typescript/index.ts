@@ -128,6 +128,28 @@ export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
+export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
+export { validatePathListAdd } from "./launchPathListAdd";
+export type { LaunchConfigLayerName, LaunchFormState, OptionGroup, PromptCompositeSpec } from "./launchSchema";
+export {
+  buildFormState,
+  collectConfig,
+  emptyChoiceLabel,
+  globalDefaultHint,
+  groupOptions,
+  inactivePromptDependent,
+  isCollectionKind,
+  isPromptCompositeWireField,
+  listSupportsExplicitEmpty,
+  matchesEnvCredentialError,
+  optionSupportsLayer,
+  PROMPT_COMPOSITE_SPECS,
+  PROMPT_DEPENDENT_WIRE_FIELDS,
+  resolvedDefaultLabel,
+  resolvedEmptyChoice,
+  schemaPathKind,
+} from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,

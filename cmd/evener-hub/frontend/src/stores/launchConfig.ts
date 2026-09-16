@@ -1,6 +1,6 @@
 // launchConfig.ts is the thin wire-truth gateway for every settings surface
-// built on the schema-driven launch-config engine (launchShared/) plus the
-// hand-rolled in-repo trust flow: evener/launch/{schema,getLayer,setLayer,
+// built on the schema-driven launch-config engine (the package's launchSchema
+// rendered by launchShared/) plus the hand-rolled in-repo trust flow: evener/launch/{schema,getLayer,setLayer,
 // resolve,trustRepo} and evener/path/validate. Follows stores/threads.ts's own
 // requireClient()-via-connectionStore pattern (no connect() of its own).
 //
@@ -16,6 +16,7 @@
 import type {
   AppwireClientLike,
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchConfigResolved,
   LaunchOptionSchemaResponse,
   PathValidateResponse,
@@ -33,8 +34,6 @@ function requireClient(): AppwireClientLike {
   }
   return client;
 }
-
-export type LaunchConfigLayerName = "global" | "project";
 
 export interface LaunchConfigStoreState {
   schema(): Promise<LaunchOptionSchemaResponse>;
