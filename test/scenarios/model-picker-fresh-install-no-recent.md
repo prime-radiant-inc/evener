@@ -16,7 +16,7 @@ it worth an e2e card at all:
   `data` contains the provider-grouped descriptors.
 - **Web**: `buildPickerRows` emits the `Recent` group head *only* when
   the filtered recent list is non-empty
-  (`widgets/modelCatalog/pickerRows.ts#buildPickerRows`).
+  (`appwire-client/typescript/modelCatalogPickerRows.ts#buildPickerRows`).
 - **TUI**: `modelPickerItemsFromResponse` early-returns before building
   any Recent items when `len(resp.Recent) == 0`
   (`cmd/evener-tui/hub_commands.go#modelPickerItemsFromResponse`).
@@ -139,14 +139,14 @@ there is one markup to assert against, not two.
   find nothing and misreport a false pass. That hazard is gone: both
   render `widgets/modelCatalog/`'s `<ModelCatalog>`, and `Recent`
   appears in both as a plain `li[role="presentation"]` group head
-  labelled `Recent` (`pickerRows.ts:31,89-91`). The false-pass shape it
+  labelled `Recent` (`appwire-client/typescript/modelCatalogPickerRows.ts:31,89-91`). The false-pass shape it
   warned about is still real in general, which is why step 2's snippet
   also reports `optionCount` — an assertion of *absence* is worthless
   without evidence the list rendered at all.
 - **`role="presentation"` is two different things.** The listbox uses it
   for group heads *and* for unavailable-provider lines
   (`widgets/modelCatalog/index.tsx:263-277`). An unavailable line reads
-  `<provider> — <message>` (`unavailableLine`, `pickerRows.ts:60-65`),
+  `<provider> — <message>` (`unavailableLine`, `appwire-client/typescript/modelCatalogPickerRows.ts:60-65`),
   so a down provider shows up in `groups` above. That is expected —
   check for the exact string `Recent`, not for the group count.
 - **The spawn picker's model/list request is scoped.** Even with a populated
@@ -162,7 +162,7 @@ there is one markup to assert against, not two.
 - The unit-level counterpart is
   `TestModelPickerItemsFromResponse_NoRecentOmitsGroup`
   (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItemsFromResponse_NoRecentOmitsGroup`) for the TUI and
-  `pickerRows.test.ts:54-55` ("no Recent group when the envelope carries
+  `appwire-client/typescript/modelCatalogPickerRows.test.ts:56-57` ("no Recent group when the envelope carries
   none") for the web. If those pass and the live picker still shows a
   Recent header, the bug is in what the hub put in `recent`, not in the
   rendering.
