@@ -30,9 +30,11 @@ import (
 // personal AGENTS.md, and the host-dependent discovery helpers the remote
 // settings panes and the spawn form call. Nothing else.
 var remoteHostAdminMethods = map[string]struct{}{
-	// Provider instances (hubInstancesController, app_instances.go). These are
-	// exactly the five handlers the catalog defines; there is no
-	// evener/instance/setModelDisabled and no evener/instance/refreshModels.
+	// Provider instances (hubInstancesController, app_instances.go). The
+	// settings panes drive these five handlers remotely; the catalog's newer
+	// evener/instance/setModelDisabled and evener/instance/refreshModels are
+	// deliberately absent here and in the policy table, so the proxy refuses
+	// them (fail closed).
 	appwire.MethodEvenerInstanceList:       {},
 	appwire.MethodEvenerInstanceCreate:     {},
 	appwire.MethodEvenerInstanceEdit:       {},

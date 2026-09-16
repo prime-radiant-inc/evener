@@ -343,29 +343,37 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	policy := map[string]bool{
-		"evener/archive/set":                      false,
-		"evener/auth/apiKey/clear":                true,
-		"evener/auth/apiKey/set":                  true,
-		"evener/auth/credentialJson/set":          true,
-		"evener/auth/device/poll":                 true,
-		"evener/auth/device/start":                true,
-		"evener/auth/list":                        true,
-		"evener/auth/login/complete":              true,
-		"evener/auth/login/start":                 true,
-		"evener/auth/logout":                      true,
-		"evener/auth/status":                      true,
-		"evener/auth/test":                        true,
-		"evener/command/list":                     false,
-		"evener/dirs/create":                      true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":                     false,
-		"evener/git/head":                         true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":                   true, // discovery: the host's own harnesses
-		"evener/host/request":                     false,
-		"evener/instance/create":                  true,
-		"evener/instance/edit":                    true,
-		"evener/instance/list":                    true,
+		"evener/archive/set":             false,
+		"evener/auth/apiKey/clear":       true,
+		"evener/auth/apiKey/set":         true,
+		"evener/auth/credentialJson/set": true,
+		"evener/auth/device/poll":        true,
+		"evener/auth/device/start":       true,
+		"evener/auth/list":               true,
+		"evener/auth/login/complete":     true,
+		"evener/auth/login/start":        true,
+		"evener/auth/logout":             true,
+		"evener/auth/status":             true,
+		"evener/auth/test":               true,
+		"evener/command/list":            false,
+		"evener/dirs/create":             true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":            false,
+		"evener/git/head":                true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list":          true, // discovery: the host's own harnesses
+		"evener/host/request":            false,
+		"evener/instance/create":         true,
+		"evener/instance/edit":           true,
+		"evener/instance/list":           true,
+		// Two instance methods landed on the catalog after this list was
+		// written (per-model enablement and its refresh). The proxy forwards the
+		// five instance handlers the settings panes drive remotely and nothing
+		// else, so both are denied deliberately rather than left undecided: an
+		// unlisted method is refused with appwire.InvalidParams and never
+		// forwarded.
+		"evener/instance/refreshModels":           false,
 		"evener/instance/remove":                  true,
 		"evener/instance/setDefault":              true,
+		"evener/instance/setModelDisabled":        false,
 		"evener/jobs/list":                        false,
 		"evener/jobs/output":                      false,
 		"evener/launch/getLayer":                  true,
