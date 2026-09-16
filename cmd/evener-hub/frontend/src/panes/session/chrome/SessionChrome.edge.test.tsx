@@ -352,7 +352,10 @@ test("archive toggle failure toasts an error", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_archive"));
   fake.on("evener/archive/set", (params) => {
-    expect(params).toEqual({ kind: "session", id: "sess_ref_archive", archived: true });
+    // Round seven: the canonical ref, not the bare session_id. A remote row's
+    // decision is read back under its host-qualified ref, and the hub
+    // normalizes a local ref to the bare ID, so this row's key is unchanged.
+    expect(params).toEqual({ kind: "session", id: "ref_archive", archived: true });
     throw new Error("archive failed");
   });
   await threadsStore.getState().ensureThread("ref_archive");

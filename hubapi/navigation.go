@@ -97,7 +97,17 @@ type NavigationProjectSummary struct {
 	Worktrees       int    `json:"worktrees,omitempty"`
 	IsArchived      bool   `json:"is_archived,omitempty"`
 	Favorite        bool   `json:"favorite,omitempty"`
-	SessionCount    int    `json:"session_count"`
+	// Sources names every source that owns sessions in this project: the
+	// literal "local" for the controller's own sessions and a configured host
+	// name for a remote host's. The field is omitted when every session belongs
+	// to the controller, which is the same default the decision readers apply
+	// to an empty list. A project merged across hosts (the same canonical ID
+	// and path, e.g. a local checkout and a remote host's clone) carries
+	// "local" alongside every host name, so a caller that must name exactly one
+	// owner — a delete, or a per-source favorite/archive decision — can refuse
+	// or address each owner instead of guessing which host a mutation means.
+	Sources      NavigationArray[string] `json:"sources,omitempty"`
+	SessionCount int                     `json:"session_count"`
 }
 
 // NavigationProjectResource is the first bounded page for each project tier.

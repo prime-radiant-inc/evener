@@ -1144,6 +1144,7 @@ export interface NavigationProjectSummary {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  sources?: string[];
   session_count: number;
 }
 

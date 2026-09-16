@@ -438,6 +438,20 @@ func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {
 		utf8.RuneCountInString(value.RollupState) > maxNavigationLabelRunes {
 		return false
 	}
+	// Sources are the project's owning sources: the controller's own spelled
+	// "local" and one entry per configured host that also owns rows in it.
+	// Bounded like every other summary field — the list cannot exceed the
+	// controller plus the 64 hosts the inputs admit, and each name is an
+	// identity — but no entry may be empty, because an empty name would reach a
+	// client as a decision key that addresses no source.
+	if len(value.Sources) > maxNavigationProjectSources {
+		return false
+	}
+	for _, source := range value.Sources {
+		if !navigationSchemaIdentity(source, false) {
+			return false
+		}
+	}
 	for _, count := range counts {
 		if !navigationIntCount(count) {
 			return false

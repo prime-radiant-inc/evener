@@ -554,6 +554,30 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
 });
 
+test("session-menu archive addresses the canonical ref so a remote row's decision sticks", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("host-a:r1"));
+  await threadsStore.getState().ensureThread("host-a:r1");
+  setLocation("host-a:r1");
+  navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+  fake.on("evener/archive/set", (params) => {
+    // The bare session ID ("sess_host-a:r1") would be stored as this hub's own
+    // decision, which the remote row never reads back.
+    expect(params).toEqual({ kind: "session", id: "host-a:r1", archived: true });
+    return { ok: true, navigation: { generation_id: "generation_test", targets: [] } };
+  });
+
+  render(<SessionChrome ref="host-a:r1" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+  expect(fake.calls).toContainEqual({
+    method: "evener/archive/set",
+    params: { kind: "session", id: "host-a:r1", archived: true },
+  });
+});
+
 test("session-menu pin assignment uses typed AppWire and converges its navigation receipt", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

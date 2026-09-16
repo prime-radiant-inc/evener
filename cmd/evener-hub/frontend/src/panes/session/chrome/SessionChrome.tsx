@@ -227,7 +227,11 @@ export function SessionChrome({ ref: sessionRef, placement = "footer", onOpenTas
   const archiveAction = async () => {
     if (!menuSession) return;
     try {
-      const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
+      // The canonical ref, not the bare session ID: a remote row's ref is
+      // host-qualified and is the identity its archive decision is read back
+      // under, so the bare ID would store a local decision the row never
+      // consults. "local:<id>" refs normalize server-side to the bare ID.
+      const result = await setArchived("session", menuSession.ref, menuSession.tier !== "archived");
       if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
     } catch (err) {
       toasts.push("error", sessionActionError("Couldn't update archive state", err));
