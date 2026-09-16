@@ -259,6 +259,18 @@ function SpawnForm({
   // to it. Affirmatively settling on local cannot rewrite the stale value -
   // selecting "Local" fires no change event while the select already reads
   // local - so the draft, not the remembered host, must carry the choice.
+  //
+  // An EMPTY manifest is not that evidence (component 07b review, round five).
+  // `sources` is empty both while the manifest is in flight (and if its fetch
+  // failed) and when the manifest genuinely lists nothing remote, so its
+  // emptiness cannot decide the target: reading it as a fallback silently
+  // converted a remote draft into a controller launch - the draft kept naming
+  // its host while every discovery call and thread/start ran on this one. Until
+  // the manifest has named its sources, the draft's own value is the last host
+  // that was CONFIRMED (the picker writes it), so it stays the launch AND
+  // discovery target until the manifest arrives to confirm or contradict it.
+  // This is the same `sources.length > 0` gate component 06b's `submittedSource`
+  // reads, so both branches agree on the wire value in every case.
   const chosenSource = sources.find((candidate) => candidate.id === source);
   const hostChoice = chosenSource?.online ? chosenSource.id : "local";
   // `sources` is empty both while the manifest loads (and if it never arrives)
@@ -389,6 +401,20 @@ function SpawnForm({
     active: boolean;
     promise: Promise<ModelListResponse>;
   } | null>(null);
+  // The host whose global model list has ANSWERED since the last host change
+  // (null while the current host's is outstanding). It is the model half of the
+  // submit gate: a non-empty model is host-derived exactly as the harness is -
+  // it was chosen from, or persisted against, the catalog of whichever host was
+  // selected at the time - so until the SELECTED host's list lands, a submit
+  // could carry a model this host never offered (component 07b review, round
+  // five: `hostCatalogPending` covered only the harness/schema requests). A
+  // LOCAL mount starts settled: nothing about it is host-derived, so the form
+  // stays startable exactly as it was before host routing existed. Settlement,
+  // not success, is the bar - see the effect below.
+  const modelHostRef = useRef(submittedSource);
+  const [modelHostSettled, setModelHostSettled] = useState<string | null>(() =>
+    isLocalHost(submittedSource) ? submittedSource : null,
+  );
   const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
@@ -736,6 +762,11 @@ function SpawnForm({
     model === "" &&
     advancedModel === "" &&
     (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
+  // The model half of the host gate (component 07b review, round five): a
+  // non-empty model belongs to the host whose catalog offered it, so it cannot
+  // be submitted until the SELECTED host's model list has settled - see
+  // modelHostSettled above for why settlement (not success) is the bar.
+  const modelHostPending = model !== "" && modelHostSettled !== submittedSource;
 
   // A credential change can make models discoverable (a stored Vertex
   // credential JSON enables the publisher-model listing) or take them away,
@@ -848,15 +879,37 @@ function SpawnForm({
   // this pane, and the reason a directory that exists only on that host neither
   // reads as invalid here nor gets dropped from launchOverrides. Local targets
   // keep the plain call, byte-for-byte.
+  // The host the pane is on RIGHT NOW, for async answers issued for an earlier
+  // one. Assigned during render, so a switch is visible to a pending response's
+  // microtask before the new host's own effects run - a path check answers for
+  // the MACHINE that ran it, never for the one the reader moved to.
+  const activeHostRef = useRef(submittedSource);
+  activeHostRef.current = submittedSource;
   const validatePath = useCallback(
     (path: string, kind: string): Promise<PathValidation> => {
       // `path` is the server-canonicalized spelling, which a pathList add stores
       // in place of the raw input (matching the settings-side pathList field).
-      return hostRequest(client, submittedSource, "evener/path/validate", { path, kind }).then((r) => ({
-        valid: r.valid,
-        error: r.error,
-        path: r.path,
-      }));
+      const ask = (host: string) =>
+        hostRequest(client, host, "evener/path/validate", { path, kind }).then((r) => ({
+          valid: r.valid,
+          error: r.error,
+          path: r.path,
+        }));
+      // A superseded host's answer must not land (component 07b review, round
+      // five): the advanced panel accepts a validation result on FIELD identity
+      // alone, and a pathList add goes on its "ok" verdict, so a response issued
+      // for host A could still mark - or re-add - an override after the reader
+      // switched to host B, which then rides thread/start to a machine that
+      // never accepted it. The answer is discarded and the question re-asked of
+      // the host selected now, so every consumer acts on an answer for the
+      // machine it is about to launch on. Only a switch DURING a request can
+      // continue the loop; each round is one real RPC.
+      const askSelectedHost = (issuedFor: string): Promise<PathValidation> =>
+        ask(issuedFor).then((result) => {
+          const current = activeHostRef.current;
+          return current === issuedFor ? result : askSelectedHost(current);
+        });
+      return askSelectedHost(submittedSource);
     },
     [client, submittedSource],
   );
@@ -936,6 +989,14 @@ function SpawnForm({
     setAdvancedOverrides,
     setAdvancedErrors,
   ]);
+  // The seed both picker surfaces open from when no directory is committed yet.
+  // It is the CONTROLLER's own last accepted directory, so a remote host's
+  // picker must not start there: the picker validates its opening path before
+  // showing anything, and a controller path usually does not exist on the other
+  // machine, so remote browsing began by refusing a stranger's directory
+  // (component 07b review, round five). A remote picker opens from the committed
+  // cwd, or the selected host's home when there is none.
+  const pickerFallbackDir = isLocalHost(submittedSource) ? getGlobalLastWorkingDir() : "";
   const resolveConfig = useCallback(
     (overrides: LaunchConfigLayer) =>
       hostRequest(client, submittedSource, "evener/launch/resolve", {
@@ -998,14 +1059,15 @@ function SpawnForm({
   // Load the host-dependent catalogs and focus the current prompt. Reloaded
   // when the selected host changes (component 07b): harnesses and launch
   // schema describe the host, so a remote selection must not keep showing the
-  // controller's lists - neither while the new host's answer is in flight nor
-  // after it fails, when a retained catalog would let the user pick a harness
-  // the selected host does not have.
+  // controller's lists - neither while the new host's answer is in flight (the
+  // switch clears them) nor after it fails, when a retained catalog would let
+  // the user pick a harness the selected host does not have.
   const catalogHostRef = useRef(submittedSource);
   // The host whose harness/schema answers are the ones in hand (null until the
-  // first load settles). The reconciliation below must not read a catalog that
-  // has not answered yet, or an empty one would read as "the host offers
-  // nothing" and wipe a perfectly valid draft.
+  // current host's first load ANSWERS - a failed load settles without being an
+  // answer). The reconciliation below must not read a catalog that has not
+  // answered yet, or an empty one would read as "the host offers nothing" and
+  // wipe a perfectly valid draft.
   const [catalogHostSettled, setCatalogHostSettled] = useState<string | null>(null);
   // True while the CURRENT host's answers are outstanding. A switch is pending
   // because the catalogs have just been cleared and the draft's host-derived
@@ -1049,31 +1111,37 @@ function SpawnForm({
       setPluginSelection({ mode: "default" });
       setKnownSelectionIssues([]);
     }
-    const harnessesRequest = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
+    // Each load resolves to whether it ANSWERED. A rejection is a settlement but
+    // not an answer: it must release Start (a host that refuses a catalog can
+    // never hold the submit hostage) and must NOT be reconciled against - an
+    // empty list read as "this host offers nothing" wiped the draft's harness
+    // and every Advanced-options override on one transient hub error, with
+    // nothing left for a later successful load to restore (component 07b review,
+    // round five; the rejection handlers deliberately leave the catalogs as they
+    // were, as they did before that round). `active` is false once this host is
+    // superseded, so a previous host's late answer never certifies the current
+    // one.
+    const harnessesLoad = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
       (r) => {
-        if (active) setHarnesses(r.data);
+        if (!active) return false;
+        setHarnesses(r.data);
+        return true;
       },
-      () => {
-        if (active) setHarnesses([]);
-      },
+      () => false,
     );
-    const schemaRequest = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
+    const schemaLoad = hostRequest(client, submittedSource, "evener/launch/schema", {}).then(
       (r) => {
-        if (active) setSchemaOptions(perLaunchEvenerOptions(r));
+        if (!active) return false;
+        setSchemaOptions(perLaunchEvenerOptions(r));
+        return true;
       },
-      () => {
-        if (active) setSchemaOptions([]);
-      },
+      () => false,
     );
-    // Both answers settle to SOMETHING even on failure (an empty catalog is an
-    // answer), so a host that refuses one can never hold Start hostage. `active`
-    // is false once this host is superseded, so a previous host's late answer
-    // never certifies the current one.
-    void Promise.all([harnessesRequest, schemaRequest]).then(() => {
-      if (active) {
-        setCatalogHostSettled(submittedSource);
-        setHostCatalogPending(false);
-      }
+    void Promise.all([harnessesLoad, schemaLoad]).then(([harnessesAnswered, schemaAnswered]) => {
+      if (!active) return;
+      setHostCatalogPending(false);
+      // Only an ANSWER may reconcile the draft against the catalogs.
+      if (harnessesAnswered && schemaAnswered) setCatalogHostSettled(submittedSource);
     });
     return () => {
       active = false;
@@ -1137,6 +1205,12 @@ function SpawnForm({
   // harness or directory. Refresh/unmount retires the request for all consumers.
   // biome-ignore lint/correctness/useExhaustiveDependencies: auth generation and provider instances trigger a fresh global catalog
   useEffect(() => {
+    // A host change owes a fresh answer: the previous host's list says nothing
+    // about the one selected now, so the gate reopens until this host's lands.
+    if (modelHostRef.current !== submittedSource) {
+      modelHostRef.current = submittedSource;
+      setModelHostSettled(null);
+    }
     const request = {
       active: true,
       promise: hostRequest(client, submittedSource, "model/list", { harness: "evener" }),
@@ -1144,6 +1218,9 @@ function SpawnForm({
     setGlobalModelRequest(request);
     request.promise.then(
       (r) => {
+        if (!request.active) return;
+        // An answer - the host's own list, for the host it names.
+        setModelHostSettled(submittedSource);
         // model/list can serialize an empty Go slice as `data: null`
         // (appwire.ModelListResponse.Data carries no omitempty). Normalize here
         // so the sweep never iterates a non-iterable and skips its work.
@@ -1153,9 +1230,15 @@ function SpawnForm({
         // still offers. Only the local host's catalog has authority here; a
         // remote draft is validated against the remote list by the effect
         // below, which never writes storage.
-        if (request.active && isLocalHost(submittedSource)) sweepStaleModels(r.data ?? []);
+        if (isLocalHost(submittedSource)) sweepStaleModels(r.data ?? []);
       },
-      () => {},
+      () => {
+        // A refusal is a SETTLEMENT, not an answer: it releases the submit gate
+        // (an offline host must not hold Start hostage - the same rule the
+        // harness/schema gate follows) while the draft validator below still
+        // clears a model this host turns out not to serve.
+        if (request.active) setModelHostSettled(submittedSource);
+      },
     );
     return () => {
       request.active = false;
@@ -1862,7 +1945,9 @@ function SpawnForm({
     // draft's launch config has not been reconciled against them yet - a submit
     // now could carry a value the host does not offer. Same reasoning as the
     // disabled Start button; this catches the ⌘/Ctrl+Enter chord.
-    if (hostCatalogPending) return;
+    // The model list is the same question asked of the same host, and it is the
+    // field the harness/schema answer cannot vouch for, so it gates here too.
+    if (hostCatalogPending || modelHostPending) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -2003,7 +2088,7 @@ function SpawnForm({
           <DirectoryPicker
             key={cwd}
             value={cwd}
-            fallbackDir={getGlobalLastWorkingDir()}
+            fallbackDir={pickerFallbackDir}
             complete={complete}
             listRecents={listRecents}
             validatePath={validatePath}
@@ -2246,7 +2331,8 @@ function SpawnForm({
                       (modelRequired && slashModelBootstrap === null) ||
                       providerRequired ||
                       pluginSelectionBlocked ||
-                      hostCatalogPending
+                      hostCatalogPending ||
+                      modelHostPending
                     }
                   >
                     {busy ? (
@@ -2392,8 +2478,8 @@ function SpawnForm({
             validatePath={validatePath}
             createDirectory={createDirectory}
             listRecents={listRecents}
-            fallbackDir={getGlobalLastWorkingDir()}
-            onCwdPanelClose={commitLastWorkingDir}
+                fallbackDir={pickerFallbackDir}
+                onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
             accessMode={accessMode}
             accessOptions={accessOptions}

@@ -8183,3 +8183,279 @@ test("host reconciliation keeps the errors of the advanced fields it keeps", asy
   expect(draft.fields.getState().advancedValues).toEqual({ maxRounds: { value: "7" } });
   expect(draft.fields.getState().advancedErrors).toEqual({ maxRounds: "fix this value" });
 });
+
+// --- round five ------------------------------------------------------------
+
+/** The calls the pane forwarded to `host` through evener/host/request. */
+function routedHostCalls(fake: FakeClient, method: string, host = "buildbox"): HostRequestParams[] {
+  return fake.calls
+    .filter((call) => call.method === "evener/host/request")
+    .map((call) => call.params as HostRequestParams)
+    .filter((call) => call.method === method && call.host === host);
+}
+
+// A failed catalog load is NOT an answer. The round-four rejection handlers
+// cleared the lists and the Promise.all stamped the host "settled" whatever the
+// outcome, so a single transient hub error reconciled a perfectly good draft
+// against an empty catalog: the harness and every Advanced-options override
+// vanished, and a later successful load had nothing left to restore. Start must
+// still be released by a settled-but-unanswered load (an offline host must not
+// hold the submit hostage) - only the RECONCILIATION waits for a real answer.
+test("a failed catalog load leaves the draft's harness and advanced options alone", async () => {
+  const fake = readyClient((f) => {
+    f.on("evener/harnesses/list", () => {
+      throw new Error("hub unavailable");
+    });
+    f.on("evener/launch/schema", () => {
+      throw new Error("hub unavailable");
+    });
+  });
+  const draft = selectSpawnDirectory("/tmp/catalog-failure");
+  setDraftField(draft, "harness", "external");
+  setDraftField(draft, "advancedOverrides", { agent: "controller-agent" });
+  setDraftField(draft, "advancedValues", { agent: { value: "controller-agent" } });
+  window.history.pushState({}, "", "/new?dir=/tmp/catalog-failure");
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/harnesses/list")).toHaveLength(1));
+  // Let the rejection handlers and the reconciliation effect take their turn.
+  await act(async () => {});
+  expect(draft.fields.getState().harness).toBe("external");
+  expect(draft.fields.getState().advancedOverrides).toEqual({ agent: "controller-agent" });
+  expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "controller-agent" } });
+});
+
+// The other half of the same rule, on a host that has no answers at all: the
+// request SETTLED, so the submit gate opens - the host refuses what it cannot
+// serve at start rather than leaving Start disabled forever.
+test("a host whose catalogs all fail still releases Start", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      fail: ["evener/harnesses/list", "evener/launch/schema"],
+      // A credentialed registry, so the only thing that could hold Start here is
+      // the catalog gate itself.
+      overrides: { "evener/instance/list": { instances: [REMOTE_CREDENTIALED_INSTANCE], availableProviders: [] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/catalog-answerless");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/srv/catalog-answerless");
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({ source: "buildbox" });
+});
+
+// An unavailable manifest is not evidence that the draft's host is gone: it is
+// empty both while it loads and if it never arrives, so reading that emptiness
+// as "fall back to local" silently ran a remote draft's launch on the
+// controller. The draft's own source is the last host that was confirmed, and
+// it stays the launch AND discovery target until the manifest says otherwise.
+test("a remote draft is not silently converted to local while the manifest is unavailable", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => readyRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/manifest-gap");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/srv/manifest-gap");
+  renderSpawn(fake);
+  await settled();
+
+  // Every host-scoped call went to the draft's own host...
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+  // ...and the launch carries it, so it runs on buildbox rather than here.
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({ source: "buildbox" });
+});
+
+// The submit gate covered the harness/schema answers but not the model list, so
+// after a host switch a model chosen from the PREVIOUS host's catalog could be
+// submitted while the new host's model list was still in flight. A model is
+// host-derived like the harness: the gate has to include its host's settlement.
+test("a previous host's model cannot be submitted while the new host's model list is outstanding", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const remoteModelList = deferred<{ data: ModelDescriptor[] }>();
+  const fake = readyClient((f) => readyRemoteHost(f, { "model/list": remoteModelList.promise }));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-model-pending");
+  // Persisted from, and still valid in, the CONTROLLER's own catalog - it stays
+  // non-empty across the switch, so only the gate can hold the submit.
+  setDraftField(draft, "model", "openai/gpt-5");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-model-pending");
+  renderSpawn(fake);
+  await settled();
+  // A local mount is not host-derived, so it stays startable exactly as before.
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  // buildbox answered for harnesses/schema, so the catalog gate is open and the
+  // model list is the only thing still outstanding.
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+  expect(draft.fields.getState().model).toBe("openai/gpt-5");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.keyDown(promptField(), { key: "Enter", metaKey: true });
+  await act(async () => {});
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+
+  act(() => remoteModelList.resolve({ data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({ source: "buildbox" });
+});
+
+// The pane's injected validatePath closes over the host selected when the field
+// was edited, and the panel accepts the answer on field identity alone - so a
+// late controller answer marked (or re-added) an advanced path override after
+// the user had switched hosts. The superseded answer must never land: the field
+// is judged by the host that is selected NOW.
+test("a late path validation from the previous host never marks the field on the new host", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const agentOption: LaunchOption = {
+    field: "agent",
+    wireField: "agent",
+    label: "Agent",
+    kind: "text",
+    group: "general",
+    pathKind: "command",
+    perLaunch: true,
+  };
+  const localValidation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({ options: [agentOption] }));
+    f.on("evener/path/validate", ({ path }) =>
+      path === "review-agent" ? localValidation.promise : { path, valid: true },
+    );
+    // buildbox offers the same field but rejects the value.
+    readyRemoteHost(f, {
+      "evener/launch/schema": { options: [agentOption] },
+      "evener/path/validate": { path: "review-agent", valid: false, error: "not on buildbox" },
+    });
+  });
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-path-validation");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-path-validation");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "review-agent" } });
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+
+  // The controller finally accepts the path - after the user left it.
+  await act(async () => localValidation.resolve({ path: "review-agent", valid: true, error: "" }));
+  // The value is re-judged by buildbox instead of being marked valid by the
+  // machine the user left. Re-pinned for main's landed target-change
+  // re-validation (the pathValidationTarget effect): that effect already asks
+  // the newly selected host about every stored path value, so the superseded
+  // local answer's re-ask is not the only routed call - what this pins is that
+  // every routed ask names this field and that the verdict that lands is
+  // buildbox's.
+  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate").length).toBeGreaterThan(0));
+  for (const call of routedHostCalls(fake, "evener/path/validate")) {
+    expect(call.params).toMatchObject({
+      path: "review-agent",
+      kind: "command",
+    });
+  }
+  await waitFor(() =>
+    expect(draft.fields.getState().advancedValues).toEqual({ agent: { value: "review-agent", invalid: true } }),
+  );
+  // ...so it cannot ride the launch to a host that does not have it.
+  expect(draft.fields.getState().advancedOverrides).toEqual({});
+  expect(await screen.findByText("not on buildbox")).toBeTruthy();
+});
+
+// The same guard, through the other consumer the finding names: a pathList add
+// goes on the validator's "ok" verdict, so a superseded host's late acceptance
+// re-added an entry the selected host never accepted.
+test("a late pathList validation from the previous host cannot re-add its entry on the new host", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const pathListOption: LaunchOption = {
+    field: "pluginDirs",
+    wireField: "pluginDirs",
+    label: "Plugin dirs",
+    kind: "pathList",
+    group: "general",
+    pathKind: "command",
+    perLaunch: true,
+    description: "Add a plugin dir",
+  };
+  const localValidation = deferred<{ path: string; valid: boolean; error: string }>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({ options: [pathListOption] }));
+    f.on("evener/path/validate", ({ path }) =>
+      path === "review-dir" ? localValidation.promise : { path, valid: true },
+    );
+    // buildbox offers the same field but refuses the entry.
+    readyRemoteHost(f, {
+      "evener/launch/schema": { options: [pathListOption] },
+      "evener/path/validate": { path: "review-dir", valid: false, error: "no such dir on buildbox" },
+    });
+  });
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-pathlist");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-pathlist");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.type(screen.getByPlaceholderText("Add a plugin dir"), "review-dir");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(1));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/harnesses/list")).toHaveLength(1));
+
+  // The controller accepts it only after the user has left it.
+  await act(async () => localValidation.resolve({ path: "review-dir", valid: true, error: "" }));
+  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
+  // buildbox refused it, so the entry never joins the draft's list - and so
+  // never rides the launch to a host that never accepted it. (Its message is
+  // the add row's own transient feedback; the host switch repopulates the
+  // panel's fields from the new host's schema, so only the draft state here is
+  // durable.)
+  expect(draft.fields.getState().advancedOverrides).toEqual({});
+  expect(draft.fields.getState().advancedValues).toEqual({});
+});
+
+// The picker's last-working-dir seed is controller-wide: opening a REMOTE picker
+// at a path the controller last accepted validates a directory that need not
+// exist on the selected host. Only a local launch may seed from it.
+test("a remote directory picker does not start from the controller's last working directory", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/controller/last");
+  const fake = readyClient((f) =>
+    readyRemoteHost(f, { "evener/path/validate": { path: "/home/buildbox", valid: true } }),
+  );
+  connectionStore.getState().connect(fake);
+  // No working directory yet, so the fallback seed is what browsing starts from.
+  const draft = selectSpawnDirectory("");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(workingDir());
+  await waitFor(() => expect(routedHostCalls(fake, "evener/path/validate")).toHaveLength(1));
+  expect(routedHostCalls(fake, "evener/path/validate")[0]?.params).toMatchObject({ path: "~" });
+});
