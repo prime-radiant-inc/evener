@@ -730,9 +730,10 @@ func (m *Manager) PreflightIfAttached(name string) (Preflight, bool) {
 // current channel attached, ONLY while a live, not-closed channel is installed,
 // and reports false otherwise. appwire.Client keeps its Features privately with
 // no exported accessor on a *Channel-less seam, so component 05's capability
-// probe reads ProtocolVersion/ServerInfo/SourceID/Features through this seam.
-// Like ClientIfAttached it takes the manager-wide mutex, not the per-host gate,
-// and never dials.
+// probe reads ProtocolVersion/SourceID/Features through this seam; HubVersion
+// stays preflight-owned (the handshake's ServerInfo.Version is the hub's package
+// constant, not its build identity). Like ClientIfAttached it takes the
+// manager-wide mutex, not the per-host gate, and never dials.
 func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool) {
 	ch, ok := m.attachedChannel(name)
 	if !ok {
@@ -2025,9 +2026,11 @@ func (c *Channel) Preflight() Preflight {
 // Handshake returns the InitializeResponse captured when this channel attached:
 // ProtocolVersion, ServerInfo, SourceID, and the peer's advertised Features.
 // appwire.Client keeps its own Features copy privately, so component 05's
-// capability probe reads those four fields here (reached by host name through
-// Manager.HandshakeIfAttached) rather than re-running the connection-scoped
-// initialize.
+// capability probe reads ProtocolVersion/SourceID/Features here (reached by
+// host name through Manager.HandshakeIfAttached) rather than re-running the
+// connection-scoped initialize. ServerInfo is carried but not consumed: its
+// Version is the hub's package constant, not its build identity, so the
+// probe's HubVersion stays preflight-owned.
 func (c *Channel) Handshake() appwire.InitializeResponse { return c.handshake }
 
 // Host returns the registry entry this channel was built from. The value owns

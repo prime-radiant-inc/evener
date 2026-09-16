@@ -70,11 +70,14 @@ func TestRemoteHubSourceUnattachedCallIsUnavailableWithoutDialing(t *testing.T) 
 	}
 }
 
-// The capability probe reads ProtocolVersion/ServerInfo/SourceID/Features from
-// the attach handshake seam and OS/Arch from the preflight seam, over the
-// attached-only client: component 05, §"Capability probe". Those four are
-// handshake-only — the connection-scoped initialize cannot be re-run on the
-// already-initialized channel, and no other wire call reports them.
+// The capability probe reads ProtocolVersion/SourceID/Features from the attach
+// handshake seam and OS/Arch/HubVersion from the preflight seam, over the
+// attached-only client: component 05, §"Capability probe". ProtocolVersion,
+// SourceID, and Features are handshake-only — the connection-scoped initialize
+// cannot be re-run on the already-initialized channel, and no other wire call
+// reports them. HubVersion is preflight-owned: the handshake's
+// ServerInfo.Version is the hub's package constant ("0.1.0"), not the running
+// build, so copying it would clobber the facts seam's buildinfo.Version().
 func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
 	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
@@ -109,8 +112,15 @@ func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HostCapabilities: %v", err)
 	}
-	if caps.ProtocolVersion != "handshake-proto" || caps.HubVersion != "9.9.9" {
-		t.Fatalf("handshake version facts = %q/%q, want handshake-proto/9.9.9", caps.ProtocolVersion, caps.HubVersion)
+	if caps.ProtocolVersion != "handshake-proto" {
+		t.Fatalf("ProtocolVersion = %q, want handshake-proto", caps.ProtocolVersion)
+	}
+	// HubVersion stays facts-owned. The handshake stubs a deliberately distinct
+	// ServerInfo.Version ("9.9.9"), so a value of "9.9.9" here would prove the
+	// probe copied the hub's package constant over the running build the facts
+	// seam reported.
+	if caps.HubVersion != "preflight-ver" {
+		t.Fatalf("HubVersion = %q, want the facts seam value preflight-ver (not the handshake ServerInfo.Version 9.9.9)", caps.HubVersion)
 	}
 	if caps.HubSourceID != "local" {
 		t.Fatalf("HubSourceID = %q, want local", caps.HubSourceID)
@@ -120,6 +130,38 @@ func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 	}
 	if caps.OS != "linux" || caps.Arch != "amd64" {
 		t.Fatalf("os/arch = %q/%q, want the preflight facts", caps.OS, caps.Arch)
+	}
+}
+
+// A handshake seam that reports false — no live channel installed, or a channel
+// that is not the generation the probe resolved — must refuse with the typed
+// SessionUnavailable and cache nothing. Falling through would cache a snapshot
+// that pairs this client's wire reads with no handshake facts, and a later call
+// on the same client would serve that partial snapshot instead of refusing the
+// generation change.
+func TestHostCapabilitiesHandshakeFalseRefusesWithoutCaching(t *testing.T) {
+	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostClientIfAttached(func(string) (*appwire.Client, bool) { return client, true })
+	source.SetHostFacts(func(context.Context, string, *appwire.Client) (HostFacts, error) {
+		return HostFacts{
+			ProtocolVersion: "preflight-proto",
+			HubVersion:      "preflight-ver",
+			OS:              "linux",
+			Arch:            "amd64",
+		}, nil
+	})
+	source.SetHostHandshake(func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
+		return appwire.InitializeResponse{}, false
+	})
+
+	_, err := source.HostCapabilities(context.Background())
+	assertSessionUnavailableForHost(t, "HostCapabilities", "host", err)
+
+	if source.probe != nil {
+		t.Fatalf("a refused handshake cached a probe: %+v", source.probe)
 	}
 }
 
