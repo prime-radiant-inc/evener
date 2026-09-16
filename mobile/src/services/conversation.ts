@@ -28,14 +28,17 @@ import type {
   ThreadCapabilities,
   ThreadClearResponse,
   ThreadForkResponse,
-  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
 } from "@evener/appwire-client";
-import { hydrateThread, isStaleCursorError } from "@evener/appwire-client";
+import {
+  hydrateThread,
+  isStaleCursorError,
+  mergeOlderItemPage,
+} from "@evener/appwire-client";
 import type {
   MobileConversation,
   MobileTimelineItem,
@@ -760,7 +763,7 @@ export function createConversationService(
       }
       // Project the older turns into mobile items by hydrating a minimal
       // Thread containing just these turns; only the display rows are kept.
-      const items = projectOlderTurns(response.data, threadId);
+      const items = projectOlderTurns(response, threadId);
       return {
         items,
         nextCursor: response.nextCursor,
@@ -1205,19 +1208,21 @@ export function createConversationService(
   };
 }
 
-// Project older Turn[] into mobile timeline items. We build a minimal Thread
-// with just these turns, hydrate it through the package like open() does, and
-// keep only the display rows (the model's ref and clock are placeholders the
-// rows never read). The real thread id names the serving session so a
-// replayed image's sha route points at this session, not a placeholder; the
-// store owns the page merge over display rows until D23 adopts the reducer's
-// mergeOlderItemPage.
+// Project an older page into mobile timeline items: hydrate an empty Thread
+// under the real thread id (so a replayed image's sha route names this
+// session), merge the page into it with the package's mergeOlderItemPage —
+// the same across-turn merge and tool call/result folding the web applies to
+// a page — and keep only the display rows. The model's ref and clock are
+// placeholders the rows never read. The store still owns the prepend of
+// these rows onto the retained timeline (D23d moves that onto the model).
+// A page never repeats a transcript key: the hub's pager refuses to emit one
+// (internal/appitempaging/page.go validateCandidates), so there is no
+// within-page dedupe to do here.
 function projectOlderTurns(
-  turns: ThreadTurnsListResponse["data"],
+  page: ThreadTurnsListResponse,
   threadId: string | null,
 ): MobileTimelineItem[] {
-  if (turns.length === 0) return [];
-  const mergedTurns = mergeFragmentTurns(turns);
+  if (page.data.length === 0) return [];
   const id = threadId ?? "older";
   const thread: Thread = {
     id,
@@ -1231,7 +1236,7 @@ function projectOlderTurns(
     cwd: "",
     cliVersion: "",
     source: "",
-    turns: mergedTurns,
+    turns: [],
     evener: {
       ref: "older",
       capabilities: {
@@ -1252,59 +1257,11 @@ function projectOlderTurns(
       queue: { revision: 0 },
     },
   };
+  const model = mergeOlderItemPage(hydrateThread({ thread }, "older", 0), page);
   // I3: Filter out actionable question rows from historical pages. A pending
   // ask cannot legitimately be older than newer continuation turns, and
   // page-local projection otherwise resurrects settled calls. All other
-  // projected page items/order/dedupe/cursor are preserved — only question
-  // rows are omitted.
-  return projectTimeline(hydrateThread({ thread }, "older", 0)).filter(
-    (item) => item.kind !== "question",
-  );
-}
-
-// A v4 page can overlap at turn boundaries and can carry fragments whose wire
-// ids differ while transcriptKey identifies the same item. Merge by that
-// stable identity before projecting, preserving the newer item's payload and
-// the transcript position used for deterministic ordering.
-function mergeFragmentTurns(
-  turns: ThreadTurnsListResponse["data"],
-): ThreadTurnsListResponse["data"] {
-  const byTurn = new Map<string, (typeof turns)[number]>();
-  for (const turn of turns) {
-    const existing = byTurn.get(turn.id);
-    if (!existing) {
-      byTurn.set(turn.id, {
-        ...turn,
-        items: turn.items ? [...turn.items] : [],
-      });
-      continue;
-    }
-    const items = [...(existing.items ?? []), ...(turn.items ?? [])];
-    byTurn.set(turn.id, {
-      ...existing,
-      ...turn,
-      items: mergeFragmentItems(items),
-    });
-  }
-  return [...byTurn.values()].map((turn) => ({
-    ...turn,
-    items: mergeFragmentItems(turn.items ?? []),
-  }));
-}
-
-function mergeFragmentItems(items: ThreadItem[]): ThreadItem[] {
-  const byIdentity = new Map<string, ThreadItem>();
-  for (const item of items) {
-    const identity = item.transcriptKey ?? item.id;
-    const prior = byIdentity.get(identity);
-    byIdentity.set(identity, prior ? { ...prior, ...item } : item);
-  }
-  return [...byIdentity.values()].sort((left, right) => {
-    const a = left.position;
-    const b = right.position;
-    if (a && b) return a.entry - b.entry || a.item - b.item;
-    if (a) return -1;
-    if (b) return 1;
-    return 0;
-  });
+  // projected page items/order/cursor are preserved — only question rows are
+  // omitted.
+  return projectTimeline(model).filter((item) => item.kind !== "question");
 }
