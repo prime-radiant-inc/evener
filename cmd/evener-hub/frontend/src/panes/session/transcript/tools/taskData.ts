@@ -7,7 +7,7 @@
 // onto ThreadItem.raw unchanged; protocol/reducer.ts's wireItemToModel keeps
 // it as item.raw verbatim. The shape is therefore the same
 // agent/task/task_store.go Task[] the tasks side panel already parses from a
-// different wire path (TaskListResponse.data) - chrome/taskData.ts's
+// different wire path (TaskListResponse.data) - the AppWire package's
 // parseTaskListData is reused rather than reimplemented.
 //
 // Absent/malformed raw - an old daemon predating StateResult.State, or a
@@ -15,7 +15,7 @@
 // contract as parseTaskListData itself: "we don't know the state", never
 // "zero tasks". Callers must degrade to argument-only rendering in that
 // case, never an empty checklist or a fabricated auto-start.
-import { parseTaskListData, type TaskRow } from "../../chrome/taskData";
+import { parseTaskListData, type TaskRow } from "@evener/appwire-client";
 
 export type { TaskRow };
 

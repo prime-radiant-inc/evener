@@ -2,7 +2,8 @@
 // 2026-08-09-task-list-ui-design.md). The wire's ISO strings stay strings in
 // TaskRow; these two functions are the only place they become display text.
 // Both tolerate invalid input by returning the raw string - a malformed
-// timestamp is a display detail, never a reason to blank a task row.
+// timestamp is a display detail, never a reason to blank a task row. Shared
+// by the web tasks panel and native's tasks sheet and delegate details.
 
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const t = new Date(iso);

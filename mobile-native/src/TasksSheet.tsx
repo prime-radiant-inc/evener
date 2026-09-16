@@ -14,9 +14,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import type { TaskRow } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskData";
-import { groupTasks } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskGroups";
-import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskTime";
+import type { TaskRow } from "@evener/appwire-client";
+import { absoluteTime, groupTasks } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { TaskList } from "./taskList";

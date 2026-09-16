@@ -168,6 +168,21 @@ assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
 assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
+// TaskListResponse.data is \`unknown\` on the wire: null (no data - an old
+// daemon with no tasksFn) must stay distinct from [] (a real, empty list).
+assert.equal(client.parseTaskListData(null), null);
+assert.deepEqual(client.parseTaskListData([]), []);
+const taskRows = client.parseTaskListData([
+  { id: 1, type: "implement", description: "a", prompt: "", status: "done", completed_at: "2026-08-09T12:00:00Z" },
+  { id: 2, type: "verify", description: "b", prompt: "", status: "open" },
+  "garbage",
+]);
+assert.deepEqual(taskRows.map((row) => row.id), [1, 2]);
+assert.equal(taskRows[0].completedAt, "2026-08-09T12:00:00Z");
+assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks left");
+assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
+assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
+assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
