@@ -50,6 +50,23 @@ func newRelayTestSourceListing(t *testing.T, list func() []rendezvous.Entry) (*L
 	return source, daemon
 }
 
+// rosterListing lists entries until leaveRoster is called, then lists nothing:
+// the daemon behind them has left the roster. The roster replaces its listing
+// before it announces a departure (hubcore publishListingLocked, then fire),
+// so a test that announces a daemon gone empties the listing first; otherwise
+// recovery re-dials the still-listed entry and, when the scripted daemon
+// answers, publishes the reconnect's own resync ahead of the announcement.
+// Recovery reads the listing from its own goroutine, hence the atomic.
+func rosterListing[T any](entries []T) (list func() []T, leaveRoster func()) {
+	var gone atomic.Bool
+	return func() []T {
+		if gone.Load() {
+			return nil
+		}
+		return entries
+	}, func() { gone.Store(true) }
+}
+
 // relayTestDial is the scripted daemon's side of a relay dial.
 func relayTestDial(daemon *relayTestDaemon) appwireDialFunc {
 	return func(_ context.Context, endpoint string, _ *http.Client, _ http.Header) (appwire.Transport, error) {
@@ -1741,20 +1758,13 @@ func TestRelaySessionCommandReadResyncsListenersOnReplacementConnection(t *testi
 // source announces it to the daemon's relay session, which owes the listener
 // the re-read instruction.
 func TestRelaySessionDaemonGoneTellsListenersToReread(t *testing.T) {
-	var listingMu sync.Mutex
-	listed := []rendezvous.Entry{relayEntry("thread-1")}
-	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
-		listingMu.Lock()
-		defer listingMu.Unlock()
-		return listed
-	})
+	listing, leaveRoster := rosterListing([]rendezvous.Entry{relayEntry("thread-1")})
+	source, daemon := newRelayTestSourceListing(t, listing)
 	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
 
 	// The daemon exits: its rendezvous entry goes, its socket closes, and the
 	// roster (here, the test) announces it.
-	listingMu.Lock()
-	listed = nil
-	listingMu.Unlock()
+	leaveRoster()
 	if err := call.transport.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1804,13 +1814,8 @@ func expectDaemonGoneResync(t *testing.T, delivery RelayDelivery) {
 // busy. The resync is the one thing that must survive that: it is published
 // outside the revocable epoch.
 func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.T) {
-	var listingMu sync.Mutex
-	listed := []rendezvous.Entry{relayEntry("thread-1")}
-	source, daemon := newRelayTestSourceListing(t, func() []rendezvous.Entry {
-		listingMu.Lock()
-		defer listingMu.Unlock()
-		return listed
-	})
+	listing, leaveRoster := rosterListing([]rendezvous.Entry{relayEntry("thread-1")})
+	source, daemon := newRelayTestSourceListing(t, listing)
 	_, deliveries, call := openCommittedRelay(t, source, daemon, "thread-1")
 	session := relaySessionFor(t, source)
 
@@ -1821,9 +1826,7 @@ func TestRelaySessionDaemonGoneResyncSurvivesTheNextReconnectAttempt(t *testing.
 	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
 		t.Fatalf("barrier delivery = %q, want barrier", got)
 	}
-	listingMu.Lock()
-	listed = nil
-	listingMu.Unlock()
+	leaveRoster()
 	if err := call.transport.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1881,24 +1884,13 @@ func openCommittedRelay(t *testing.T, source *LocalDaemonSource, daemon *relayTe
 func TestRelaySessionDaemonGoneReachesALegacyEntryThroughItsResolvedSession(t *testing.T) {
 	legacy := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://thread-1", SourceID: "local", ThreadID: "thread-1"}
 	daemon := &relayTestDaemon{reads: make(chan relayReadCall, 16)}
-	var listingMu sync.Mutex
-	listed := []LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}}
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		listingMu.Lock()
-		defer listingMu.Unlock()
-		return listed
-	}, nil)
+	listing, leaveRoster := rosterListing([]LocalDaemonEntry{{Entry: legacy, SessionID: "resolved"}})
+	source := NewLocalDaemonSourceWithEntries("local", listing, nil)
 	source.dial = relayTestDial(daemon)
 	_, deliveries, call := openCommittedRelay(t, source, daemon, "resolved")
 
-	// The daemon exits: its rendezvous entry goes, its socket closes, and the
-	// roster (here, the test) announces it by the session it resolved. The
-	// entry has to go first: recovery re-dials whatever the listing still
-	// names, and a re-dial that answers publishes the reconnect's own resync
-	// ahead of this announcement.
-	listingMu.Lock()
-	listed = nil
-	listingMu.Unlock()
+	// The daemon exits and the roster announces it by the session it resolved.
+	leaveRoster()
 	if err := call.transport.Close(); err != nil {
 		t.Fatal(err)
 	}
