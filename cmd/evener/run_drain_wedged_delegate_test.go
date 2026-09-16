@@ -141,6 +141,7 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 		return result, err
 	}
 	t.Cleanup(func() { runDrainJobTree = oldDrain })
+	stopJoins := observeCloseStopJoins(t)
 	wedge := newWedgedReadFileEnvironment()
 	installWedgedReadFileEnvironment(t, wedge)
 
@@ -217,27 +218,73 @@ func TestRunExitsWhenADelegateIsWedgedInAnUncancellableToolCall(t *testing.T) {
 		t.Fatalf("stdout = %q, want the root's answer %q: giving up on the delegate is worthless if the answer is never printed", stdout.String(), finalMsg)
 	}
 	drainAt := <-drainReturned
-	// The hopeless stop join owns half of the 3s close budget by construction
-	// (agent.closeStopJoinContext reserves LaneClosePassBudget/2 for the
-	// stop and the other half for the bounded joins that follow it), so the
-	// floor under a healthy close here is ~1.5s: a fixed 2s ceiling re-flaked
-	// under load (2026-09-08 race-root CI: 2.136s on an idle-expected 1.51s
-	// mean, 135ms over). The ceiling below sits halfway between that worst
-	// observed healthy close (2.136s) and the full-budget burn of a stop join
-	// that escaped its half (~3s): ~365ms of scheduling margin above the
-	// flake, ~500ms of detection margin below the failure.
-	// This IS the close-tree wiring check, not just a completion signal:
+	// This is the close-tree wiring check, not just a completion signal:
 	// run() reaches Session.Close() -> closeOwnedDelegateRuntimeTree ->
-	// closeRuntimeTree -> closeStopJoinContext, so if closeRuntimeTree ever
-	// bypassed the helper and joined the hopeless stop on the whole cascade
-	// (the #420 shape: the stop consumes the joins' half too), elapsed lands
-	// at ~3s and trips this ceiling. The exact half is pinned
-	// deterministically by TestCloseStopJoin_HopelessStopLeavesHalfBudget in
-	// the agent package; the 90s TRIPWIRE context above remains the hang
+	// closeRuntimeTree -> closeStopJoinContext, and the hopeless stop join
+	// must be bounded to its half of the close budget, leaving the other half
+	// for the bounded joins that follow it. If closeRuntimeTree ever bypassed
+	// the helper and joined the hopeless stop on the whole cascade (the #420
+	// shape), the stop's deadline would sit at the cascade's. That is read off
+	// the two deadlines the real close minted, after the drain returned, not
+	// off how long Close took: a wall-clock ceiling on this path flaked twice
+	// (2026-09-08, 2.136s of a 3s budget; 2026-09-16 #1493, 3.901s -- past
+	// the whole budget, which only host load explains). The exact half is
+	// also pinned in isolation by TestCloseStopJoin_HopelessStopLeavesHalfBudget
+	// in the agent package; the 90s TRIPWIRE context above remains the hang
 	// guard.
-	ceiling := agent.LaneClosePassBudget - 500*time.Millisecond
-	if elapsed := time.Since(drainAt); elapsed >= ceiling {
-		t.Fatalf("Close spent %s after the drain returned (ceiling %s); it consumed the joins' half of the close budget joining the hopeless stop instead of its reserved half", elapsed, ceiling)
+	t.Logf("close after drain: %s", time.Since(drainAt))
+	stopJoins.assertHalfReserved(t, drainAt)
+}
+
+// closeStopJoinObservations records every stop join Session.Close bounds, via
+// agent.ObserveCloseStopJoin: the stop's deadline, the cascade's, and when it
+// was minted.
+type closeStopJoinObservations struct {
+	mu   sync.Mutex
+	seen []closeStopJoin
+}
+
+type closeStopJoin struct {
+	mintedAt, stopDeadline, cascadeDeadline time.Time
+}
+
+func observeCloseStopJoins(t *testing.T) *closeStopJoinObservations {
+	t.Helper()
+	obs := &closeStopJoinObservations{}
+	old := agent.ObserveCloseStopJoin
+	agent.ObserveCloseStopJoin = func(stopDeadline, cascadeDeadline time.Time) {
+		obs.mu.Lock()
+		obs.seen = append(obs.seen, closeStopJoin{mintedAt: time.Now(), stopDeadline: stopDeadline, cascadeDeadline: cascadeDeadline})
+		obs.mu.Unlock()
+	}
+	t.Cleanup(func() { agent.ObserveCloseStopJoin = old })
+	return obs
+}
+
+// assertHalfReserved checks the close tree's wiring off the deadlines: at
+// least one stop join was minted after the drain returned, and every one left
+// half of what the cascade had -- LaneClosePassBudget/2 from a fresh budget,
+// half the remainder for a nested close -- for the joins that follow it. The
+// 250ms tolerance is scheduling skew between two back-to-back mints, orders
+// of magnitude above honest skew and far below a stop join that took the
+// whole cascade.
+func (obs *closeStopJoinObservations) assertHalfReserved(t *testing.T, drainAt time.Time) {
+	t.Helper()
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	afterDrain := 0
+	for _, join := range obs.seen {
+		if !join.mintedAt.Before(drainAt) {
+			afterDrain++
+		}
+		remaining := join.cascadeDeadline.Sub(join.mintedAt)
+		want := min(agent.LaneClosePassBudget/2, remaining/2)
+		if reserved := join.cascadeDeadline.Sub(join.stopDeadline); reserved < want-250*time.Millisecond {
+			t.Fatalf("a close stop join reserved %s of the cascade's remaining %s for the joins behind it, want %s: the hopeless stop consumed the joins' half of the close budget (#420)", reserved, remaining, want)
+		}
+	}
+	if afterDrain == 0 {
+		t.Fatalf("Close bounded no stop join after the drain returned (%d observed in all): the close tree did not reach closeStopJoinContext", len(obs.seen))
 	}
 }
 

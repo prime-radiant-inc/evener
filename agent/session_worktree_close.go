@@ -209,14 +209,30 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 		ctx = context.Background()
 	}
 	budget := LaneClosePassBudget / 2
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
+	cascadeDeadline, bounded := ctx.Deadline()
+	if bounded {
+		remaining := time.Until(cascadeDeadline)
 		if remaining < budget {
 			budget = remaining / 2
 		}
 	}
-	return context.WithTimeout(ctx, budget)
+	stopCtx, cancel := context.WithTimeout(ctx, budget)
+	if ObserveCloseStopJoin != nil && bounded {
+		if stopDeadline, ok := stopCtx.Deadline(); ok {
+			ObserveCloseStopJoin(stopDeadline, cascadeDeadline)
+		}
+	}
+	return stopCtx, cancel
 }
+
+// ObserveCloseStopJoin, when set, sees every stop join closeStopJoinContext
+// bounds under a cascade deadline: the stop's own deadline and the cascade's.
+// It is EXPORTED for cmd/evener's wedged-delegate run tests, which check the
+// close tree's wiring -- that the hopeless stop join is bounded to its half of
+// the budget rather than the whole cascade -- off these two deadlines instead
+// of off wall-clock time, which host load can stretch past any ceiling. Nil in
+// production; the same convention as LaneClosePassBudget.
+var ObserveCloseStopJoin func(stopDeadline, cascadeDeadline time.Time)
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
 // not reach before the budget expired (spec §P0, rev-9.1 finding O2): touch the
