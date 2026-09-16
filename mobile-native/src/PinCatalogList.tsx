@@ -39,7 +39,6 @@ export function PinCatalogList({
 		!pending &&
 		!uncertain &&
 		!error &&
-		!stale &&
 		sections.length === 0;
 	return (
 		<FlatList
@@ -54,15 +53,21 @@ export function PinCatalogList({
 					) : null}
 					{!connected ? (
 						<Copy muted>Reconnect to view pinned sections.</Copy>
-					) : stale ? (
-						<Copy muted>Refresh to see the latest pinned sections.</Copy>
 					) : uncertain ? (
 						<Copy muted>Refresh to confirm the previous pin change.</Copy>
+					) : stale ? (
+						<Copy muted>Updating…</Copy>
 					) : null}
 					<ErrorMessage message={error} />
-					<Action disabled={loading || pending} onPress={refresh} tone="quiet">
-						{connected ? "Refresh sections" : "Reconnect"}
-					</Action>
+					{!connected || uncertain || error ? (
+						<Action
+							disabled={loading || pending}
+							onPress={refresh}
+							tone="quiet"
+						>
+							{connected ? "Refresh sections" : "Reconnect"}
+						</Action>
+					) : null}
 					{showEmpty ? (
 						<View style={{ gap: 8 }}>
 							<Copy>No pinned sections yet.</Copy>
@@ -99,9 +104,7 @@ export function PinCatalogList({
 			ListFooterComponent={
 				remaining > 0 ? (
 					<Action
-						disabled={
-							!connected || !loaded || loading || stale || uncertain || pending
-						}
+						disabled={!connected || !loaded || loading || uncertain || pending}
 						onPress={more}
 					>
 						{`Load more sections (${remaining} remaining)`}

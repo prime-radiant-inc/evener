@@ -51,8 +51,7 @@ export function PinAssignmentEditor({
 	close,
 }: PinAssignmentEditorProps) {
 	const colors = useColors();
-	const blocked =
-		pending || uncertain || !canEdit || !connected || stale || loading;
+	const blocked = pending || uncertain || !canEdit || !connected;
 	const valid =
 		(selection?.kind === "existing" &&
 			sections.some((section) => section.id === selection.sectionId)) ||
@@ -63,9 +62,7 @@ export function PinAssignmentEditor({
 			? "Checking the pin assignment…"
 			: !connected
 				? "Reconnect to change pin assignments."
-				: stale
-					? "Refresh the sections before changing a pin assignment."
-					: null;
+				: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView
@@ -151,12 +148,13 @@ export function PinAssignmentEditor({
 				{loading ? (
 					<ActivityIndicator accessibilityLabel="Loading pinned sections" />
 				) : null}
+				{stale ? <Copy muted>Updating…</Copy> : null}
 				{!loading && remaining > 0 ? (
 					<Action disabled={blocked} onPress={more}>
 						{`Load more sections (${remaining} remaining)`}
 					</Action>
 				) : null}
-				{stale || uncertain ? (
+				{uncertain ? (
 					<Action
 						tone="quiet"
 						disabled={!connected || loading || pending}

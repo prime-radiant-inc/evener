@@ -238,7 +238,6 @@ export function PageList<T>({
 				!focused ||
 				!current.loaded ||
 				current.loading ||
-				current.stale ||
 				(!allowError && current.error) ||
 				current.remaining <= 0
 			)
@@ -262,6 +261,7 @@ export function PageList<T>({
 	useFocusEffect(
 		useCallback(() => {
 			let active = true;
+			if (ready) pages.resume();
 			if (ready && revealRef) {
 				setRevealError(null);
 				setRevealed(null);
@@ -315,24 +315,22 @@ export function PageList<T>({
 					</Action>
 				</View>
 			) : null}
+			{state.stale ? (
+				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+					<Copy muted>Updating…</Copy>
+				</View>
+			) : null}
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
-					<ErrorMessage message={state.stale ? null : state.error} />
-					{state.stale ? (
-						<Copy muted>
-							Updates are available. Refresh to see the latest list.
-						</Copy>
-					) : null}
-					{state.error ? (
-						<Action
-							disabled={!ready || state.loading}
-							onPress={() => {
-								refreshList();
-							}}
-						>
-							Refresh list
-						</Action>
-					) : null}
+					<ErrorMessage message={state.error} />
+					<Action
+						disabled={!ready || state.loading}
+						onPress={() => {
+							refreshList();
+						}}
+					>
+						Refresh list
+					</Action>
 				</View>
 			) : null}
 			<FlatList
@@ -402,7 +400,7 @@ export function PageList<T>({
 							</View>
 						) : state.remaining > 0 ? (
 							<Action
-								disabled={!ready || !focused || state.loading || state.stale}
+								disabled={!ready || !focused || state.loading}
 								onPress={state.error ? retryMore : loadMore}
 							>
 								{state.error
@@ -441,7 +439,6 @@ export function PageList<T>({
 									disabled={
 										!ready ||
 										state.loading ||
-										state.stale ||
 										!!actionState?.pending ||
 										!!actionState?.uncertain ||
 										!!actionState?.storageUnavailable
@@ -456,15 +453,8 @@ export function PageList<T>({
 											actionState.storageUnavailable
 										)
 											return;
-										const snapshot = pages.getSnapshot();
 										const invoke = (operation: () => void) => {
-											if (
-												current.current === binding &&
-												snapshot === pages.getSnapshot() &&
-												!snapshot.stale &&
-												!snapshot.loading
-											)
-												operation();
+											if (current.current === binding) operation();
 										};
 										Alert.alert(
 											title(item),
