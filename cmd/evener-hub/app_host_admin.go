@@ -183,6 +183,10 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 // wrapped in evener/host/notification. Any other remote notification is
 // dropped: the wrapper is not a general-purpose remote-notification tunnel.
 //
+// This set is the Go-side contract only. The browser-side unwrapping that puts
+// a wrapped notification back on a host-scoped store is component 07b (see
+// appwire.HostNotificationParams); no Go-side consumer reads the wrapper here.
+//
 // notifyInstanceUpdated reuses evener/auth/updated for provider-instance
 // mutations (app_rpc.go), so instance edits arrive here as evener/auth/updated
 // and carry through unchanged.

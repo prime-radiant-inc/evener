@@ -213,6 +213,235 @@ func TestRemoteHubSourceAdminMutationCallClientFailureIsNotOutcomeUnknown(t *tes
 	}
 }
 
+// blockingRemoteSource wires a scripted remote that records the forwarded
+// request, signals receipt on the returned channel, and then parks until the
+// test ends (its cleanup releases the handler). The caller therefore controls
+// exactly when the call is torn down: everything after receipt is post-send,
+// which is the window these tests are about.
+func blockingRemoteSource(t *testing.T, forwardedMethod string) (*RemoteHubSource, <-chan struct{}, func() []remoteCall) {
+	t.Helper()
+	received := make(chan struct{})
+	release := make(chan struct{})
+	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != forwardedMethod {
+			return scriptedReply{result: appwire.EmptyResponse{}}
+		}
+		close(received)
+		<-release
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	return source, received, calls
+}
+
+// TestRemoteHubSourceAdminMutationCallPostSendCancellationIsOutcomeUnknown pins
+// the round-seven medium finding. A forwarded admin mutation can be written to
+// the host and then report the caller's own context end (the browser
+// disconnecting cancels the RPC handler's context), and appwire.Client reports
+// that identically whether it stopped the frame write or the response wait, so
+// the raw cancellation the mutating path used to return reads as "nothing
+// happened, retry" — the blind retry that duplicates a forwarded
+// instance/create or plugin/install.
+//
+// The remote here records the request and stays silent, so the cancellation
+// provably lands after the frame is on the wire; the mapping must still be
+// ErrorMutationOutcomeUnknown/RetryDispositionBlocked. Same assertion, same
+// error shapes, as the lost-response case pinned by
+// TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown.
+func TestRemoteHubSourceAdminMutationCallPostSendCancellationIsOutcomeUnknown(t *testing.T) {
+	source, received, calls := blockingRemoteSource(t, appwire.MethodEvenerPluginInstall)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		var out json.RawMessage
+		done <- source.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, json.RawMessage(`{"name":"p"}`), &out)
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the remote never received the forwarded mutation")
+	}
+	cancel()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AdminMutationCall did not return after its context was canceled")
+	}
+
+	// The request was delivered, so this is the post-send window the finding is
+	// about — not a pre-call cancellation that provably sent nothing.
+	lastMethodCall(t, calls(), appwire.MethodEvenerPluginInstall)
+
+	if err == nil {
+		t.Fatal("AdminMutationCall succeeded after the caller's context ended mid-call")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v; the raw cancellation escapes, so a caller can blind-retry a mutation that may have been applied", err)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorMutationOutcomeUnknown) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorMutationOutcomeUnknown)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+	}
+	if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+		t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+	}
+	if data.RetryDisposition != appwire.RetryDispositionBlocked {
+		t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
+	}
+	if !strings.Contains(wire.Message, "host") {
+		t.Fatalf("message = %q, want it to name the host", wire.Message)
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallPostSendDeadlineIsOutcomeUnknown pins the
+// second half of the in-flight rule. A deadline that expires while the call is
+// in flight loses the response exactly as a cancellation does, and this
+// classification is not new: mapCallError mapped DeadlineExceeded to
+// SessionUnavailable, which the mutation mapping already re-labelled as
+// outcome-unknown. It is pinned here because the round-seven fix classifies
+// both context ends explicitly instead of relying on that re-labelling, so a
+// future change to either mapping cannot silently turn a possibly-applied
+// mutation back into a retryable session failure.
+//
+// The context stub is the only way to end a call on demand with
+// DeadlineExceeded rather than Canceled; the remote still receives the frame
+// first, so the deadline is post-send.
+func TestRemoteHubSourceAdminMutationCallPostSendDeadlineIsOutcomeUnknown(t *testing.T) {
+	source, received, calls := blockingRemoteSource(t, appwire.MethodEvenerPluginInstall)
+
+	ctx := &onDemandDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		var out json.RawMessage
+		done <- source.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, nil, &out)
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the remote never received the forwarded mutation")
+	}
+	ctx.expire()
+
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AdminMutationCall did not return after its deadline expired")
+	}
+	lastMethodCall(t, calls(), appwire.MethodEvenerPluginInstall)
+
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError (a lost response, not a retryable session failure)", err, err)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorMutationOutcomeUnknown) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorMutationOutcomeUnknown)
+	}
+}
+
+// onDemandDeadlineContext is a context whose Err reports DeadlineExceeded once
+// expire is called. A real WithTimeout would have to fire on a wall-clock
+// schedule, which cannot be ordered against the scripted remote's receipt.
+type onDemandDeadlineContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *onDemandDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c *onDemandDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (c *onDemandDeadlineContext) expire() {
+	select {
+	case <-c.done:
+	default:
+		close(c.done)
+	}
+}
+
+// TestRemoteHubSourceAdminMutationCallPreCallCancellationStaysRaw pins the
+// boundary the round-seven fix must not cross: a context already ended before
+// the request is handed to the client provably sent nothing, so it keeps
+// AdminCall's raw cancellation (a safe retry) instead of the blocked
+// outcome-unknown. The recorded calls prove no frame went out.
+func TestRemoteHubSourceAdminMutationCallPreCallCancellationStaysRaw(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: appwire.EmptyResponse{}}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out json.RawMessage
+	err := source.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, nil, &out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %T %v, want the caller's own context.Canceled", err, err)
+	}
+	if got := calls(); len(got) != 1 {
+		t.Fatalf("remote calls = %+v, want only initialize: a context canceled before the call sends nothing", got)
+	}
+}
+
+// TestRemoteHubSourceAdminCallPostSendCancellationStaysRaw pins that the
+// round-seven fix is scoped to mutations: a read whose response is lost to the
+// caller's cancellation is a harmless retry, so AdminCall keeps returning the
+// raw cancellation rather than the blocked outcome-unknown.
+func TestRemoteHubSourceAdminCallPostSendCancellationStaysRaw(t *testing.T) {
+	source, received, _ := blockingRemoteSource(t, appwire.MethodEvenerInstanceList)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		var out json.RawMessage
+		done <- source.AdminCall(ctx, appwire.MethodEvenerInstanceList, nil, &out)
+	}()
+
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the remote never received the forwarded read")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %T %v, want the raw context.Canceled for a read", err, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AdminCall did not return after its context was canceled")
+	}
+}
+
 // TestRemoteHubSourceHostSubscriptionClosesOnContextEnd pins the documented
 // channel-closure contract: when the subscription's context ends the returned
 // channel is closed, not merely unregistered. A caller ranging over it (the

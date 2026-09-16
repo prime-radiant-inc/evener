@@ -198,7 +198,8 @@ const (
 	// evener/plugin/updated, evener/settings/agentsDoc/changed) tagged with the
 	// source host (component 07a). Local notifications keep their own unwrapped
 	// methods; this wrapper is emitted only for remote hosts. See
-	// HostNotificationParams.
+	// HostNotificationParams: the emitter is this component's hub-side fan-out,
+	// and the browser-side consumer that unwraps it is component 07b.
 	NotifyEvenerHostNotification = "evener/host/notification"
 )
 
@@ -3542,11 +3543,26 @@ type HostRequestParams struct {
 // returns json.RawMessage; this marker exists so the catalog and the generated
 // protocol reference (docs/appwire-protocol.md, types.gen.ts) name the
 // passthrough honestly instead of borrowing an unrelated type.
+//
+// A typed TypeScript client therefore does NOT get the forwarded method's own
+// result type out of MethodTypes: internal/appwirets maps a named catalog type
+// to an interface (and a struct with no fields to an empty one), so
+// MethodTypes["evener/host/request"]["result"] is `{}` — "the passthrough is an
+// object, the catalog cannot say more". `unknown` is not expressible here: that
+// mapping belongs to a field typed json.RawMessage, and a top-level catalog
+// entry always names an interface. The declared contract is deliberately
+// weaker than the payload, and a caller must widen the result and cast to the
+// method it forwarded (component 07b's host-scoped request seam,
+// cmd/evener-hub/frontend/src/stores/hostRouting.ts, does exactly that in
+// hostRequest: `result as unknown as MethodTypes[M]["result"]`). Read this
+// marker as "an opaque JSON object the proxy passes through", never as an
+// empty result.
 type HostForwardedResult struct{}
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's
-// browser clients, tagged with the source host.
+// browser clients, tagged with the source host. It is the Go-side fan-out
+// contract — what the controller emits for a remote host — and nothing more.
 //
 // Method and Params are the remote hub's own notification, unchanged:
 // evener/auth/updated, evener/launch/updated, evener/marketplace/updated,
@@ -3554,6 +3570,15 @@ type HostForwardedResult struct{}
 // notifications keep their existing, unwrapped methods; the wrapper is
 // emitted only for remote hosts, so a store that is not host-scoped never
 // sees remote traffic and cannot misapply it.
+//
+// There is no Go-side consumer of the wrapper: the emitter in this component is
+// cmd/evener-hub's remote-admin fan-out, and the client-side unwrapping into
+// host-scoped stores is component 07b (branch multi-host-pr07b-host-routing),
+// where the wrapped evener/auth/updated refreshes a remote host's own partition
+// in cmd/evener-hub/frontend/src/stores/credentials.ts and in the spawn pane's
+// catalog invalidation. Until that lands, a wrapped notification reaches browser
+// clients that do not yet route it; a local config change is still delivered
+// unwrapped, so no existing store changes behavior.
 //
 // Host is always present and is the only way a store tells two hosts apart.
 type HostNotificationParams struct {
