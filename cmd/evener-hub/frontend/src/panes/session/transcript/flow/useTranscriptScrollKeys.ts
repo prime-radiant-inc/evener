@@ -22,9 +22,9 @@
 // Mobile: nothing registers at all (rail.toggle's no-registration pattern);
 // with no handler the bindings are inert there.
 
+import { ACTIONS } from "@evener/appwire-client";
 import { type RefObject, useEffect, useRef } from "react";
-import { ACTIONS } from "../../../../keybindings/actions";
-import { keybindingsRegistry } from "../../../../keybindings/registry";
+import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { workspaceStore } from "../../../../shell/workspace";

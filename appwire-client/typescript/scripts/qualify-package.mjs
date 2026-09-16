@@ -253,6 +253,17 @@ assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.adv
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
 assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+// The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
+const keybindingParser = (keybinding) => keybinding.split(" ").map((press) => { const parts = press.split("+"); return [parts.slice(0, -1), [], parts[parts.length - 1]]; });
+assert.equal(client.ACTIONS.paletteOpen, "palette.open");
+assert.deepEqual(client.parseChord(keybindingParser, "Control+K"), [{ modifiers: ["Control"], optionalModifiers: [], key: "K" }]);
+const keybindingRegistry = client.createKeybindingsRegistry(keybindingParser);
+assert.equal(keybindingRegistry.getState().registerBinding({ id: "probe", actionId: client.ACTIONS.sessionNext, chord: "Alt+ArrowRight" }).scope, client.GLOBAL_SCOPE);
+assert.deepEqual(client.defaultBindingChordsForAction(keybindingParser, client.ACTIONS.sessionPrevious), [{ id: "session.previous", scope: "global", serialized: "Alt+ArrowLeft" }]);
+assert.equal(client.displayBindingFor(keybindingRegistry.getState().bindings, client.ACTIONS.sessionNext)?.id, "probe");
+client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp");
+assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
+assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off

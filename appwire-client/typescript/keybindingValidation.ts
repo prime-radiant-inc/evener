@@ -1,6 +1,7 @@
-// Semantic validation for user keybinding overrides. The server validates
-// STRUCTURE only (it does not know the frontend action registry); everything
-// that requires knowing the live bindings happens here, at load and at patch:
+// Semantic validation for user keybinding overrides, shared by the web's
+// overrides store and native's shortcut preview. The hub validates STRUCTURE
+// only (it does not know the action registry); everything that requires
+// knowing the live bindings happens here, at load and at patch:
 //
 //   - action ids against the default map (unknown or stale rules are skipped),
 //   - chord parseability,
@@ -13,17 +14,22 @@
 // the offending rule is skipped, so persisted data can degrade to defaults
 // but can never crash the shell.
 
-import { ACTIONS } from "./actions";
+import { ACTIONS } from "./keybindingActions";
 import {
   chordsOverlap,
+  type KeybindingParser,
   type KeySequence,
   keyComparisonIdentity,
   parseChord,
   regexMatchesKeyValue,
   serializeChord,
-} from "./chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, DEFAULT_BINDINGS, defaultBindingShapesForAction } from "./defaults";
-import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+} from "./keybindingChord";
+import {
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  DEFAULT_BINDINGS,
+  defaultBindingShapesForAction,
+} from "./keybindingDefaults";
+import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 export type KeybindingsPlatform = "apple" | "other";
 
@@ -106,23 +112,6 @@ function canonicalPress(sequence: KeySequence): string | null {
   return `${press.modifiers.join("+")}+${keyComparisonIdentity(press.key)}`;
 }
 
-const RESERVED_BY_PLATFORM: Record<KeybindingsPlatform, ReadonlySet<string>> = {
-  apple: new Set(
-    [...COMMON_RESERVED, ...APPLE_RESERVED].map((chord) => {
-      const canonical = canonicalPress(parseChord(chord));
-      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
-      return canonical;
-    }),
-  ),
-  other: new Set(
-    [...COMMON_RESERVED, ...OTHER_RESERVED].map((chord) => {
-      const canonical = canonicalPress(parseChord(chord));
-      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
-      return canonical;
-    }),
-  ),
-};
-
 // The same reserved chords as modifier-set + key-value pairs, for the REGEX
 // path: a regex chord like Control+(W) never string-matches the canonical
 // set, but it matches the reserved event, so it must be flagged the same way
@@ -132,17 +121,24 @@ interface ReservedPress {
   modifiers: string;
   keyValue: string;
 }
-function reservedPresses(chords: string[]): ReservedPress[] {
-  return chords.map((chord) => {
-    const press = parseChord(chord)[0];
+interface ReservedChords {
+  /** Each reserved chord in canonicalPress form, for the literal-key path. */
+  canonical: ReadonlySet<string>;
+  presses: readonly ReservedPress[];
+}
+
+/** The platform's reserved chords, parsed through the host's parser like
+ * every other chord (the package has no parser of its own to build them at
+ * module load). validateOverrideRules runs at load and patch, so this is
+ * rebuilt per call rather than cached. */
+function reservedChords(parse: KeybindingParser, platform: KeybindingsPlatform): ReservedChords {
+  const presses = [...COMMON_RESERVED, ...(platform === "apple" ? APPLE_RESERVED : OTHER_RESERVED)].map((chord) => {
+    const press = parseChord(parse, chord)[0];
     if (press === undefined || press.key instanceof RegExp) throw new Error(`bad reserved chord "${chord}"`);
     return { modifiers: press.modifiers.join("+"), keyValue: keyComparisonIdentity(press.key) };
   });
+  return { canonical: new Set(presses.map((press) => `${press.modifiers}+${press.keyValue}`)), presses };
 }
-const RESERVED_PRESSES_BY_PLATFORM: Record<KeybindingsPlatform, readonly ReservedPress[]> = {
-  apple: reservedPresses([...COMMON_RESERVED, ...APPLE_RESERVED]),
-  other: reservedPresses([...COMMON_RESERVED, ...OTHER_RESERVED]),
-};
 
 export interface OverrideRule {
   action: string;
@@ -214,7 +210,8 @@ export function validateOverrideRules(
   characterKeyTriggers = true,
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
-  const reserved = RESERVED_BY_PLATFORM[platform];
+  const parse = registry.parseKeybinding;
+  const reserved = reservedChords(parse, platform);
 
   interface Candidate {
     rule: OverrideRule;
@@ -245,7 +242,7 @@ export function validateOverrideRules(
     }
     let sequence: KeySequence;
     try {
-      sequence = parseChord(rule.chord);
+      sequence = parseChord(parse, rule.chord);
     } catch (error) {
       warnings.push({
         rule,
@@ -255,7 +252,7 @@ export function validateOverrideRules(
       continue;
     }
     const canonical = canonicalPress(sequence);
-    if (canonical !== null && reserved.has(canonical)) {
+    if (canonical !== null && reserved.canonical.has(canonical)) {
       warnings.push({
         rule,
         reason: "reserved-chord",
@@ -270,7 +267,7 @@ export function validateOverrideRules(
     if (onlyPress !== undefined && onlyPress.key instanceof RegExp) {
       const modifiers = onlyPress.modifiers.join("+");
       const regex = onlyPress.key;
-      const reservedHit = RESERVED_PRESSES_BY_PLATFORM[platform].some(
+      const reservedHit = reserved.presses.some(
         (entry) => entry.modifiers === modifiers && regexMatchesKeyValue(regex, entry.keyValue),
       );
       if (reservedHit) {
@@ -301,7 +298,7 @@ export function validateOverrideRules(
   // already mirrors the pref) is untouched. Only the default-map shape is
   // adjusted: a cheatsheet.toggle override candidate or a dropped restore
   // overwrites the action's whole final entry below anyway.
-  const questionShape = defaultBindingShapesForAction(ACTIONS.cheatsheetToggle, {
+  const questionShape = defaultBindingShapesForAction(parse, ACTIONS.cheatsheetToggle, {
     characterKeyTriggers: true,
   }).find((shape) => shape.id === CHARACTER_KEY_TRIGGER_BINDING_ID);
   if (questionShape !== undefined) {
@@ -340,7 +337,7 @@ export function validateOverrideRules(
     for (const action of dropped) {
       final.set(
         action,
-        defaultBindingShapesForAction(action, { characterKeyTriggers }).map((shape) => ({
+        defaultBindingShapesForAction(parse, action, { characterKeyTriggers }).map((shape) => ({
           scope: shape.scope,
           sequence: shape.sequence,
         })),

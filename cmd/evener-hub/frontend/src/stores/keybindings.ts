@@ -4,9 +4,9 @@
 // unlike transcript display there is no localStorage layer: an unsupported
 // or unreachable hub means defaults only, never a local fallback copy.
 //
-// Applied overrides live in the keybindings registry (src/keybindings/), not
+// Applied overrides live in the keybindings registry (keybindings/appRegistry.ts), not
 // in this store's state: startup `get` and every `changed` notification are
-// validated semantically (keybindings/validation.ts) and reconciled into the
+// validated semantically (the package's keybindingValidation.ts) and reconciled into the
 // registry as a DELTA - only actions whose effective chord changed are
 // rebound, and actions whose overrides vanished get their defaults restored -
 // so in-flight dispatcher state for untouched actions is never torn down.
@@ -14,14 +14,21 @@
 // crash startup on malformed persisted data.
 
 import type { AnyNotification, AppwireClientLike, KeybindingsOverrides } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import {
+  type Binding,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  type OverrideRule,
+  rebindAction,
+  removeActionBindings,
+  restoreDefaultBinding,
+  serializeChord,
+  type ValidationWarning,
+  validateOverrideRules,
+  WireError,
+} from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
-import { serializeChord } from "../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../keybindings/defaults";
-import { rebindAction, removeActionBindings, restoreDefaultBinding } from "../keybindings/overrides";
-import { type Binding, keybindingsRegistry } from "../keybindings/registry";
-import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "../keybindings/validation";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
 

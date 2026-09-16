@@ -7,11 +7,11 @@ import type {
 } from "@evener/appwire-client";
 import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { capability, manifest } from "../stores/navigation/testing";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";

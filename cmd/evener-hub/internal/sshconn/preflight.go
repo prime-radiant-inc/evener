@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
+	"os/exec"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -42,10 +42,21 @@ type Preflight struct {
 	ConfigRoot string
 	// StateRoot is the default evener state root (~/.local/state/evener or
 	// XDG_STATE_HOME/evener), not a hub.toml hub_state_root override.
-	StateRoot   string
+	StateRoot string
+	// UID is the host's numeric effective uid (`id -u`), or empty when the host
+	// did not report a numeric one. The supervised darwin restart interpolates it
+	// into `gui/<uid>/<label>`; it is expired on the controller, never left for
+	// the remote shell to expand as `$(id -u)` (spec 04, §"Preflight + version
+	// contract" and §"Stop/restart mechanics").
+	UID         string
 	Version     string
 	Protocol    string
 	LaunchFlags []string
+	// LaunchCheckKnown is true when the on-disk binary answered
+	// `launch-check --json` with a contract. It is false when the binary refused
+	// the controller's appwire protocol outright, in which case Protocol,
+	// Version, and LaunchFlags carry no information and must be read as unknown.
+	LaunchCheckKnown bool
 }
 
 // osArchTargetsSupported reports whether a build ships for this target. Only
@@ -110,6 +121,19 @@ func parseEnvProbe(out []byte) (map[string]string, error) {
 	return env, nil
 }
 
+// parseEffectiveUID reads the host's numeric effective uid from `id -u` output.
+// A non-numeric or empty answer is recorded as absent rather than guessed: the
+// value is interpolated into launchd's bare-safe `gui/<uid>/<label>` word, so a
+// host that does not report a plain number falls through to the ad hoc restart
+// path instead of risking a wrong or injected command.
+func parseEffectiveUID(out []byte) string {
+	s := strings.TrimSpace(string(out))
+	if !isNumericUID(s) {
+		return ""
+	}
+	return s
+}
+
 // resolveRoots resolves the host's evener config and state roots from the
 // probed environment using the same chain the host binary itself uses
 // (cmdutil.StateRootFromLookup, envvars/userdirs.ConfigRoot). Empty variables
@@ -139,7 +163,10 @@ type launchCheck struct {
 }
 
 // parseLaunchCheck decodes the host's launch-check contract. Any decode failure
-// is ErrPreflightDecode: the host cannot be trusted to launch.
+// is ErrPreflightDecode: the host cannot be trusted to launch. A contract that
+// names a protocol but no version is refused here too — version auto-match keys
+// off it, so accepting an empty version would let the manager attach while the
+// match stayed unverifiable.
 func parseLaunchCheck(out []byte) (launchCheck, error) {
 	var lc launchCheck
 	if err := json.Unmarshal(out, &lc); err != nil {
@@ -201,27 +228,113 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	pf.Home = env["HOME"]
 	pf.ConfigRoot, pf.StateRoot = resolveRoots(goos, env)
 
-	checkOut, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
-	if err != nil {
-		if isProtocolMismatchOutput(checkOut) {
-			return pf, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(checkOut))
-		}
-		return pf, sshRunFailure(host.Name, "launch-check", err, tail(checkOut))
-	}
-	lc, err := parseLaunchCheck(checkOut)
+	uidOut, err := m.runRemote(ctx, host, "id -u")
 	if err != nil {
 		return pf, err
 	}
+	pf.UID = parseEffectiveUID(uidOut)
+
+	// Address the executable this Manager already resolved for the host (a deploy
+	// target, or a discovered install) when the registry has no evener_path, so
+	// version auto-match probes the binary the host actually runs rather than a
+	// bare `evener` the non-interactive PATH may not carry.
+	probeHost := host
+	if strings.TrimSpace(probeHost.EvenerPath) == "" {
+		probeHost.EvenerPath = m.resolvedTarget(host.Name)
+	}
+	lc, err := m.probeLaunchCheck(ctx, probeHost)
+	if err != nil {
+		if errors.Is(err, errExecutableMissing) {
+			// The executable is absent from the non-interactive PATH, but the
+			// binary may still exist at the installer's default location
+			// deployTarget falls back to. Probe it before recording the contract
+			// as unknown, so a host that already runs the controller's build at
+			// ~/.local/bin/evener is recognized instead of being re-deployed on
+			// every reconnect. This runs whether or not a deploy is configured:
+			// discovering an already-installed binary is the same probe either
+			// way, and gating it on canDeploy made a controller with no build
+			// source (or an unpublishable installer ref) fail to attach to a
+			// perfectly good host whose binary is simply off the non-interactive
+			// PATH. Only the deploy decision below is gated on canDeploy.
+			if p, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
+				probeHost.EvenerPath = p
+				if lc2, err2 := m.probeLaunchCheck(ctx, probeHost); err2 == nil {
+					m.setResolvedTarget(host.Name, p)
+					pf.LaunchCheckKnown = true
+					pf.Protocol = lc2.Protocol
+					pf.Version = lc2.Version
+					pf.LaunchFlags = append([]string(nil), lc2.LaunchFlags...)
+					return pf, nil
+				}
+			}
+		}
+		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || errors.Is(err, errExecutableMissing)) {
+			// The on-disk binary either refused the controller's appwire protocol
+			// outright, returned a contract that cannot be read, or is not there at
+			// all. Each is a fact about the binary, not a fatal preflight: ensureOnce
+			// must be able to deploy a matching build over ssh (which uses neither
+			// appwire nor the contract) before any refusal is made terminal. The
+			// absent-executable case is why this matters for the installer fallback,
+			// whose default target ~/.local/bin/evener is not on the non-interactive
+			// PATH: without it, a host that simply has no evener installed could
+			// never be deployed to. Record the contract as unknown and let the
+			// decision ladder choose the deploy path. With no deploy configured
+			// there is nothing to install, so the failure stays terminal rather than
+			// being deferred to a deploy that can never run.
+			return pf, nil
+		}
+		return pf, err
+	}
+	pf.LaunchCheckKnown = true
 	pf.Protocol = lc.Protocol
 	pf.Version = lc.Version
 	pf.LaunchFlags = append([]string(nil), lc.LaunchFlags...)
-	if lc.Protocol != appwire.ProtocolVersion {
-		return pf, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, lc.Protocol, appwire.ProtocolVersion)
-	}
-	if !slices.Contains(lc.LaunchFlags, requiredLaunchFlag) {
-		return pf, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, lc.LaunchFlags, requiredLaunchFlag)
-	}
+	// Neither the protocol nor the launch-flag contract is refused here. Both are
+	// judged by ensureOnce *after* the deploy path has had its chance: a 04a-era
+	// host binary missing a required flag, or speaking an older appwire protocol,
+	// must be upgradable by the version-match deploy before it is refused.
+	// Otherwise it is permanently rejected and no deploy can ever fix it.
 	return pf, nil
+}
+
+// probeLaunchCheck runs `evener launch-check` on the host and returns its parsed
+// contract. It is the one place the invocation and its protocol-refusal and
+// decode classification live, so preflight and the post-deploy re-probe in
+// ensureOnce cannot drift apart.
+func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (launchCheck, error) {
+	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
+	if err != nil {
+		if isProtocolMismatchOutput(out) {
+			return launchCheck{}, fmt.Errorf("%w: host %q refused protocol %s: %s", ErrProtocolIncompatible, host.Name, appwire.ProtocolVersion, tail(out))
+		}
+		if executableMissing(err, out) {
+			return launchCheck{}, fmt.Errorf("%w: host %q launch-check: %s", errExecutableMissing, host.Name, tail(out))
+		}
+		return launchCheck{}, sshRunFailure(host.Name, "launch-check", err, tail(out))
+	}
+	return parseLaunchCheck(out)
+}
+
+// errExecutableMissing marks a failed evener invocation that failed because there
+// is no evener executable at the resolved path: the host's non-interactive PATH
+// does not carry it. It is a fact about the command's absence, not a transport or
+// permission refusal, so a controller with a deploy configured records the launch
+// contract as unknown and lets the installer fallback install a binary at a known
+// location, instead of refusing the host outright.
+var errExecutableMissing = errors.New("sshconn: evener executable not found on the host")
+
+// executableMissing reports whether a failed evener invocation failed because the
+// executable could not be found. POSIX shells exit 127 for a command that cannot
+// be found and print a "not found" diagnostic; 126 (found but not executable) is
+// a real permission problem and is deliberately excluded, as is any failure whose
+// exit status or diagnostics do not name a missing command.
+func executableMissing(err error, out []byte) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 127 {
+		return false
+	}
+	text := strings.ToLower(string(out))
+	return strings.Contains(text, "not found") || strings.Contains(text, "no such file")
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth
