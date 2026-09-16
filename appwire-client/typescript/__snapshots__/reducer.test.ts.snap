@@ -528,7 +528,7 @@ PASS
         },
         {
           "id": "item_steering_live_turn_3001_0",
-          "images": undefined,
+          "images": [],
           "source": undefined,
           "status": "completed",
           "steeringKind": undefined,
