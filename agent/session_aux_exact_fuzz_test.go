@@ -244,12 +244,13 @@ type fuzzAuxWriter struct {
 	closeErr     error
 }
 
-func (w *fuzzAuxWriter) Append(schema.Turn) error {
+func (w *fuzzAuxWriter) Append(schema.Turn) (int, error) {
 	if w.appends == w.failAppendAt {
-		return errors.New("append fault")
+		return 0, errors.New("append fault")
 	}
+	seq := w.appends
 	w.appends++
-	return nil
+	return seq, nil
 }
 func (w *fuzzAuxWriter) Close() error { err := w.closeErr; w.closeErr = nil; return err }
 

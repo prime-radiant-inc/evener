@@ -969,11 +969,11 @@ func TestResumeHistoryFoldRecord_KeepsRetainedTailBeforeMarker(t *testing.T) {
 	history := ResumeHistory(entries)
 
 	wantKinds := []schema.TurnKind{
-		schema.TurnSummary,      // the head marker (Layers)
-		schema.TurnUserInput,    // seq 3 (RetainedSeqs)
-		schema.TurnAssistant,    // seq 4 (RetainedSeqs)
-		schema.TurnUserInput,    // seq 8 (post-record)
-		schema.TurnAssistant,    // seq 9 (post-record)
+		schema.TurnSummary,   // the head marker (Layers)
+		schema.TurnUserInput, // seq 3 (RetainedSeqs)
+		schema.TurnAssistant, // seq 4 (RetainedSeqs)
+		schema.TurnUserInput, // seq 8 (post-record)
+		schema.TurnAssistant, // seq 9 (post-record)
 	}
 	if len(history) != len(wantKinds) {
 		t.Fatalf("resumed %d turns, want %d: %+v", len(history), len(wantKinds), history)
