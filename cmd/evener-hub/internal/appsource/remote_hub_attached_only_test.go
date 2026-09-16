@@ -89,9 +89,12 @@ func TestHostCapabilitiesReadsAttachedHandshakeFacts(t *testing.T) {
 			Features:        appwire.FeatureSet{ThreadList: true},
 		}, nil
 	})
-	source.SetHostHandshake(func(host string) (appwire.InitializeResponse, bool) {
+	source.SetHostHandshake(func(host string, got *appwire.Client) (appwire.InitializeResponse, bool) {
 		if host != "host" {
 			t.Fatalf("handshake lookup for %q, want host", host)
+		}
+		if got != client {
+			t.Fatalf("handshake lookup for a different client generation")
 		}
 		return appwire.InitializeResponse{
 			ProtocolVersion: "handshake-proto",

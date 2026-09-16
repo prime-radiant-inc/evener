@@ -699,6 +699,18 @@ func (m *Manager) installedLiveChannel(name string) (*Channel, bool) {
 	return ch, true
 }
 
+// ChannelIfAttached returns name's installed live channel ONLY while a live,
+// not-closed channel is installed, and reports false otherwise. It is the
+// atomic primitive behind the attached-only accessors: a caller that must not
+// mix two connection generations reads the channel's client, preflight, and
+// handshake from the single value this returns, so a supervisor reconnect
+// between two separate lookups cannot splice one generation's facts onto
+// another's client. Like ClientIfAttached it takes the manager-wide mutex, not
+// the per-host gate, and never spawns ssh, preflights, deploys, or attaches.
+func (m *Manager) ChannelIfAttached(name string) (*Channel, bool) {
+	return m.attachedChannel(name)
+}
+
 // PreflightIfAttached returns name's captured preflight facts ONLY while a
 // live, not-closed channel is installed, and reports false otherwise. It is the
 // non-dialing accessor behind hubcore.WebConfig.RemoteHostFacts: the manager

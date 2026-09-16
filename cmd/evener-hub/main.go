@@ -471,19 +471,24 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		// The attached-only lookup every non-explicit read path resolves
 		// through, so none can implicitly attach a dormant host.
 		RemoteHostClientIfAttached: sshManager.ClientIfAttached,
-		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
-			// Non-dialing: the facts describe the installed channel, matching the
-			// generation the probe resolved its client from. If the host is not
-			// attached (it dropped between the probe's lookup and this read),
-			// report the typed unavailable error rather than dialing it back.
-			pf, ok := sshManager.PreflightIfAttached(host)
+		RemoteHostFacts: func(_ context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
+			// Non-dialing: read one installed channel and refuse unless it is the
+			// very channel client belongs to, so the facts can never describe a
+			// different generation than the probe's wire reads.
+			ch, ok := sshManager.ChannelIfAttached(host)
 			if !ok {
 				return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
 			}
-			return remoteHostFacts(pf, client.Features()), nil
+			return remoteHostFactsForChannel(ch, host, client)
 		},
-		RemoteHostHandshake: sshManager.HandshakeIfAttached,
-		RemoteHostOnline:    sshManager.Attached,
+		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
+			ch, ok := sshManager.ChannelIfAttached(host)
+			if !ok {
+				return appwire.InitializeResponse{}, false
+			}
+			return remoteHostHandshakeForChannel(ch, client)
+		},
+		RemoteHostOnline: sshManager.Attached,
 	}, appwireTrace)
 	// Drain the AppWire RPC server on every exit path, tracing or not (round
 	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
@@ -718,6 +723,47 @@ func remoteHostFacts(pf sshconn.Preflight, features appwire.FeatureSet) appsourc
 		Arch:            pf.Arch,
 		Features:        features,
 	}
+}
+
+// attachedChannelView is the slice of a live sshconn.Channel the remote-host
+// facts seams read. One sshconn.Manager.ChannelIfAttached lookup yields one
+// generation, so reading the client, preflight, and handshake from the same
+// value cannot splice a reconnect's facts onto the previous client's reads.
+// *sshconn.Channel satisfies it.
+type attachedChannelView interface {
+	Client() *appwire.Client
+	Preflight() sshconn.Preflight
+	Handshake() appwire.InitializeResponse
+}
+
+// remoteHostFactsForChannel returns the preflight half of the host's capability
+// snapshot for client, refusing when ch is not the channel client belongs to.
+//
+// The capability probe resolves client through the attached-only lookup and
+// runs every wire read on it, then asks for the facts. A supervisor reconnect
+// between those two steps would leave ch describing a newer connection than
+// client; answering from it would let the probe cache a snapshot assembled from
+// two generations — the hazard sshconn's channel identity check exists to
+// prevent. Refuse with the typed unavailable error the auto-resume gate already
+// understands instead; the probe is not cached on failure, so it re-probes the
+// new generation cleanly.
+func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appwire.Client) (appsource.HostFacts, error) {
+	if ch == nil || ch.Client() != client {
+		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
+	}
+	return remoteHostFacts(ch.Preflight(), client.Features()), nil
+}
+
+// remoteHostHandshakeForChannel returns the attach handshake ch captured, but
+// only when ch is the channel client belongs to. Reporting false otherwise
+// keeps the probe from pairing one connection's wire reads with another's
+// handshake; the preflight facts it already accepted (remoteHostFactsForChannel)
+// are then the only source, and those are pinned to the same client.
+func remoteHostHandshakeForChannel(ch attachedChannelView, client *appwire.Client) (appwire.InitializeResponse, bool) {
+	if ch == nil || ch.Client() != client {
+		return appwire.InitializeResponse{}, false
+	}
+	return ch.Handshake(), true
 }
 
 // printVersionInfo prints version information including backend git SHA and frontend hash.

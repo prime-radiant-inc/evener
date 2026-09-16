@@ -3475,6 +3475,65 @@ func TestHandshakeIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
+// ChannelIfAttached is the atomic primitive the generation-guarded facts seams
+// read: one lookup yields one installed channel, so a caller can take the
+// client, preflight, and handshake from the same connection generation. It must
+// answer from the installed channel alone and stop the moment that channel
+// drops or the manager closes.
+func TestChannelIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if ch, ok := m.ChannelIfAttached("alpha"); ok || ch != nil {
+		t.Fatalf("ChannelIfAttached(unattached) = %v, %v; want nil, false", ch, ok)
+	}
+	if ch, ok := m.ChannelIfAttached("ghost"); ok || ch != nil {
+		t.Fatalf("ChannelIfAttached(unknown host) = %v, %v; want nil, false", ch, ok)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("ChannelIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	got, ok := m.ChannelIfAttached("alpha")
+	if !ok || got != ch {
+		t.Fatalf("ChannelIfAttached(attached) = %v, %v; want the installed channel", got, ok)
+	}
+	// The single value carries one generation: its client, preflight, and
+	// handshake all belong to the channel Ensure just installed.
+	if got.Client() != ch.Client() {
+		t.Fatal("ChannelIfAttached returned a channel whose client is not the installed one")
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client != got.Client() {
+		t.Fatalf("ClientIfAttached disagrees with ChannelIfAttached: %v, %v", client, ok)
+	}
+	if pf, ok := m.PreflightIfAttached("alpha"); !ok || !reflect.DeepEqual(pf, got.Preflight()) {
+		t.Fatalf("PreflightIfAttached disagrees with ChannelIfAttached: %+v, %v", pf, ok)
+	}
+	if hs, ok := m.HandshakeIfAttached("alpha"); !ok || !reflect.DeepEqual(hs, got.Handshake()) {
+		t.Fatalf("HandshakeIfAttached disagrees with ChannelIfAttached: %+v, %v", hs, ok)
+	}
+
+	ch.markLost()
+	if got, ok := m.ChannelIfAttached("alpha"); ok || got != nil {
+		t.Fatalf("ChannelIfAttached(a dropped channel) = %v, %v; want nil, false", got, ok)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got, ok := m.ChannelIfAttached("alpha"); ok || got != nil {
+		t.Fatalf("ChannelIfAttached(a closed manager) = %v, %v; want nil, false", got, ok)
+	}
+}
+
 // exitGatedStdio is a bridge Stdio whose child exit the test releases directly,
 // rather than through Kill: the stdio pipes stay open, so the manager's read
 // loop keeps waiting and the child-wait goroutine's own liveness transition is

@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // countingRemoteSource is a remote-listed source that records how many
@@ -157,5 +158,74 @@ func TestNewHubSourceRegistryDirectReadAgainstUnattachedHostIsUnavailable(t *tes
 	}
 	if got := dials.Load(); got != 0 {
 		t.Fatalf("direct read against an unattached host dialed %d times; want 0", got)
+	}
+}
+
+// stubAttachedChannel models one installed sshconn.Channel generation: its
+// client, preflight, and handshake all come from the same connection.
+type stubAttachedChannel struct {
+	client    *appwire.Client
+	preflight sshconn.Preflight
+	handshake appwire.InitializeResponse
+}
+
+func (s stubAttachedChannel) Client() *appwire.Client { return s.client }
+func (s stubAttachedChannel) Preflight() sshconn.Preflight {
+	return s.preflight
+}
+func (s stubAttachedChannel) Handshake() appwire.InitializeResponse { return s.handshake }
+
+// The capability probe resolves its client once and runs every wire read on it.
+// If a supervisor reconnect installs a new channel before the probe asks for
+// the preflight facts, answering from the new channel would let the probe cache
+// a snapshot assembled from two generations — the hazard the pre-attached-only
+// code refused with "connection changed during capability probe". The
+// attached-only version must refuse just the same: an installed channel whose
+// client is not the probe's is a typed unavailable, never a mixed snapshot.
+func TestRemoteHostFactsRefusesAReconnectedChannelGeneration(t *testing.T) {
+	probeClient := &appwire.Client{}
+	reconnected := stubAttachedChannel{
+		client:    &appwire.Client{}, // a different generation than probeClient
+		preflight: sshconn.Preflight{Protocol: "v9", OS: "plan9", Arch: "mips"},
+		handshake: appwire.InitializeResponse{ProtocolVersion: "v9", SourceID: "local"},
+	}
+
+	_, err := remoteHostFactsForChannel(reconnected, "alpha", probeClient)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("facts for a reconnected generation: error %T=%v, want WireError", err, err)
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("facts wire=%+v, want session unavailable", wire)
+	}
+
+	if hs, ok := remoteHostHandshakeForChannel(reconnected, probeClient); ok {
+		t.Fatalf("handshake for a reconnected generation = %+v, true; want false", hs)
+	}
+}
+
+// When the installed channel is the probe's own generation, both seams answer
+// from it: the facts carry that channel's preflight, and the handshake is the
+// one that channel captured.
+func TestRemoteHostFactsAndHandshakeUseTheProbesGeneration(t *testing.T) {
+	probeClient := &appwire.Client{}
+	installed := stubAttachedChannel{
+		client:    probeClient,
+		preflight: sshconn.Preflight{Protocol: "v4", OS: "linux", Arch: "amd64"},
+		handshake: appwire.InitializeResponse{ProtocolVersion: "v4", SourceID: "local"},
+	}
+
+	facts, err := remoteHostFactsForChannel(installed, "alpha", probeClient)
+	if err != nil {
+		t.Fatalf("facts: %v", err)
+	}
+	if facts.ProtocolVersion != "v4" || facts.OS != "linux" || facts.Arch != "amd64" {
+		t.Fatalf("facts = %+v, want the installed channel's preflight", facts)
+	}
+
+	hs, ok := remoteHostHandshakeForChannel(installed, probeClient)
+	if !ok || hs.ProtocolVersion != "v4" || hs.SourceID != "local" {
+		t.Fatalf("handshake = %+v, %v; want the installed channel's handshake", hs, ok)
 	}
 }

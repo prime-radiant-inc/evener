@@ -375,7 +375,11 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    and `RemoteHostHandshake` (`sshManager.HandshakeIfAttached` — the
    attached-only attach handshake facts component 05's capability probe reads
    for `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`; component 04,
-   §"Go surface"; component 05, §"Capability probe"). `newHubSourceRegistry`
+   §"Go surface"; component 05, §"Capability probe"). Both facts seams read a
+   single `sshManager.ChannelIfAttached` value and refuse unless its client is
+   the exact generation the probe resolved, so a reconnect between the probe's
+   client lookup and its facts read can never produce a mixed-generation
+   snapshot. `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
@@ -386,12 +390,14 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
    names (`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached` /
    `Manager.ClientIfAttached`, wired through `RemoteHostFacts` /
    `RemoteHostHandshake` / `RemoteHostClientIfAttached`) landed with the
-   attached-only enforcement PR. `RemoteHostFacts` is the non-dialing
-   `PreflightIfAttached` accessor, so the capability probe and the fleet snapshot
-   cannot attach a dormant host through it; `RemoteHostClient` remains the
-   `Ensure`-backed dial reserved for the explicit attach triggers (an explicit
-   host in `thread/list`'s `SourceIDs`, and the not-yet-shipped component-06
-   Connect action). The `Channel` handshake is reached by host name through
+   attached-only enforcement PR. `RemoteHostFacts` is non-dialing and
+   generation-guarded (`ChannelIfAttached` + client-identity check, refusing
+   with `SessionUnavailable`), so the capability probe cannot attach a dormant
+   host through it nor cache two connections' facts as one snapshot;
+   `RemoteHostClient` remains the `Ensure`-backed dial reserved for the explicit
+   attach triggers (an explicit host in `thread/list`'s `SourceIDs`, and the
+   not-yet-shipped component-06 Connect action). The `Channel` handshake is
+   reached by host name through
    `Manager.HandshakeIfAttached` (`Channel.Handshake()` backs it).
 
 ## Data flow

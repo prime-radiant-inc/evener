@@ -96,17 +96,24 @@ type WebConfig struct {
 	RemoteHostClientIfAttached func(host string) (*appwire.Client, bool)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
 	// version, hub version, OS/arch, advertised features) for the AppWire
-	// connection behind client: the non-dialing, attached-only accessor
-	// sshconn.Manager.PreflightIfAttached, which answers from the installed
-	// channel alone. The capability probe combines the facts with its AppWire
-	// reads. nil leaves the preflight-owned fields zero-valued (tests).
+	// connection behind client, the exact generation the probe resolved for the
+	// capability probe. An implementation must answer from that same generation
+	// rather than racing a reconnect: it reads one
+	// sshconn.Manager.ChannelIfAttached value and refuses (a typed
+	// SessionUnavailable) when that channel's client is not client, so a probe
+	// can never cache a snapshot assembled from two connections. The capability
+	// probe combines the facts with its AppWire reads. nil leaves the
+	// preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
 	// attached, ONLY while a live channel is installed, without dialing
-	// (component 04's Manager.HandshakeIfAttached). The capability probe reads
-	// those four fields through it. nil leaves them zero-valued (tests).
-	RemoteHostHandshake func(host string) (appwire.InitializeResponse, bool)
+	// (component 04's Manager.HandshakeIfAttached). It takes client — the exact
+	// generation the probe resolved — and reports false when the installed
+	// channel is a different one, so the probe cannot pair one connection's wire
+	// reads with another's handshake. nil leaves those fields zero-valued
+	// (tests).
+	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// controller-to-host channel (component 06). Nil leaves every remote host
 	// online (tests).
 	RemoteHostOnline func(host string) bool
