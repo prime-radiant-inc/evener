@@ -59,8 +59,23 @@ export interface ActivitySummaryLink {
 
 let summaryLink: ActivitySummaryLink | undefined;
 
-export function linkActivitySummary(link: ActivitySummaryLink): void {
+/** Returns the unlink. Production registers once for the app's lifetime and
+ * drops it; a test that needs the unregistered state calls it. */
+export function linkActivitySummary(link: ActivitySummaryLink): () => void {
   summaryLink = link;
+  return () => {
+    if (summaryLink === link) summaryLink = undefined;
+  };
+}
+
+// A continuation page cannot run unlinked: it would record an undefined
+// generation and its settlement would reach nobody, leaving the badge unpaid
+// and a queued root refresh asleep. That is a wiring mistake, so it says so.
+function requireSummaryLink(): ActivitySummaryLink {
+  if (!summaryLink) {
+    throw new Error("activityPanel store: no summary link registered; import ./activitySummary first");
+  }
+  return summaryLink;
 }
 
 export interface ActivityPanelStoreState {
@@ -146,12 +161,14 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   entries: new Map(),
 
   beginFetch(ref, continuation) {
+    // Read before the updater runs, so an unlinked continuation throws with
+    // the entry untouched rather than half-begun.
+    const summaryRequestID = continuation ? requireSummaryLink().summaryGeneration(ref) : undefined;
     let requestID = 0;
     set((state) => {
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
-      const summaryRequestID = continuation ? summaryLink?.summaryGeneration(ref) : undefined;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
@@ -305,7 +322,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       entries.set(ref, next);
       return { entries };
     });
-    if (settlement) summaryLink?.onContinuationSettled(ref, settlement);
+    if (settlement) requireSummaryLink().onContinuationSettled(ref, settlement);
   },
 
   setExpanded(ref, expandedIDs) {

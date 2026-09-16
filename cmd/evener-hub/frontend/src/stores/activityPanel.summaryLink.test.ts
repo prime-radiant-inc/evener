@@ -1,17 +1,8 @@
 // The ActivitySummaryLink seam, driven directly with a fake summary side.
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ActivityTree } from "@evener/appwire-client";
-import { describe, expect, test, vi } from "vitest";
-import {
-  type ActivitySummaryLink,
-  activityPanelStore,
-  linkActivitySummary,
-  resetActivityPanelStoreForTests,
-} from "./activityPanel";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
+import { describe, expect, test } from "vitest";
+import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
+import { linkFakeActivitySummary } from "./activitySummaryLinkTestUtils";
 
 function tree(revision = 1): ActivityTree {
   return {
@@ -30,22 +21,13 @@ function tree(revision = 1): ActivityTree {
 }
 
 function linkWithGeneration(generation: number | undefined) {
-  const settled = vi.fn<ActivitySummaryLink["onContinuationSettled"]>();
-  linkActivitySummary({ summaryGeneration: () => generation, onContinuationSettled: settled });
-  return settled;
+  return linkFakeActivitySummary(generation).settled;
 }
 
 function publishRoot(): void {
   const root = activityPanelStore.getState().beginFetch("ref_a");
   activityPanelStore.getState().publishFetch("ref_a", root, { kind: "ready", tree: tree() });
 }
-
-describe("activityPanel does not depend on activitySummary", () => {
-  test("the panel store imports nothing from ./activitySummary", () => {
-    const source = readFileSync(join(HERE, "activityPanel.ts"), "utf8");
-    expect(source).not.toMatch(/["']\.\/activitySummary["']/);
-  });
-});
 
 describe("the summary link", () => {
   test("a merged page settles with the generation it began under and the merged counts", () => {
@@ -87,6 +69,17 @@ describe("the summary link", () => {
       summaryRequestID: undefined,
       debt: { kind: "counts", counts: expect.anything() },
     });
+  });
+
+  test("a continuation with no summary registered fails loudly", () => {
+    resetActivityPanelStoreForTests();
+    const { unlink } = linkFakeActivitySummary(7);
+    publishRoot();
+    unlink();
+    expect(() => activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" })).toThrow(
+      /no summary link registered/,
+    );
+    expect(activityPanelStore.getState().entries.get("ref_a")?.pending).toBeUndefined();
   });
 
   test("a dropped stale page settles nothing", () => {

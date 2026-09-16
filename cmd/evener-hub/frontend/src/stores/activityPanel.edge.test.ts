@@ -4,8 +4,9 @@
 // - applyFetchResult continuation-failed (lines 371, 380)
 
 import type { ActivityTree } from "@evener/appwire-client";
-import { describe, expect, test } from "vitest";
+import { beforeEach, describe, expect, test } from "vitest";
 import { activityPanelStore, resetActivityPanelStoreForTests, retainedActivityTree } from "./activityPanel";
+import { linkFakeActivitySummary } from "./activitySummaryLinkTestUtils";
 
 function makeTree(revision = 1): ActivityTree {
   return {
@@ -67,6 +68,12 @@ describe("retainedActivityTree", () => {
 });
 
 describe("activityPanelStore continuation paths", () => {
+  // This suite drives the panel without importing ./activitySummary, so it
+  // supplies the summary side the continuation protocol requires.
+  beforeEach(() => {
+    linkFakeActivitySummary();
+  });
+
   test("beginFetch + publishFetch ready stores the tree", () => {
     resetActivityPanelStoreForTests();
     const tree = makeTree();
