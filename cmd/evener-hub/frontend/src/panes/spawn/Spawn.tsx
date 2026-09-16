@@ -4,6 +4,7 @@
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
+  effortLabel,
   filterSlashMenuItems,
   friendlyLaunchErrorMessage,
   mergeSlashCommands,
@@ -19,7 +20,6 @@ import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { effortLabel } from "../../shell/reasoningEffort";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";

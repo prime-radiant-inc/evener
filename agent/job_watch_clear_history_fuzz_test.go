@@ -56,10 +56,10 @@ func FuzzWatchClearHistoryResidue(f *testing.F) {
 		}
 		jm.mu.Unlock()
 
-		if got := inspectResultFromWatchConfig(watchKey{}, nil); got.Watching || got.WatchID != "" {
+		if got := inspectResultFromWatchConfig(nil); got.Watching || got.WatchID != "" {
 			t.Fatalf("nil watch inspection = %+v, want inactive empty result", got)
 		}
-		if got := inspectResultFromWatchConfig(watchKey{Target: cfg.target}, cfg); !got.Watching || got.WatchID != cfg.watchID {
+		if got := inspectResultFromWatchConfig(cfg); !got.Watching || got.WatchID != cfg.watchID {
 			t.Fatalf("terminal config inspection = %+v", got)
 		}
 

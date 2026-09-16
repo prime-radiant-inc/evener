@@ -46,6 +46,9 @@
     "catalogCommands.ts",
     "slashCompletion.ts",
     "sharedNotesAvailability.ts",
-    "railSessionState.ts"
+    "marketplaceSourceLabel.ts",
+    "railSessionState.ts",
+    "reasoningEffort.ts",
+    "credentialLabels.ts"
   ]
 }
