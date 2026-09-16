@@ -948,6 +948,80 @@ func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
 	}
 }
 
+// TestResumeAfterConfirmedRetirementRecordsResolvedSession is the round-16
+// regression: a successful retirement recovery must record the replacement the
+// alias resolved to, or the alias keeps walking a stale hop. The recorded chain
+// is stale by construction — a completed explicit resume left A -> B
+// (ResumeSessionID cleared, ResolvedSessionID(A) == B) — while the live
+// rendezvous entry names C as the current session and still claims A, so
+// resumeClaimTarget resolves the target to C from live evidence. C appears in no
+// recorded hop, so without RecordResolvedSession the alias still names the older
+// session B and a later fork/resume branches it.
+func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
+	const (
+		alias  = "session-record-alias"
+		stale  = "session-record-stale"
+		target = "session-record-target"
+	)
+	locks := hubcore.NewResumeLocks()
+	// A completed redirect A -> B, exactly as production leaves one after an
+	// explicit resume: the durable per-alias ResumeSessionID is cleared, and the
+	// only surviving record is the group's resolved routing.
+	if err := locks.PersistForceStop([]string{alias, stale}, stale); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(alias).Epoch
+	if err := locks.ExplicitResumeCompleted(stale, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(alias, stale, epoch)
+	if got := locks.ResolvedSessionID(alias); got != stale {
+		t.Fatalf("seeded ResolvedSessionID(%q) = %q, want the stale hop %q", alias, got, stale)
+	}
+
+	// The live daemon serves C but still owns the alias A. The run dir holds the
+	// rendezvous entry resumeOwnership reads as live evidence; the roster holds
+	// the same entry so the owner lookups resolve it as the already-live
+	// replacement.
+	entry := rendezvous.Entry{
+		PID:          6101,
+		Address:      "127.0.0.1:6101",
+		Endpoint:     "ws://127.0.0.1:6101/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     alias,
+		SessionID:    target,
+		WorkspaceRef: "local:" + alias,
+		InstanceID:   "record-instance",
+		StateDir:     t.TempDir(),
+		StartedAt:    time.Unix(1700002000, 0).UTC(),
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:          entry,
+		SessionID:      target,
+		Status:         appwire.ThreadStatusIdle,
+		Lifecycle:      &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+		LifecycleFresh: true,
+	})
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		ResumeLocks: locks,
+	}
+	if err := resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + alias}); err != nil {
+		t.Fatalf("resumeAfterConfirmedRetirement: %v", err)
+	}
+	if got := locks.ResolvedSessionID(alias); got != target {
+		t.Fatalf("ResolvedSessionID(%q) = %q after a successful retirement resume, want the live replacement %q (the stale hop is %q)", alias, got, target, stale)
+	}
+}
+
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {
 	// A run dir that is a regular file makes rendezvous discovery unreadable;
 	// turn/start must fail instead of guessing at a replacement.

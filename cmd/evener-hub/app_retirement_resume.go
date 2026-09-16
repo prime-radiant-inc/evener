@@ -121,7 +121,7 @@ func awaitRetiredOwner(ctx context.Context, cfg hubcore.WebConfig, entry rendezv
 // resume discovery-and-spawn half under the same locks. It never signals the
 // daemon: retirement remains the daemon's own decision, and force-stop
 // authority is unchanged.
-func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) error {
+func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.TurnStartParams) (resumeErr error) {
 	if err := deletionFenceError(cfg, params.Ref, params.ThreadID, params.ClientMutationID); err != nil {
 		return err
 	}
@@ -142,6 +142,23 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	if err != nil {
 		return appwire.Unavailable(err.Error())
 	}
+	// A successful retirement recovery is a completed resume, so record where
+	// the alias resolved exactly as resumeThread's defer does after
+	// ExplicitResumeCompleted. This defer covers the normal exit and the three
+	// early returns where a replacement is already live. The target resolved
+	// from live rendezvous evidence (resumeClaimTarget's entry.SessionID) is in
+	// no recorded chain, so without this a later fork/resume of the alias walks
+	// the stale hop and branches the older session. RecordResolvedSession is a
+	// no-op unless the alias is at the current epoch, is not stopping, and has
+	// no pending recovery obligation. Retirement recovery is not an explicit
+	// resume, so ExplicitResumeCompleted is deliberately not called here (the
+	// automatic branch of the normal path skips it too).
+	defer func() {
+		if resumeErr != nil {
+			return
+		}
+		cfg.ResumeLocks.RecordResolvedSession(sessionID, target, epoch)
+	}()
 	epochs := make(map[string]uint64, len(aliases))
 	for _, id := range aliases {
 		epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, "", id)
@@ -222,6 +239,6 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// sessionID would drive discovery and spawn for a stale alias whenever
 	// resumeOwnership resolved a different current owner (thread/clear), the
 	// same convention resumeThread follows by assigning sessionID = target.
-	_, err = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
-	return err
+	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
+	return resumeErr
 }
