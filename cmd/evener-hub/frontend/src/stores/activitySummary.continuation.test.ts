@@ -1,7 +1,7 @@
 import type { ActivityTree } from "@evener/appwire-client";
 import { beforeEach, expect, test, vi } from "vitest";
 import { activityPanelStore, retainedActivityTree } from "./activityPanel";
-import { activitySummaryStore } from "./activitySummary";
+import { activitySummaryStore, initActivitySummary } from "./activitySummary";
 
 const ref = "ref_pages";
 const nodeID = "session:pages";
@@ -65,6 +65,7 @@ function heldRoot() {
 beforeEach(() => {
   activitySummaryStore.getState().resetForTests();
   activityPanelStore.getState().resetForTests();
+  initActivitySummary();
   const summary = activitySummaryStore.getState().beginRootFetch(ref, 10);
   if (summary === null) throw new Error("initial fetch rejected");
   activitySummaryStore.getState().publishRootFetch(ref, summary, tree(["first"]).root.counts);

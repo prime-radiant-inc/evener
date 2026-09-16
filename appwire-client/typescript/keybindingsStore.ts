@@ -245,6 +245,23 @@ const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
 
+/** The hub's whitespace, enumerated: `strings.TrimSpace` tests each rune with
+ * Go's `unicode.IsSpace`, which is U+0009-U+000D, U+0020, U+0085 and U+00A0
+ * below Latin-1, and U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F and
+ * U+3000 above it (go/src/unicode/graphic.go `IsSpace` and the `White_Space`
+ * table in go/src/unicode/tables.go). Enumerated rather than trimmed because
+ * JS `trim()` is a DIFFERENT set in both directions: it does not treat U+0085
+ * as whitespace, so a rule of only U+0085 would pass here and then be trimmed
+ * to nothing by the hub, which rejects every later whole-payload PATCH for it;
+ * and it does strip U+FEFF, which the hub keeps as an ordinary character. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the hub's whitespace set contains control characters (U+0009-U+000D, U+0085); enumerating them is the point of this class
+const HUB_WHITESPACE_ONLY = /^[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/;
+
+/** Names nothing, by the hub's own reading: empty, or whitespace only. */
+function blank(value: string): boolean {
+  return HUB_WHITESPACE_ONLY.test(value);
+}
+
 /** Structural check for a wire payload (get result, changed params, patch
  * response, conflict `current`). The server's own validation already ran; this
  * is the trust-boundary re-check so a malformed payload degrades to an error
@@ -259,15 +276,17 @@ export function fromWireOverrides(value: unknown): KeybindingsOverrides | undefi
   // loadError rides GET only: the hub's persisted state failed to load and
   // rules carries the shipped-default fallback. String-or-absent.
   if (candidate.loadError !== undefined && typeof candidate.loadError !== "string") return undefined;
-  // An action id is a non-empty string; a chord is null (an unbind) or a
-  // non-empty string. Empty strings are rejected at the boundary for both
-  // hosts: neither names an action or a chord, and letting one through would
-  // reach the registry as a rule that can only fail validation.
+  // An action id is a string naming an action; a chord is null (an unbind) or
+  // a string naming a chord. Blank strings are rejected at the boundary for
+  // both hosts, trimmed as the hub trims them (appwire/keybindings.go
+  // ValidateKeybindingsConfig): neither names anything, and letting one
+  // through would put a rule in rawOverrides that the registry can only skip
+  // and that every later whole-payload PATCH is rejected for.
   for (const rule of candidate.rules) {
     if (typeof rule !== "object" || rule === null || Array.isArray(rule)) return undefined;
     const entry = rule as Record<string, unknown>;
-    if (typeof entry.action !== "string" || entry.action.length === 0) return undefined;
-    if (!(entry.chord === null || (typeof entry.chord === "string" && entry.chord.length > 0))) return undefined;
+    if (typeof entry.action !== "string" || blank(entry.action)) return undefined;
+    if (!(entry.chord === null || (typeof entry.chord === "string" && !blank(entry.chord)))) return undefined;
   }
   return value as KeybindingsOverrides;
 }
@@ -296,8 +315,8 @@ function keybindingRules(value: unknown): KeybindingsRule[] {
     const rule = item as Record<string, unknown>;
     if (
       typeof rule.action !== "string" ||
-      !rule.action.length ||
-      (rule.chord !== null && (typeof rule.chord !== "string" || !rule.chord.length))
+      blank(rule.action) ||
+      (rule.chord !== null && (typeof rule.chord !== "string" || blank(rule.chord)))
     )
       invalidDraft();
     return { action: rule.action, chord: rule.chord };

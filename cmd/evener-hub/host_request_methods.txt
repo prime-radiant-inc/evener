@@ -1,0 +1,49 @@
+# host_request_methods.txt — the methods the hub web UI forwards to a selected
+# remote host through evener/host/request, and the single checked-in list BOTH
+# languages' tests read. Lines beginning with '#' are comments; every other
+# non-empty line is one method name, spelled exactly as the AppWire catalog
+# spells it (appwire's Method* constants / the generated METHOD_NAMES).
+#
+# It exists because the two ends of this contract live in different languages
+# and were each pinned only against themselves:
+#
+#   frontend  cmd/evener-hub/frontend/src/stores/hostRouting.ts's
+#             HOST_DEPENDENT_DISCOVERY_METHODS, with the shipped set asserted
+#             against a literal list in its own test file;
+#   Go        remoteHostAdminMethods in cmd/evener-hub/app_host_admin.go, with
+#             the allow-list asserted against the policy table in its own test
+#             file.
+#
+# A method deleted from either side therefore left the other side's tests green
+# while the browser kept forwarding — or stopped forwarding — a call the proxy
+# refuses with InvalidParams. Now each side answers to this list:
+#
+#   frontend  hostRouting.test.ts asserts the shipped set IS this list (both
+#             directions), so dropping a method from the product set fails even
+#             when its neighbouring literal is deleted with it;
+#   Go        app_host_admin_test.go asserts every method here is on the
+#             allow-list AND that hubHostAdminController.Request actually
+#             forwards it rather than refusing it, so removing one there fails
+#             even when the policy table is flipped to match.
+#
+# The Go allow-list is a SUPERSET of this list: it also carries the remote
+# settings panes' provider/launch/marketplace/plugin/auth methods, which the
+# spawn form never issues. What is listed here is the spawn form's discovery set
+# (component 06 §"Frontend changes", acceptance criterion 10; component 07
+# §"Proxy method"): model discovery, harnesses, launch resolution/schema, path
+# completion/validation, directory creation, recent projects, the spawn slash
+# catalog, the branch/location git HEAD read, the plugin-preview panel, and the
+# provider-instance list. A method removed from the product should be removed
+# from here — which fails on both sides until the other side is updated too.
+model/list
+evener/harnesses/list
+evener/launch/resolve
+evener/launch/schema
+evener/paths/complete
+evener/path/validate
+evener/dirs/create
+evener/projects/recent
+evener/spawn/slashCatalog
+evener/git/head
+evener/plugin/preview
+evener/instance/list
