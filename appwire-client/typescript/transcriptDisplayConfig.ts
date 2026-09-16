@@ -1,10 +1,23 @@
+// The transcript display configuration both apps share: what a transcript
+// shows (a named content preset or a custom vector of tool intent, tool calls,
+// reasoning and default expansion) plus the advanced toggles (round timings,
+// token counts, estimated cost, system and prompt events, hook exits), with
+// the shipped defaults, the local -> hub -> shipped precedence, the codec to
+// and from the hub's wire shape and the migration from the older per-toggle
+// preference keys. Pure - no store, no rendering, no platform access - so the
+// web Settings card, the transcript detail control and native's preferences
+// editor all compute from one rule.
+//
+// The local codec is a pinned localStorage contract: values a browser already
+// stores must keep decoding, so its encoding does not change.
+
 import type {
   TranscriptDisplayAdvanced as WireAdvanced,
   TranscriptDisplayConfig as WireConfig,
   TranscriptDisplayContent as WireContent,
   TranscriptDisplayDefault as WireDefault,
   TranscriptDisplayDefaults as WireDefaults,
-} from "@evener/appwire-client";
+} from "./types.gen";
 
 export type ContentLevel = "chat" | "intent" | "tools" | "activity" | "full";
 export type TranscriptLevel = ContentLevel;

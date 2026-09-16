@@ -25,12 +25,25 @@ function resolve(name: string) {
   return config.resolver.resolveRequest(context, name, "ios");
 }
 
+// Every specifier package.json publishes, read off its exports map so a
+// subpath added there without a Metro mapping fails here rather than on a
+// device; the source each one must resolve to is the .ts beside the .d.ts the
+// map names. The in-repo testing/ alias is absent from exports, so it is added
+// by hand.
+const packageManifest = createRequire(import.meta.url)("../../appwire-client/typescript/package.json") as {
+  name: string;
+  exports: Record<string, { types: string }>;
+};
+const publishedSpecifiers = Object.entries(packageManifest.exports).map(([subpath, entry]) => [
+  `${packageManifest.name}${subpath.slice(1)}`,
+  entry.types.replace(/^\.\/dist\//, "appwire-client/typescript/").replace(/\.d\.ts$/, ".ts"),
+]);
+
 describe("metro.config.js resolves the AppWire package by name", () => {
   for (const [specifier, expectedSuffix] of [
-    ["@evener/appwire-client", "appwire-client/typescript/index.ts"],
-    ["@evener/appwire-client/docContent", "appwire-client/typescript/docContent.ts"],
+    ...publishedSpecifiers,
     ["@evener/appwire-client/testing/fakeClient", "appwire-client/typescript/testing/fakeClient.ts"],
-  ] as const) {
+  ]) {
     it(`maps ${specifier} to a file that exists`, () => {
       const resolved = resolve(specifier);
       expect(resolved).toMatchObject({ type: "sourceFile" });

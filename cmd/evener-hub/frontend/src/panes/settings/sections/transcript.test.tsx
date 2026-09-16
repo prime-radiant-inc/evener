@@ -1,5 +1,5 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,7 +10,6 @@ import {
   resetTranscriptDisplayStoreForTests,
   transcriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig } from "../../../transcriptDisplay/config";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { TranscriptSection } from "./transcript";

@@ -52,8 +52,9 @@ this repository imports it by name, never by a relative path into that
 directory:
 
 - `@evener/appwire-client` for the root exports,
-- `@evener/appwire-client/docContent` for the doc-pane data layer, the one
-  subpath the package publishes, and
+- `@evener/appwire-client/<subpath>` for the subpaths its `package.json`
+  `exports` map publishes (the package README lists them and says when a
+  module gets a subpath instead of a root export), and
 - `@evener/appwire-client/testing/<module>` for the fakes and fixtures. That
   specifier is in-repo only — it is absent from `package.json` `exports` and
   from the tarball — so it belongs in test and dev-support files and nowhere

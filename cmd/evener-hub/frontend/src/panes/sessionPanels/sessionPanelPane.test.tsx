@@ -7,6 +7,7 @@ import type {
   ThreadReadResponse,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -15,7 +16,6 @@ import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activi
 import { activitySummaryStore } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { tasksPanelStore } from "../../stores/tasksPanel";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";

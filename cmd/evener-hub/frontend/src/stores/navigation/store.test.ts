@@ -6,13 +6,21 @@ import type {
   NavigationSnapshot,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
+import {
+  isNavigationUnavailable,
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  nextNavigationOffset,
+  type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, expect, test, vi } from "vitest";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
   findSessionNode,
-  nextNavigationOffset,
   selectExpanded,
   selectGlobalRows,
   selectLocation,
@@ -28,14 +36,6 @@ import {
 } from "./selectors";
 import { awaitNavigationConvergence, initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
 import { capability, completeSession, manifest, wireV2 } from "./testing";
-import {
-  isNavigationUnavailable,
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-} from "./types";
 
 const generation = "generation_test";
 const flush = async () => {
