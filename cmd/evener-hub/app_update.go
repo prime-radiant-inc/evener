@@ -386,7 +386,5 @@ func scheduleHubRestartAfterResponse(ctx context.Context, pin restartPin, binary
 			// lock fd); release() is intentionally not called.
 		}()
 	}
-	if !appserver.AfterResponseWritten(ctx, restart) {
-		restart()
-	}
+	appserver.RunAfterResponseWritten(ctx, restart)
 }

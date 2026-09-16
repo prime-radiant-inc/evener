@@ -319,6 +319,30 @@ describe("ActivityRowDetail", () => {
     expect(screen.getByText(`running 42s · 0b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
   });
 
+  // A resumed run keeps the previous run's latestActivityAt until the child
+  // reports again, and an anchor that does not parse is no anchor: either way
+  // the quiet age measures from runStartedAt, never from the frozen snapshot.
+  test.each([
+    ["predates the run start", "2026-08-05T14:59:00Z", 72_000],
+    ["does not parse", "not-a-timestamp", 5_000],
+  ])(
+    "live delegate quiet age anchors at the run start when latestActivityAt %s",
+    (_case, latestActivityAt, quietForMs) => {
+      render(
+        <ActivityRowDetail
+          row={delegateRow({
+            mandate: "Inspect the repo",
+            runStartedAt: "2026-08-05T15:00:00Z",
+            latestActivityAt,
+            quietForMs,
+          })}
+          now={NOW}
+        />,
+      );
+      expect(screen.getByText(`running 12s · 0b · started ${localHHMM("2026-08-05T15:00:00Z")}`)).toBeTruthy();
+    },
+  );
+
   test("terminal row meta drops the duplicated runtime and a successful exit code", () => {
     render(
       <ActivityRowDetail

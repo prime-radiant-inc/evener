@@ -26,9 +26,11 @@ type scriptedReply struct {
 	closeConn bool
 }
 
-// newScriptedRemote wires a RemoteHubSource to an in-memory StreamTransport
-// whose server side answers canned responses. No SSH, no network, no host.
-func newScriptedRemote(t *testing.T, id string, handle func(method string, params json.RawMessage) scriptedReply) (*RemoteHubSource, func() []remoteCall) {
+// newScriptedClient builds an initialized AppWire client backed by an in-memory
+// StreamTransport whose server side answers canned responses and records every
+// request. No SSH, no network, no host. It is the shared body behind
+// newScriptedRemote and the probe tests that need to swap clients.
+func newScriptedClient(t *testing.T, handle func(method string, params json.RawMessage) scriptedReply) (*appwire.Client, func() []remoteCall) {
 	t.Helper()
 	clientConn, serverConn := net.Pipe()
 	server := appwire.NewStreamTransport(serverConn)
@@ -91,16 +93,24 @@ func newScriptedRemote(t *testing.T, id string, handle func(method string, param
 		<-done
 	})
 
-	source := NewRemoteHubSource(id, nil, func(context.Context, string) (*appwire.Client, error) {
-		return client, nil
-	})
-	return source, func() []remoteCall {
+	return client, func() []remoteCall {
 		mu.Lock()
 		defer mu.Unlock()
 		out := make([]remoteCall, len(calls))
 		copy(out, calls)
 		return out
 	}
+}
+
+// newScriptedRemote wires a RemoteHubSource to an in-memory StreamTransport
+// whose server side answers canned responses. No SSH, no network, no host.
+func newScriptedRemote(t *testing.T, id string, handle func(method string, params json.RawMessage) scriptedReply) (*RemoteHubSource, func() []remoteCall) {
+	t.Helper()
+	client, calls := newScriptedClient(t, handle)
+	source := NewRemoteHubSource(id, nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	return source, calls
 }
 
 // lastMethodCall returns the params of the most recent call of method, failing
