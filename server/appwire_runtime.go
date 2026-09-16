@@ -1939,7 +1939,7 @@ func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire
 	return appwire.EmptyResponse{}, fn(ctx)
 }
 
-func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
@@ -1949,7 +1949,15 @@ func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.Threa
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("shutdown not available")
 	}
-	go fn()
+	// The shutdown ends the process, which closes this socket, so the reply
+	// this handler owes has to reach the transport first: a reply still queued
+	// in the connection's send loop when the process exits is never written,
+	// and the client reads EOF in its place (#1501). Only a request with no
+	// transport to wait on starts the shutdown right away.
+	start := func() { go fn() }
+	if !appserver.AfterResponseWritten(ctx, start) {
+		start()
+	}
 	return appwire.EmptyResponse{}, nil
 }
 

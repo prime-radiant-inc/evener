@@ -2021,17 +2021,46 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 	}
 }
 
-func TestServerAppWireThreadShutdownInvokesCallback(t *testing.T) {
+// thread/shutdown owes its reply ("the daemon runs it asynchronously",
+// appwire/protocol.go), and the daemon's shutdown func ends the process,
+// which closes this very socket. The shutdown must therefore wait for the
+// reply frame to reach the transport; a reply still queued in the send loop
+// at that moment never arrives, and the client reads EOF where its reply
+// should be (#1501). The shutdown func here does to the connection what
+// process exit does - cancels it - so a shutdown that starts too early loses
+// the reply the same way the daemon did.
+func TestServerAppWireThreadShutdownRepliesBeforeTheShutdownStarts(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	done := make(chan struct{})
+	srv.SetShutdownFunc(func() {
+		defer close(done)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.AppServer().Shutdown(shutdownCtx)
+	})
+
+	client := dialServerAppWire(t, srv)
+	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown callback was not invoked")
+	}
+}
+
+// A shutdown request with no transport to wait on (nothing will ever write
+// its reply) still has to shut the daemon down.
+func TestServerAppWireThreadShutdownInvokesCallbackWithoutATransport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	done := make(chan struct{}, 1)
 	srv.SetShutdownFunc(func() { done <- struct{}{} })
 
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "local:th_1"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
+	if _, err := srv.handleAppThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
 	select {
 	case <-done:
