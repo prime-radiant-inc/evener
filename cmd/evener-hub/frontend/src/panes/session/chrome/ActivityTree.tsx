@@ -13,6 +13,7 @@ import {
   activityNodeID,
   buildActivityRows,
   buildWatchRows,
+  delegateTiming,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -205,32 +206,28 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
+  const timing = delegateTiming(delegate, now);
   if (row.live) {
-    // quietForMs arrives frozen at snapshot time, and a quiet delegate emits
-    // no frames to refresh the snapshot: derive the displayed age from the
-    // server's own quiet anchor (latestActivityAt, else runStartedAt — the
-    // same fallback the server computes quietForMs from) and the ticking
-    // `now`. The frozen value itself is only a last resort for a snapshot
-    // with no parseable anchor.
-    const quietAnchorAt = parseMillis(
-      delegate.latestActivityAt ?? (delegate.quietForMs != null ? delegate.runStartedAt : undefined),
-    );
-    const quiet = quietAnchorAt !== undefined ? Math.max(0, now - quietAnchorAt) : (delegate.quietForMs ?? undefined);
-    return liveMetaSegments(tokens ?? undefined, rowStatusText(row), quiet);
+    // The age is the shared delegateTiming measurement (the newer of
+    // latestActivityAt and runStartedAt against the ticking `now`; the frozen
+    // quietForMs only when no anchor parses), shown only when the snapshot
+    // carries quiet evidence of its own. A snapshot with neither
+    // latestActivityAt nor quietForMs gets no age inferred from its start alone:
+    // the dense row shows what the daemon vouched for, nothing it did not.
+    const hasQuietEvidence = delegate.latestActivityAt !== undefined || delegate.quietForMs != null;
+    return liveMetaSegments(tokens ?? undefined, rowStatusText(row), hasQuietEvidence ? timing.quietForMs : undefined);
   }
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  if (delegate.durationMs !== undefined && delegate.durationMs !== null) {
-    segments.push({ key: "duration", text: formatQuietAge(delegate.durationMs) });
-  } else {
-    segments.push(
-      terminalSegment(
-        { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
-        rowStatusText(row),
-        activityDelegateState(delegate).failed,
-      ),
-    );
-  }
+  segments.push(
+    timing.durationMs !== undefined
+      ? { key: "duration", text: formatQuietAge(timing.durationMs) }
+      : {
+          key: "status",
+          text: rowStatusText(row),
+          tone: activityDelegateState(delegate).failed ? "failed" : undefined,
+        },
+  );
   return segments;
 }
 

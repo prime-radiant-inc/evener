@@ -1180,6 +1180,40 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
   expect(stats.textContent).toContain("22m00s");
 });
 
+// A stored projection can carry the run's duration without its timestamps.
+// The card shows that duration rather than no clock at all - and never the
+// launch call's own seconds.
+test("a terminal delegate without a parseable run window shows the projection's duration", () => {
+  const now = 1_700_000_221_000;
+  const stable = {
+    delegateId: "dlg_frozen",
+    status: "idle",
+    outcome: "completed",
+    terminal: true,
+    durationMs: 22 * 60_000,
+  } as EvenerDelegateInfo;
+  threadsStore.setState({ threads: new Map([["parent_frozen", { delegates: [stable] } as ThreadModel]]) });
+  const turn: TurnModel = { id: "frozen", status: "completed", items: [] };
+  render(
+    <SessionNowContext.Provider value={now}>
+      <ToolCallItem
+        item={delegateItem({
+          turnId: turn.id,
+          startedAt: new Date(now - 221_000).toISOString(),
+          output: JSON.stringify({ delegate_id: stable.delegateId, status: "completed" }),
+        })}
+        turn={turn}
+        live={false}
+        sessionRef="parent_frozen"
+      />
+    </SessionNowContext.Provider>,
+  );
+  const row = screen.getByTestId("subagent-row");
+  expect(row.dataset.kind).toBe("done");
+  expect(within(row).getByText("22m00s")).toBeTruthy();
+  expect(within(row).queryByText("3m41s")).toBeNull();
+});
+
 // --- live-data lessons (2026-08-20): real delegates exposed three fixture-blind
 // spots ---------------------------------------------------------------------
 
