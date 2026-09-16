@@ -585,8 +585,14 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolver failed under a BSD-style readlink: %v: %s", err, stderr)
 	}
-	if got := strings.TrimSpace(out); got != resolved {
-		t.Fatalf("resolver output = %q, want %q", got, resolved)
+	// The resolver prints the canonical path (cd -P), so the expectation must be
+	// canonical too: on macOS t.TempDir lives under a symlinked /var.
+	want, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out); got != want {
+		t.Fatalf("resolver output = %q, want %q", got, want)
 	}
 
 	// The pre-fix command must fail under the same shim: this is the darwin

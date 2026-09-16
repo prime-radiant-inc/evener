@@ -1,7 +1,7 @@
+import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { expect, test } from "vitest";
 import { buildShutdownConvergence } from "./shutdownConvergence";
 import { navigationStore, resetNavigationStoreForTests } from "./store";
-import { capability, manifest } from "./testing";
 
 test("shutdown factory builds session-scoped targets and predicate", () => {
   const convergence = buildShutdownConvergence("local:s1", { pinSectionId: "pins", projectKey: "p1" });

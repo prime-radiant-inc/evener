@@ -60,6 +60,8 @@ const askItem = {
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
+const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
 const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
@@ -239,6 +241,18 @@ const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Ski
 assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
 assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
 client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
+// The launch-config gateway over a two-member client port: the schema read is cached per store, the layer read is not.
+const launchCalls = [];
+const launchStore = client.createLaunchConfigStore({
+  request: async (method, params) => { launchCalls.push(method); return method === "evener/launch/schema" ? { options: [launchOption] } : params; },
+  onNotification: () => () => {},
+});
+Promise.all([launchStore.getState().schema(), launchStore.getState().schema(), launchStore.getState().getLayer("/", "global")]).then(([schema, , layer]) => {
+  assert.equal(schema.options[0].wireField, "skillsDirs");
+  assert.deepEqual(layer, { cwd: "/", layer: "global" });
+  assert.deepEqual(launchCalls, ["evener/launch/schema", "evener/launch/getLayer"]);
+});
+assert.equal(new client.LaunchSettings(null, "/", "global").getSnapshot().dirty, false);
 assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
 assert.equal(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }])?.argsText, "fix it");
 const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { tokenCounts: true });

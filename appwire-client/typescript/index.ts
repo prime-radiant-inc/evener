@@ -90,6 +90,8 @@ export {
 } from "./credentialLabels";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
+export type { DisclosureState, DisclosureStore } from "./disclosure";
+export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
   firstLine,
   formatCharCount,
@@ -127,6 +129,8 @@ export {
   sessionActionHeadline,
   WireError,
 } from "./errors";
+export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
+export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
@@ -181,6 +185,14 @@ export type {
   ValidationWarningReason,
 } from "./keybindingValidation";
 export { actionDisplayLabel, currentKeybindingsPlatform, validateOverrideRules } from "./keybindingValidation";
+export type {
+  LaunchConfigClient,
+  LaunchConfigListener,
+  LaunchConfigStore,
+  LaunchConfigStoreState,
+  LaunchSettingsState,
+} from "./launchConfig";
+export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
