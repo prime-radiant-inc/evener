@@ -304,6 +304,9 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 	// never waits on s.mu, and the set changes only on the input goroutine
 	// that is calling here.
 	inFlight := s.steeringInFlightSample()
+	if s.cfg.testOnly.steeringCarrierClaiming != nil {
+		s.cfg.testOnly.steeringCarrierClaiming()
+	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil

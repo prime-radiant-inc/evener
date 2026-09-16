@@ -1018,11 +1018,15 @@ func (s *Session) unparkSteering() {
 	s.mu.Unlock()
 }
 
-// steeringParkedNow reports Session.steeringParked.
+// steeringParkedNow reports whether user steering is parked: a failed attempt
+// left Session.steeringParked set and the steer is still queued. Every
+// autonomous path -- the drain ladder's notification and goal rungs, the
+// deferred continuation, the settle's goal kick, the entry gate for a
+// daemon-started notification or continuation -- asks this and stands down.
 func (s *Session) steeringParkedNow() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.steeringParked
+	return s.steeringParked && s.hasPendingUserSteeringLocked()
 }
 
 // steeringInFlightSample copies the in-flight set under s.mu, for a caller
@@ -1368,6 +1372,12 @@ func (s *Session) hasRunnableUserSteering() bool {
 func (s *Session) hasPendingUserSteering() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.hasPendingUserSteeringLocked()
+}
+
+// hasPendingUserSteeringLocked is hasPendingUserSteering for a caller holding
+// s.mu.
+func (s *Session) hasPendingUserSteeringLocked() bool {
 	for _, msg := range s.steeringQueue {
 		if msg.Source == events.SteeringSourceUser {
 			return true

@@ -35,6 +35,8 @@ type heldLegAdapter struct {
 	// always answers with a terminal response once released); calls past its
 	// end answer terminally too.
 	later []func(llm.Request) llm.Response
+	// holdCall is the call that parks until release: the first unless set.
+	holdCall int
 }
 
 func newHeldLegAdapter() *heldLegAdapter {
@@ -48,7 +50,7 @@ func (a *heldLegAdapter) Complete(_ context.Context, req llm.Request) (llm.Respo
 	a.requests = append(a.requests, req)
 	n := len(a.requests)
 	a.mu.Unlock()
-	if n == 1 {
+	if n == max(a.holdCall, 1) {
 		close(a.entered)
 		<-a.release
 	}
@@ -1542,5 +1544,178 @@ func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 	}
 	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
 		t.Fatalf("provider requests = %d, want 2 with the steer carried", len(requests))
+	}
+}
+
+// refuseTheNextCarrierClaimWrite arms the store to refuse the write of the next
+// carrier claim, and that write alone.
+func refuseTheNextCarrierClaimWrite(s *Session) {
+	s.cfg.testOnly.steeringCarrierClaiming = func() {
+		s.cfg.testOnly.steeringCarrierClaiming = nil
+		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+			return errors.New("injected: claim write refused")
+		}
+	}
+}
+
+// steeringTurnOwner returns the OwningTurnID of the steering turn history
+// holds for the client mutation, and whether one is there.
+func steeringTurnOwner(s *Session, clientMutationID string) (owner string, delivered bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && turn.ClientMutationID == clientMutationID {
+			owner, delivered = turn.OwningTurnID, true
+		}
+	}
+	return owner, delivered
+}
+
+// TestRefusedLadderClaimKicksNoGoalContinuation (round 14): the ladder's
+// carrier claim is refused with a goal active. The settle must not kick the
+// goal's continuation -- its acceptance drains the parked steer under the
+// continuation's fresh turn id -- and the goal is deferred, not dropped: the
+// next external wake carries the steer under its reserved id, and the goal
+// resumes at that input's settle.
+func TestRefusedLadderClaimKicksNoGoalContinuation(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.SetGoal(context.Background(), "finish the feature"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	kicks := make(chan string, 8)
+	s.SetKickFunc(func(prompt string) { kicks <- prompt })
+	refuseTheNextCarrierClaimWrite(s)
+
+	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := len(kicks); got != 0 {
+		t.Fatalf("goal kicks after the refused claim = %d, want 0: the continuation's acceptance drains the parked steer under its own turn id", got)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model calls = %d, want 1: an autonomous turn ran behind the refused claim", got)
+	}
+	if _, delivered := steeringTurnOwner(s, "cm-drain-mid-leg"); delivered || !s.hasPendingUserSteering() {
+		t.Fatalf("delivered=%v queued=%v, want the steer parked and queued", delivered, s.hasPendingUserSteering())
+	}
+
+	// The next external wake carries the steer under its reserved id, and the
+	// goal resumes behind it.
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	if owner, delivered := steeringTurnOwner(s, "cm-drain-mid-leg"); !delivered || owner != carrier {
+		t.Fatalf("delivered=%v owner=%q, want the steer delivered under its receipt's %q", delivered, owner, carrier)
+	}
+	if got := len(kicks) + len(adapter.Requests()) - 2; got < 1 {
+		t.Fatalf("no goal continuation after the external wake: kicks=%d requests=%d; the goal was dropped, not deferred", len(kicks), len(adapter.Requests()))
+	}
+}
+
+// TestRefusedLadderClaimHoldsADeferredContinuation (round 14): the goal's
+// continuation was armed at an earlier tail of the same input, a notification
+// turn interleaved, the steer arrived during it, and the tail after it cannot
+// persist the carrier claim. The wrapper must hold the deferred continuation
+// rather than run it into the parked steer.
+func TestRefusedLadderClaimHoldsADeferredContinuation(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	adapter.holdCall = 2 // the notification turn's model call is the held one
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.SetGoal(context.Background(), "finish the feature"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	kicks := make(chan string, 8)
+	s.SetKickFunc(func(prompt string) { kicks <- prompt })
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+	refuseTheNextCarrierClaimWrite(s)
+
+	// Leg 1 answers at once; tail 1 folds the goal gate and runs the
+	// notification, whose call is held while the queue is drained as steering.
+	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if owner, delivered := steeringTurnOwner(s, "cm-drain-mid-leg"); delivered {
+		t.Fatalf("the deferred continuation ran into the parked steer and delivered it under %q", owner)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("model calls = %d, want 2 (the leg and the notification turn): an autonomous turn ran behind the refused claim", got)
+	}
+	if got := len(kicks); got != 0 {
+		t.Fatalf("goal kicks = %d, want 0 while steering is parked", got)
+	}
+	if !s.hasPendingUserSteering() {
+		t.Fatal("the steer is not queued after the refused claim")
+	}
+}
+
+// TestParkedSteeringRefusesADaemonNotificationTurn (round 14, #1453): a
+// notification turn the daemon starts on its own wake, outside any drain
+// ladder, would drain a parked steer as a passenger under the notification's
+// turn id. The entry gate refuses autonomous turns while steering is parked,
+// the way it refuses them while a question is pending; the notification stays
+// queued and is delivered by the ladder behind the external wake's carrier.
+func TestParkedSteeringRefusesADaemonNotificationTurn(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	close(adapter.release)
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-parked",
+		Input:            []appwire.InputItem{{Type: "text", Text: "parked"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	drainWakes(wakes)
+	refuseTheNextCarrierClaimWrite(s)
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+		t.Fatalf("the wake with the claim refused: ran=%v err=%v, want a stand-down", ran, err)
+	}
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+
+	// The daemon's own notification wake.
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	if owner, delivered := steeringTurnOwner(s, "steer-parked"); delivered {
+		t.Fatalf("the daemon's notification turn delivered the parked steer under %q", owner)
+	}
+	if got := len(adapter.Requests()); got != 0 {
+		t.Fatalf("model calls = %d, want 0: the notification turn ran while steering was parked", got)
+	}
+	if s.peekNotifications() != 1 {
+		t.Fatalf("pending notifications = %d, want the notification kept for later", s.peekNotifications())
+	}
+
+	// The external wake carries the steer under its reserved id, and its
+	// ladder delivers the notification behind it.
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	snapshot := s.clientMutations.snapshot()
+	owner, delivered := steeringTurnOwner(s, "steer-parked")
+	if !delivered || owner != snapshot.Journal["steer-parked"].StableTurnID {
+		t.Fatalf("delivered=%v owner=%q, want the steer delivered under its receipt's %q", delivered, owner, snapshot.Journal["steer-parked"].StableTurnID)
+	}
+	if s.peekNotifications() != 0 {
+		t.Fatalf("pending notifications = %d after the external wake, want the ladder to have delivered it", s.peekNotifications())
 	}
 }

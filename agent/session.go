@@ -431,8 +431,12 @@ type Session struct {
 	// (wakePendingUserInput: an accepted client mutation, attach, a store write
 	// that landed). While set, a wake the daemon had already buffered before
 	// the failure stands down instead of spending a second attempt on the same
-	// steer, and the drain ladder runs no autonomous turn behind the failed
-	// claim. Guarded by mu.
+	// steer, and no autonomous turn runs while the steer is queued -- the
+	// drain ladder's notification and goal rungs, a deferred continuation,
+	// the settle's goal kick and the entry gate for a daemon-started
+	// notification or continuation all stand down (steeringParkedNow) -- so
+	// nothing drains it under a turn id that is not its receipt's. Guarded by
+	// mu.
 	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string

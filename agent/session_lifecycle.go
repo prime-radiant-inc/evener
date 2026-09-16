@@ -1016,6 +1016,15 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 		return "", nil
 	}
+	// The same refusal while user steering is parked after a failed attempt
+	// (Session.steeringParked): an autonomous turn would drain the parked
+	// steer under its own turn id, not the receipt's. Its wake source keeps
+	// its work, and the ladder behind the external wake that carries the
+	// steer runs it.
+	if s.steeringParked && kind != EntryUserInput && s.hasPendingUserSteeringLocked() {
+		s.mu.Unlock()
+		return "", nil
+	}
 	s.sessionEndEmitted = false
 	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
 	// read this under s.mu to coordinate the idle kick against the drain-loop gate
@@ -1319,7 +1328,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
-			SteeringParked:       s.steeringParkedNow() && s.hasPendingUserSteering(),
+			SteeringParked:       s.steeringParkedNow(),
 		})
 
 		switch action {
@@ -1396,7 +1405,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// settleGoalOnIdle and return; the goal itself is untouched in the store)
 		// — the normal resume fold picks the still-active goal up again once the
 		// reply resolves the ask.
-		if !awaiting && haveDeferredCont {
+		// Held, not dropped, while steering is parked (Session.steeringParked):
+		// the continuation's acceptance drains steering, and the parked steer
+		// belongs to the carrier the next external wake runs; the goal is
+		// untouched in the store and the settle after that carrier kicks it.
+		if !awaiting && haveDeferredCont && !s.steeringParkedNow() {
 			haveDeferredCont = false
 			// Re-validate against the goal store before running: the user may have
 			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
