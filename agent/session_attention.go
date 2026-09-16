@@ -1031,11 +1031,23 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn) error {
 		// must not be able to publish over it and silently resurrect the
 		// stale resident turn.
 		s.history[index] = turn
+		s.readmitEntrySeqLocked(turn)
 		s.bumpHistoryRevisionLocked()
 		return nil
 	}
 	s.history = append(s.history, turn)
+	s.readmitEntrySeqLocked(turn)
 	return nil
+}
+
+// readmitEntrySeqLocked clears a turn's entry from the withdrawn set: this turn
+// is in live history again -- the read-back confirmed the entry the withdrawal
+// distrusted -- so a fold must name it like any other retained turn. Callers
+// hold mu.
+func (s *Session) readmitEntrySeqLocked(turn schema.Turn) {
+	if turn.Seq >= 0 {
+		delete(s.withdrawnSeqs, turn.Seq)
+	}
 }
 
 func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {

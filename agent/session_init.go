@@ -133,6 +133,10 @@ func inheritedProvenanceTurns(length, divergenceTurn int, origins, repairInserti
 	return inherited
 }
 
+// inheritedContextBoundaryText separates a delegate's inherited prefix from its
+// own assignment, in the child's history and in its transcript.
+const inheritedContextBoundaryText = "The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."
+
 // escapeInheritedHistory escapes a forked session's inherited prefix for the
 // model copy, and reports for each returned turn the inherited entry it came
 // from (-1 for a synthetic the orphan repair spliced in), so the caller can
@@ -201,21 +205,47 @@ func splitInheritedContext(snapshot []transcript.Entry) (durable []transcript.En
 
 // stampInheritedHistorySeqs resolves each inherited history turn to the Seq of
 // the child transcript entry it was just written as, so a fold in this session
-// can name it and a restart can restore it. sources maps history positions to
-// inherited entries (see escapeInheritedHistory); a repair synthetic has no
-// entry of its own and keeps the no-entry marker. The turns arrive carrying the
+// can name it and a restart can restore it, and returns those Seqs in history
+// order. sources maps history positions to inherited entries (see
+// escapeInheritedHistory); a repair synthetic has no entry of its own, keeps
+// the no-entry marker and is named by nothing. The turns arrive carrying the
 // PARENT transcript's Seqs, which name nothing here.
-func stampInheritedHistorySeqs(history []schema.Turn, sources, seqs []int) {
+func stampInheritedHistorySeqs(history []schema.Turn, sources, seqs []int) []int {
+	stamped := make([]int, 0, len(sources))
 	for i, source := range sources {
 		if i >= len(history) {
-			return
+			break
 		}
 		if source < 0 || source >= len(seqs) {
 			history[i].Seq = schema.NoTranscriptEntrySeq
 			continue
 		}
 		history[i].Seq = seqs[source]
+		stamped = append(stamped, seqs[source])
 	}
+	return stamped
+}
+
+// writeInheritedContextRecord records which of the entries just written to a
+// child's transcript its inherited history is made of. The transcript keeps the
+// parent's conversation in the parent's own order -- an archive, the turns that
+// parent's fold summarized away included -- while the history the child starts
+// with is the one that fold left live. Nothing else names those entries: they
+// sit BEFORE the newest marker in the archive, so a restart before this
+// session's own first fold would anchor on that marker and resume a summary
+// alone (issue #1587). The record names no layers of its own, because this
+// session folded nothing: it inherited a history, and every turn of it is
+// retained.
+func writeInheritedContextRecord(w *transcript.Writer, parentSessionID string, retained []int) error {
+	if len(retained) == 0 {
+		return nil
+	}
+	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
+	record.Fold = &schema.FoldRecord{FoldID: "inherited-" + parentSessionID, RetainedSeqs: retained}
+	if _, err := w.Append(record); err != nil {
+		return fmt.Errorf("record inherited delegate context: %w", err)
+	}
+	return nil
 }
 
 // initEnvContext constructs the session's environment-context collector and
@@ -472,7 +502,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
 		s.history, inheritedSources = escapeInheritedHistory(inheritedContext, inheritedOrder)
-		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
+		boundary := schema.NewTurn(schema.TurnSteering, llm.User(inheritedContextBoundaryText))
 		// The boundary is written to the child transcript when attachTranscript
 		// flushes pendingTranscriptTurns; mark it held so that flush stamps it
 		// with the Seq it spends (it sits after the inherited prefix, not at
@@ -635,7 +665,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			}
 			seqs = append(seqs, seq)
 		}
-		stampInheritedHistorySeqs(s.history, inheritedSources, seqs)
+		retained := stampInheritedHistorySeqs(s.history, inheritedSources, seqs)
+		if err := writeInheritedContextRecord(tw, cfg.spawn.parentSessionID, retained); err != nil {
+			_ = tw.Close()
+			return nil, err
+		}
 	}
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {

@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -399,6 +400,63 @@ func TestFoldRecordTakesNoLogicalTurnOrdinal(t *testing.T) {
 	}
 	if !reflect.DeepEqual(indexedKeys, wantKeys) {
 		t.Fatalf("indexed window keys = %v, want the full projection's %v", indexedKeys, wantKeys)
+	}
+}
+
+// The incremental index resumes where the last committed scan stopped, so a
+// scan batch can BEGIN on a fold record. The record is transparent to grouping,
+// which means the entry after it continues whatever group was open before the
+// record -- a fact that lives in the already-committed index, not in this
+// batch. An index that cannot see past the start of its own batch opens a new
+// group there, spends an ordinal the full read does not, and the two
+// projections of the same item disagree on its key.
+func TestIncrementalIndexBatchStartingOnAFoldRecordKeepsGrouping(t *testing.T) {
+	path := t.TempDir() + "/session.transcript.jsonl"
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: "fold-record-batch"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	appendTurn := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := writer.Append(turn); err != nil {
+			t.Fatalf("Append %s: %v", turn.Kind, err)
+		}
+	}
+
+	appendTurn(schema.Turn{Kind: schema.TurnUserInput, StableTurnID: "turn_open", Message: llm.User("opens the turn")})
+	cache := NewTurnCache()
+	// Commit an index through the user turn: the next scan resumes after it,
+	// so the fold record is the first entry of that batch.
+	if _, _, err := cache.loadTurnIndexContext(context.Background(), path, testMaxLineBytes, boundedTestProjector); err != nil {
+		t.Fatalf("first index: %v", err)
+	}
+
+	appendTurn(schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{FoldID: "fold-1", Layers: []int{1}, RetainedSeqs: []int{0}}})
+	appendTurn(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("continues the same turn")})
+
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	var wantKeys []string
+	for _, turn := range full {
+		wantKeys = append(wantKeys, keysFor(turn)...)
+	}
+	window, _, err := cache.LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
+		ThreadRef: "local:th_fold_record_batch",
+		Limit:     40,
+	}, boundedTestProjector)
+	if err != nil {
+		t.Fatalf("LatestItemWindowFromFile: %v", err)
+	}
+	var gotKeys []string
+	for _, candidate := range window.Candidates {
+		gotKeys = append(gotKeys, candidate.Item.TranscriptKey)
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("incremental index keys = %v, want the full projection's %v", gotKeys, wantKeys)
 	}
 }
 

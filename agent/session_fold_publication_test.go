@@ -2579,3 +2579,50 @@ func recordNumberedTurns(t *testing.T, s *Session, prefix string, n int) {
 		s.recordTurn(turn, turn)
 	}
 }
+
+// Withdrawing a durability-unverified attention turn must not blacklist its
+// entry for the rest of the session: the same entry is re-retained the moment
+// the read-back confirms it (readDelegateAttentionFold's verified copy), and a
+// fold after that must name it again. Otherwise the turn is live in history,
+// invisible to the record, and gone on the next restart.
+func TestFoldPublication_ReRetainedAttentionTurnIsNamedAgain(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "attn-reretain-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual fold
+
+	const attnText = "delegate attention, verified on the second read"
+	attn := schema.NewTurn(schema.TurnSteering, llm.User(attnText))
+	attn.AttentionID = "att-reretain"
+	seq, err := s.writeTranscriptDurable(attn)
+	if err != nil {
+		t.Fatalf("write attention entry: %v", err)
+	}
+	attn.Seq = seq
+
+	if err := s.retainDelegateAttentionTurn(attn); err != nil {
+		t.Fatalf("retain: %v", err)
+	}
+	s.removeUnverifiedDelegateAttentionTurn(attn) // the read-back did not confirm it
+	if err := s.retainDelegateAttentionTurn(attn); err != nil {
+		t.Fatalf("re-retain: %v", err)
+	}
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if indexOfTurnText(currentHistory(t, s), attnText) < 0 {
+		t.Fatal("test setup: the re-retained attention turn is not in live history")
+	}
+	record := foldRecordFromTranscript(t, s)
+	if record == nil {
+		t.Fatal("the fold wrote no record")
+	}
+	if !slices.Contains(record.RetainedSeqs, seq) {
+		t.Fatalf("the fold record does not name the re-retained attention turn (Seq %d): %+v", seq, record)
+	}
+	if indexOfTurnText(ResumeHistory(sessionTranscriptEntries(t, s)), attnText) < 0 {
+		t.Fatal("the re-retained attention turn is live but missing from the resumed history: a restart drops it")
+	}
+}

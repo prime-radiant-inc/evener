@@ -441,3 +441,37 @@ func TestDelegateForkContext_ChildFoldRetainsInheritedTurns(t *testing.T) {
 		t.Fatalf("the child fold retained no inherited turn, so its restart resumes without them: %+v", resumed)
 	}
 }
+
+// A delegate restarted BEFORE its own first fold must resume the history it was
+// started with. Its transcript holds the parent's conversation as an archive,
+// in the parent's file order, so the newest marker in it is the parent fold's
+// summary and everything the fold retained sits before that marker: with
+// nothing naming those entries, the restart resumes a summary alone and the
+// delegate loses the context it was forked for.
+func TestDelegateForkContext_ChildRestartBeforeItsOwnFoldKeepsTheInheritedTail(t *testing.T) {
+	t.Parallel()
+	parent := compactedForkParent(t, "fork-child-restart")
+	snapshot, err := parent.snapshotDelegateContext()
+	if err != nil {
+		t.Fatalf("snapshotDelegateContext: %v", err)
+	}
+
+	cfg := SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}
+	cfg.spawn.parentSessionID = parent.id
+	cfg.spawn.inheritedContext = snapshot
+	child := newScriptedSummaryCompactSession(t, "fork-child-restart-child", summaryResponder, withConfig(cfg))
+
+	resumed := ResumeHistory(sessionTranscriptEntries(t, child))
+	for i := 6; i < 12; i++ {
+		want := fmt.Sprintf("kept-%d", i)
+		if indexOfTurnText(resumed, want) < 0 {
+			t.Fatalf("a restart before the child's own fold loses the inherited turn %q: %+v", want, resumed)
+		}
+	}
+	if indexOfTurnText(resumed, "kept-0") >= 0 {
+		t.Fatal("the restart resurrected a turn the parent's fold summarized away; the archive must stay out of the resumed history")
+	}
+	if indexOfTurnText(resumed, inheritedContextBoundaryText) < 0 {
+		t.Fatalf("the restart lost the delegate boundary turn, which is recorded after the inherited prefix: %+v", resumed)
+	}
+}
