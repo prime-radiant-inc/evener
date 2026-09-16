@@ -4,6 +4,7 @@ import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores
 import { Button, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
+import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
 import { Code, SettingsField } from "./settingsField";
 
@@ -77,6 +78,7 @@ export function HubSection() {
         />
       </dl>
       <HubUpdates />
+      <HubResidents />
     </div>
   );
 }

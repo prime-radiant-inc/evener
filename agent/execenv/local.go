@@ -200,6 +200,19 @@ type LocalExecutionEnvironment struct {
 	// deterministically instead of racing for it. Guarded by scratchMu like the
 	// two fields above; nil in production, and not copied by either clone path.
 	scratchMovedOut func()
+
+	// retentionOwner/retentionBinding record this environment's persisted
+	// logical identity for the root's scratch-retention manifest. They are
+	// installed by SetScratchRetentionBinding before publication and guarded by
+	// scratchMu like the scratch fields above. retentionSet distinguishes "no
+	// binding" from a zero-valued binding.
+	retentionOwner   sandbox.ScratchOwner
+	retentionBinding sandbox.ScratchBinding
+	retentionSet     bool
+	// retentionPinErr is the first sticky scratch-retention pin/publish failure
+	// seen on this environment. Preparation surfaces it as a persistence error
+	// rather than trusting a partially pinned allocation.
+	retentionPinErr error
 }
 
 // ObserveScratchMoveWindowForTesting installs fn as this environment's
@@ -577,22 +590,28 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 // directory, and only the owned one is disposed with the env.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	e.scratchMu.Lock()
-	defer e.scratchMu.Unlock()
 	if tmp := e.ownedSessionTmp; tmp != nil {
+		e.scratchMu.Unlock()
 		return tmp.Dir
 	}
 	if e.unsandboxedScratch != nil {
-		return e.unsandboxedScratch.Dir
+		dir := e.unsandboxedScratch.Dir
+		e.scratchMu.Unlock()
+		return dir
 	}
 	if e.unsandboxedScratchFailed {
+		e.scratchMu.Unlock()
 		return ""
 	}
 	tmp, err := e.newSessionScratch()
 	if err != nil {
 		e.unsandboxedScratchFailed = true
+		e.scratchMu.Unlock()
 		return ""
 	}
 	e.unsandboxedScratch = tmp
+	e.scratchMu.Unlock()
+	e.pinOwnedScratchAfterMint()
 	return tmp.Dir
 }
 
@@ -655,6 +674,35 @@ func (e *LocalExecutionEnvironment) RetainSessionScratch() {
 	e.retainUnsandboxedScratch()
 }
 
+// ReleaseSessionScratch takes the retained allocation this env currently holds
+// for kind off the environment and returns its handle WITHOUT releasing the
+// lease and WITHOUT removing the directory. It is the undo of
+// RestoreSessionScratch for a caller that installed part of a binding and has to
+// give the allocation back: RetainSandboxScratch/RetainSessionScratch keep the
+// allocation installed while releasing its lease, and the Dispose* methods
+// remove the directory, so neither can express it. The file-tool layers are
+// invalidated exactly as RestoreSessionScratch invalidates them, because the
+// effective scratch path changed. A kernel wrapper the env still carries keeps
+// reporting the released path — the wrapper is rebuilt around a retained
+// directory before an adopter installs it — so this runs only on an environment
+// its caller is abandoning, never on one that goes on working.
+func (e *LocalExecutionEnvironment) ReleaseSessionScratch(kind string) *sandbox.SessionScratch {
+	e.scratchMu.Lock()
+	var handle *sandbox.SessionScratch
+	switch kind {
+	case sandbox.ScratchKindSandbox:
+		handle, e.ownedSessionTmp = e.ownedSessionTmp, nil
+	case sandbox.ScratchKindUnsandboxed:
+		handle, e.unsandboxedScratch = e.unsandboxedScratch, nil
+	default:
+		e.scratchMu.Unlock()
+		return nil
+	}
+	e.scratchMu.Unlock()
+	e.invalidateSandboxFS()
+	return handle
+}
+
 func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) {
 	if e.lookPath != nil {
 		return e.lookPath(name)
@@ -710,6 +758,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		if policy != nil && policy.FileToolConfined() {
 			if tmp, err := e.newSessionScratch(); err == nil {
 				e.setOwnedSessionTmp(tmp)
+				e.pinOwnedScratchAfterMint()
 			}
 		}
 		return nil
@@ -747,6 +796,7 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	e.Wrapper = w
 	e.Sandbox = policy
 	e.setOwnedSessionTmp(tmp)
+	e.pinOwnedScratchAfterMint()
 	return nil
 }
 
@@ -793,6 +843,23 @@ func (e *LocalExecutionEnvironment) DisposeSandboxScratch() {
 	tmp := e.ownedSessionTmp
 	e.ownedSessionTmp = nil
 	_ = tmp.Cleanup()
+}
+
+// DisposeUnsandboxedScratch releases the lazily minted per-session scratch this
+// env provisioned and removes it, WITHOUT the process teardown Cleanup performs.
+// It is the unsandboxed twin of DisposeSandboxScratch: a resume that adopts a
+// retained unsandboxed allocation onto the launcher's environment must drop the
+// launcher's own replacement mint first, because RestoreSessionScratch refuses
+// to replace an exposed scratch. It must run only on such a launcher-owned mint,
+// never on an allocation the manifest still references. The next spawned command
+// lazily mints a replacement if the environment is left without one.
+func (e *LocalExecutionEnvironment) DisposeUnsandboxedScratch() {
+	e.scratchMu.Lock()
+	defer e.scratchMu.Unlock()
+	if tmp := e.unsandboxedScratch; tmp != nil {
+		e.unsandboxedScratch = nil
+		_ = tmp.Cleanup()
+	}
 }
 
 // DisposeUnadoptedScratch drops every per-session scratch directory this env
@@ -888,6 +955,14 @@ func (e *LocalExecutionEnvironment) AdoptSessionScratch(from *LocalExecutionEnvi
 	// works in.
 	from.invalidateSandboxFS()
 	e.retireStaleFileToolLayers()
+	// Persist the destination's pin for whatever this env just adopted. A
+	// source's own post-mint pin can run in the move window above, after its
+	// scratch fields were taken, and observe no leased handle: without this
+	// publication the moved allocation would hold a lease nothing in the
+	// manifest attributes, so a restore would mint a replacement instead of
+	// reacquiring it. PinOwnedScratch no-ops when this env carries no retention
+	// binding and records any failure sticky for preparation to surface.
+	_ = e.PinOwnedScratch()
 }
 
 // retireStaleFileToolLayers retires every cached file-tool layer whose scratch

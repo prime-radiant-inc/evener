@@ -99,6 +99,36 @@ type closeOptions struct {
 	forceTerminal bool
 }
 
+// releaseRuntime runs the session's single one-time teardown under an explicit
+// policy. A prior terminal close or non-terminal release owns the pass, so a
+// later deferred Close can never run a destructive second pass. Terminal
+// callers keep the void/logging contract; a retirement caller gets the cleanup
+// errors back.
+func (s *Session) releaseRuntime(ctx context.Context, options closeOptions, policy runtimeReleasePolicy) error {
+	var releaseErr error
+	ran := false
+	s.closeOnce.Do(func() {
+		ran = true
+		releaseErr = s.releaseRuntimeOnce(ctx, options, policy)
+	})
+	if !ran {
+		// A terminal Close or an earlier release already owns the one pass.
+		// Terminal callers keep their void/no-op contract; a retirement caller
+		// must see that its release did not happen.
+		if policy == releaseRetirement {
+			return errRetirementTeardownSpent
+		}
+		return nil
+	}
+	return releaseErr
+}
+
+// close is the terminal-policy helper retained for internal callers and tests
+// that shuts a session down without needing the cleanup error.
+func (s *Session) close(ctx context.Context, options closeOptions) {
+	_ = s.releaseRuntime(ctx, options, releaseTerminal)
+}
+
 // joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
 // budget expires and saying so. The joins it replaces exist for DELIVERY
 // ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
@@ -141,34 +171,53 @@ func (s *Session) releaseAPILogRoute() {
 // followed by an Add outside the lock would reopen the race (spec §P1, rev-9.1
 // finding O5). A true return MUST be paired with a (deferred) endDispose().
 func (s *Session) beginDispose() bool {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
+		return false
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closing {
+		s.mu.Unlock()
+		release()
 		return false
 	}
 	s.disposeWG.Add(1)
+	s.disposeRetirement = append(s.disposeRetirement, release)
+	s.mu.Unlock()
 	return true
 }
 
 // endDispose releases a dispose admission obtained from beginDispose().
 func (s *Session) endDispose() {
+	s.mu.Lock()
+	last := len(s.disposeRetirement) - 1
+	release := s.disposeRetirement[last]
+	s.disposeRetirement[last] = nil
+	s.disposeRetirement = s.disposeRetirement[:last]
+	s.mu.Unlock()
 	s.disposeWG.Done()
+	release()
 }
 
 // envWorkID handles one admission on envWorkWG, so its label can be dropped
 // again when the work returns.
 type envWorkID uint64
 
+type envWorkRecord struct {
+	label   string
+	release func()
+}
+
 // registerEnvWorkLocked records an admission described by label and returns its
 // handle. The caller holds s.mu and has already established that the session is
 // not closing — that pairing is the whole point (see beginEnvWork).
-func (s *Session) registerEnvWorkLocked(label string) envWorkID {
+func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID {
 	s.envWorkSeq++
 	id := envWorkID(s.envWorkSeq)
 	if s.envWork == nil {
-		s.envWork = make(map[envWorkID]string)
+		s.envWork = make(map[envWorkID]envWorkRecord)
 	}
-	s.envWork[id] = label
+	s.envWork[id] = envWorkRecord{label: label, release: release}
 	s.envWorkWG.Add(1)
 	return id
 }
@@ -207,12 +256,19 @@ func (s *Session) registerEnvWorkLocked(label string) envWorkID {
 //     so skipping it would leave the residue the rollback exists to prevent.
 //     Better unfenced cleanup than none.
 func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closing {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
 		return 0, false
 	}
-	return s.registerEnvWorkLocked(label), true
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		release()
+		return 0, false
+	}
+	id := s.registerEnvWorkLocked(label, release)
+	s.mu.Unlock()
+	return id, true
 }
 
 // relabelEnvWork renames a live admission. An operation's admission is taken
@@ -223,17 +279,22 @@ func (s *Session) beginEnvWork(label string) (envWorkID, bool) {
 func (s *Session) relabelEnvWork(id envWorkID, label string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, live := s.envWork[id]; live {
-		s.envWork[id] = label
+	if work, live := s.envWork[id]; live {
+		work.label = label
+		s.envWork[id] = work
 	}
 }
 
 // endEnvWork releases an admission obtained from beginEnvWork().
 func (s *Session) endEnvWork(id envWorkID) {
 	s.mu.Lock()
+	work := s.envWork[id]
 	delete(s.envWork, id)
 	s.mu.Unlock()
 	s.envWorkWG.Done()
+	if work.release != nil {
+		work.release()
+	}
 }
 
 // outstandingEnvWork lists the labels of every admission still in flight,
@@ -242,8 +303,8 @@ func (s *Session) outstandingEnvWork() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	labels := make([]string, 0, len(s.envWork))
-	for _, label := range s.envWork {
-		labels = append(labels, label)
+	for _, work := range s.envWork {
+		labels = append(labels, work.label)
 	}
 	sort.Strings(labels)
 	return labels
@@ -329,9 +390,12 @@ func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
 		strings.Join(outstanding, "; "))})
 }
 
-func (s *Session) close(ctx context.Context, options closeOptions) {
-	s.closeOnce.Do(func() {
-		emitTerminal := options.forceTerminal
+func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, policy runtimeReleasePolicy) error {
+	retirement := policy == releaseRetirement
+	cleanupEnv := options.cleanupEnv
+	emitTerminal := options.forceTerminal
+	var releaseErr error
+	{
 		// One budget per close cascade (spec §P0, Implementation-order item 4):
 		// the initiating close mints the deadline; descendants reached below via
 		// close(budgetCtx, closeOptions{}) reuse it rather than minting their own.
@@ -374,7 +438,9 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
 		}
 		s.closing = true
-		s.state = SessionClosed
+		if !retirement {
+			s.state = SessionClosed
+		}
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
 
@@ -387,10 +453,16 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		if s.cancelFunc != nil {
 			s.cancelFunc()
 		}
-		// A delegate result is acknowledged only after its enclosing tool-result
-		// turn is durable. Closing refuses that turn, so release any receipts that
-		// can no longer reach their commit point before stopping the tree.
-		s.abortDelegateDeliveryCommits()
+		if !retirement {
+			// Escalations can use a context independent of the turn. Deny their
+			// human-decision waits before joining the retained environment work;
+			// closing already prevents any new escalation from registering.
+			s.cancelAllEscalations()
+			// A delegate result is acknowledged only after its enclosing tool-result
+			// turn is durable. Closing refuses that turn, so release any receipts that
+			// can no longer reach their commit point before stopping the tree.
+			s.abortDelegateDeliveryCommits()
+		}
 		// A close that begins before the P3 open-pass delay elapses cancels the
 		// pass outright; stop the timer now that `closing` is set (a timer that
 		// already fired is joined below via sweepWG instead — spec §P3).
@@ -441,13 +513,17 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// delegate tree. Persist and join recursive stop before generic Session
 		// teardown can close a child out from under that durable operation. The
 		// store stays open until worktree disposal has recorded its evidence.
-		if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
-			// A hopeless stop has already consumed its dedicated half of the
-			// cascade budget. Do not spend the remaining half joining the same
-			// wedged child again through its generic Session.Close path.
-			if errors.Is(err, context.DeadlineExceeded) {
-				cancelBudget()
+		// Retirement never stops or closes the durable delegate tree; exact
+		// resident child runtimes are released leaf-first by the caller instead.
+		if !retirement {
+			if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+				// A hopeless stop has already consumed its dedicated half of the
+				// cascade budget. Do not spend the remaining half joining the same
+				// wedged child again through its generic Session.Close path.
+				if errors.Is(err, context.DeadlineExceeded) {
+					cancelBudget()
+				}
 			}
 		}
 
@@ -457,16 +533,14 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// there is no window for a late goroutine to escape the drain. The map is
 		// cleared under the lock; children are closed OUTSIDE the lock
 		// (teardownChildSession's close acquires the child's own mu).
-		s.responseSideEffectsMu.Lock()
-		s.mu.Lock()
-		subs := s.subagents.drainForClose()
-		s.mu.Unlock()
-		s.responseSideEffectsMu.Unlock()
-		// Deny every in-flight sandbox escalation so a tool-exec goroutine blocked on
-		// a human decision unblocks (typed denial) rather than leaking. Safe after
-		// the unlock: closing was set above under the lock, so escalateOnSandboxDenial
-		// refuses to register any new escalation past this point.
-		s.cancelAllEscalations()
+		var subs []*subagent
+		if !retirement {
+			s.responseSideEffectsMu.Lock()
+			s.mu.Lock()
+			subs = s.subagents.drainForClose()
+			s.mu.Unlock()
+			s.responseSideEffectsMu.Unlock()
+		}
 		// Flush the just-accumulated work time and usage now, before any
 		// teardown below (Decision 4/L3): Close is the terminal event for a
 		// turn that died mid-flight above, and also for a turn that was
@@ -476,9 +550,11 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// value. Neither case has any other flush point once Close runs, so
 		// without this the in-memory WorkMillis/CumulativeUsage are correct
 		// but never reach meta.json, and a daemon restart silently loses them.
-		s.maybeAutoSave()
-		s.subagents.waitForReconstructions()
-		s.subagents.waitForReconstructionSideEffects()
+		if !retirement {
+			s.maybeAutoSave()
+			s.subagents.waitForReconstructions()
+			s.subagents.waitForReconstructionSideEffects()
+		}
 
 		// Spec Appendix B graceful shutdown ordering:
 		// 1. In-flight LLM calls were already cancelled in the set-flag → cancel
@@ -491,19 +567,28 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// jobs may still need to forward their terminal events to the parent.
 		var jobManagerCloseErr error
 		if s.jobManager != nil {
-			jobManagerCloseErr = s.jobManager.closeRuntimeState()
+			if retirement {
+				jobManagerCloseErr = s.jobManager.releaseQuiescentRuntime()
+			} else {
+				jobManagerCloseErr = s.jobManager.closeRuntimeState()
+			}
 		}
 
 		// 3. Close subagents before shared environment cleanup; child sessions
 		// can own durable jobs whose process handles live in the parent env. The
 		// parent owns cleanup of that env (step 4), so a child's teardown never
 		// runs it; what a child owns is its scratch, retained for the handoff.
-		for _, sub := range subs {
-			teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
+		if !retirement {
+			for _, sub := range subs {
+				teardownChildSession(budgetCtx, sub.sess, retainChildScratch)
+			}
 		}
 		if s.ownsArtifactStore && s.artifactStore != nil {
 			if err := s.artifactStore.Close(); err != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("artifact store close incomplete: %v", err)})
+				if retirement {
+					releaseErr = errors.Join(releaseErr, err)
+				}
 			}
 		}
 		// Native worktree tools spec §9 step 4 + §5 close-unlock: dispose the
@@ -515,24 +600,37 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		// residual lane process; a residual writer racing the clean check is
 		// self-healing since disposal's `git worktree remove` runs without
 		// --force and downgrades to keep on a dirty refusal.
-		s.disposeDelegateLanesAtClose(budgetCtx)
-		// P3 close pass (spec §P3): after this session's own P0 disposal, collect
-		// foreign residue (other cleanly-closed sessions' unlocked, merged
-		// delegate lanes) over the SAME shared close budget. Store must still be
-		// open (the own-store Disposed mark is a durable append); it closes below.
-		s.disposeLaneResidueAtClose(budgetCtx)
-		s.unlockOwnManagedWorktreeAtClose()
+		if !retirement {
+			s.disposeDelegateLanesAtClose(budgetCtx)
+			// P3 close pass (spec §P3): after this session's own P0 disposal, collect
+			// foreign residue (other cleanly-closed sessions' unlocked, merged
+			// delegate lanes) over the SAME shared close budget. Store must still be
+			// open (the own-store Disposed mark is a durable append); it closes below.
+			s.disposeLaneResidueAtClose(budgetCtx)
+			s.unlockOwnManagedWorktreeAtClose()
+		}
 
-		if s.jobManager != nil {
+		if !retirement && s.jobManager != nil {
 			jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
 		}
 		if jobManagerCloseErr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job manager close incomplete: %v", jobManagerCloseErr)})
+			if retirement {
+				releaseErr = errors.Join(releaseErr, jobManagerCloseErr)
+			}
 		}
 		if err := s.closeOwnedDelegateStoreWithContext(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate store close incomplete: %v", err)})
+			if retirement {
+				releaseErr = errors.Join(releaseErr, err)
+			}
 		}
 
+		// Retirement releases the live scratch leases without signalling any
+		// process or deleting a required directory, keeping Released:false.
+		if retirement {
+			s.releaseRetirementScratch()
+		}
 		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		if options.cleanupEnv {
 			if observe := s.cfg.testOnly.envCleanupObserved; observe != nil {
@@ -554,62 +652,82 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 			s.settleAbandonedEnvironmentScratch(retainChildScratch)
 		}
 
-		// SessionEnd hooks (best-effort, bounded timeout)
-		if s.hookRunner != nil {
-			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.hookRunner.RunSessionEnd(s.apiLogContext(hookCtx), s.hookInput(plugin.HookSessionEnd))
-			hookCancel()
+		// A terminal root close has committed: write the retention tombstone
+		// for this root's own manifest. Retirement never reaches here.
+		if !retirement && cleanupEnv {
+			s.releaseTerminalScratchRetention()
 		}
 
-		// 5-6. Emit SESSION_END with final state.
-		//
-		// Under the transcript door, because the terminal boundary has to be
-		// ordered against the one other publication that takes it: an
-		// environment append holds attentionMu across its entry and the event
-		// announcing it, so taking it here waits for an append already in
-		// flight and shuts out any that starts later (it re-reads `closing`,
-		// set in step 1, under this same lock). Without that an ENVIRONMENT
-		// event can reach a live reader behind the SESSION_END that says the
-		// session is over. The send is bounded by the shared close budget, the
-		// same bound the emit below already relies on, and the door is released
-		// before closeAttachedTranscript takes it again.
-		s.attentionMu.Lock()
-		if emitEnd {
-			// A live authoritative bridge gets the terminal boundary with the
-			// same lossless backpressure as every other event. A wedged bridge
-			// cannot be allowed to hold CloseForShutdown here: the shared close
-			// deadline releases sendEventContext, after which the durable closed
-			// state and stream close below still complete.
-			data := events.SessionEndData{
-				Reason: "session_closed",
-				State:  string(SessionClosed),
-				Turns:  turns,
+		if !retirement {
+			// SessionEnd hooks (best-effort, bounded timeout)
+			if s.hookRunner != nil {
+				hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				s.hookRunner.RunSessionEnd(s.apiLogContext(hookCtx), s.hookInput(plugin.HookSessionEnd))
+				hookCancel()
 			}
-			_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
-			if delivered && s.jobManager != nil {
-				s.jobManager.onSessionEvent(ev)
+
+			// 5-6. Emit SESSION_END with final state.
+			//
+			// Under the transcript door, because the terminal boundary has to be
+			// ordered against the one other publication that takes it: an
+			// environment append holds attentionMu across its entry and the event
+			// announcing it, so taking it here waits for an append already in
+			// flight and shuts out any that starts later (it re-reads `closing`,
+			// set in step 1, under this same lock). Without that an ENVIRONMENT
+			// event can reach a live reader behind the SESSION_END that says the
+			// session is over. The send is bounded by the shared close budget, the
+			// same bound the emit below already relies on, and the door is released
+			// before closeAttachedTranscript takes it again.
+			s.attentionMu.Lock()
+			if emitEnd {
+				// A live authoritative bridge gets the terminal boundary with the
+				// same lossless backpressure as every other event. A wedged bridge
+				// cannot be allowed to hold CloseForShutdown here: the shared close
+				// deadline releases sendEventContext, after which the durable closed
+				// state and stream close below still complete.
+				data := events.SessionEndData{
+					Reason: "session_closed",
+					State:  string(SessionClosed),
+					Turns:  turns,
+				}
+				_, ev, delivered := s.sendEventContext(budgetCtx, events.EventSessionEnd, data, s.activeCausalProvenance())
+				if delivered && s.jobManager != nil {
+					s.jobManager.onSessionEvent(ev)
+				}
 			}
+			s.attentionMu.Unlock()
 		}
-		s.attentionMu.Unlock()
 
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
 
-		_ = s.closeAttachedTranscript()
-
-		// Export ATIF trajectory if configured (root session only, after transcript flush).
-		if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
-			tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-			if err := exportATIF(tpath, s.cfg.ExportATIFPath, s.cfg.ExportATIFProviderHandles); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
+		if retirement {
+			// The fault seam is evaluated only under the non-terminal policy, so a
+			// set fault can never skip the terminal close's transcript close.
+			if err := retirementReleaseFailure("transcript_close"); err != nil {
+				releaseErr = errors.Join(releaseErr, err)
+			} else if err := s.closeAttachedTranscript(); err != nil {
+				releaseErr = errors.Join(releaseErr, fmt.Errorf("close transcript: %w", err))
 			}
+		} else {
+			_ = s.closeAttachedTranscript()
 		}
 
-		// 8. Reassert closed in case an in-flight turn reached a late state transition.
-		s.mu.Lock()
-		s.state = SessionClosed
-		s.mu.Unlock()
+		if !retirement {
+			// Export ATIF trajectory if configured (root session only, after transcript flush).
+			if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
+				tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+				if err := exportATIF(tpath, s.cfg.ExportATIFPath, s.cfg.ExportATIFProviderHandles); err != nil {
+					s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
+				}
+			}
+
+			// 8. Reassert closed in case an in-flight turn reached a late state transition.
+			s.mu.Lock()
+			s.state = SessionClosed
+			s.mu.Unlock()
+		}
 		s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
 		// Join detached event emitters (subagent runs, session namer) so their
 		// events are delivered before the channel closes. They are already
@@ -628,7 +746,8 @@ func (s *Session) close(ctx context.Context, options closeOptions) {
 		s.eventsClosed = true
 		close(s.events)
 		s.eventsMu.Unlock()
-	})
+	}
+	return releaseErr
 }
 
 // recordAbandonedEnvironmentLocked remembers an environment the swap has just
@@ -742,7 +861,16 @@ func (s *Session) discardRestoredCandidate() {
 		// teardown (which RETAINS both scratch dirs for the human handoff), there
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
-		releaseOwnedChildEnvironment(s.environmentOwnedAtTeardown(), disposeChildScratch)
+		// The one exception is an allocation this candidate ADOPTED from the
+		// root's durable retention manifest: that directory is referenced on disk
+		// and a later resume reacquires it, so it is retained (lease released)
+		// instead of removed with the mint a fresh restore allocated.
+		env := s.environmentOwnedAtTeardown()
+		scratch := disposeChildScratch
+		if s.ownsReferencedRetainedScratch(env) {
+			scratch = retainChildScratch
+		}
+		releaseOwnedChildEnvironment(env, scratch)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -972,6 +1100,11 @@ func (s *Session) processInputWithProvenance(ctx context.Context, input string, 
 }
 
 func (s *Session) processInputKindWithProvenance(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (string, error) {
+	release, admissionErr := s.beginRetirementMutation("turn")
+	if admissionErr != nil {
+		return "", admissionErr
+	}
+	defer release()
 	// Stamp the session id for the whole turn so LLM side calls made from tools
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
@@ -2385,7 +2518,9 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		hi.UserPrompt = input
 		result := s.hookRunner.RunUserPromptSubmit(s.apiLogContext(ctx), hi)
 		for _, m := range result.ModelContext {
-			s.deliverHookContext(m)
+			if err := s.deliverHookContext(m); err != nil {
+				return err
+			}
 		}
 		for _, m := range result.UserMessages {
 			s.deliverHookUserMessage(m)

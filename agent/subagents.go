@@ -213,10 +213,18 @@ const (
 // so a teardown reaching a child no parent bookkeeping names still settles
 // both correctly.
 func teardownChildSession(ctx context.Context, sess *Session, scratch childScratchDisposition) {
+	_ = teardownChildSessionWithPolicy(ctx, sess, scratch, releaseTerminal)
+}
+
+// teardownChildSessionWithPolicy is teardownChildSession under an explicit
+// release policy. Retirement uses it so a resident child runtime is released
+// non-terminally: its durable identity, descriptor, outcome and lanes stay
+// intact while its process-local resources and retained scratch are settled.
+func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch childScratchDisposition, policy runtimeReleasePolicy) error {
 	if sess == nil {
-		return
+		return nil
 	}
-	sess.close(ctx, closeOptions{})
+	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
@@ -235,6 +243,7 @@ func teardownChildSession(ctx context.Context, sess *Session, scratch childScrat
 	// teardown must never touch: a child that started on its live parent's own
 	// environment parks THAT, and its scratch is the parent's to close.
 	releaseOwnedChildEnvironment(sess.ownedParkedWorktreeEnvironment(), scratch)
+	return releaseErr
 }
 
 // sameEnvironment reports whether a and b are the same execution environment.
@@ -847,6 +856,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	subCfg.spawn.parentJobActivity = nil
 	subCfg.spawn.parentDelegateID = ""
 	subCfg.spawn.delegateController = s.delegateController
+	subCfg.spawn.retirementController = s.retirementController.Load()
 	subCfg.spawn.delegateRootSessionID = s.delegateRootSessionID
 	subCfg.spawn.owningDelegateID = ""
 	subCfg.spawn.subscriberCount = subscriberCount
@@ -1171,7 +1181,10 @@ func (s *Session) prepareSubagentRunFromSelection(
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
-			subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask)
+			if err := subSess.SteerKind(formatCurrentTaskSteering(current, subSess.canInstructTool("task_list")), events.SteeringKindCurrentTask); err != nil {
+				disposeUnadopted()
+				return nil, err
+			}
 		}
 	}
 
@@ -1393,8 +1406,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 		// (sub.driving) is in flight just like a running one: the drive turn absorbs
 		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
 		// rather than launching a second concurrent run.
-		subSess.SteerKind(input, events.SteeringKindAgentMessage)
-		return false, nil
+		return false, subSess.SteerKind(input, events.SteeringKindAgentMessage)
 	}
 
 	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
@@ -1480,6 +1492,16 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	if sub == nil {
 		return false
 	}
+	release, err := s.beginRetirementMutation("delegate_drive")
+	if err != nil {
+		return false
+	}
+	launched := false
+	defer func() {
+		if !launched {
+			release()
+		}
+	}()
 	sub.mu.Lock()
 	if sub.sess == nil || sub.closed || sub.running || sub.driving || sub.disposeGated || sub.fatalRunGated || sub.finalizing || s.childCommittedSendStart(sub.sess.id) {
 		sub.mu.Unlock()
@@ -1524,7 +1546,9 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	childSess := sub.sess
 	sub.mu.Unlock()
 
+	launched = true
 	go func() {
+		defer release()
 		defer s.sendersWG.Done()
 		defer driveCancel()
 		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
@@ -2328,7 +2352,9 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	}
 	stopResult := a.sess.hookRunner.RunSubagentStop(a.sess.apiLogContext(ctx), input)
 	for _, m := range stopResult.ModelContext {
-		a.sess.deliverHookContext(m)
+		if steerErr := a.sess.deliverHookContext(m); steerErr != nil {
+			return res, errors.Join(err, steerErr)
+		}
 	}
 	for _, m := range stopResult.UserMessages {
 		a.sess.deliverHookUserMessage(m)

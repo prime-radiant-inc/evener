@@ -20,6 +20,7 @@ const FULL_RESPONSE: SettingsOverviewResponse = {
     runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
     bearerTokenAge: "created 3d ago",
+    daemonIdleTimeoutMillis: 3600000,
     pastIndex: { path: "~/.evener/past.db", size: "48 MB", perPage: 20, count: 7 },
   },
   storage: { stateDir: "/home/user/.evener" },
@@ -89,7 +90,7 @@ test("Hub version appends the commit only when present", async () => {
 test("omits Past index and Past results per page when no past-session index is configured", async () => {
   const fake = connectFakeClient();
   const response: SettingsOverviewResponse = {
-    hub: { version: "1.2.3", listenAddr: "127.0.0.1:9180" },
+    hub: { version: "1.2.3", listenAddr: "127.0.0.1:9180", daemonIdleTimeoutMillis: 3600000 },
     storage: { stateDir: "/home/user/.evener" },
   };
   fake.on("evener/settings/overview", () => response);

@@ -14,9 +14,9 @@ func checkToArgs_APILog(t *testing.T) {
 		layer Layer
 		want  []string
 	}{
-		{"unset", Layer{}, nil},
-		{"on", Layer{APILog: new(true)}, []string{"--api-log", "on"}},
-		{"explicit off", Layer{APILog: new(false)}, []string{"--api-log", "off"}},
+		{"unset", Layer{}, []string{"--daemon-idle-timeout", "0s"}},
+		{"on", Layer{APILog: new(true)}, []string{"--api-log", "on", "--daemon-idle-timeout", "0s"}},
+		{"explicit off", Layer{APILog: new(false)}, []string{"--api-log", "off", "--daemon-idle-timeout", "0s"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
