@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 func TestComposeDest(t *testing.T) {
@@ -185,7 +186,7 @@ func TestExecRunnerStartRejectsCanceledContext(t *testing.T) {
 // ssh joins the remote argv and hands the result to the remote login shell, so a
 // value with a space would split into two arguments and a metacharacter would be
 // executed there. Ordinary words keep their documented, unquoted form.
-func TestQuoteRemoteWord(t *testing.T) {
+func TestRemoteWord(t *testing.T) {
 	cases := map[string]string{
 		"":                       "''",
 		"evener":                 "evener",
@@ -200,10 +201,15 @@ func TestQuoteRemoteWord(t *testing.T) {
 		"`id`":                   "'`id`'",
 		"it's":                   `'it'\''s'`,
 		"a\tb":                   "'a\tb'",
+		// A non-ASCII word keeps its bare form: high bytes are not remote-shell
+		// metacharacters, so the pre-consolidation deny-list left them bare and
+		// the shared helper must too.
+		"café":                "café",
+		"/opt/Ünïcode/evener": "/opt/Ünïcode/evener",
 	}
 	for in, want := range cases {
-		if got := quoteRemoteWord(in); got != want {
-			t.Errorf("quoteRemoteWord(%q) = %q, want %q", in, got, want)
+		if got := shellquote.RemoteWord(in); got != want {
+			t.Errorf("RemoteWord(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

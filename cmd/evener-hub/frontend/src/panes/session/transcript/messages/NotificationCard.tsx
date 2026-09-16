@@ -31,6 +31,7 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
+import { splitTrailingWord } from "../tailWord";
 import styles from "./notificationcard.module.css";
 import {
   decodeNotificationEntities,
@@ -63,13 +64,6 @@ const CLASS = {
 
 const EXCERPT_PREVIEW = 500;
 const MESSAGE_MAX = 8000;
-
-function splitTrailingWord(text: string): [leading: string, trailing: string] {
-  const match = /^(.*\s)(\S+)$/.exec(text);
-  const leading = match?.[1];
-  const trailing = match?.[2];
-  return leading !== undefined && trailing !== undefined ? [leading, trailing] : ["", text];
-}
 
 // Only warning/error earn colour (attention/danger); success + neutral recede
 // with no chip at all (the done glyph is the same neutral as any other card).

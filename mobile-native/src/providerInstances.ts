@@ -1,5 +1,7 @@
-import { safeCredentialTestResult } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
-import { sessionActionError } from "@evener/appwire-client";
+import {
+  safeCredentialTestResult,
+  sessionActionError,
+} from "@evener/appwire-client";
 import type {
   AuthTestResponse,
   InstanceCreateParams,

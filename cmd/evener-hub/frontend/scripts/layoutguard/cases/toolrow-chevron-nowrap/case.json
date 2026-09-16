@@ -1,0 +1,19 @@
+{
+  "name": "toolrow-chevron-nowrap",
+  "description": "ToolRow's trailing glyphs never wrap to a line by themselves, and inside an atomic tail unit they seat on the line they share: every unit glyph's midpoint rides the reference text's last line band, not the unit's full height (a centered child on a unit whose final word wrapped internally overlaps the line without sitting on it). Four surfaces, all swept across a width ladder per column: the intent line's chevron (plain-trigger branch), the two-level expanded summary line's body chevron, the same line with an 'Open beside' control ahead of the chevron, and the expanded read_file shape whose chevron trails the 'lines N-M' meta (its mid-summary control has no stranding geometry - the meta text always wraps onto the control's line - so only the chevron is asserted there), plus that shape's binary-read fold (trailingAfter equal to the whole summary) where the control and the chevron strand together at the text's end and both assert. Every fixture renders the production row plus an unglued probe (the pre-fix markup): the production row must satisfy the invariant at EVERY swept width, and the probe must STRAND somewhere in the sweep - proof the ladder exercises the stranding geometry at this font, so a font change that moves the geometry fails the case instead of letting it pass vacuously.",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "panes/session/transcript/toolcallitem.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css",
+    "widgets/openbutton/openbutton.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 1600, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "ToolRow.tsx: the chevron rendered as a bare inline sibling after the intent text, with no atomic .intentTail unit around the final word (the harness's unglued probe row)",
+    "verified": "2026-09-15",
+    "expect": "fail",
+    "note": "Verified with the final harness both ways on 2026-09-15, per shape: the intent shapes went red-first against the pre-fix production markup (bare inline chevron stranded below the intent's last text line at every binding width the sweeps found, e.g. phone 374-388px) and pass with the .intentTail unit; the summary-line shapes (body chevron, Open control ahead of it, read_file anchor meta) went red-first against the pre-fix production markup the same way (e.g. summary-chevron strands at 492-498px, the open-control shape at 492px+) and pass with the .summaryTail unit - flipping any shape's glue flag back to false is the recorded mutation and strands that shape's glyph at the same binding widths (re-verified for summary-open-control after the fix; the anchor-binary-read fixture, added the same day with roborev's coverage-gap review, was red-first verified the same way, its unglued probe stranding the control and the chevron together on the path's final word at 460px+). The equivalent CSS-only mutation (reverting the tail unit's display:inline-flex to display:inline) strands identically, per the secondaryTail mechanism verified on 2026-09-11 for notification-open-last-line."
+  }
+}

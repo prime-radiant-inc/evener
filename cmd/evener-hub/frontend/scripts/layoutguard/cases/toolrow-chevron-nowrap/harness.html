@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>toolrow-chevron-nowrap layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* Transitions OFF (docs/testing.md): the chevron turn and the trigger's
+     hover ink wash are motion; the assertion reads settled line placement. */
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  /* The row sits inside runContent's --speaker-gutter padding in production; a
+     transcript column is what bounds it. Each fixture box is SWEPT across a
+     ladder of widths (below) rather than pinned to one, because whether a
+     text's last line lands within a glyph's width of the edge is a property
+     of font metrics the harness must not guess - the sweep finds the binding
+     widths wherever they are, and the assert requires that it found one. */
+  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces ToolRow.tsx's trailing-glyph surfaces against the REAL classes
+     from panes/session/transcript/toolcallitem.module.css (plus the real
+     widgets/button, widgets/iconbutton and widgets/openbutton classes the
+     "Open beside" control renders through):
+
+     shape intent   - the plain-trigger branch: chevron inline at the end of
+       the wrapping intent text, glued to its final word in an atomic
+       .intentTail unit.
+     shape summary  - the two-level expanded branch: the demoted summary line
+       renders its full (wrapping) text with the body chevron - and where the
+       descriptor has one, the "Open beside" control before it - inline at
+       the end, glued in an atomic .summaryTail unit.
+     shape anchor   - the expanded read_file branch: the control rides
+       MID-SUMMARY after the file path (trailingAfter's anchor), the body
+       chevron after the "· lines N-M" meta; each glyph glues to the final
+       word of the text segment it trails.
+       An empty meta (a binary read) folds the control into the chevron's
+       end-of-text unit.
+
+     Every shape renders twice per box: the PRODUCTION row (glued per its
+     shape flag below) and a PROBE row hardwired to the unglued markup - the
+     pre-fix shape. The probe is the binding detector: at a width where the
+     probe's glyph strands on its own line, the unglued markup would fail, so
+     the sweep is provably exercising the stranding geometry at this font. The
+     assert requires every sweep to have found such a width (a sweep that
+     cannot fail is a guard that has stopped guarding) and the production row
+     to satisfy the invariant at EVERY width. -->
+<div class="fixtures"></div>
+<script>
+// The real Chevron widget's "right" path (widgets/chevron/index.tsx), 14px box.
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+// The real OpenIcon (widgets/openbutton/index.tsx), 14px box, currentColor so
+// the quiet Button's ink is what it inherits in production. The .inline shell
+// is the full hit size; its negative margin-block hands exactly 1em back to
+// layout (openbutton.module.css).
+const OPEN_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" style="display:block"><path d="M12.5 8.5V12.5H3.5V3.5H7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path><path d="M8 8L13 3M9.5 3H13V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+function chevron(open) {
+  return `<span class="chevron" data-chevron aria-hidden="true" data-open="${open ? "true" : "false"}">${CHEVRON_SVG}</span>`;
+}
+
+// The "Open beside" control as FileOpenBesideButton renders it: OpenButton's
+// .inline shell around a quiet small icon Button.
+function openControl() {
+  return `<span class="inline"><button type="button" class="button quiet sm" data-open aria-hidden="true" tabindex="-1"><span class="icon">${OPEN_SVG}</span></button></span>`;
+}
+
+// The glue: wraps a final word and the glyphs that trail it in one atomic
+// inline-flex unit. Unglued, the same glyphs render as bare inline siblings.
+function tail(word, glyphs, glued, unitClass, textClass) {
+  return glued
+    ? `<span class="${unitClass}"><span class="${textClass}" data-tail-text>${word}</span>${glyphs}</span>`
+    : `${word}${glyphs}`;
+}
+
+// splitTrailingWord, exactly as tailWord.ts implements it (the harness cannot
+// import the module, so the copy stays local and this comment is the tie):
+// everything up to and including the whitespace before the final word, and
+// that final word.
+function splitTrailingWord(text) {
+  const match = /^(.*\s)(\S+)$/.exec(text);
+  return match ? [match[1], match[2]] : ["", text];
+}
+
+// --- shape intent: the plain-trigger branch ------------------------------
+// <div class="row" data-intent="true">
+//   <button class="trigger"><span class="intent">HEAD<span class="intentTail"><span class="intentTailText">WORD</span>CHEVRON</span></span></button>
+//   <div class="summaryLine"><span class="summary demoted clamped">…</span></div>
+// </div>
+function intentRow(intent, glued) {
+  const [head, word] = splitTrailingWord(intent);
+  return `
+    <div class="row" data-intent="true">
+      <button type="button" class="trigger" aria-expanded="false">
+        <span class="intent" data-intent-text>${head}${tail(word, chevron(false), glued, "intentTail", "intentTailText")}</span>
+      </button>
+      <div class="summaryLine"><span class="summary demoted clamped"><span class="clampedHead">Ran grep_files</span><span class="clampedTail"> · output_mode:content</span></span></div>
+    </div>`;
+}
+
+// --- shape summary: the two-level expanded branch -------------------------
+// <div class="row" data-intent="true">
+//   <button class="trigger"><span class="intent">…(line 1, fixed glue)…</span></button>
+//   <div class="summaryLine" data-body-trigger="true">
+//     <button class="bodyTrigger"></button>
+//     <span class="summary demoted">HEAD<span class="summaryTail"><span class="summaryTailText">WORD</span>[CONTROL]CHEVRON</span></span>
+//   </div>
+// </div>
+function summaryRow(intent, summary, withControl, glued) {
+  const [iHead, iWord] = splitTrailingWord(intent);
+  const [sHead, sWord] = splitTrailingWord(summary);
+  const glyphs = `${withControl ? `<span class="summaryTrailing">${openControl()}</span>` : ""}${chevron(true)}`;
+  return `
+    <div class="row" data-intent="true">
+      <button type="button" class="trigger" aria-expanded="true">
+        <span class="intent">${iHead}${tail(iWord, chevron(true), true, "intentTail", "intentTailText")}</span>
+      </button>
+      <div class="summaryLine" data-body-trigger="true">
+        <button type="button" class="bodyTrigger" aria-expanded="true"></button>
+        <span class="summary demoted" data-summary>${sHead}${tail(sWord, glyphs, glued, "summaryTail", "summaryTailText")}</span>
+      </div>
+    </div>`;
+}
+
+// --- shape anchor: the expanded read_file branch ---------------------------
+// The "Open beside" control rides MID-SUMMARY after the file path
+// (trailingAfter's anchor), the body chevron after the "· lines N-M" meta.
+// The control never strands: its own wrap point always carries the meta text
+// onto the same line. The chevron trails the LAST text, so IT is the strand
+// surface - glued to the meta's final word. Unglued:
+// [Read <path>] CONTROL [ · lines N-M] CHEVRON inline.
+// An empty meta (a binary read: trailingAfter is the whole summary) is the
+// degenerate fold: the control sits at the END of the text, where it strands
+// together with the chevron exactly like the plain summary shapes, so the
+// path's final word, the control, and the chevron are ONE unit (ToolRow's
+// anchorSplit[1] === "" arm). Unglued: [Read <path>] CONTROL CHEVRON inline.
+function anchorRow(intent, path, meta, glued) {
+  const [iHead, iWord] = splitTrailingWord(intent);
+  const seg0 = `Read ${path}`;
+  const [a0Head, a0Word] = splitTrailingWord(seg0);
+  const [a1Head, a1Word] = splitTrailingWord(meta);
+  const summaryHtml = meta
+    ? `${a0Head}${a0Word}<span class="summaryTrailing">${openControl()}</span>${a1Head}${tail(a1Word, chevron(true), glued, "summaryTail", "summaryTailText")}`
+    : `${a0Head}${tail(a0Word, `<span class="summaryTrailing">${openControl()}</span>${chevron(true)}`, glued, "summaryTail", "summaryTailText")}`;
+  return `
+    <div class="row" data-intent="true">
+      <button type="button" class="trigger" aria-expanded="true">
+        <span class="intent">${iHead}${tail(iWord, chevron(true), true, "intentTail", "intentTailText")}</span>
+      </button>
+      <div class="summaryLine" data-body-trigger="true">
+        <button type="button" class="bodyTrigger" aria-expanded="true"></button>
+        <span class="summary demoted" data-summary>${summaryHtml}</span>
+      </div>
+    </div>`;
+}
+
+// The intent from the bug report's screenshot, and a long desktop one.
+const LONG_INTENT = "Confirming the native textarea constraint and the smallest editor boundary that would need replacement.";
+const LONG_INTENT_WIDE = "Reading the actual built-in matching call rather than surrounding suppositions, confirming the native textarea constraint and the smallest editor boundary that would need replacement, and checking that a line which fills exactly keeps the trailing disclosure arrow on the words it opens.";
+const SHORT_INTENT = "List the directory contents.";
+// Shell-ish and web_fetch-ish summaries long enough to wrap at every swept
+// base, and the read_file shape's own path + line-range grammar.
+const LONG_SUMMARY = "Fetched https://example.com/very/long/path/segment/index.html and read the full document body before summarizing the constraint it documents.";
+const READ_PATH = "cmd/evener-hub/frontend/src/panes/session/transcript/tools/subagentModule.tsx";
+const READ_META = " · lines 100-260";
+
+// Every swept fixture walks its box width from the base across SWEEP_SPAN_PX
+// in SWEEP_STEP_PX steps. Binding widths occur wherever a wrap arrangement's
+// last line leaves less room than the trailing glyph unit needs, so a 300px
+// span at 2px steps crosses many of them wherever the platform's font metrics
+// put them.
+const SWEEP_SPAN_PX = 300;
+const SWEEP_STEP_PX = 2;
+
+// The shapes. `glued` mirrors the PRODUCTION markup of each shape as this
+// case's history moved through it: the intent line's glue is shipped, the
+// summary-line shapes' glue is what this case went red against and then
+// verified - flipping any shape's flag to false is the recorded mutation.
+const SHAPES = [
+  { key: "intent-phone", base: 360, kind: "intent", intent: LONG_INTENT, glued: true },
+  { key: "intent-narrow", base: 420, kind: "intent", intent: LONG_INTENT, glued: true },
+  { key: "intent-mid", base: 640, kind: "intent", intent: LONG_INTENT, glued: true },
+  { key: "intent-wide", base: 880, kind: "intent", intent: LONG_INTENT_WIDE, glued: true },
+  { key: "summary-chevron-phone", base: 360, kind: "summary", intent: "Inspect the guard's fixture geometry.", summary: LONG_SUMMARY, withControl: false, glued: true },
+  { key: "summary-chevron-mid", base: 640, kind: "summary", intent: "Inspect the guard's fixture geometry.", summary: LONG_SUMMARY, withControl: false, glued: true },
+  { key: "summary-open-control", base: 420, kind: "summary", intent: "Inspect the guard's fixture geometry.", summary: LONG_SUMMARY, withControl: true, glued: true },
+  { key: "anchor-read-file", base: 420, kind: "anchor", intent: "Reading the fixture that reproduces the anchor-split row.", path: READ_PATH, meta: READ_META, glued: true },
+  { key: "anchor-binary-read", base: 420, kind: "anchor", intent: "Reading the fixture that reproduces the binary-read row.", path: READ_PATH, meta: "", glued: true },
+  { key: "short-inline", base: 420, kind: "short", intent: SHORT_INTENT, glued: true },
+];
+
+function shapeRowHtml(shape, probe) {
+  const glued = probe ? false : shape.glued;
+  switch (shape.kind) {
+    case "intent":
+      return intentRow(shape.intent, glued);
+    case "summary":
+      return summaryRow(shape.intent, shape.summary, shape.withControl, glued);
+    case "anchor":
+      return anchorRow(shape.intent, shape.path, shape.meta, glued);
+    case "short":
+      return intentRow(shape.intent, glued);
+    default:
+      throw new Error(`unknown shape kind ${shape.kind}`);
+  }
+}
+
+const root = document.querySelector(".fixtures");
+for (const shape of SHAPES) {
+  const section = document.createElement("div");
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `#${shape.key}`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.id = `box-${shape.key}`;
+  box.style.width = `${shape.base}px`;
+  // The production row and, for swept shapes, the unglued probe beside it.
+  box.innerHTML =
+    `<div data-production>${shapeRowHtml(shape, false)}</div>` +
+    (shape.kind === "short" ? "" : `<div data-probe-row>${shapeRowHtml(shape, true)}</div>`);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+// A text element's wrapped LINES, from TEXT NODES ONLY (a TreeWalker skips
+// the glyph elements, which carry no text): rects that overlap vertically are
+// one line. Reading text fragments instead of element contents is what keeps
+// a glyph's own box out of the line it is asserted against.
+function linesOf(textEl) {
+  const walker = document.createTreeWalker(textEl, NodeFilter.SHOW_TEXT);
+  const rects = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    rects.push(...range.getClientRects());
+  }
+  const lines = [];
+  for (const r of rects) {
+    const line = lines.find((l) => r.top < l.bottom - 1 && r.bottom > l.top + 1);
+    if (line) {
+      line.right = Math.max(line.right, r.right);
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+    } else {
+      lines.push({ top: r.top, bottom: r.bottom, right: r.right });
+    }
+  }
+  return lines;
+}
+
+// The glyphs a shape must keep on the LAST line of its reference text, as
+// [selector, reference-text selector] pairs. The summary shapes' end-of-text
+// glyphs (the body chevron, and where one exists the "Open beside" control
+// ahead of it) all trail the summary's final word; the anchor shape's
+// mid-summary control is deliberately absent - its wrap point always carries
+// the meta text onto the same line, so it has no stranding geometry to guard.
+// The binary-read fold is the exception: its control sits at the text's end
+// and strands with the chevron, so both assert there.
+function glyphRefs(shape) {
+  switch (shape.kind) {
+    case "intent":
+    case "short":
+      return [{ glyph: "[data-chevron]", text: "[data-intent-text]" }];
+    case "summary":
+      return [
+        // The "Open beside" control only exists on the with-control fixture;
+        // both it and the chevron trail the summary's final word.
+        ...(shape.withControl ? [{ glyph: "[data-open]", text: "[data-summary]" }] : []),
+        { glyph: "[data-chevron]", text: "[data-summary]" },
+      ];
+    case "anchor":
+      return shape.meta
+        ? [{ glyph: "[data-chevron]", text: "[data-summary]" }]
+        : [
+            { glyph: "[data-open]", text: "[data-summary]" },
+            { glyph: "[data-chevron]", text: "[data-summary]" },
+          ];
+  }
+}
+
+function measureRowRefs(rowEl, shape) {
+  const out = [];
+  // One lines pass per reference text: the with-control summary has two
+  // glyphs on the same text, and the short fixture's lineCount rides the
+  // same measurement.
+  const linesByEl = new Map();
+  for (const ref of glyphRefs(shape)) {
+    // The glyph selector is scoped under its reference text container: a
+    // two-level row carries a chevron on the intent line as well, and an
+    // unscoped query would measure the wrong glyph.
+    const glyphEl = rowEl.querySelector(`${ref.text} ${ref.glyph}`);
+    const textEl = rowEl.querySelector(ref.text);
+    const glyph = box(glyphEl);
+    let lines = linesByEl.get(textEl);
+    if (lines === undefined) {
+      lines = linesOf(textEl);
+      linesByEl.set(textEl, lines);
+    }
+    const lastLine = lines.at(-1);
+    // Glyphs inside an atomic tail unit must also SEAT on the last line: the
+    // unit's own cross alignment is what puts them there, and a misaligned
+    // child (e.g. one centering across the unit's full height when the final
+    // word wrapped internally) still overlaps the last line, so the strand
+    // check alone cannot see it. The midpoint test can: the hit target may
+    // paint symmetrically beyond the line box, but its center rides the line.
+    const mid = (glyph.top + glyph.bottom) / 2;
+    out.push({
+      glyph: ref.glyph,
+      inUnit: glyphEl.closest(".intentTail, .summaryTail") !== null,
+      sharesLastLine: glyph.top < lastLine.bottom - 1 && glyph.bottom > lastLine.top + 1,
+      centeredOnLastLine: mid >= lastLine.top - 0.5 && mid <= lastLine.bottom + 0.5,
+      glyphTop: glyph.top,
+      glyphBottom: glyph.bottom,
+      lineTop: lastLine.top,
+      lineBottom: lastLine.bottom,
+      lineCount: lines.length,
+    });
+  }
+  return out;
+}
+
+// One measurement at one box width: the production row's glyphs against the
+// invariant, and the probe row's - which the assert reads as the binding
+// signal (a stranded probe glyph is proof the sweep exercises the stranding
+// geometry at this font).
+function measureAt(shape, width, refs) {
+  refs.box.style.width = `${width}px`;
+  const production = measureRowRefs(refs.production, shape);
+  const probe = refs.probe ? measureRowRefs(refs.probe, shape) : null;
+  return { width, production, probe };
+}
+
+window.measure = () => {
+  const out = [];
+  for (const shape of SHAPES) {
+    // The box and its rows are stable across a shape's sweep; resolve them
+    // once per shape instead of re-querying at every width.
+    const boxEl = document.getElementById(`box-${shape.key}`);
+    const refs = {
+      box: boxEl,
+      production: boxEl.querySelector("[data-production] > div"),
+      probe: boxEl.querySelector("[data-probe-row] > div"),
+    };
+    if (shape.kind === "short") {
+      const m = measureAt(shape, shape.base, refs);
+      out.push({ id: shape.key, kind: shape.kind, fixed: { ...m, lineCount: m.production[0].lineCount } });
+      continue;
+    }
+    const widths = [];
+    let binding = null;
+    const steps = Math.floor(SWEEP_SPAN_PX / SWEEP_STEP_PX);
+    for (let i = 0; i <= steps; i++) {
+      const m = measureAt(shape, shape.base + i * SWEEP_STEP_PX, refs);
+      widths.push(m);
+      if (m.probe.some((p) => !p.sharesLastLine)) {
+        binding ??= m;
+      }
+    }
+    out.push({ id: shape.key, kind: shape.kind, widths, binding });
+  }
+  return out;
+};
+</script>
+</body>
+</html>
