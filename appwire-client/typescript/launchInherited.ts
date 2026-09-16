@@ -1,10 +1,10 @@
-// Shared inherited-items computation for collection controls: the entries a
-// session would inherit from lower config layers, rendered as grayed
-// "(default)" ghost rows by CollectionEditor. The effective layer already
-// contains the local overrides (resolve includes them), so subtracting the
-// local keys yields exactly the inherited entries under each kind's merge
-// semantics.
-import type { MCPServerSpec } from "@evener/appwire-client";
+// The inherited-items computation collection controls share: the entries a
+// session would inherit from lower config layers, which the settings form and
+// the spawn pane's advanced options render as grayed "(default)" ghost rows.
+// The effective layer already contains the local overrides (resolve includes
+// them), so subtracting the local keys yields exactly the inherited entries
+// under each kind's merge semantics.
+import type { MCPServerSpec } from "./types.gen";
 
 /** Effective value minus local entries, keyed by the caller's key extractor.
  * Returns [] when the effective value is absent or the wrong shape. */

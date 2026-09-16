@@ -30,6 +30,7 @@ import (
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -107,10 +108,13 @@ type mainDeps struct {
 	loadAuthToken   func(string) (string, error)
 	loadCredentials func(string) (*credentials.Store, error)
 	loadRegistry    hubcore.RegistryLoader
-	notifyContext   func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
-	listen          func(context.Context, string, string) (net.Listener, error)
-	serve           func(context.Context, hubHTTPServer) error
-	afterWeb        func(*WebServer)
+	// startLivePrefetch warms the holder's live model cache: main wires it to
+	// the background runner and the broadcast, tests to a synchronous seam.
+	startLivePrefetch func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func())
+	notifyContext     func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen            func(context.Context, string, string) (net.Listener, error)
+	serve             func(context.Context, hubHTTPServer) error
+	afterWeb          func(*WebServer)
 	// stdin/stdout carry the process streams the `attach` subcommand bridges to
 	// the hub's loopback AppWire edge. The normal hub command ignores them.
 	stdin  io.Reader
@@ -119,14 +123,15 @@ type mainDeps struct {
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:      LoadConfig,
-		ensureDirs:      cmdutil.EnsureUserConfigDirs,
-		acquireLock:     hostlock.AcquireLock,
-		newToken:        newHubToken,
-		loadAuthToken:   hubedge.LoadOrCreateAuthToken,
-		loadCredentials: credentials.LoadStore,
-		loadRegistry:    cmdutil.LoadRegistry,
-		notifyContext:   signal.NotifyContext,
+		loadConfig:        LoadConfig,
+		ensureDirs:        cmdutil.EnsureUserConfigDirs,
+		acquireLock:       hostlock.AcquireLock,
+		newToken:          newHubToken,
+		loadAuthToken:     hubedge.LoadOrCreateAuthToken,
+		loadCredentials:   credentials.LoadStore,
+		loadRegistry:      cmdutil.LoadRegistry,
+		startLivePrefetch: startLiveModelsPrefetch,
+		notifyContext:     signal.NotifyContext,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
 			return lc.Listen(ctx, network, addr)
@@ -180,6 +185,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	// Stamp the build User-Agent once: previously every registry-client
+	// construction rewrote this process global per request, racing
+	// in-flight Codex requests. Fetch paths now bind scoped
+	// authenticators per request and never write it.
+	tokenauth.ClientVersion = buildinfo.Version()
 	if opts.addr != "" {
 		cfg.Addr = opts.addr
 	}
@@ -521,6 +531,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
+	// Live-model prefetch: fetch every instance's /models listing into the
+	// held registry once at startup and every livePrefetchInterval after,
+	// so the Providers sheet reads cached inventory instead of fetching on
+	// open. Best-effort per instance; a provider that is down keeps its
+	// catalog rows until the next tick. A pass that changes what any
+	// client shows announces it over the reused instance channel, so every
+	// browser refetches its list; a no-op pass stays silent.
+	// Through deps so hermetic runMain tests stay offline: the default
+	// warms the live cache from real provider endpoints.
+	deps.startLivePrefetch(ctx, hubReg, livePrefetchInterval, startBackground, func() {
+		notifyInstanceUpdated(web.appRPC)
+	})
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{

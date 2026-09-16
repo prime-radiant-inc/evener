@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -29,6 +30,9 @@ type credentialProbeFakeClient struct {
 	release chan struct{}
 	calls   int
 	listErr error
+	// lastCtx keeps the request context, so a test can assert what the probe
+	// actually carried.
+	lastCtx context.Context
 	// notLive makes the probe report a listing the provider did not actually
 	// serve, which is how "this endpoint has no model list" reaches the pane.
 	notLive bool
@@ -37,6 +41,7 @@ type credentialProbeFakeClient struct {
 func (f *credentialProbeFakeClient) Models(ctx context.Context, _ string) (llm.ModelListing, error) {
 	f.mu.Lock()
 	f.calls++
+	f.lastCtx = ctx
 	started := f.calls == 1 && f.started != nil
 	f.mu.Unlock()
 	if started {
@@ -58,6 +63,14 @@ func (f *credentialProbeFakeClient) Close() error { return nil }
 // that assert an endpoint fingerprint set it; every other test leaves it nil,
 // where an empty assertion reads nothing.
 func (f *credentialProbeFakeClient) Registry() *registry.Registry { return f.reg }
+
+// requestContext keeps the last request's context, so a test can assert what
+// the probe actually carried.
+func (f *credentialProbeFakeClient) requestContext() context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastCtx
+}
 
 func (f *credentialProbeFakeClient) callCount() int {
 	f.mu.Lock()
@@ -85,11 +98,18 @@ func clearProviderKeysFromEnvironment(t *testing.T) {
 // exactly instances, resolved against env, and whose probe returns client.
 func newCredentialProbeController(t *testing.T, client credentialProbeClient, instances map[string]registry.Provider, env map[string]string) *hubAuthController {
 	t.Helper()
+	return newCredentialProbeControllerAt(t, client, t.TempDir(), instances, env)
+}
+
+// newCredentialProbeControllerAt is newCredentialProbeController with the
+// registry's state root chosen by the caller: a test that needs the probe to
+// read Codex records has to know which root they live under.
+func newCredentialProbeControllerAt(t *testing.T, client credentialProbeClient, stateDir string, instances map[string]registry.Provider, env map[string]string) *hubAuthController {
+	t.Helper()
 	store, err := credentials.LoadStore(t.TempDir() + "/credentials.toml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stateDir := t.TempDir()
 	c := newHubAuthControllerWithStore(t.TempDir(), store)
 	c.stateDir = stateDir
 	c.reg = newProbeRegistry(t, stateDir, store, env, instances)
@@ -160,6 +180,49 @@ func TestAuthTestCredentialsClassifiesProviderOutcomesWithoutSecrets(t *testing.
 				t.Fatalf("response leaked credential: %s", encoded)
 			}
 		})
+	}
+}
+
+// TestAuthTestCredentialsBindsTheProbeRegistrysCodexScope pins the probe's
+// half of a wrong-record bug: probing an instance must authenticate with the
+// probe client's own registry root, not whatever root the process-global
+// Codex holds. The fake records the request context, so the assertion is
+// about what the probe actually carried.
+func TestAuthTestCredentialsBindsTheProbeRegistrysCodexScope(t *testing.T) {
+	clearProviderKeysFromEnvironment(t)
+	stateDir := t.TempDir()
+	writeCodexOAuthRecord(t, stateDir, "codex-work")
+	instances := map[string]registry.Provider{"codex-work": {Base: "openai-codex"}}
+	// The probe's own client speaks for a registry at that same root: the
+	// binding under test is the one the probe derives from this client.
+	probeReg, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(stateDir),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(instances),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := &credentialProbeFakeClient{reg: probeReg}
+	c := newCredentialProbeControllerAt(t, client, stateDir, instances, nil)
+	resp, err := c.TestCredentials(context.Background(), appwire.AuthTestParams{Provider: "codex-work"})
+	if err != nil {
+		t.Fatalf("TestCredentials: %v", err)
+	}
+	if resp.Status != appwire.AuthTestStatusSuccess {
+		t.Fatalf("status=%q (%q), want success", resp.Status, resp.Message)
+	}
+	if got := client.callCount(); got != 1 {
+		t.Fatalf("probe calls=%d, want 1", got)
+	}
+	auth := llm.AuthenticatorOverrideFor(client.requestContext(), registry.AuthOAuthOpenAICodex)
+	codex, ok := auth.(*tokenauth.Codex)
+	if !ok {
+		t.Fatalf("probe context carried %T, want a scoped *tokenauth.Codex", auth)
+	}
+	if codex.StateDir != stateDir {
+		t.Fatalf("scoped Codex state dir = %q, want the probe registry's %q", codex.StateDir, stateDir)
 	}
 }
 

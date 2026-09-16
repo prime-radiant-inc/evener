@@ -77,6 +77,36 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// escapeHistoryWithSessionProvenance escapes a restored history for the model
+// copy. Turns before the session's divergence point came from a parent, whose
+// journal this session does not hold -- and a child mutation may reuse a parent's
+// client mutation id -- so they are decided by their own kinds and the write-path
+// text shape alone; only the turns the session itself created consult the
+// provenance its journal persists. divergenceTurn is expressed in the units of
+// the history being escaped, not the transcript's (see the caller's shift), so a
+// compacted fork keeps its own turns' provenance.
+func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
+	inherited := divergenceTurn - 1
+	if inherited <= 0 {
+		return escapeNotesHistoryTurns(history, origins)
+	}
+	if inherited >= len(history) {
+		return escapeNotesHistoryTurns(history, nil)
+	}
+	out := escapeNotesHistoryTurns(history[:inherited], nil)
+	return append(out, escapeNotesHistoryTurns(history[inherited:], origins)...)
+}
+
+// escapeInheritedHistory escapes a forked session's inherited prefix for the
+// model copy. No journal is in reach, and that is deliberate: the prefix belongs
+// to the parent's session, whose records the child's journal does not hold -- and
+// a child mutation may reuse a parent's client mutation id -- so a child record
+// must never decide what an inherited turn was. The prefix is decided by its own
+// kinds and the write-path text shape alone.
+func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
+	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
+}
+
 // initEnvContext constructs the session's environment-context collector and
 // tracker (agent/envctx), seeding the tracker from persisted (nil on
 // a fresh session; meta.EnvContext on resume, itself possibly nil for a
@@ -323,7 +353,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// escaped copy, exactly as the parent's own requests do. The child's own
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
-		s.history = escapeNotesHistoryTurns(ResumeHistory(inheritedContext))
+		s.history = escapeInheritedHistory(inheritedContext)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		s.history = append(s.history, boundary)
 		s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, boundary)
@@ -843,10 +873,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
+	var repairInsertions []int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory = ResumeHistory(transcriptEntries)
+		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -856,7 +887,26 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// history becomes model context. The projection record is read first, because
 	// it is compared against raw renders (see lastNotesProjection).
 	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
-	resumeHistory = escapeNotesHistoryTurns(resumeHistory)
+	// A fork's inherited prefix belongs to the parent's session, so only the
+	// session's own turns consult its journal (see
+	// escapeHistoryWithSessionProvenance). DivergenceTurn indexes the full
+	// transcript, and a compacted transcript resumes partway through it, so the
+	// bound shifts by where the retained history begins.
+	divergenceTurn := meta.DivergenceTurn
+	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
+		divergenceTurn -= retainedFrom(transcriptEntries)
+		// Repair splices a synthetic result wherever an orphaned tool call was,
+		// so every insertion at or before the boundary shifts it right by one:
+		// the synthetic completes the call it repairs, which sits inside the
+		// inherited prefix (history_repair.go shifts the in-flight boundary the
+		// same way).
+		for _, idx := range repairInsertions {
+			if idx <= divergenceTurn-1 {
+				divergenceTurn++
+			}
+		}
+	}
+	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
