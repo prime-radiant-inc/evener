@@ -239,6 +239,57 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile), withoutGitSnapshot()}, opts...)...)
 }
 
+// TestFoldPublication_RetainedTailSurvivesRestart is the #1200 regression in
+// production form: the recent turns a checkpoint preserves verbatim are
+// recorded as ordinary transcript entries BEFORE the fold's marker, so the old
+// last-marker resume anchor dropped them and a restart resumed the summary
+// alone. The fold record now names them by Seq, so a restart rebuilds the
+// retained tail exactly as live history kept it.
+func TestFoldPublication_RetainedTailSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "retained-tail-cheap", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+
+	// Record 12 turns as real transcript entries (unlike seedNumberedSessionHistory,
+	// which bypasses the transcript). The last PreserveRecentTurns(6) are the
+	// verbatim tail the checkpoint keeps.
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("kept-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	resumed := ResumeHistory(data.Entries)
+	if len(resumed) == 0 || resumed[0].Kind != schema.TurnSummary {
+		t.Fatalf("resumed history does not head with the summary: %+v", resumed)
+	}
+	// The retained tail (the last few turns) must all be present, verbatim.
+	for i := 6; i < 12; i++ {
+		want := fmt.Sprintf("kept-%d", i)
+		if indexOfTurnText(resumed, want) < 0 {
+			t.Fatalf("retained tail turn %q missing from resumed history %+v", want, resumed)
+		}
+	}
+	// The summarized-away prefix must not reappear.
+	if indexOfTurnText(resumed, "kept-0") >= 0 {
+		t.Fatal("resumed history resurrected a turn the fold summarized away")
+	}
+	// The fold record itself is durable bookkeeping, never resumed history.
+	for _, rt := range resumed {
+		if rt.Kind == schema.TurnFoldRecord {
+			t.Fatal("the fold record leaked into resumed history")
+		}
+	}
+}
+
 // TestFoldPublication_ClaimedNoteNotReinjectedByConcurrentFold pins the
 // double-inject half of the note claim: the pinned note must be claimed
 // atomically at publication, not at flush -- a note left visible between a
