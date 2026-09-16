@@ -168,6 +168,12 @@ export interface CredentialInstancesState {
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
   deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
   devicePoll(provider: string, flowId: string): Promise<AuthDevicePollResponse>;
+  // authStatus reads one provider's credential status: a plain read, so it
+  // takes the read gate (available while the rows on screen are a replaced
+  // connection's), arms no echo marker and refreshes nothing. A reply that
+  // arrives after the connection it was asked on is gone describes a hub that
+  // is no longer wired, so it is refused rather than returned.
+  authStatus(provider: string): Promise<AuthStatusResponse>;
   // testCredentials is a probe, not a listing read: it dials the endpoint the
   // row names and asserts the fingerprint it carries, so it takes the same gate
   // as a write (the stale-listing refusal) - a probe issued from a listing that
@@ -897,6 +903,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
     async deviceStart(provider) {
       return requireWritableClient().request("evener/auth/device/start", { provider });
+    },
+
+    async authStatus(provider) {
+      const client = requireClient();
+      const status = await client.request("evener/auth/status", { provider });
+      if (connection.client !== client) throw new Error(CONNECTION_REPLACED_ERROR);
+      return status;
     },
 
     devicePoll(provider, flowId) {

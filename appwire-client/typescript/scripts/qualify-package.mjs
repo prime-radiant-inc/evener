@@ -388,7 +388,14 @@ credentialStore.connectionChanged(null, "idle");
 assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
 assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
 assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
-assert.rejects(credentialStore.getState().fetch(), /no client connected/);
+assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins
