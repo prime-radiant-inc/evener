@@ -8,6 +8,7 @@ import type {
   InstanceEditParams,
 } from "@evener/appwire-client";
 import {
+  type CredentialInstancesState,
   type CredentialListing,
   createCredentialInstancesStore,
   listingOf,
@@ -20,20 +21,31 @@ interface ProviderState {
     pending: boolean;
     result?: AuthTestResponse;
   } | null;
-  // Null until a read has landed: the core's empty listing and "never read"
-  // look the same from its state, and the screen shows a spinner for one and
-  // an empty list for the other.
+  // Null until a listing has landed: the core's empty listing and "never
+  // read" look the same from its state, and the screen shows a spinner for
+  // one and an empty list for the other.
   data: CredentialListing | null;
   loading: boolean;
   busy: boolean;
   error: string | null;
 }
 
+const LISTING_FIELDS = ["instances", "availableProviders", "diagnostics", "userLayer", "writesRefused"] as const;
+
+// listingMoved reports whether a core transition replaced the listing: every
+// applied read or write installs fresh rows, while a loading or error patch
+// leaves the same arrays in place.
+function listingMoved(state: CredentialInstancesState, previous: CredentialInstancesState): boolean {
+  return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
+}
+
 /** Provider data and operations owned by one connected hub's screen lifetime:
- * the package's credential instances listing core, driven for one client and
- * projected into the snapshot the Providers screen renders. The screen's own
- * rules stay here - one write at a time (`busy`), a re-read after every write
- * whatever its reply, and a credential test that never echoes the wire. */
+ * the package's credential instances store core, driven for one client and
+ * projected into the snapshot the Providers screen renders. The core owns
+ * the listing, its ordering, the evener/auth/updated refetch and the
+ * post-write refresh; the screen's own rules stay here - one write at a time
+ * (`busy`), a reconciling read after a write whose reply was lost, and a
+ * credential test that never echoes the wire. */
 export class ProviderInstances {
   private core = createCredentialInstancesStore();
   private state: ProviderState = {
@@ -44,13 +56,13 @@ export class ProviderInstances {
     error: null,
   };
   private listeners = new Set<() => void>();
-  private unsubscribe?: () => void;
+  private stopProjecting: () => void;
   private disposed = false;
-  private dirty = false;
+  private started = false;
   private testRevision = 0;
-  private inFlight?: Promise<void>;
-  constructor(private client: ConversationClientLike) {
+  constructor(client: ConversationClientLike) {
     this.core.connectionChanged(client, "ready");
+    this.stopProjecting = this.core.subscribe((state, previous) => this.project(state, previous));
   }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
@@ -64,43 +76,29 @@ export class ProviderInstances {
     this.state = { ...this.state, ...change };
     for (const listener of this.listeners) listener();
   }
+  private project(state: CredentialInstancesState, previous: CredentialInstancesState) {
+    const change: Partial<ProviderState> = {};
+    if (listingMoved(state, previous)) change.data = listingOf(state);
+    if (state.loading !== previous.loading) change.loading = state.loading;
+    if (state.error !== previous.error)
+      change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
+    if (Object.keys(change).length > 0) this.publish(change);
+  }
   start() {
-    if (this.disposed || this.unsubscribe) return;
-    this.unsubscribe = this.client.onNotification((notification) => {
-      if (notification.method === "evener/auth/updated") void this.refresh();
-    });
+    if (this.disposed || this.started) return;
+    this.started = true;
     void this.refresh();
   }
   refresh = (): Promise<void> => {
     if (this.disposed) return Promise.resolve();
     this.testRevision += 1;
     this.publish({ credentialTest: null });
-    this.dirty = true;
-    if (this.inFlight) return this.inFlight;
     if (this.state.busy) return Promise.resolve();
-    this.inFlight = this.load().finally(() => {
-      this.inFlight = undefined;
-    });
-    return this.inFlight;
+    return this.core
+      .getState()
+      .fetch()
+      .then(() => undefined);
   };
-  private async load() {
-    this.publish({ loading: true, error: null });
-    do {
-      this.dirty = false;
-      // The core drops a read a newer request outran (fetch resolves false
-      // with no error), so only an applied answer reaches the screen; a read
-      // asked for while this one was out re-runs below instead.
-      const applied = await this.core.getState().fetch();
-      if (this.dirty) continue;
-      const state = this.core.getState();
-      if (applied) this.publish({ data: listingOf(state) });
-      else if (state.error !== null)
-        this.publish({
-          error: sessionActionError("Could not load providers", state.error),
-        });
-    } while (this.dirty && !this.disposed && !this.state.busy);
-    this.publish({ loading: false });
-  }
   private async mutate(action: () => Promise<unknown>, configuration: boolean) {
     if (this.disposed) throw new Error("Provider screen is closed");
     if (this.state.busy) throw new Error("A provider operation is in progress");
@@ -110,11 +108,13 @@ export class ProviderInstances {
     this.publish({ busy: true, credentialTest: null });
     try {
       await action();
-    } finally {
-      this.publish({ busy: false });
+    } catch (error) {
       // A failed reply can still follow a successful server write. Read to
       // reconcile either outcome; never retry a credential or instance mutation.
-      await this.refresh();
+      if (!this.disposed) await this.core.getState().fetch();
+      throw error;
+    } finally {
+      this.publish({ busy: false });
     }
   }
   create = (params: InstanceCreateParams) =>
@@ -126,25 +126,13 @@ export class ProviderInstances {
   setDefault = (name: string) =>
     this.mutate(() => this.core.getState().setDefault(name), true);
   setApiKey = (provider: string, value: string) =>
-    this.mutate(
-      () => this.client.request("evener/auth/apiKey/set", { provider, value }),
-      false,
-    );
+    this.mutate(() => this.core.getState().setApiKey(provider, value), false);
   setCredentialJson = (provider: string, value: string) =>
-    this.mutate(
-      () => this.client.request("evener/auth/credentialJson/set", { provider, value }),
-      false,
-    );
+    this.mutate(() => this.core.getState().setCredentialJson(provider, value), false);
   clearStoredKey = (provider: string) =>
-    this.mutate(
-      () => this.client.request("evener/auth/apiKey/clear", { provider }),
-      false,
-    );
+    this.mutate(() => this.core.getState().clearStoredKey(provider), false);
   logout = (provider: string) =>
-    this.mutate(
-      () => this.client.request("evener/auth/logout", { provider }),
-      false,
-    );
+    this.mutate(() => this.core.getState().logout(provider), false);
   testCredentials = async (provider: string): Promise<void> => {
     if (
       this.disposed ||
@@ -159,7 +147,7 @@ export class ProviderInstances {
     try {
       result = safeCredentialTestResult(
         provider,
-        await this.client.request("evener/auth/test", { provider }),
+        await this.core.getState().testCredentials(provider),
       );
     } catch {
       result = safeCredentialTestResult(provider, {
@@ -173,11 +161,12 @@ export class ProviderInstances {
   };
   dispose() {
     this.disposed = true;
-    this.unsubscribe?.();
+    this.stopProjecting();
     this.listeners.clear();
     // Nothing more may go out on this client for a screen that is gone: this
-    // cancels the core's pending coalesced refetch and its restore-on-ready
-    // read, and drops whatever in-flight answer was still its to apply.
+    // detaches the core's evener/auth/updated listener, cancels its pending
+    // refetch and restore-on-ready read, and drops whatever in-flight answer
+    // was still its to apply.
     this.core.connectionChanged(null, "closed");
   }
 }

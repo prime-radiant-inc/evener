@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type {
   AnyNotification,
   InstanceListResponse,
@@ -92,11 +92,14 @@ it("refuses configuration writes while allowing independent credential repair", 
   await model.refresh();
   await expect(model.remove("test")).rejects.toThrow("configuration");
   await model.clearStoredKey("test");
-  expect(requests.map((r) => r.method)).toEqual([
-    "evener/instance/list",
-    "evener/auth/apiKey/clear",
-    "evener/instance/list",
-  ]);
+  // The post-write read is the core's own coalesced refresh.
+  await vi.waitFor(() =>
+    expect(requests.map((r) => r.method)).toEqual([
+      "evener/instance/list",
+      "evener/auth/apiKey/clear",
+      "evener/instance/list",
+    ]),
+  );
 });
 it("does not replay a failed mutation and reconciles with a read", async () => {
   const { model, io, requests } = boundary();
@@ -146,7 +149,9 @@ it("does not let a pre-mutation read replace the reconciled provider configurati
   await Promise.resolve();
   stale.resolve(listing("old default"));
   await Promise.all([read, write]);
-  expect(model.getSnapshot().data).toEqual(listing("new default"));
+  // The write's own answer is the reconciled configuration; the read that
+  // started before it does not replace it.
+  expect(model.getSnapshot().data).toEqual(listing("mutation response"));
   expect(model.getSnapshot().loading).toBe(false);
 });
 it("sanitizes credential test replies before publishing them", async () => {
@@ -223,12 +228,15 @@ it("reconciles a successful credential JSON write through the authoritative list
 
   await model.setCredentialJson("vertex", credential);
 
-  expect(requests.map((request) => request.method)).toEqual([
-    "evener/instance/list",
-    "evener/auth/credentialJson/set",
-    "evener/instance/list",
-  ]);
-  expect(model.getSnapshot().data).toEqual(listing("credential-json-saved"));
+  // The post-write read is the core's own coalesced refresh.
+  await vi.waitFor(() =>
+    expect(requests.map((request) => request.method)).toEqual([
+      "evener/instance/list",
+      "evener/auth/credentialJson/set",
+      "evener/instance/list",
+    ]),
+  );
+  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("credential-json-saved")));
   expect(JSON.stringify(model.getSnapshot())).not.toContain(credential);
 });
 
