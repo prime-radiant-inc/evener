@@ -24,6 +24,7 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
+import { createListRevision } from "./listRevision";
 
 export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -100,18 +101,12 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   const browseInFlight = new Map<string, Promise<void>>();
 
   // Every marketplace mutation, and the notification refetch, replaces the
-  // whole list from its own response. The hub answers one connection's
-  // requests in the order they were sent, and a dropped connection rejects
-  // everything it had in flight, so a later response is always the newer
-  // list. The revision each request takes as it starts is the fence should
-  // that ever stop holding: a response writes its list only if no later
-  // revision has committed since, and a list that snapshotted before an
-  // in-flight mutation committed is put right by the refetch that mutation's
-  // broadcast triggers. A retirement in the same response still applies -
-  // retiring is monotonic, and a catalog stale under the older list is stale
-  // under the newer one too.
-  let marketplaceRevisions = 0;
-  let appliedMarketplaceRevision = 0;
+  // whole list from its own response; see listRevision.ts for the fence. A
+  // list that snapshotted before an in-flight mutation committed is put right
+  // by the refetch that mutation's broadcast triggers. A retirement in the
+  // same response still applies - retiring is monotonic, and a catalog stale
+  // under the older list is stale under the newer one too.
+  const listRevision = createListRevision();
 
   let stopNotifications: (() => void) | undefined;
   let refetchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -145,25 +140,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     return next;
   }
 
-  function nextMarketplaceRevision(): number {
-    marketplaceRevisions += 1;
-    return marketplaceRevisions;
-  }
-
-  /** Whether the response that took `revision` is still the store's newest
-   * word on the marketplaces, and records it as such when it is. A failed list
-   * counts: its error is marketplace state too, so a success that started
-   * earlier must not clear it. */
-  function commitMarketplaceRevision(revision: number): boolean {
-    if (revision < appliedMarketplaceRevision) return false;
-    appliedMarketplaceRevision = revision;
-    return true;
-  }
-
   /** Fences every list response and browse still on the wire: reset and
    * dispose both want a reply that started before them to land nothing. */
   function fenceInFlight(): void {
-    appliedMarketplaceRevision = nextMarketplaceRevision();
+    listRevision.fence();
     for (const name of browseInFlight.keys()) retireGeneration(name);
     browseInFlight.clear();
     clearTimeout(refetchTimer);
@@ -185,10 +165,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
     ): Promise<void> {
-      const revision = nextMarketplaceRevision();
+      const revision = listRevision.next();
       const resp = await request();
       set((s) => ({
-        ...(commitMarketplaceRevision(revision) ? { marketplaces: resp.marketplaces } : {}),
+        ...(listRevision.commit(revision) ? { marketplaces: resp.marketplaces } : {}),
         ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
       }));
     }
@@ -202,7 +182,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       marketplacesError: null,
 
       async fetchMarketplaces() {
-        const revision = nextMarketplaceRevision();
+        const revision = listRevision.next();
         set({ marketplacesLoading: true, marketplacesError: null });
         try {
           const resp = await client.request("evener/marketplace/list", {});
@@ -211,10 +191,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           // success would clear an error a newer fetch posted or hide a load
           // still running, and its failure would put "Failed to load" over a
           // newer mutation's list.
-          if (!commitMarketplaceRevision(revision)) return;
+          if (!listRevision.commit(revision)) return;
           set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
         } catch (err) {
-          if (!commitMarketplaceRevision(revision)) return;
+          if (!listRevision.commit(revision)) return;
           set({ marketplacesLoading: false, marketplacesError: errorText(err) });
         }
       },

@@ -94,10 +94,14 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
-  one cached browse result per marketplace, where fetches record their failure
-  in state and mutations reject), with the installed-plugin and directory
-  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  one cached browse result per marketplace), the installed-plugins store
+  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  plugins, their six mutations and a `pluginRevision` that moves as the hub
+  announces a change), and the `createListRevision` fence both put on a list
+  every response replaces whole. In both stores fetches record their failure
+  in state and mutations reject. The directories store is to follow. The
+  subpath resolves to `state/extensions/index.ts`, a barrel over the layer's
+  modules.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

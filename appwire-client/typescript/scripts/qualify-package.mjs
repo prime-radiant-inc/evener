@@ -363,9 +363,13 @@ assert.throws(
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
-const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;`,
-      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;`,
-      // A store built over a client that rejects everything: the list fetch
+const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;
+const pluginsClient: PluginsClient = marketplacesClient;
+const plugins: PluginsStore = createPluginsStore(pluginsClient);
+const revision: ListRevision = createListRevision(); void plugins; void revision;`,
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;`,
+      // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
       // promise chain rather than await: the CommonJS consumer has no
@@ -373,6 +377,13 @@ const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces;
       smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplacesStore = client.createMarketplacesStore(offline);
 assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+const pluginsStore = client.createPluginsStore(offline);
+assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(pluginsStore.getState().pluginRevision, 0);
+const listRevision = client.createListRevision();
+const first = listRevision.next();
+listRevision.fence();
+assert.equal(listRevision.commit(first), false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()
@@ -384,7 +395,13 @@ marketplacesStore
   .then(() => {
     assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
     marketplacesStore.dispose();
+    return pluginsStore.getState().fetchPlugins();
   })
+  .then(() => {
+    assert.equal(pluginsStore.getState().pluginsError, "offline");
+    return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
+  })
+  .then(() => pluginsStore.dispose())
   .catch((err) => {
     console.error(err);
     process.exit(1);
