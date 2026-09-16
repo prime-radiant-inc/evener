@@ -1111,10 +1111,19 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 
 // InstanceModels lists an instance's known models with their effective
 // disabled state, sorted by id, for the Providers pane's per-model toggles:
-// exact catalog rows plus cached live ids (the same set ModelIDs lists).
-// Alias rows are skipped: the flag lives on the target, so every listed
-// row is directly writable. A toggle on a live-only id authors an exact
-// config row, which precedes live lookup, so the exception takes effect.
+// exact catalog rows plus cached live ids (the same set ModelIDs lists),
+// alias rows included.
+//
+// An alias row names a model the provider serves under another id (the Codex
+// family aliases gpt-5.6-sol/terra/luna onto openai's rows), and the picker
+// offers those names - so the list of what can be toggled has to carry them
+// too. It is safe to list and toggle one: SetModelDisabled resolves an alias to
+// its target and writes the flag there, so every spelling of a model shares one
+// flag, and the row below reports the state the target carries
+// (aliasEffectiveDisabled) rather than a flag of its own.
+//
+// A toggle on a live-only id authors an exact config row, which precedes live
+// lookup, so the exception takes effect.
 func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	rec, ids, err := r.instanceRecordIDs(instance)
 	if err != nil {
@@ -1124,9 +1133,6 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	mayDisable := r.recordMayDisable(rec)
 	for _, id := range ids {
 		hit := r.lookupRow(rec, id)
-		if hit.rowID != "" && rec.head.Models[hit.rowID].AliasOf != "" {
-			continue
-		}
 		disabled := false
 		if mayDisable {
 			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, hit)

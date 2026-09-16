@@ -324,6 +324,28 @@ func TestInstanceModels_ReportsDisabledState(t *testing.T) {
 	}
 }
 
+// The cross-provider spelling of the same rule - the Codex family aliases
+// gpt-5.6-sol/terra/luna onto openai's rows, which is the case that made these
+// names invisible in the sheet while the picker offered them.
+func TestInstanceModels_ListsCrossProviderAliasRows(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.openai-codex]\nbase = \"openai\"\napi_key = \"sk\"\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n[providers.openai-codex.models.\"gpt-5.6-sol\"]\nalias_of = \"openai/gpt-5.6-sol\"\n")
+	models, err := r.InstanceModels("openai-codex")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	byID := map[string]InstanceModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	alias, ok := byID["gpt-5.6-sol"]
+	if !ok {
+		t.Fatalf("alias row missing from the inventory: %+v", models)
+	}
+	if !alias.Disabled {
+		t.Fatalf("alias row must report its target's state: %+v", alias)
+	}
+}
+
 func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n")
 	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
@@ -350,21 +372,33 @@ func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 	}
 }
 
-func TestInstanceModels_SkipsAliasRows(t *testing.T) {
-	// The flag lives on the target, so the inventory offers no toggle on
-	// the alias itself: every row it lists is directly writable.
-	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
+func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
+	// An alias row names a model the provider serves under another id, and the
+	// picker offers that name, so the inventory lists it too: the toggle path
+	// resolves the alias to its target (SetModelDisabled), which is what makes
+	// every listed row - alias or not - directly writable. The state it reports
+	// is the target's, since the flag lives there.
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
 	models, err := r.InstanceModels("anthropic")
 	if err != nil {
 		t.Fatalf("InstanceModels: %v", err)
 	}
+	byID := map[string]InstanceModel{}
 	for _, m := range models {
-		if m.ID == "house-model" {
-			t.Fatalf("alias row must not list: %+v", models)
-		}
+		byID[m.ID] = m
 	}
-	if len(models) == 0 {
-		t.Fatal("inventory must still list the target rows")
+	alias, ok := byID["house-model"]
+	if !ok {
+		t.Fatalf("alias row missing from the inventory: %+v", models)
+	}
+	if !alias.Disabled {
+		t.Fatalf("alias row must report its target's disabled state: %+v", alias)
+	}
+	if !byID["claude-opus-4-6"].Disabled {
+		t.Fatalf("target row must stay listed and disabled: %+v", byID["claude-opus-4-6"])
+	}
+	if _, err := r.Resolve("anthropic/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(alias) = %v, want ErrModelDisabled (the state the row reported)", err)
 	}
 }
 
