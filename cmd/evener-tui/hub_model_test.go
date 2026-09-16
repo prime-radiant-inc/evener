@@ -2402,6 +2402,57 @@ func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
 	}
 }
 
+// The stale gate a partial drain sets belongs to the session it happened in:
+// entering another session (clearSessionQueue) must not carry it over, or a
+// session whose queue revision is below the earlier drain's stays un-drainable.
+func TestHubModelStaleQueueGateDoesNotSurviveSessionSwitch(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+	if got.sessionCanDrainQueue() {
+		t.Fatal("precondition: the partial drain should have gated Ctrl+S")
+	}
+
+	// Enter another session whose parked queue sits at a lower revision.
+	got.clearSessionQueue()
+	got.detail.Ref = "local:02OTHER"
+	got.detail.State = appwire.ThreadStatusIdle
+	got.applyQueueState("local:02OTHER", appwire.QueueState{Depth: 1, Revision: 3, Preview: []string{"parked"}})
+	if !got.sessionCanDrainQueue() {
+		t.Fatal("the other session's parked queue is not drainable: the previous session's stale gate survived clearSessionQueue")
+	}
+}
+
+// The status is authoritative and the transcript's turn id can be empty while
+// the session is active (a thread/read cut between turns, or the gap after
+// turn/completed at an inline boundary). A failed completion arriving then
+// still settles the session idle; one for a superseded turn is left alone.
+func TestHubModelFailedTurnWithoutAnIdSettlesIdle(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = ""
+	m.session.processing = true
+	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
+	m.applyHubNotification(*failed.Notification)
+	if m.detail.State != appwire.ThreadStatusIdle || m.session.processing {
+		t.Fatalf("after a failed completion with no active turn id: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+	}
+
+	m = newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.ActiveTurnID = "turn_2"
+	late := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_1", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "late"}}})
+	m.applyHubNotification(*late.Notification)
+	if m.detail.State != appwire.ThreadStatusActive || m.detail.ActiveTurnID != "turn_2" {
+		t.Fatalf("a failed completion for a superseded turn changed the session: state=%q active=%q", m.detail.State, m.detail.ActiveTurnID)
+	}
+}
+
 func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
