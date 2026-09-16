@@ -228,7 +228,7 @@ func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	client.Register(adapter)
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response { return finalResponse("ok") },
 	}})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -404,7 +404,7 @@ func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
 	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
