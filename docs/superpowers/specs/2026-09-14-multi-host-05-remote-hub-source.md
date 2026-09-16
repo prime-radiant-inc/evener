@@ -935,18 +935,26 @@ Ref translation detail (`remote_hub_refs.go`):
     legacy flat array, an unknown object, a minimal (zero-value) tree, and a
     forward-compatible tree carrying an extra field.
     **Implementation status:** the shipped translator (`translateActivityRefs`
-    and its walk helpers, `remote_hub_refs.go`) recognizes **structurally**
-    rather than by the required-field/type test above: it walks the declared
-    containers (`root`/`entries`/`job`/`delegate`/`child`/`turns`, or the
-    retired array's `transcriptRef`) and rewrites only the ref fields those
-    nodes declare, preserving every other key byte-for-byte, so a payload with
-    none of those positions is untouched in practice. The required-field test
-    itself (`revision` a non-negative integer, `root` carrying `sessionId` and
-    `ref` as strings) is **not implemented**, and its named pass-through cases
-    (an empty object, `{"root":{}}`, a tree whose required fields carry another
-    type) are not pinned by a test; the requirement stands as an open code
-    item. The legacy-array translation is shipped and pinned
-    (`TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs`).
+    and its walk helpers, `remote_hub_refs.go`) applies the required-field/type
+    test above **before** it walks: `activityTreeRecognized` demands `revision`
+    as a non-negative integer and `root` as an object carrying `sessionId` and
+    `ref` as strings (empty strings allowed, because the wire types carry no
+    `omitempty`), and every payload that fails it — an empty object,
+    `{"root":{}}`, a tree whose required fields carry another type, or an
+    unrelated object — is returned as the `any` value it arrived as. Only a
+    recognized tree is walked, and the walk itself stays structural: it follows
+    the declared containers (`root`/`entries`/`job`/`delegate`/`child`/`turns`)
+    and rewrites only the ref fields those nodes declare, preserving every
+    other key byte-for-byte. The named pass-through cases are pinned by
+    `TestRemoteHubJobsListPreservesUnrecognizedPayloads`, the recognized tree —
+    every declared ref field, a zero `revision`, empty required strings, and a
+    forward-compatible extra field — by
+    `TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees`, and the retired flat
+    array's translation by `TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs`
+    with its unaddressable value classes (a bare id, a foreign ref, an empty
+    value) in `TestRemoteHubJobsListPreservesUnaddressableLegacyTranscriptRefs`;
+    all four run through the actual stream client, so the requirement is closed
+    rather than an open code item.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
