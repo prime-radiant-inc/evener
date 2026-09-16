@@ -158,6 +158,18 @@ func LoadConfig(path string) (Config, error) {
 	if decodeErr != nil {
 		return cfg, fmt.Errorf("parse config: %w", decodeErr)
 	}
+	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
+	// integer as a nanosecond count without error, so `daemon_idle_timeout =
+	// 3600` (plausible shorthand for one hour) would silently arm a 3.6µs idle
+	// deadline and churn retire/resume on every spawned daemon. Reject the
+	// integer form instead of flooring it: the doc comment defines an explicit
+	// "0s" as the deliberate kill switch, which flooring would rewrite. The
+	// metadata's TOML type is the parser's own discriminator (verified against
+	// BurntSushi/toml v1.6.0: bare integers report "Integer", quoted duration
+	// strings report "String", an absent key reports "").
+	if metadata.Type("daemon_idle_timeout") == "Integer" {
+		return cfg, fmt.Errorf("daemon_idle_timeout must be a duration string such as \"1h\" or \"0s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.DaemonIdleTimeout))
+	}
 	applyConfigDefaults(&cfg)
 	if cfg.DaemonIdleTimeout < 0 {
 		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)

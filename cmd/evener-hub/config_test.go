@@ -554,6 +554,42 @@ func TestDaemonIdleConfigRejectsMalformed(t *testing.T) {
 	}
 }
 
+// TestDaemonIdleConfigRejectsInteger covers a bare integer, which
+// BurntSushi/toml decodes as a nanosecond count without error: `= 3600`
+// (plausible shorthand for one hour) would silently arm a 3.6µs idle deadline
+// and churn retire/resume on every spawned daemon. The field's contract is a
+// duration string, so reject the integer form with a message that names it —
+// and deliberately do NOT floor it, since "0s" is the documented kill switch
+// (see TestDaemonIdleConfigOmittedAndZero).
+func TestDaemonIdleConfigRejectsInteger(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		got  string
+	}{
+		{name: "positive integer shorthand for one hour", body: `daemon_idle_timeout = 3600`, got: "3600"},
+		{name: "bare zero", body: `daemon_idle_timeout = 0`, got: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "hub.toml")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatalf("LoadConfig accepted the integer form %q", tc.body)
+			}
+			if !strings.Contains(err.Error(), "duration string") {
+				t.Fatalf("error must name the duration-string form, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.got) {
+				t.Fatalf("error must name the offending integer %s, got: %v", tc.got, err)
+			}
+		})
+	}
+}
+
 // TestHubSpawnResumePassDaemonIdleTimeout proves the Hub's configured value
 // actually reaches the daemon's argv on BOTH launch paths — the historical
 // reconstruction resume performs must not silently drop it. The fake evener
