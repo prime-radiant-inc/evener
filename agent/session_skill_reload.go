@@ -206,7 +206,9 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 	// below. The caller folds it into the admission budget, because these turns
 	// join the same request the body admission is measured against.
 	stagedTokens := 0
-	reminderPublications := map[string]bool{}
+	// consumedReminders counts the reminder receipts this call consumed, so the
+	// lifecycle is saved once at the end when any were.
+	consumedReminders := 0
 	for _, receipt := range handoffs {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, 0, err
@@ -292,22 +294,15 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			// Absent or invalid: no reload is authorized. Reserve the complete
 			// typed metadata notification — every inventory entry — and never
 			// enqueue bodies here.
-			//
-			// The reminder turn IS the admission, so a publication whose
-			// reminder the history already holds was admitted by an earlier
-			// attempt whose metadata consumption then failed. That consumption
-			// is what retries; appending a second turn saying the same thing
-			// would deliver the same inventory twice for one handoff.
-			if s.skillReloadReminderRecorded(publicationID) {
-				reminderPublications[publicationID] = true
-				continue
-			}
 			summary, diagnostics := s.skillInventorySummary(ctx)
 			if len(summary) == 0 {
 				// No skill is loaded: the complete reminder is an empty list
 				// with nothing to notify. Consume the receipt without a turn
 				// rather than appending vacuous history.
-				reminderPublications[publicationID] = true
+				s.mu.Lock()
+				s.consumeSkillReloadReminderLocked(publicationID)
+				s.mu.Unlock()
+				consumedReminders++
 				continue
 			}
 			s.mu.Lock()
@@ -327,100 +322,64 @@ func (s *Session) prepareCompactedSkillReloads(ctx context.Context) (*skillActiv
 			content := renderSkillReloadReminder(reminder, s.canInstructTool("use_skill"))
 			if !s.skillReloadReminderFits(content) {
 				// Keep the full list and fail visibly; never trim older names.
-				// Reminders already admitted in this call are consumed first:
-				// their turns are durable, and leaving their receipts behind
-				// would re-append them on every retry, spending more of the very
-				// window this check measures. A failed consumption save is only
-				// warned about (inside the helper) because the fit error is the
-				// failure the caller must see; a restart reconciles the durable
-				// reminder turns the same way.
-				_ = s.consumeSkillReloadReminders(reminderPublications)
+				// Reminders already admitted in this call left with their
+				// receipts, so a retry re-appends none of them and spends no
+				// more of the very window this check measures.
 				return nil, nil, 0, fmt.Errorf("the complete post-compaction skill inventory (%d entries) does not fit the remaining context window", len(summary))
 			}
 			turn := schema.NewTurn(schema.TurnSystem, llm.User(content))
 			turn.SkillState = &schema.SkillTurnState{ReloadReminder: &reminder}
 			// The reminder's durable admission is this turn, so append through
 			// the durable pair -- transcript write first, live append only on
-			// success. A failed write must NOT consume the receipt: the handoff
-			// stays pending so a retry (or a restart) can still deliver the
-			// only reminder for it, instead of recording nothing and forgetting
-			// the handoff forever.
+			// success -- and consume the receipt in that same commit: a
+			// receipt whose reminder exists is never visible to a retry, so
+			// nothing can deliver the same inventory twice. A failed write
+			// must NOT consume the receipt: the handoff stays pending so a
+			// retry (or a restart) can still deliver the only reminder for it,
+			// instead of recording nothing and forgetting the handoff forever.
 			live, persisted := turn, turn
 			live.SkillState = live.SkillState.Clone()
 			persisted.SkillState = persisted.SkillState.Clone()
 			if err := s.appendTurnAfterTranscriptWrite(
 				persisted,
 				func() error { return s.writeTranscriptDurableLocked(persisted) },
-				func() { s.history = append(s.history, live) },
+				func() {
+					s.history = append(s.history, live)
+					s.consumeSkillReloadReminderLocked(publicationID)
+				},
 			); err != nil {
 				s.emit(events.EventWarning, warningDataFromError("recording the post-compaction skill reminder failed", err))
 				return nil, nil, 0, fmt.Errorf("recording the post-compaction skill reminder: %w", err)
 			}
 			stagedTokens += skillReloadTurnTokens(content)
-			reminderPublications[publicationID] = true
+			consumedReminders++
 		}
 	}
-	// The reminder's durable admission is its recorded turn: consume its
-	// receipts now so a retry or restart cannot repeat delivery.
-	if err := s.consumeSkillReloadReminders(reminderPublications); err != nil {
-		return nil, nil, 0, err
+	if consumedReminders > 0 {
+		if err := s.persistSkillReloadReminderConsumption(); err != nil {
+			return nil, nil, 0, err
+		}
 	}
 	return batch, outcomes, stagedTokens, nil
 }
 
-// skillReloadReminderRecorded reports whether the history already holds the
-// reminder turn for publicationID — which, because the reminder is appended
-// through the durable pair, means the transcript holds it too.
-func (s *Session) skillReloadReminderRecorded(publicationID string) bool {
-	if publicationID == "" {
-		return false
+// consumeSkillReloadReminderLocked retires the handoff whose reminder was just
+// admitted (or needed no turn), so neither a retry nor a restart can deliver
+// the same inventory notification twice. Callers hold s.mu.
+func (s *Session) consumeSkillReloadReminderLocked(publicationID string) {
+	if len(s.removeSkillCompactionHandoffsLocked(map[string]bool{publicationID: true})) > 0 {
+		s.skillLifecycle.Revision++
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, turn := range s.history {
-		state := turn.SkillState
-		if state == nil || state.ReloadReminder == nil {
-			continue
-		}
-		if state.ReloadReminder.PublicationID == publicationID {
-			return true
-		}
-	}
-	return false
 }
 
-// consumeSkillReloadReminders retires the handoffs whose reminders were already
-// durably admitted, so neither a retry nor a restart can deliver the same
-// inventory notification twice. Only the named publications are removed.
-//
-// The consumption only happened once the metadata recording it is durable, so
-// removal, save and rollback are one critical section under metaSaveMu: a
-// concurrent autosave must not snapshot the transient removal and persist a
-// meta.json that has forgotten a reminder no restart can then deliver. A
-// failed save puts back exactly the receipts this call removed. It does not
-// restore a pre-removal snapshot wholesale, because s.mu is not held while the
-// save runs and a fold publishing in that window can have recorded a handoff
-// of its own, which a wholesale restore would discard.
-func (s *Session) consumeSkillReloadReminders(publications map[string]bool) error {
-	if len(publications) == 0 {
-		return nil
-	}
-	s.metaSaveMu.Lock()
-	defer s.metaSaveMu.Unlock()
-	s.mu.Lock()
-	removed := s.removeSkillCompactionHandoffsLocked(publications)
-	if len(removed) > 0 {
-		s.skillLifecycle.Revision++
-	}
-	s.mu.Unlock()
-	if len(removed) == 0 {
-		return nil
-	}
-	if err := s.autoSaveMetaLocked(); err != nil {
-		s.mu.Lock()
-		s.restoreSkillCompactionHandoffsLocked(removed)
-		s.skillLifecycle.Revision++
-		s.mu.Unlock()
+// persistSkillReloadReminderConsumption saves the lifecycle after reminder
+// receipts were consumed in memory. A failed save is reported and rolls
+// nothing back: the receipt left with its reminder's durable commit, so a
+// retry finds no receipt and appends no second reminder, and a restart
+// reconciles a snapshot that still holds the receipt from the durable reminder
+// turn (reconcileSkillCompactionReceipts).
+func (s *Session) persistSkillReloadReminderConsumption() error {
+	if err := s.saveMeta(); err != nil {
 		s.emit(events.EventWarning, warningDataFromError("persisting the compaction skill reminder consumption failed", err))
 		return err
 	}

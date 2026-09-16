@@ -2016,81 +2016,11 @@ func plantReminderReceipt(s *Session, publicationID string) {
 	plantReloadReceipt(s, publicationID, schema.SkillReloadSelection{State: "absent"})
 }
 
-// TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff: consuming a
-// reminder receipt is only real once the metadata that records the consumption
-// is durable. Dropping the handoff from memory before the save means a failed
-// save loses it to the next autosave, which writes a snapshot that has
-// forgotten a reminder no restart can then deliver.
-func TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff(t *testing.T) {
-	t.Parallel()
-	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
-	s := newSession(t,
-		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
-	)
-	drainSessionEvents(s)
-	const publication = "pub-consumption-save-failure"
-	plantReminderReceipt(s, publication)
-
-	if err := s.consumeSkillReloadReminders(map[string]bool{publication: true}); err == nil {
-		t.Fatal("a failed consumption save must surface an error")
-	}
-	handoffs := pendingHandoffsSnapshot(s)
-	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != publication {
-		t.Fatalf("handoffs after the failed save = %+v, want the reminder's receipt still pending", handoffs)
-	}
-}
-
-// TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff: the
-// save runs without s.mu, so a fold publishing in that window records a handoff
-// of its own. Restoring a pre-removal snapshot wholesale discards it — the
-// reload it authorizes is then owed to nobody. Only the receipts this
-// consumption removed come back.
-func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *testing.T) {
-	t.Parallel()
-	const consumed = "pub-consumed-reminder"
-	const arrived = "pub-arrived-mid-save"
-	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
-	s := newSession(t,
-		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
-		withoutGitSnapshot(),
-	)
-	drainSessionEvents(s)
-	plantReminderReceipt(s, consumed)
-	metaFS.before = func() {
-		s.mu.Lock()
-		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
-			Phase: skillCompactionReceiptDelivered,
-			Operation: schema.SkillCompactionOperation{
-				Generation:    2,
-				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
-				PublicationID: arrived,
-			},
-		})
-		s.skillLifecycle.Revision++
-		s.mu.Unlock()
-	}
-
-	if err := s.consumeSkillReloadReminders(map[string]bool{consumed: true}); err == nil {
-		t.Fatal("a failed consumption save must surface an error")
-	}
-	pending := map[string]bool{}
-	for _, handoff := range pendingHandoffsSnapshot(s) {
-		pending[handoff.Operation.PublicationID] = true
-	}
-	if !pending[arrived] {
-		t.Fatalf("handoffs after the failed save = %v, want the handoff recorded while the save ran kept", pending)
-	}
-	if !pending[consumed] {
-		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reminder receipt back", pending)
-	}
-}
-
 // TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn:
-// the reminder turn IS the admission, and keeping the receipt when its metadata
-// consumption fails is what makes the retry possible. What the retry must retry
-// is that consumption — appending a second turn saying the same thing delivers
-// the same inventory twice for one handoff.
+// the reminder turn IS the admission, so its receipt leaves with the turn's
+// durable commit whatever the metadata save then does. A retry after a failed
+// save therefore finds no receipt and appends no second turn saying the same
+// thing, which would deliver the same inventory twice for one handoff.
 func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn(t *testing.T) {
 	t.Parallel()
 	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
@@ -2109,8 +2039,8 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 	if got := countSkillReloadReminderTurns(s); got != 1 {
 		t.Fatalf("reminders after the failed save = %d, want exactly one", got)
 	}
-	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
-		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("the recorded reminder must consume its receipt whatever the save did, got %+v", handoffs)
 	}
 
 	metaFS.fail = false
