@@ -1,6 +1,8 @@
-// The humanized wire state a row's second line leads with (§2.3) - the same
-// wire state vocabulary cadenceStateFor reads, worded for a person rather
-// than mapped to a Cadence family.
+// The humanized wire state a session row's second line leads with (§2.3),
+// shared by the web rail (shell/rail/RailRow.tsx) and native's session list
+// (mobile-native/src/screens.tsx): the same wire state vocabulary the web's
+// cadenceStateFor (shell/rail/railNodes.ts) reads, worded for a person rather
+// than mapped to a Cadence family. Pure function, no imports.
 //
 // "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
 // attention.go, Track A §2 ask-tiering) already draws this same line for the

@@ -40,6 +40,7 @@
 
 import {
   canReadSharedNotes,
+  humanizeState,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
@@ -76,7 +77,6 @@ import {
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
-import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
