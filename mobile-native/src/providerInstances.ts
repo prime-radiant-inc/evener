@@ -79,9 +79,12 @@ export class ProviderInstances {
       Object.assign(change, this.invalidateTest());
     }
     if (state.loading !== previous.loading) change.loading = state.loading;
-    if (state.error !== previous.error)
-      change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
+    if (state.error !== previous.error) change.error = this.loadFailure(state.error);
     if (Object.keys(change).length > 0) this.publish(change);
+  }
+  // loadFailure is the sentence the screen shows for the core's read error.
+  private loadFailure(error: string | null): string | null {
+    return error === null ? null : sessionActionError("Could not load providers", error);
   }
   // invalidateTest retires any credential test - a shown result, or a probe
   // still in flight - and returns the state change that takes it down.
@@ -94,13 +97,15 @@ export class ProviderInstances {
     this.started = true;
     this.connect();
     // Rows the store already holds for this connection - a list remounted
-    // after a sign-in, say - are published as they are: the store's own
-    // refresh keeps them current, and a read here would only repeat it. Rows
-    // that belong to a replaced connection are read past, as ever.
+    // after a sign-in, say - are published as they are, with the read state
+    // they came with (a failed background refetch keeps its rows and its
+    // error): the store's own refresh keeps them current, and a read here
+    // would only repeat it. Rows that belong to a replaced connection are read
+    // past, as ever.
     const held = this.core.getState();
     const rows = held.instances.length > 0 || held.availableProviders.length > 0;
     if (rows && !held.listingFromPreviousConnection) {
-      this.publish({ data: listingOf(held) });
+      this.publish({ data: listingOf(held), loading: held.loading, error: this.loadFailure(held.error) });
       return;
     }
     void this.refresh();
