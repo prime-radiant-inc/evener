@@ -1653,6 +1653,9 @@ func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem 
 	return out
 }
 
+// projectOutputImages returns nil, never an empty slice, when nothing survives:
+// an empty list is the removal signal (see ThreadItem.OutputImages), and an
+// item whose descriptors were all unusable never showed any images to remove.
 func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
 	if len(images) == 0 {
 		return nil
@@ -1671,6 +1674,9 @@ func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
 			SHA:       img.SHA,
 			Path:      img.Path,
 		})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -1948,9 +1954,9 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 		return
 	}
 	p.heldToolResultImages[item.CallID] = *item
-	if len(fetchable) == 0 {
-		fetchable = nil
-	}
+	// Empty, never nil: this item's images were withheld, and an empty list is
+	// what tells a client holding an earlier copy that it must stop showing
+	// them. The release below re-sends the item with its descriptors restored.
 	item.OutputImages = fetchable
 }
 
