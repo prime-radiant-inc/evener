@@ -344,8 +344,11 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		}
 	}
 	ctx, trace := withThreadLifecycleLog(ctx, "resume", logSessionID, nil)
-	requestDone := trace.stage(ctx, "request")
-	defer func() { requestDone(resumeErr) }()
+	// These deferred stages use the final local trace after alias resolution,
+	// while retaining their original start times and immutable context snapshots.
+	requestStarted := time.Now()
+	trace.record(ctx, "request", "begin", requestStarted, nil, 0, 0)
+	defer func() { trace.record(ctx, "request", "complete", requestStarted, resumeErr, 0, 0) }()
 	requestedRefID := ""
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
@@ -393,12 +396,13 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			cfg.ResumeLocks.For(id).Lock()
 		}
 		lockDone(nil)
-		heldDone := trace.stage(ctx, "lock_held")
+		heldStarted := time.Now()
+		trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
 		defer func() {
 			for _, id := range slices.Backward(aliases) {
 				cfg.ResumeLocks.For(id).Unlock()
 			}
-			heldDone(nil)
+			trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 		}()
 		for _, id := range aliases {
 			if err := sessionConnectionRecoveryError(ctx, cfg, "", id); err != nil {
