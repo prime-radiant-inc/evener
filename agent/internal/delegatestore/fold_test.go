@@ -2,6 +2,7 @@ package delegatestore
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -769,4 +770,155 @@ func stateJSON(t *testing.T, state State) string {
 		t.Fatalf("marshal state: %v", err)
 	}
 	return string(b)
+}
+
+// TestApplyLeavesUntouchedAggregatesShared pins the contract
+// extendHistoricalDelegateFold (agent/jobs_activity_past.go) relies on: Apply
+// may be handed a shallow maps.Clone of a state another reader still holds,
+// so it must never mutate an aggregate in place. Every aggregate an event
+// changes is replaced by a fresh clone, and every aggregate the event leaves
+// alone keeps its pointer, so the shared prior state stays intact and the
+// per-event cost scales with the aggregates the event touches.
+func TestApplyLeavesUntouchedAggregatesShared(t *testing.T) {
+	base := applyEvents(t,
+		createdEvent("dlg_parent", ""),
+		createdEvent("dlg_child", "dlg_parent"),
+		createdEvent("dlg_other", ""),
+		startedEvent("dlg_parent", 1, TriggerInitial),
+		startedEvent("dlg_child", 1, TriggerInitial),
+		startedEvent("dlg_other", 1, TriggerInitial),
+		preparedEvent("dlg_child", 1, reportedPacket("done")),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_other", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
+	)
+	stopped := applyEvents(t,
+		createdEvent("dlg_parent", ""),
+		createdEvent("dlg_child", "dlg_parent"),
+		createdEvent("dlg_other", ""),
+		startedEvent("dlg_child", 1, TriggerInitial),
+		preparedEvent("dlg_child", 1, reportedPacket("done")),
+		finishedEvent("dlg_child", 1, OutcomeCompleted, DispositionReported, "dlg_child/delivery/1", nil),
+		Event{Kind: EventDelegateSubtreeStopRequested, DelegateID: "dlg_parent", Seq: 7, SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_parent"}},
+	)
+	tests := []struct {
+		name       string
+		prior      State
+		event      Event
+		wantShared []string
+	}{
+		{
+			name:       "created leaves every existing aggregate shared",
+			prior:      base,
+			event:      createdEvent("dlg_new", "dlg_parent"),
+			wantShared: []string{"dlg_parent", "dlg_child", "dlg_other"},
+		},
+		{
+			name:       "attention change touches only its delegate",
+			prior:      base,
+			event:      Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_child", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
+			wantShared: []string{"dlg_parent", "dlg_other"},
+		},
+		{
+			name:       "run finished touches only its delegate",
+			prior:      base,
+			event:      finishedEvent("dlg_child", 1, OutcomeCompleted, DispositionReported, "dlg_child/delivery/1", nil),
+			wantShared: []string{"dlg_parent", "dlg_other"},
+		},
+		{
+			name:       "resumability closure touches the subtree",
+			prior:      base,
+			event:      Event{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_parent", ResumabilityClosed: &ResumabilityClosed{Reason: "isolation_disposed"}},
+			wantShared: []string{"dlg_other"},
+		},
+		{
+			name:       "subtree stop request touches the subtree",
+			prior:      base,
+			event:      Event{Kind: EventDelegateSubtreeStopRequested, DelegateID: "dlg_parent", Seq: 9, SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_parent"}},
+			wantShared: []string{"dlg_other"},
+		},
+		{
+			name:       "subtree stop completion rewrites every aggregate's deliveries",
+			prior:      stopped,
+			event:      Event{Kind: EventDelegateSubtreeStopCompleted, DelegateID: "dlg_parent", SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 7}},
+			wantShared: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := stateJSON(t, tc.prior)
+			state := maps.Clone(tc.prior)
+			if err := Apply(state, tc.event); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if got := stateJSON(t, tc.prior); got != before {
+				t.Fatalf("Apply mutated the shared prior state:\n got %s\nwant %s", got, before)
+			}
+			shared := make(map[string]bool, len(tc.wantShared))
+			for _, id := range tc.wantShared {
+				shared[id] = true
+			}
+			for id, aggregate := range state {
+				prior := tc.prior[id]
+				switch {
+				case shared[id] && aggregate != prior:
+					t.Errorf("delegate %q was cloned although the event does not touch it", id)
+				case !shared[id] && prior != nil && aggregate == prior:
+					t.Errorf("delegate %q was mutated in place", id)
+				}
+			}
+		})
+	}
+}
+
+// TestApplyRestoresStateWhenEventIsRejected pins that a rejected event leaves
+// the state exactly as it was, including after applyRunFinished has already
+// written to the aggregate before discovering the event is invalid.
+func TestApplyRestoresStateWhenEventIsRejected(t *testing.T) {
+	state := applyEvents(t,
+		createdEvent("dlg_parent", ""),
+		createdEvent("dlg_child", "dlg_parent"),
+		startedEvent("dlg_child", 1, TriggerInitial),
+		Event{Kind: EventDelegateAttentionChanged, DelegateID: "dlg_child", AttentionChanged: &DelegateAttentionChanged{NeedsAttention: true}},
+		Event{Kind: EventDelegateSubtreeStopRequested, DelegateID: "dlg_child", Seq: 5, SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_child"}},
+	)
+	before := stateJSON(t, state)
+	child := state["dlg_child"]
+	rejected := finishedEvent("dlg_child", 1, OutcomeStopped, DispositionTerminalError, "dlg_child/delivery/1", stoppedPacket())
+	rejected.RunFinished.ObserverCallbackDelivered = true
+	err := Apply(state, rejected)
+	if err == nil || !strings.Contains(err.Error(), "observer callback") {
+		t.Fatalf("Apply error = %v, want observer callback rejection", err)
+	}
+	if got := stateJSON(t, state); got != before {
+		t.Fatalf("rejected event changed state:\n got %s\nwant %s", got, before)
+	}
+	if state["dlg_child"] != child {
+		t.Fatalf("rejected event replaced the delegate aggregate")
+	}
+	if err := Apply(state, createdEvent("dlg_parent", "")); err == nil {
+		t.Fatal("Apply accepted a duplicate created event")
+	}
+	if got := stateJSON(t, state); got != before {
+		t.Fatalf("rejected created event changed state:\n got %s\nwant %s", got, before)
+	}
+}
+
+// TestApplyRejectsNilAggregateWalkedBySubtreeEvents pins that the event kinds
+// whose apply functions walk every aggregate reject a state holding a nil
+// entry instead of dereferencing it, even when the nil entry is outside the
+// event's subtree.
+func TestApplyRejectsNilAggregateWalkedBySubtreeEvents(t *testing.T) {
+	for _, event := range []Event{
+		{Kind: EventDelegateSubtreeStopRequested, DelegateID: "dlg_parent", Seq: 3, SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_parent"}},
+		{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_parent", ResumabilityClosed: &ResumabilityClosed{Reason: "isolation_disposed"}},
+		{Kind: EventDelegateSubtreeStopCompleted, DelegateID: "dlg_parent", SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 3}},
+	} {
+		t.Run(string(event.Kind), func(t *testing.T) {
+			state := applyEvents(t, createdEvent("dlg_parent", ""), createdEvent("dlg_other", ""))
+			state["dlg_nil"] = nil
+			err := Apply(state, event)
+			if err == nil || !strings.Contains(err.Error(), `delegate "dlg_nil" aggregate is nil`) {
+				t.Fatalf("Apply error = %v, want nil aggregate rejection", err)
+			}
+		})
+	}
 }

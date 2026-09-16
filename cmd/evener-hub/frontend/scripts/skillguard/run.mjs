@@ -25,6 +25,7 @@ import { mkdtempSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import {
   chromeProfileEnvironment,
   chromeProfileIsolationArgs,
@@ -178,7 +179,7 @@ function parseArgs(argv) {
   return out;
 }
 
-class Driver {
+export class Driver {
   constructor({ url, artifactDir, controlPath, milestonePath }) {
     this.url = url;
     this.artifactDir = artifactDir;
@@ -2127,7 +2128,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Only run the guard when invoked as the entrypoint: importing this module
+// (the unit test beside it) must not start Chrome.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

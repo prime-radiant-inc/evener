@@ -62,6 +62,9 @@ const (
 	MethodEvenerTasksList                = "evener/tasks/list"
 	MethodEvenerJobsList                 = "evener/jobs/list"
 	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerDaemonList               = "evener/daemon/list"
+	MethodEvenerDaemonRetire             = "evener/daemon/retire"
+	MethodEvenerDaemonStatus             = "evener/daemon/status"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
@@ -1896,6 +1899,9 @@ type ThreadCompactStartParams struct {
 
 type ThreadForceStopParams struct {
 	Ref string `json:"ref"`
+	// ExpectedDaemon carries the exact ownership evidence the resident UI
+	// resolved for this daemon; nil preserves existing ref-only callers.
+	ExpectedDaemon *DaemonIdentity `json:"expectedDaemon,omitempty"`
 }
 
 type ThreadShutdownParams struct {
@@ -3626,6 +3632,12 @@ type SettingsHubOverview struct {
 	// PastIndex is nil only when no past-session index is configured
 	// (cfg.Past == nil) — e.g. a minimal/test hub config.
 	PastIndex *SettingsPastIndexOverview `json:"pastIndex,omitempty"`
+	// DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
+	// for spawned daemons, in integer milliseconds; zero means automatic
+	// retirement is disabled. No omitempty: zero is a real configured state,
+	// not "unknown". Source: cfg.DaemonIdleTimeout (hub.toml
+	// daemon_idle_timeout, default 1h).
+	DaemonIdleTimeoutMillis int64 `json:"daemonIdleTimeoutMillis"`
 }
 
 // SettingsPastIndexOverview describes the past-session SQLite index. Settings

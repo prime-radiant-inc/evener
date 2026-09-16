@@ -18,12 +18,19 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type { AppwireClientLike, LaunchConfigLayer, PathValidateResponse, PluginEntry } from "@evener/appwire-client";
+import type {
+  AppwireClientLike,
+  HostNotificationParams,
+  LaunchConfigLayer,
+  PathValidateResponse,
+  PluginEntry,
+} from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { createMarketplacesStore, type MarketplacesState } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectionStore, onConnectionNotification } from "./connection";
+import { isLocalHost } from "./hostRouting";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
@@ -253,8 +260,45 @@ onConnectionNotification((n) => {
   if (n.method === "evener/plugin/updated") {
     extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
     schedulePluginRefetch();
-  } else if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
+  } else if (n.method === "evener/launch/updated") {
+    scheduleLaunchLayerRefetch();
+  } else if (n.method === "evener/host/notification") {
+    handleHostNotification(n.params);
+  }
 });
+
+// handleHostNotification consumes a REMOTE host's config notification, which the
+// hub re-emits to this browser wrapped in evener/host/notification tagged with
+// the host that owns it (cmd/evener-hub/app_host_admin.go's
+// relayHostNotifications, broadcast to every client for every subscribed host,
+// over the remoteHostConfigNotifications allowlist that names both
+// evener/plugin/updated and evener/launch/updated).
+//
+// The plugin half is load-bearing for the spawn form. pluginRevision is the
+// revision the HOST-SCOPED plugin consumers key their requests on:
+// usePluginPreview and useSpawnSlashCatalog build their logical key from it and
+// then issue their own evener/plugin/preview / evener/spawn/slashCatalog against
+// the SELECTED host through evener/host/request. Without the bump a plugin
+// enabled or disabled on that host is never observed, so the form keeps
+// rendering the pre-change list - and a plugin reconciled from that stale
+// preview is sent as a thread/start launchOverride the host no longer has. The
+// bump therefore happens for a wrapped update exactly as it does for the
+// controller's own (component 07b review, round three).
+//
+// The refetches are a different matter: evener/plugin/list and
+// evener/launch/getLayer read THIS hub over the plain connection, so they stay
+// gated to a notification the controller emitted itself. A remote host's change
+// is not evidence about this hub's plugins, and its launch layer has no
+// host-scoped consumer here at all - the only launchLayer readers are the
+// controller-scoped settings sections (dirListSetting/mcp).
+function handleHostNotification(n: HostNotificationParams): void {
+  if (n.method === "evener/plugin/updated") {
+    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
+    if (isLocalHost(n.host)) schedulePluginRefetch();
+  } else if (n.method === "evener/launch/updated") {
+    if (isLocalHost(n.host)) scheduleLaunchLayerRefetch();
+  }
+}
 
 // resetExtensionsStoreForTests resets the store to its initial state,
 // including the module-private wiring/debounce bookkeeping above.

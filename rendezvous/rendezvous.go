@@ -64,7 +64,13 @@ func defaultDir(userHomeDir func() (string, error)) string {
 // Write creates dir if necessary and writes <dir>/<pid>.json atomically.
 // Returns the absolute path that was written.
 func Write(dir string, entry Entry) (string, error) {
-	return writeFS(afero.NewOsFs(), dir, entry)
+	var path string
+	err := withOwnershipLock(dir, entry.PID, func() error {
+		var err error
+		path, err = writeFS(afero.NewOsFs(), dir, entry)
+		return err
+	})
+	return path, err
 }
 
 // writeFS is Write against an injected afero.Fs. Production passes
@@ -104,7 +110,9 @@ func writeFSWithMarshal(fs afero.Fs, dir string, entry Entry, marshal func(any) 
 
 // Remove deletes <dir>/<pid>.json. A missing file is not an error.
 func Remove(dir string, pid int) error {
-	return removeFS(afero.NewOsFs(), dir, pid)
+	return withOwnershipLock(dir, pid, func() error {
+		return removeFS(afero.NewOsFs(), dir, pid)
+	})
 }
 
 // removeFS is Remove against an injected afero.Fs (see writeFS).

@@ -215,6 +215,11 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefAskUser(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			release, err := s.beginRetirementMutation("question")
+			if err != nil {
+				return nil, err
+			}
+			defer release()
 			_ = env
 			if err := deps.abort(ctx); err != nil {
 				return nil, err

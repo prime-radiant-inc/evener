@@ -48,6 +48,11 @@ const (
 // open timer already scheduled for a top-level session) or explicitly (a
 // dedicated one-shot for a restored subagent coordinator with no P3 pass).
 func (s *Session) resumeReLockOwnLanes() {
+	work, admitted := s.beginEnvWork("resume-lane-relock")
+	if !admitted {
+		return
+	}
+	defer s.endEnvWork(work)
 	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
 		return // env swapping / local git worktrees are a local-env-only feature
@@ -183,6 +188,17 @@ func (s *Session) armLaneReLockRetryTimer() {
 // either registers before close observes it (and close joins it) or sees closing
 // and bails.
 func (s *Session) fireLaneReLockRetry() {
+	work, ok := s.beginEnvWork("lane-relock-retry")
+	if !ok {
+		// Admission was refused for this one-shot firing (a real TryClaim
+		// preparing window, or close). Do not consume the only firing: re-arm
+		// the existing retry timer so a later firing still retries the retained
+		// pending re-lock. The arming helper is closing-gated, so a
+		// stop-during-close stays stopped.
+		s.armLaneReLockRetryTimer()
+		return
+	}
+	defer s.endEnvWork(work)
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()

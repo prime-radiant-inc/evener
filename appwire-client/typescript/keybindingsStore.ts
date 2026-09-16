@@ -259,11 +259,15 @@ export function fromWireOverrides(value: unknown): KeybindingsOverrides | undefi
   // loadError rides GET only: the hub's persisted state failed to load and
   // rules carries the shipped-default fallback. String-or-absent.
   if (candidate.loadError !== undefined && typeof candidate.loadError !== "string") return undefined;
+  // An action id is a non-empty string; a chord is null (an unbind) or a
+  // non-empty string. Empty strings are rejected at the boundary for both
+  // hosts: neither names an action or a chord, and letting one through would
+  // reach the registry as a rule that can only fail validation.
   for (const rule of candidate.rules) {
     if (typeof rule !== "object" || rule === null || Array.isArray(rule)) return undefined;
     const entry = rule as Record<string, unknown>;
-    if (typeof entry.action !== "string" || !(entry.chord === null || typeof entry.chord === "string"))
-      return undefined;
+    if (typeof entry.action !== "string" || entry.action.length === 0) return undefined;
+    if (!(entry.chord === null || (typeof entry.chord === "string" && entry.chord.length > 0))) return undefined;
   }
   return value as KeybindingsOverrides;
 }
@@ -866,7 +870,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       return;
     }
     const payload = fromWireOverrides(notification.params);
-    if (payload === undefined) return;
+    if (payload === undefined) {
+      // The hub says something changed and this build cannot read what: the
+      // change is not dropped, the store reads the truth itself. Auto-refresh
+      // is what both hosts do here - never a "refresh to inspect" prompt.
+      void refreshFor(activeEpoch);
+      return;
+    }
     try {
       applyHubOverrides(payload);
     } catch (error) {
