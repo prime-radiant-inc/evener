@@ -893,8 +893,16 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 //
 // A NewName re-keys the entry, follows the default pointer, and then moves
 // the stored key and OAuth record (moveCredentials); it is refused for an
-// implicit instance, an invalid name, a name any instance already has, and a
-// name still holding a credential of its own (credentialsUnder).
+// invalid name, a name any instance already has, and a name still holding a
+// credential of its own (credentialsUnder).
+//
+// An instance with no authored entry renames like any other: the rename
+// authors the entry under the new name, pinning the base it was resolving
+// against. For an instance a UI credential created (a signed-in Codex record,
+// a stored key) that moves the whole instance, because the credential is a
+// file under the old name. For one the environment supplies it does not:
+// nothing in the rename can move a shell variable or the ADC file, so the old
+// row stays alongside the new one.
 //
 // Refusals follow Create's convention (#717/#748): the ones that blame the
 // fields the caller sent — an unknown name, an invalid vars key, an edit
@@ -966,9 +974,6 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	newName := strings.TrimSpace(params.NewName)
 	renaming := newName != "" && newName != name
 	if renaming {
-		if !authored {
-			return appwire.InvalidParams(fmt.Sprintf("instance %q comes from the environment and cannot be renamed", name))
-		}
 		if !registry.ValidInstanceName(newName) {
 			return appwire.InvalidParams(fmt.Sprintf("invalid instance name %q (lowercase, no slash)", params.NewName))
 		}
@@ -1169,11 +1174,31 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	return nil
 }
 
-// Remove deletes an authored instance, its stored key and its OAuth record.
-// An instance that exists from the environment has no entry to delete, so the
-// refusal says what to unset instead (spec §5.1). A name that resolves to no
-// instance follows Create and Edit's convention (#717/#748): the caller sent
-// it, so it comes back as appwire.InvalidParams.
+// environmentBacked reports whether an instance owes its existence to the
+// host's environment rather than to a credential the user added through the
+// UI. The two differ in what a removal can achieve: a stored key and a
+// signed-in Codex record are files under the instance name, so deleting them
+// takes the instance with them, while an API-key variable, the ADC file and a
+// keyless local endpoint come back with the host - the row would be re-derived
+// by the reload right after. The credential source is the discriminator, not
+// `implicit` alone: a curated provider is implicit whenever no providers.toml
+// entry shadows it, which includes the account a user signed in to
+// (client-side parity: fromEnvironment in the AppWire package's
+// credentialLabels).
+func environmentBacked(inst registry.Instance) bool {
+	if !inst.Implicit {
+		return false
+	}
+	return inst.CredentialSource != "store" && inst.CredentialSource != "oauth"
+}
+
+// Remove deletes an instance, its stored key and its OAuth record. An instance
+// that exists from the environment has no entry to delete and would come
+// straight back, so it is refused with a message saying what to unset instead
+// (spec §5.1); one the user credentialed through the UI has no entry either,
+// and there the credential cleanup is the removal (environmentBacked). A name
+// that resolves to no instance follows Create and Edit's convention
+// (#717/#748): the caller sent it, so it comes back as appwire.InvalidParams.
 func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
 		return err
@@ -1208,7 +1233,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	if inst.Implicit {
+	if environmentBacked(inst) {
 		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
 	}
 
@@ -1270,16 +1295,31 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
 	}
 
+	// An instance the user credentialed through the UI has no authored entry:
+	// the credential cleanup above IS the removal, and writing the absent file
+	// back as an empty one would leave a providers.toml the user never had. The
+	// reload below is what re-derives the instance set either way.
+	_, authored := before.Providers[name]
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.
 	if l.Default == name {
 		l.Default = ""
 	}
-	if err := c.writeLoadable(l); err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+	if authored {
+		if err := c.writeLoadable(l); err != nil {
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+		}
 	}
 	if err := c.reg.Reload(); err != nil {
+		if !authored {
+			// Nothing was written, so there is no file to put back: restoring
+			// the credentials this call deleted is the whole rollback, and a
+			// write here would create the providers.toml the guard above
+			// exists to avoid.
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+				fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+		}
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
 		// load (#711). A failed reload drops the registry to implicit-only and

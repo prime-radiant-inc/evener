@@ -163,12 +163,16 @@ clients drop their cached credential state for the old name.
 unchanged. Body, top to bottom:
 
 1. Header row as today: `StatusDot`, "★ default" and "from environment"
-   chips.
+   chips. The last follows §5.1: it marks an instance the host's environment
+   supplies, not one whose credential the user added through the UI
+   (amended 2026-09-16).
 2. The form, prefilled from the `InstanceEntry`:
-   - Name (`Input`). Read-only with a "from environment" note on implicit
-     instances. When dirty, an inline note under the field: "Launch config
-     and past sessions that reference `<old>` keep the old name." No
-     confirm dialog.
+   - Name (`Input`), editable on every instance. When dirty, an inline note
+     under the field: "Launch config and past sessions that reference
+     `<old>` keep the old name." On an environment-backed instance the note
+     adds that the rename creates a new instance and leaves that one in
+     place, because nothing in the rename can move a shell variable or the
+     ADC file (amended 2026-09-16). No confirm dialog.
    - Base provider: a read-only meta row (`providerId`); re-basing is not
      supported by the edit RPC and is not added.
    - Base URL (`Input`). Emptying a field that had a value sends
@@ -198,8 +202,10 @@ unchanged. Body, top to bottom:
 4. Below the form, unchanged from today: the credential layers block, Test
    credentials, Set/Replace key, Set/Replace credential JSON, Sign in… /
    Refresh OAuth, ★ make default.
-5. Danger zone, unchanged: Clear stored key, Clear, Remove, all
-   ConfirmDialog-gated.
+5. Danger zone: Clear stored key, Clear, Remove, all ConfirmDialog-gated.
+   Remove follows §5.1 — offered for an authored instance and for an
+   implicit one the user credentialed through the UI, withheld from an
+   instance the environment supplies (amended 2026-09-16).
 
 `AddInstanceDialog` gains the same Protocol and Surface selects
 (`InstanceCreateParams` already accepts both), placed after Base URL.
