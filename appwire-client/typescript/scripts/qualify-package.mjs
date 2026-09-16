@@ -485,8 +485,34 @@ const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: 
 const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;`,
-      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;`,
+const outboxStorage: MutationOutboxStorage = {
+  enqueueIntent: () => Promise.resolve(outboxRecord),
+  listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
+  getOutbox: () => Promise.resolve(undefined),
+  getOptimistic: () => Promise.resolve(undefined),
+  listOptimistic: () => Promise.resolve([]),
+  getRecovery: () => Promise.resolve(undefined),
+  nextDispatchable: () => Promise.resolve(undefined),
+  markAttempted: () => Promise.resolve(false),
+  markUnknown: () => Promise.resolve(false),
+  settleReceipt: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(false),
+  restoreProvenAbsent: () => Promise.resolve([]),
+  transferToRecovery: () => Promise.resolve(undefined),
+};
+const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
+const reason: MutationDiscoveryReason = "enqueue";
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
+void outbox; void reason;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+const channel: client.MutationOutboxChannel = {
+  postMessage: () => undefined,
+  close: () => undefined,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
+void storage; void channel;`,
       // ownClientId is memoized per process (one client, one identity), so
       // setMutationClientIdentityForTests resets it before the probe: two
       // reads against the same fake storage return the same identity, that
@@ -500,6 +526,67 @@ assert.equal(firstId, secondId);
 assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(client.isOwnMutationRecord({}), true);
+// The outbox over a memory storage port: no channel, no lifecycle target and
+// no timer, which is exactly what a host without them passes. One enqueue
+// commits through the port and announces the ref it landed under, and stop()
+// awaits the discovery it queued — all of it synchronous in shape (one promise
+// chain, no timers), so a CommonJS consumer with no top-level await can prove
+// it.
+const enqueued = [];
+const discovered = [];
+const memoryOutbox = new client.MutationOutbox(
+  {
+    enqueueIntent(intent) {
+      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+      enqueued.push(record);
+      return Promise.resolve(record);
+    },
+    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+    getOutbox: () => Promise.resolve(undefined),
+    getOptimistic: () => Promise.resolve(undefined),
+    listOptimistic: () => Promise.resolve([]),
+    getRecovery: () => Promise.resolve(undefined),
+    nextDispatchable: () => Promise.resolve(undefined),
+    markAttempted: () => Promise.resolve(false),
+    markUnknown: () => Promise.resolve(false),
+    settleReceipt: () => Promise.resolve(false),
+    settleApplied: () => Promise.resolve(false),
+    restoreProvenAbsent: () => Promise.resolve([]),
+    transferToRecovery: () => Promise.resolve(undefined),
+  },
+  {
+    isReady: () => true,
+    onDiscover: (targetRefs, reason) => {
+      discovered.push({ targetRefs, reason });
+    },
+  },
+);
+memoryOutbox
+  .start()
+  .then(() =>
+    memoryOutbox.enqueueIntent({
+      targetRef: "local:thread-1",
+      method: "turn/queue",
+      payload: {},
+      attachments: [],
+      optimisticDisplay: null,
+    }),
+  )
+  .then((record) => {
+    assert.equal(record.clientMutationId, "cmid-1");
+    return memoryOutbox.stop();
+  })
+  .then(() => {
+    assert.deepEqual(
+      discovered.map((entry) => entry.reason),
+      ["startup", "enqueue"],
+    );
+    assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 `,
     },
   };

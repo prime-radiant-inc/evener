@@ -85,6 +85,7 @@
     "state/extensions/index.ts",
     "state/extensions/marketplaces.ts",
     "state/mutation/index.ts",
+    "state/mutation/outbox.ts",
     "state/mutation/records.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
