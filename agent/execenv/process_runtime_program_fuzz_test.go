@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -404,8 +405,12 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	if err != nil || grep != "one\ntwo" {
 		t.Fatalf("Grep ripgrep success = %q, %v", grep, err)
 	}
-	if request := factory.command("grep-success").request; !strings.Contains(request, "'x; touch never'") || !strings.Contains(request, "'*.go'") {
-		t.Fatalf("Grep did not shell-quote adversarial arguments: %q", request)
+	// Grep hands ripgrep an argument vector directly (never a shell command
+	// string), so the adversarial pattern and glob filter must arrive as whole,
+	// byte-identical argv elements rather than POSIX-quoted shell text.
+	if grep := factory.command("grep-success"); grep.kind != "argv" ||
+		!slices.Contains(grep.args, "x; touch never") || !slices.Contains(grep.args, "*.go") {
+		t.Fatalf("Grep did not pass adversarial arguments as argv: kind=%q args=%q", grep.kind, grep.args)
 	}
 	grep, err = env.Grep(context.Background(), "nothing", "sub", "", false, 1, "")
 	if err != nil || grep != "" {

@@ -59,6 +59,8 @@ export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+export type { RejectableFile } from "./attachmentLimits";
+export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -67,6 +69,22 @@ export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
+export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
+export {
+  activeSourceLabel,
+  credentialLayers,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_ERROR,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  groupByProvider,
+  isEndpointConflict,
+  keylessByDesign,
+  safeCredentialTestMessage,
+  safeCredentialTestResult,
+  styleInfoText,
+  unconfiguredLabel,
+} from "./credentialLabels";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {
@@ -110,6 +128,7 @@ export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
   ItemImage,
@@ -123,6 +142,7 @@ export { SYSTEM_PRELUDE_TURN_ID } from "./model";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
+export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";

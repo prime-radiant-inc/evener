@@ -493,6 +493,56 @@
   color: var(--ink-mid);
 }
 
+/* The atomic tail unit both glyph-bearing lines render (ToolRow.tsx's
+ * TailUnit): the line's final word and the glyphs that trail it ride inside
+ * ONE inline-flex unit - the intent line's .intentTail, the expanded summary
+ * line's .summaryTail, same declarations under each line's own name so its
+ * markup reads its own vocabulary. When the line runs out of room the unit
+ * moves to the next line as a whole, so the glyph can never wrap to a line
+ * by itself - the bug report's screenshot had a read_file row's arrow
+ * sitting alone under its wrapped intent. Same mechanism as
+ * notificationcard.module.css's .secondaryTail. max-width + the text child's
+ * overflow-wrap keep a pathological final word breaking INSIDE the unit
+ * instead of overflowing the row; align-items: flex-end then seats the
+ * chevron on the text's last internal line. */
+.intentTail,
+.summaryTail {
+  display: inline-flex;
+  align-items: flex-end;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.intentTailText,
+.summaryTailText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The "Open beside" control inside the tail unit must SEAT on the unit's
+ * last line like the chevron does: the base .summaryTrailing's
+ * align-self: center would center it across the unit's full height when the
+ * final word wraps internally (overflow-wrap: anywhere), seating it between
+ * text lines instead of on the last one. One line box tall and bottom
+ * aligned - the chevron's own seating, and NotificationCard's .openTrailing
+ * precedent - with the hit slot centered in it. The base rule's
+ * align-self: center keeps serving the collapsed .clamped line, which is
+ * single-line and centers correctly. */
+.summaryTail .summaryTrailing {
+  align-self: flex-end;
+  height: 1lh;
+  align-items: center;
+}
+
+/* One line box tall, glyph centered in it, so the chevron seats level with
+ * the words of the line it shares (see widgets/disclosure's own .chevron for
+ * the same 1lh pinning rationale). */
+.intentTail .chevron,
+.summaryTail .chevron {
+  height: 1lh;
+  align-items: center;
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .chevron > svg {
     transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);

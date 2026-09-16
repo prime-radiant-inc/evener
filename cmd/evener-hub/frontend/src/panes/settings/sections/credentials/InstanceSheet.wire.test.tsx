@@ -6,11 +6,11 @@
 // evener/instance/list handler and re-verifies the corpus on every run.
 
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { hubInstance, hubInstanceEntries } from "@evener/appwire-client/testing/hubWireFixtures";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
-import { hubInstance, hubInstanceEntries } from "./hubWireFixtures";
 import { InstanceSheet } from "./InstanceSheet";
 
 function renderHubInstance(name: string) {
