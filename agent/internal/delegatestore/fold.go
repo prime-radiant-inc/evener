@@ -18,7 +18,12 @@ func Fold(events []Event) (State, error) {
 		if event.Seq != uint64(i+1) {
 			return nil, fmt.Errorf("delegate event sequence %d, want %d", event.Seq, i+1)
 		}
-		if err := Apply(state, event); err != nil {
+		if err := validateEventEnvelope(event); err != nil {
+			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
+		}
+		// This state is unpublished; any failure discards it instead of rolling
+		// back a transaction by cloning every aggregate for every event.
+		if err := applyWithProjectionRevisions(state, event); err != nil {
 			return nil, fmt.Errorf("delegate event %d: %w", event.Seq, err)
 		}
 	}
@@ -72,6 +77,50 @@ func Apply(state State, event Event) error {
 		}
 		aggregate.ProjectionRevision = original.ProjectionRevision
 		if !reflect.DeepEqual(before[id], aggregate.publicProjection()) {
+			aggregate.ProjectionRevision++
+		}
+	}
+	return nil
+}
+
+// applyWithProjectionRevisions mutates privately owned state after envelope
+// validation. Apply owns a transaction copy; Fold owns its unpublished result.
+// Only the aggregates the event can reach are projected, normalized and
+// revisioned, exactly as Apply's touched-only transaction touches them; every
+// other aggregate keeps its pointer, projection and revision untouched.
+// Previous projections come from the state before the event: cloning may
+// normalize caller-supplied empty descriptor slices, which itself changes the
+// projection.
+func applyWithProjectionRevisions(state State, event Event) error {
+	touched := touchedDelegates(state, event)
+	before := make(map[string]publicProjection, len(touched))
+	for _, id := range touched {
+		aggregate, existed := state[id]
+		if !existed {
+			continue
+		}
+		if aggregate == nil {
+			return fmt.Errorf("delegate %q aggregate is nil", id)
+		}
+		before[id] = aggregate.publicProjection()
+		// Preserve the empty-slice representation Apply's transaction copy gives
+		// every aggregate it clones: pending_deliveries is omitempty, so nil and
+		// empty serialize identically, but they differ under reflect.DeepEqual.
+		if aggregate.PendingDeliveries == nil {
+			aggregate.PendingDeliveries = make([]PendingDelivery, 0)
+		}
+	}
+	if err := applyEvent(state, event); err != nil {
+		return err
+	}
+	for _, id := range touched {
+		aggregate := state[id]
+		previous, existed := before[id]
+		if !existed {
+			aggregate.ProjectionRevision = 1
+			continue
+		}
+		if !reflect.DeepEqual(previous, aggregate.publicProjection()) {
 			aggregate.ProjectionRevision++
 		}
 	}
