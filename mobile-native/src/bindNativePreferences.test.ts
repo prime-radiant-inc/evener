@@ -70,7 +70,7 @@ describe("native preferences connection binding", () => {
 		f.connection.resolve(f.hello);
 		await f.connection.promise;
 		expect(f.models).toHaveLength(1);
-		expect(f.notifications.size).toBe(1);
+		expect(f.notifications.size).toBeGreaterThan(0);
 		f.dispose();
 		expect(f.notifications.size).toBe(0);
 	});
@@ -80,9 +80,12 @@ describe("native preferences connection binding", () => {
 		f.connection.resolve(f.hello);
 		await f.connection.promise;
 		expect(f.models).toHaveLength(1);
+		// One model's worth of subscriptions (each domain store holds its own);
+		// a replacement model releases the old one's before taking its own.
+		const perModel = f.notifications.size;
 		f.ready({ ...f.hello });
 		expect(f.models).toHaveLength(2);
-		expect(f.notifications.size).toBe(1);
+		expect(f.notifications.size).toBe(perModel);
 		await expect(f.models[0].editTranscript({} as never)).rejects.toThrow();
 		f.dispose();
 	});

@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
+	KeybindingDraftCheckpoint,
+	KeybindingDraftStorage,
 	KeybindingsOverrides,
 	KeybindingsRule,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import type {
-	KeybindingDraftCheckpoint,
-	KeybindingDraftStorage,
-} from "./keybindingDraftRepository";
 import { NativePreferences } from "./nativePreferences";
 
 const getMethod = "evener/settings/keybindings/get";

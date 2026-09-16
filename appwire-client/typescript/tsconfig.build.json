@@ -80,6 +80,7 @@
     "keybindingDisplay.ts",
     "keybindingOverrides.ts",
     "keybindingRegistry.ts",
-    "keybindingValidation.ts"
+    "keybindingValidation.ts",
+    "keybindingsStore.ts"
   ]
 }

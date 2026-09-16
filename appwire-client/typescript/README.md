@@ -55,7 +55,14 @@ names neither a store library nor a parser; that triple is
 `createFrameworkFreeStore`, the base every shared store here is built on; the
 disclosure store both transcripts keep a row's open/closed choice in across a
 remount (`createDisclosureStore()`, the triple plus store-bound actions, read
-reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
+reactively through the `isDisclosureOpenIn` selector); the keybindings
+overrides store both apps' shortcut settings run on
+(`createKeybindingsStore({ client, registry?, characterKeyTriggers?, drafts? })`:
+one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
+into the host's registry as a delta when it has one, with a checkpointed draft
+editor over an injected storage port for a host that edits offline; the host
+drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
+`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired

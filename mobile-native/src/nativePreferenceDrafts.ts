@@ -1,7 +1,7 @@
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
-} from "./keybindingDraftRepository";
+} from "@evener/appwire-client";
 import type {
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
