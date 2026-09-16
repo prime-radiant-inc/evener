@@ -159,7 +159,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 			return []byte(link + "\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "curl -fsSL"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
 		default:
@@ -257,7 +257,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
-		case strings.Contains(joined, "curl -fsSL"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this

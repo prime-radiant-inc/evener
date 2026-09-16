@@ -837,11 +837,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// discovered install) is the binary the host actually runs, and probing the
 	// bare `evener` instead made version auto-match fail and re-deploy on every
 	// reconnect.
-	if strings.TrimSpace(host.EvenerPath) == "" {
-		if p := m.resolvedTarget(host.Name); p != "" {
-			host.EvenerPath = p
-		}
-	}
+	m.applyResolvedTarget(&host)
 	// Refuse an unusable hub address before any ssh command runs: the probe and
 	// restart paths below would otherwise address (and possibly kill) whatever
 	// holds the default port, or poll a port the bridge never dials.
@@ -857,6 +853,15 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if err != nil {
 		return nil, err
 	}
+	// Preflight may have discovered the executable during THIS attempt (the
+	// installer default ~/.local/bin/evener, off the non-interactive PATH) and
+	// recorded it. Re-apply it before anything addresses the binary again: the
+	// deploy/restart phases and, crucially, attach → channelArgv otherwise build
+	// the bridge from an empty evener_path, and evenerCommand falls back to the
+	// bare word `evener`, which the host cannot resolve. The first attach to an
+	// already-healthy host at that location then failed with command-not-found
+	// and only recovered on a later attempt (round eleven).
+	m.applyResolvedTarget(&host)
 
 	expected := m.opts.controllerVersion()
 	// One probe of the hub that is actually RUNNING. ok is false when nothing
@@ -883,12 +888,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	hubPresent := runningKnown
 	if !hubPresent && m.deployRequired(host.Name, facts, expected) {
 		// Bound the hub-presence probe like every other phase: hubIsPresent issues
-		// real ssh commands (systemctl list-units / launchctl list, then lsof) and
-		// otherwise inherits the attempt context, which for a supervisor reconnect is
-		// only WithCancel(m.baseCtx) with no deadline. A remote command that hangs
-		// (systemctl blocked on a stuck dbus, lsof stuck on NFS) would then hold the
-		// per-host lock forever and stall every later Ensure and reconnect for the
-		// host — exactly what attemptLimit exists to prevent.
+		// real ssh commands (systemctl list-units / launchctl list, then the port
+		// probe — lsof, ss, or the host's TCP tables) and otherwise inherits the
+		// attempt context, which for a supervisor reconnect is only
+		// WithCancel(m.baseCtx) with no deadline. A remote command that hangs
+		// (systemctl blocked on a stuck dbus, a probe stuck on NFS) would then hold
+		// the per-host lock forever and stall every later Ensure and reconnect for
+		// the host — exactly what attemptLimit exists to prevent.
 		presentCtx, cancelPresent := context.WithTimeout(ctx, m.opts.attemptLimit())
 		present, err := m.hubIsPresent(presentCtx, host, facts)
 		cancelPresent()
@@ -1008,14 +1014,15 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 // failure instead of attaching nothing.
 func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
 	port := hubPort(m.hostAddr(host))
-	pids, err := m.hubListenerPIDs(ctx, host, port)
+	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
 		return err
 	}
-	if len(pids) > 0 {
+	if len(lp.pids) > 0 || lp.present {
 		// Something already owns the address, even if it did not answer the health
 		// probe. Starting a second hub would race hub.lock; leave it to the attach
-		// attempt.
+		// attempt. An unnamed listener counts too: the port is held even when the
+		// host's probes cannot say by which process.
 		return nil
 	}
 
@@ -1208,10 +1215,13 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	client.Start(m.baseCtx)
 
 	// Bound the handshake by initTimeout, never by the caller's or the attempt's
-	// deadline: both Ensure and reconnectOnce hand attach a context that always
-	// carries the attempt limit (default 70s), so the old deadline check meant a
-	// hung Initialize ran to that limit instead of stopping at initTimeout
-	// (default 30s). WithTimeout keeps whichever deadline is earlier.
+	// deadline: neither caller imposes the attempt limit on this path. Ensure
+	// hands ensureOnce plain context.WithCancel (so an in-flight attempt cannot
+	// outlive the manager), and reconnectOnce passes the supervisor's own
+	// cancellable context, which carries no deadline either — so a hung
+	// Initialize stops at initTimeout (default 30s) rather than running to an
+	// outer attemptLimit (default 70s) the old comment still described.
+	// WithTimeout keeps whichever deadline is earlier.
 	initCtx, cancel := context.WithTimeout(ctx, m.opts.initTimeout())
 	defer cancel()
 
@@ -1728,6 +1738,23 @@ func (m *Manager) resolvedTarget(name string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.resolvedTargets[name]
+}
+
+// applyResolvedTarget fills host.EvenerPath from the executable path this
+// Manager already resolved for the host, when the registry configured none. A
+// configured evener_path always wins. ensureOnce applies it twice for one
+// reason: preflight can discover and record the installer-default binary during
+// the very attempt that needs to address it (probeInstallerDefaultExecutable →
+// setResolvedTarget), and a host.EvenerPath that stays empty there makes
+// channelArgv build the bridge from the bare word `evener`, which a
+// non-interactive PATH need not carry.
+func (m *Manager) applyResolvedTarget(host *hostreg.Host) {
+	if strings.TrimSpace(host.EvenerPath) != "" {
+		return
+	}
+	if p := m.resolvedTarget(host.Name); p != "" {
+		host.EvenerPath = p
+	}
 }
 
 // setResolvedTarget records the executable path this Manager resolved for name.

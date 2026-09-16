@@ -206,14 +206,17 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 // EVENER_SHARE_BINDIR so the symlink lands at evener_path.
 func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
 	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
-	// The installer is fetched to a temp file and curl's status checked before it
-	// runs; a `curl … | sh` pipeline would report sh's status and hide a failed
-	// download.
-	if !strings.Contains(got, "curl -fsSL "+installScriptURL+" -o \"$tmp\" && env ") {
-		t.Fatalf("installerCommand does not check curl before executing the installer: %q", got)
+	// The script is written to a temp file and the write's status checked before it
+	// runs; a `cat … | sh` pipeline would report sh's status and hide a failed
+	// write, and any fetch here would be a mutable installer.
+	if !strings.Contains(got, "cat > \"$tmp\" && env ") {
+		t.Fatalf("installerCommand does not check the script write before executing the installer: %q", got)
 	}
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
-		t.Fatalf("installerCommand still pipes the download into sh: %q", got)
+		t.Fatalf("installerCommand still pipes the script into sh: %q", got)
+	}
+	if strings.Contains(got, "http") || strings.Contains(got, "curl") {
+		t.Fatalf("installerCommand fetches the installer script instead of streaming the embedded copy: %q", got)
 	}
 	want := "env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
 	if !strings.HasSuffix(got, want) {
@@ -261,7 +264,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "install.sh"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			return []byte(`{"version":"newsha"}`), nil
@@ -289,7 +292,10 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 		if strings.Contains(joined, "EVENER_INSTALL_VERSION=newsha") {
 			t.Fatalf("passed the Git SHA as a release tag: %v", argv)
 		}
-		if strings.Contains(joined, "cat >") {
+		// The push path is identified by its own markers: the installer also writes
+		// the streamed script with `cat > "$tmp"`, so only the byte-count check and
+		// the chmod prove a cross-compile ran.
+		if strings.Contains(joined, "chmod +x") || strings.Contains(joined, "wc -c") {
 			t.Fatalf("cross-compiled despite the installer fallback: %v", argv)
 		}
 	}
@@ -330,7 +336,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "install.sh"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			return []byte(`{"version":"newsha"}`), nil
@@ -1144,7 +1150,7 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
 			return []byte(noListenerMarker + "\n"), nil
-		case strings.Contains(joined, "curl -fsSL"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerRan = true
 			return nil, nil
 		case strings.Contains(joined, "evener_resolve"):
@@ -1206,7 +1212,7 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 			return []byte("/usr/local/bin/evener\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "curl -fsSL"):
+		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
 		default:

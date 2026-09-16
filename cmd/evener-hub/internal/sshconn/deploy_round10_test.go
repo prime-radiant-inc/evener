@@ -63,17 +63,20 @@ func TestRound10PushVerifiesByteCount(t *testing.T) {
 	}
 }
 
-// TestRound10InstallerChecksCurlBeforeExecuting pins the round-ten Medium that
-// `curl … | env … sh` returned sh's exit status, so a failed download looked
-// successful and the post-install probe could misclassify. The installer must be
-// fetched to a temp file and curl's status checked before it runs.
-func TestRound10InstallerChecksCurlBeforeExecuting(t *testing.T) {
+// TestInstallerScriptChecksTheWriteBeforeExecuting pins the round-ten Medium —
+// `… | env … sh` returned sh's exit status, so a failed handoff looked
+// successful and the post-install probe could misclassify — under round eleven's
+// mechanism. The installer is now the embedded script rather than a download
+// (round eleven's High), but the property is unchanged: the script is written to
+// a temp file and only then run, so a truncated or dropped stream cannot
+// half-execute.
+func TestInstallerScriptChecksTheWriteBeforeExecuting(t *testing.T) {
 	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
-		t.Fatalf("installerCommand still pipes the download into sh, masking curl failure: %q", got)
+		t.Fatalf("installerCommand still pipes the script into sh, masking a failed write: %q", got)
 	}
-	if !strings.Contains(got, "curl -fsSL "+installScriptURL+" -o \"$tmp\" && env ") {
-		t.Fatalf("installerCommand does not check curl before executing the installer: %q", got)
+	if !strings.Contains(got, "cat > \"$tmp\" && env ") {
+		t.Fatalf("installerCommand does not check the script write before executing the installer: %q", got)
 	}
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=v1.2.3") {
 		t.Fatalf("installerCommand lost the pinned ref: %q", got)

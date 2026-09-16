@@ -1,7 +1,9 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -534,12 +536,27 @@ func (m *Manager) pushBinary(ctx context.Context, host hostreg.Host, target stri
 	return nil
 }
 
-// installScriptURL is where the installer fallback fetches install.sh on the
-// host: the documented quickstart one-liner
-// (docs/getting-started.md:39-41) pins the repository's main branch. It is
-// fetched on the host, so the fallback needs host network access that the push
-// path does not.
-const installScriptURL = "https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh"
+// installerScript is the installer the fallback runs on the host, compiled into
+// this binary: a byte-for-byte copy of the repository's install.sh, the same
+// file the documented quickstart serves. It is embedded rather than generated
+// (like agent/sandbox's SBPL policies) so it stays auditable as plain shell text
+// and byte-identical across every build.
+//
+// Why a compiled-in copy rather than a URL: the fallback used to download
+// install.sh from the repository's mutable `main` branch and execute it on every
+// remote host. A future branch change, or any compromise of the repository,
+// therefore gained arbitrary code execution on every auto-deployed host, under
+// the controller's ssh identity and with no operator in the loop. The controller
+// binary is the trust anchor instead: its installer copy is reviewed, built, and
+// (for a release) published as part of the same artifact the operator chose to
+// run, and it cannot change under the controller's feet.
+//
+// The copy is kept honest by TestRound11EmbeddedInstallerMatchesTheReviewedScript,
+// which fails whenever it drifts from the repository's install.sh; the fix for a
+// failure is to re-copy the reviewed script, never to loosen the check.
+//
+//go:embed install.sh
+var installerScript []byte
 
 // installerRefFor maps this controller's build channel to the artifact
 // reference install.sh accepts as EVENER_INSTALL_VERSION. install.sh treats that
@@ -601,17 +618,21 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 	return bindir, shareBindir, p, nil
 }
 
-// installerCommand builds the remote command that runs install.sh pinned to
-// ref, installing into bindir/shareBindir when a custom run target is given.
-// The installer runs on the host with the variables passed to `env` (not to
-// curl), and every value is shell-quoted.
+// installerCommand builds the remote command that runs the embedded installer
+// pinned to ref, installing into bindir/shareBindir when a custom run target is
+// given. The script itself arrives on stdin (deployInstaller feeds
+// installerScript), so the host fetches nothing to execute: its only network
+// use is install.sh's own archive and checksums.txt download. The installer runs
+// with the variables passed to `env` (not to sh), and every value is
+// shell-quoted.
 //
-// It fetches install.sh to a temp file and checks curl's status before running
-// it, rather than piping `curl … | sh`: a pipeline returns the LAST command's
-// status, so a failed download — a truncated stream, a 404, a DNS failure —
-// handed sh an empty script that exited 0 and the deploy looked successful,
-// with the post-install probe then misreading the unchanged binary. With the
-// temp file a failed curl short-circuits before sh ever runs.
+// It writes the script to a temp file and runs it only after that write
+// succeeds, rather than feeding it straight to an interpreter: a dropped or
+// truncated ssh stream must not execute half a script, and a pipeline returns
+// the LAST command's status, so `cat … | sh` would report sh's status and hide
+// the write failure. Round ten's property — check the handoff before executing —
+// is preserved; round eleven replaces the download whose status it checked with
+// the embedded copy.
 func installerCommand(ref, bindir, shareBindir string) string {
 	env := "EVENER_INSTALL_VERSION=" + shellQuote(ref)
 	if bindir != "" {
@@ -619,15 +640,15 @@ func installerCommand(ref, bindir, shareBindir string) string {
 	}
 	tmp := "tmp=$(mktemp \"${TMPDIR:-/tmp}/evener-install.XXXXXX\") || exit 1"
 	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
-	return tmp + "; " + cleanup + "; curl -fsSL " + shellQuote(installScriptURL) + " -o \"$tmp\" && env " + env + " sh \"$tmp\""
+	return tmp + "; " + cleanup + "; cat > \"$tmp\" && env " + env + " sh \"$tmp\""
 }
 
 // deployInstaller is the fallback deploy path for a controller with no build
-// source: it runs the installer on the host pinned to the controller's own build
-// channel, then verifies the installed binary is the expected build before any
-// restart or attach. A tag that resolves to a wrong or moved artifact is a failed
-// verification (a terminal ErrVersionMismatch), never a retry of the same pinned
-// ref and never an attach.
+// source: it streams the embedded installer to the host pinned to the
+// controller's own build channel, then verifies the installed binary is the
+// expected build before any restart or attach. A tag that resolves to a wrong or
+// moved artifact is a failed verification (a terminal ErrVersionMismatch), never
+// a retry of the same pinned ref and never an attach.
 func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty)
 	if err != nil {
@@ -650,7 +671,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir)), nil)
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir)), bytes.NewReader(installerScript))
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q installer (%s): %w: %s", ErrDeploy, host.Name, ref, err, tail(out))
 	}

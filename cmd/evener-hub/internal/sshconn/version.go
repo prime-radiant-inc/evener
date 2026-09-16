@@ -431,9 +431,45 @@ func supervisorListingAbsent(out []byte) bool {
 	return false
 }
 
+// systemdUserBusAbsent reports whether a failed `systemctl --user list-units`
+// proves there is no user manager to list, rather than a permission or transport
+// failure. A headless host reached over non-interactive ssh exports no
+// XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS, so the user listing exits nonzero
+// with one of systemd's "Failed to connect to bus" messages; none of
+// supervisorListingAbsent's markers match the newer
+// "$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined" wording. On a
+// host whose system listing named no evener unit — a fresh install, or one
+// stopped by an operator — that failure used to be fatal (round eleven), even
+// though a host with no reachable user bus cannot be running a user unit, so the
+// bare-process path is the only restart such a host can have.
+//
+// A bus that answers with a denial is NOT absent: permission and authentication
+// failures keep the probe fatal, because a user unit may exist and be running
+// where the ssh user simply cannot see it.
+func systemdUserBusAbsent(out []byte) bool {
+	text := string(out)
+	if !strings.Contains(text, "Failed to connect to bus:") &&
+		!strings.Contains(text, "$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined") {
+		return false
+	}
+	for _, denial := range []string{
+		"Permission denied",
+		"Access denied",
+		"Operation not permitted",
+		"Authentication required",
+	} {
+		if strings.Contains(text, denial) {
+			return false
+		}
+	}
+	return true
+}
+
 // detectSupervisor runs the host's supervisor listings. Only a listing that
 // proves the supervisor is absent falls through to the bare-process path; any
-// other failure is surfaced. An ambiguous listing is fatal, not a fallback.
+// other failure is surfaced — except an unreachable systemd user bus, which
+// proves no user unit can be running and falls through as well
+// (systemdUserBusAbsent). An ambiguous listing is fatal, not a fallback.
 //
 // The user listing is consulted only when the system listing named no evener hub
 // unit at all. A headless host reached over non-interactive ssh exports no
@@ -441,7 +477,10 @@ func supervisorListingAbsent(out []byte) bool {
 // exits nonzero with "Failed to connect to bus: ...", which matches none of
 // supervisorListingAbsent's markers; running it unconditionally aborted the
 // restart with ErrRestart even though the system listing had already found the
-// hub's unit, so version auto-match could never repair such a host.
+// hub's unit, so version auto-match could never repair such a host. When the
+// system listing named no unit either, the same failure is the user bus being
+// absent, and refusing there would strand every headless host that has no
+// system unit — including one this controller is trying to provision.
 func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisorSet, error) {
 	switch facts.OS {
 	case "darwin":
@@ -462,7 +501,7 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 		if live, dormant := parseSystemdHubs(sysOut); len(live) == 0 && len(dormant) == 0 {
 			out, userErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnitsUser), nil)
 			if userErr != nil {
-				if !supervisorListingAbsent(out) {
+				if !supervisorListingAbsent(out) && !systemdUserBusAbsent(out) {
 					return supervisorSet{}, fmt.Errorf("%w: host %q systemctl --user list-units: %w: %s", ErrRestart, host.Name, userErr, tail(out))
 				}
 			} else {
@@ -604,8 +643,9 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced h
 	expectedAddr := loopbackAddr(m.hostAddr(host))
 	// Inspect the listener's actual bound address first: it is authoritative,
 	// where the recovered --addr (or its absence) is only a proxy. A probe that
-	// cannot run (no lsof -F support) falls back to the recovered address, so such
-	// a host is no worse off than before.
+	// cannot run — neither lsof nor ss is available, or the tool answered with
+	// something unusable — falls back to the recovered address, so such a host is
+	// no worse off than before.
 	addrs, aerr := m.hubListenerAddrs(ctx, host, pid, port)
 	if aerr == nil && len(addrs) > 0 {
 		owned := false
@@ -677,53 +717,129 @@ func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, 
 	return nil
 }
 
-// noListenerMarker is printed by the port probe when lsof runs and finds no
-// listener. The raw exit status cannot carry that meaning over ssh: a missing
-// lsof, a transport failure, and lsof's own "no match" all reach the controller
-// as empty stdout plus a nonzero exit. The probe translates only lsof's no-match
-// exit into this marker with a zero exit, leaving every other failure to
-// surface as a Run error.
+// noListenerMarker is printed by the port probe when a probe tool ran and found
+// no listener. The raw exit status cannot carry that meaning over ssh: a missing
+// tool, a transport failure, and a tool's own "no match" all reach the
+// controller as empty stdout plus a nonzero exit. The probe translates only a
+// tool's no-match answer into this marker with a zero exit, leaving every other
+// failure to surface as a Run error.
 const noListenerMarker = "__sshconn_no_listener__"
 
-// listenerProbeRemote builds the remote command that lists the PIDs listening on
-// port, printing noListenerMarker and exiting 0 when lsof finds none. lsof exits
-// 1 for "no matching files"; any other exit (lsof absent, a signal, ssh itself
-// failing) is propagated so the caller cannot read it as a free port.
+// listenerPresentMarker is printed by the port probe when a fallback tool proved
+// a listener exists but could not name the process that owns it (ss without
+// process visibility, or the /proc TCP tables). It is a non-empty answer: a
+// caller asking "is the port free?" must read it as held, and findHubPID refuses
+// to restart a listener it cannot identify rather than guessing at a PID.
+const listenerPresentMarker = "__sshconn_listener_present__"
+
+// listenerProbeRemote builds the remote command that reports the listeners on
+// port.
+//
+// lsof names the owning PIDs, but it is not a dependency any host is documented
+// or guaranteed to have: a bare Linux host provisioned by the installer fallback
+// may carry only ss (iproute2) or only the kernel's /proc TCP tables. The probe
+// used to run lsof unconditionally, so a host without it answered with a fatal
+// ErrRestart and could never be provisioned at all (round eleven). The tiers are
+// tried in order and the answer of the first tool that runs is authoritative:
+//
+//  1. lsof, which names the owning PIDs;
+//  2. ss, which names them when the ssh user may see them and otherwise reports
+//     listenerPresentMarker;
+//  3. the /proc/net/tcp{,6} LISTEN rows (Linux), which prove presence without
+//     naming a PID;
+//  4. a nonzero exit with a diagnostic when no probe can run at all — never
+//     noListenerMarker, because collision safety depends on an unprobeable port
+//     being an error rather than a free port.
+//
+// Output contract: one PID per line, listenerPresentMarker, noListenerMarker, or
+// a nonzero exit. A tier whose parser cannot run (no awk, an unreadable file)
+// fails closed instead of falling through to "free".
 func listenerProbeRemote(port string) string {
-	q := shellQuote(":" + port)
-	return "lsof -ti " + q + " -sTCP:LISTEN; s=$?; if [ $s -eq 1 ]; then echo " + noListenerMarker + "; exit 0; fi; exit $s"
+	colonPort := shellQuote(":" + port)
+	return `p=` + shellQuote(port) + `
+if command -v lsof >/dev/null 2>&1; then
+	lsof -ti ` + colonPort + ` -sTCP:LISTEN; s=$?; if [ $s -eq 1 ]; then echo ` + noListenerMarker + `; exit 0; fi; exit $s
+fi
+if command -v ss >/dev/null 2>&1; then
+	out=$(ss -ltnp 2>/dev/null) && {
+		printf '%s\n' "$out" | awk -v port=` + colonPort + ` -v nomatch=` + noListenerMarker + ` -v nopid=` + listenerPresentMarker + ` '
+			$1 == "LISTEN" && index($4, port) == length($4) - length(port) + 1 {
+				hit = 1
+				n = split($0, a, "pid=")
+				for (i = 2; i <= n; i++) { q = a[i]; sub(/[^0-9].*/, "", q); if (q != "") { print q; named = 1 } }
+			}
+			END { if (!hit) print nomatch; else if (!named) print nopid }
+		'
+		s=$?
+		exit $s
+	}
+fi
+if [ -r /proc/net/tcp ]; then
+	hex=$(printf '%04X' "$p")
+	found=0
+	for f in /proc/net/tcp /proc/net/tcp6; do
+		[ -r "$f" ] || continue
+		v=$(awk -v hp="$hex" 'NR > 1 && toupper($4) == "0A" { n = split($2, a, ":"); if (toupper(a[n]) == hp) f = 1 } END { print f ? "hit" : "miss" }' "$f") || { s=$?; echo 'sshconn: cannot read the host TCP tables (awk failed on '"$f"')' >&2; exit $s; }
+		[ "$v" = "hit" ] && found=1
+	done
+	if [ "$found" = 1 ]; then echo ` + listenerPresentMarker + `; else echo ` + noListenerMarker + `; fi
+	exit 0
+fi
+echo 'sshconn: no listener probe is available on this host (lsof, ss, and /proc/net/tcp are all missing); install lsof or iproute2' >&2
+exit 1
+`
 }
 
-// hubListenerPIDs returns every PID listening on port. A probe that could not
-// run (a transport failure, a missing lsof) is an error, so the caller never
-// mistakes it for a free or held port.
-func (m *Manager) hubListenerPIDs(ctx context.Context, host hostreg.Host, port string) ([]string, error) {
+// listenerProbe is one port probe's answer: the PIDs a probe tool could name,
+// and whether a listener was proved to exist that no tool could name.
+type listenerProbe struct {
+	pids    []string
+	present bool
+}
+
+// probeListeners reports the listeners on port. A probe that could not run (a
+// transport failure, no probe tool at all, an unreadable TCP table) is an error,
+// so the caller never mistakes it for a free or held port.
+func (m *Manager) probeListeners(ctx context.Context, host hostreg.Host, port string) (listenerProbe, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerProbeRemote(port)), nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: host %q could not probe listeners on :%s: %w: %s", ErrRestart, host.Name, port, err, tail(out))
+		return listenerProbe{}, fmt.Errorf("%w: host %q could not probe listeners on :%s: %w: %s", ErrRestart, host.Name, port, err, tail(out))
 	}
-	var pids []string
+	var lp listenerProbe
 	for line := range strings.SplitSeq(string(out), "\n") {
-		if line = strings.TrimSpace(line); line != "" && line != noListenerMarker {
-			pids = append(pids, line)
+		line = strings.TrimSpace(line)
+		if line == "" || line == noListenerMarker {
+			continue
 		}
+		if line == listenerPresentMarker {
+			lp.present = true
+			continue
+		}
+		lp.pids = append(lp.pids, line)
 	}
-	return pids, nil
+	return lp, nil
 }
 
 // listenerAddrRemote builds the remote command that prints the local addresses
-// pid listens on for port, one per lsof -F `n` field. It uses lsof's field
-// output so a NAME containing spaces cannot be misread, and translates lsof's
-// no-match exit (1) into an empty answer so the caller does not treat a raced
-// listener as a transport failure.
+// pid listens on for port, one per `n` field so a NAME containing spaces cannot
+// be misread. lsof is preferred; a host without it falls back to ss, whose
+// numeric local-address column uses the same host:port spelling lsof -F n prints
+// (`127.0.0.1:9180`, `[::1]:9180`, `*:9180`), so the caller's ownership check
+// reads either source. Each tier translates its no-match answer into an empty
+// success, and a tier that cannot run (no awk, no probe tool) exits nonzero, so
+// a raced listener is never a transport failure and a missing probe is never
+// read as "no address".
 func listenerAddrRemote(pid, port string) string {
 	q := shellQuote(":" + port)
-	return "lsof -nP -p " + shellQuote(pid) + " -a -iTCP" + q + " -sTCP:LISTEN -F n; s=$?; if [ $s -eq 1 ]; then exit 0; fi; exit $s"
+	p := shellQuote(pid)
+	return "if command -v lsof >/dev/null 2>&1; then lsof -nP -p " + p + " -a -iTCP" + q + " -sTCP:LISTEN -F n; s=$?; if [ $s -eq 1 ]; then exit 0; fi; exit $s; fi; " +
+		"if command -v ss >/dev/null 2>&1; then ss -ltnp 2>/dev/null | awk -v port=" + q + " -v pid=" + p + " '$1 == \"LISTEN\" && index($4, port) == length($4) - length(port) + 1 && $0 ~ (\"pid=\" pid \"[^0-9]\") { print \"n\" $4 }'; exit $?; fi; " +
+		"echo 'sshconn: no listener address probe is available on this host (neither lsof nor ss); install lsof' >&2; exit 1"
 }
 
 // hubListenerAddrs returns the local addresses pid listens on for port. An empty
-// slice means lsof matched no socket (the process may have exited), which the
-// caller reads as "not proved to own the endpoint".
+// slice means the probe matched no socket (the process may have exited), which
+// the caller reads as "not proved to own the endpoint".
 func (m *Manager) hubListenerAddrs(ctx context.Context, host hostreg.Host, pid, port string) ([]string, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerAddrRemote(pid, port)), nil)
 	if err != nil {
@@ -763,23 +879,32 @@ func listenerOwnsAddr(local, configured string) bool {
 	return loopbackAddr(local) == loopbackAddr(configured)
 }
 
-// findHubPID returns the single pid listening on the hub's port, using lsof
-// because pgrep -x evener also matches `evener serve` daemons. hub.lock already
-// enforces one hub per host, so more than one listener is a real finding:
-// guessing would risk killing or restarting the wrong process.
+// findHubPID returns the single pid listening on the hub's port. There is no
+// pgrep substitute (pgrep -x evener also matches `evener serve` daemons), so a
+// listener the host's probes can see but not name — a host without lsof whose ss
+// shows another user's socket — is refused rather than guessed at. hub.lock
+// already enforces one hub per host, so more than one listener is a real
+// finding: guessing would risk killing or restarting the wrong process.
 func (m *Manager) findHubPID(ctx context.Context, host hostreg.Host, port string) (string, error) {
-	pids, err := m.hubListenerPIDs(ctx, host, port)
+	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
 		return "", err
 	}
-	switch len(pids) {
+	if lp.present && len(lp.pids) == 0 {
+		// Do not fall through to "no hub listening": the port is held, and the
+		// caller must not read this as "nothing to restart" any more than it may
+		// read a failed probe as a free port.
+		return "", fmt.Errorf("%w: host %q has a listener on :%s but no probe on the host can name the process that owns it; install lsof on the host to restart it",
+			ErrRestart, host.Name, port)
+	}
+	switch len(lp.pids) {
 	case 0:
 		return "", fmt.Errorf("%w: host %q no hub listening on :%s to restart", ErrRestart, host.Name, port)
 	case 1:
-		return pids[0], nil
+		return lp.pids[0], nil
 	default:
 		return "", fmt.Errorf("%w: host %q %d processes listen on :%s (%s); refusing to guess which one is the hub",
-			ErrRestart, host.Name, len(pids), port, strings.Join(pids, ", "))
+			ErrRestart, host.Name, len(lp.pids), port, strings.Join(lp.pids, ", "))
 	}
 }
 
@@ -804,13 +929,14 @@ func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port str
 
 // portCleared reports whether the host has no listener on the hub port. The
 // probe's result distinguishes a genuinely free port from a probe that could
-// not run, which the caller must not treat as cleared.
+// not run, which the caller must not treat as cleared; a listener no tool could
+// name holds the port just as a named one does.
 func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port string) (bool, error) {
-	pids, err := m.hubListenerPIDs(ctx, host, port)
+	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
 		return false, err
 	}
-	return len(pids) == 0, nil
+	return len(lp.pids) == 0 && !lp.present, nil
 }
 
 // hubHealthRemote builds the remote command that reads the host hub's
@@ -970,11 +1096,14 @@ func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid 
 // share/evener/bin and produced a nested, wrong install location. Canonical
 // resolution for identity lives in hubExecutableMatches.
 func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Host) string {
-	pids, err := m.hubListenerPIDs(ctx, host, hubPort(m.hostAddr(host)))
-	if err != nil || len(pids) != 1 {
+	lp, err := m.probeListeners(ctx, host, hubPort(m.hostAddr(host)))
+	if err != nil || len(lp.pids) != 1 || lp.present {
+		// A listener no probe could name, or more than one of them, leaves the
+		// preservation hint ambiguous; a deploy must not derive an install layout
+		// from a guess.
 		return ""
 	}
-	argv, err := m.recoverHubArgvRaw(ctx, host, pids[0])
+	argv, err := m.recoverHubArgvRaw(ctx, host, lp.pids[0])
 	if err != nil {
 		return ""
 	}
