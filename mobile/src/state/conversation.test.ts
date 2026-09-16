@@ -10001,7 +10001,9 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
 
       expect(rowById(store, "ask-open")).toMatchObject({ kind: "question" });
-      expect(store.getState().conversation?.askPending).toBe(true);
+      // The page made an unanswered ask answerable here; the hub's own flag
+      // is untouched by a client-side page load.
+      expect(store.getState().conversation?.questionsPending).toBe(true);
     });
   });
 
