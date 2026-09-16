@@ -48,6 +48,17 @@ func (s *Session) armLaneResidueSweepTimer() {
 // bails (and close has nothing to wait for). No re-lock, ever — the pass only
 // touches already-unlocked lanes.
 func (s *Session) fireOpenLaneResidueSweep() {
+	work, ok := s.beginEnvWork("lane-residue-sweep")
+	if !ok {
+		// Admission was refused for this one-shot firing (a real TryClaim
+		// preparing window, or close). Do not consume the only firing: re-arm
+		// the existing sweep timer so a later firing still runs the pass once
+		// the window closes. The arming helper is itself closing-gated, so a
+		// stop-during-close stays stopped.
+		s.armLaneResidueSweepTimer()
+		return
+	}
+	defer s.endEnvWork(work)
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
