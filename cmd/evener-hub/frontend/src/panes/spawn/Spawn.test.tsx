@@ -159,7 +159,10 @@ function renderSpawn(client: FakeClient, focused = true) {
 
 // Seeds the navigation manifest's launch sources, which the host picker reads
 // through selectSources. Rendered only when the list holds a non-local source.
-function seedSources(sources: NavigationManifest["sources"]): void {
+function seedSources(
+  sources: NavigationManifest["sources"],
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): void {
   const data: NavigationManifest = {
     generation_id: "generation_test",
     revision: 1,
@@ -179,6 +182,7 @@ function seedSources(sources: NavigationManifest["sources"]): void {
     stale: false,
     error: null,
     generationID: "generation_test",
+    ...overrides,
   };
   navigationStore.setState({ manifest: resource });
 }
@@ -6908,4 +6912,171 @@ test("a cwd picked for a remote target is not recorded as the controller's picke
   localStorage.removeItem(LAST_WORKING_DIR_KEY);
   await setWorkingDir(user, "/srv/remote-only");
   expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
+});
+
+// --- remote target: source-aware paths (Component 06b, round nine) -----------
+
+// evener/path/validate answers for THIS controller's filesystem, so a directory
+// that exists only on the selected host reads as invalid here - and the picker
+// refuses to select what its validator rejects. A remote target's cwd belongs to
+// that host, which validates it when the session starts (the authority the cwd
+// preflight already defers to), so the controller must not make the judgment at
+// all (round nine).
+test("a remote target can select a directory this controller cannot see", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) =>
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" })),
+  );
+  window.history.pushState({}, "", "/new?dir=/tmp/picker-base");
+  renderSpawn(fake);
+  await settled();
+
+  // A LOCAL target keeps the controller's gate unchanged: the same path is
+  // reported invalid and cannot be selected.
+  await user.click(workingDir());
+  const localInput = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(localInput);
+  await user.type(localInput, "/srv/remote-only{Enter}");
+  expect((await screen.findByRole("alert")).textContent).toBe("no such file or directory");
+  expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+  // The same path on a remote target is the host's business: it can be picked.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await setWorkingDir(user, "/srv/remote-only");
+  expectWorkingDir("/srv/remote-only");
+  expect(screen.queryByText("no such file or directory")).toBeNull();
+});
+
+// Creating a folder is a WRITE on this hub's own filesystem (evener/dirs/create
+// MkdirAll's it here). A remote target's path is the selected host's, so the
+// picker's New folder affordance - newly reachable for a remote-only path now
+// that validation is skipped - must refuse rather than materialize it locally
+// (the wrong-host action the cwd preflight already refuses to offer).
+test("the picker does not create folders locally for a remote target", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-create-base");
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await user.click(workingDir());
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, "/srv/remote-create{Enter}");
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Use this folder" }) as HTMLButtonElement).disabled).toBe(false),
+  );
+  await user.click(screen.getByRole("button", { name: "New folder" }));
+  await user.type(screen.getByRole("textbox", { name: "Folder name" }), "child{Enter}");
+
+  expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
+  expect(await screen.findByText(/Create the folder on buildbox/)).toBeTruthy();
+});
+
+// The advanced panel validates a path-kind value through the same controller
+// closure and marks the field invalid on failure - and
+// collectAdvancedOverrides DROPS an invalid field, so a valid remote path
+// silently vanished from launchOverrides. For a remote target the value is
+// forwarded for the selected host to judge (round nine).
+test("a remote target's advanced path value is not dropped for being invisible here", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "agent",
+          wireField: "agent",
+          label: "Agent",
+          kind: "text",
+          group: "general",
+          pathKind: "command",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/path/validate", ({ path }) => ({ path, valid: false, error: "no such file or directory" }));
+  });
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-advanced-path");
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  // Local: unchanged. The controller's verdict marks the field invalid, the
+  // reason is shown, and the value is excluded from the launch.
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "host-only-agent" } });
+  expect(await screen.findByText("no such file or directory")).toBeTruthy();
+  await waitFor(() =>
+    expect(completionDraft("/tmp/remote-advanced-path").fields.getState().advancedOverrides).toEqual({}),
+  );
+
+  // Remote: the same kind of value rides thread/start for the host to resolve.
+  // (A different string, not the one above: React suppresses a change event
+  // whose value is unchanged, so re-typing the identical text would never reach
+  // the field's own handler.)
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  fireEvent.change(screen.getByLabelText("Agent"), { target: { value: "remote-only-agent" } });
+  expect(completionDraft("/tmp/remote-advanced-path").fields.getState().advancedOverrides).toEqual({
+    agent: "remote-only-agent",
+  });
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
+  expect(params.launchOverrides).toMatchObject({ agent: "remote-only-agent" });
+});
+
+// The host picker is a DISPLAY of what the manifest last said about the hosts.
+// The store retains that snapshot while the fresh manifest is in flight, and
+// reading the SETTLED-only list there hid the picker (or flipped the visible
+// choice to Local) for the length of every revalidation - while the launch
+// decision still has to come from the settled list, which is what the second
+// half of this test pins (round nine).
+test("the host picker keeps its host while the manifest revalidates", async () => {
+  const user = userEvent.setup();
+  const sources: NavigationManifest["sources"] = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ];
+  seedSources(sources);
+  const fake = readyClient();
+  window.history.pushState({}, "", "/new?dir=/tmp/host-revalidate");
+  renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+
+  await act(async () => seedSources(sources, { loading: true, stale: true }));
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  expect(picker.value).toBe("buildbox");
+  const options = within(picker).getAllByRole("option") as HTMLOptionElement[];
+  expect(options.map((option) => option.value)).toEqual(["local", "buildbox", "offline-host"]);
+  // The retained snapshot keeps its own offline labelling: a withheld list
+  // reads as "unknown", which would flip this one to online.
+  const offline = options.find((option) => option.value === "offline-host") as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+  expect(offline.textContent).toContain("offline");
+
+  // Unsettled, the draft's host is still the launch target (only a settled
+  // manifest may confirm a fallback), so what the picker shows is what submits.
+  await user.type(promptField(), "run remotely");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params.source).toBe("buildbox");
 });

@@ -49,7 +49,7 @@ import {
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { selectSources } from "../../stores/navigation/selectors";
+import { selectDisplaySources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -509,9 +509,16 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
 // ONLINE, so the badge is purely additive and existing rows keep their
 // meaning. The selector returns a primitive, so a fresh inline closure each
 // render is safe for the store's reference-equality check.
+//
+// The DISPLAY view, not the settled one: a badge reports what the rail knows
+// about the host, and a manifest re-read (loading/stale) must not blank the
+// last reading - that flipped every offline badge back to online for the length
+// of the refresh (round nine). A host the fresh manifest has dropped still
+// leaves its rows reading online once the NEW manifest lands, which is the
+// unchanged "unknown host" contract below.
 function useHostOnline(hostId: string): boolean {
   return useNavigationStore((state) => {
-    const source = selectSources(state).find((candidate) => candidate.id === hostId);
+    const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
     return source ? source.online : true;
   });
 }

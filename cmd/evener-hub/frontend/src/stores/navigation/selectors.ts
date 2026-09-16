@@ -57,6 +57,20 @@ export function selectSources(state = navigationStore.getState()): Source[] {
   if (!manifest || manifest.loading || manifest.stale || manifest.error) return NO_SOURCES;
   return manifest.data?.sources ?? NO_SOURCES;
 }
+/** The same manifest sources, for DISPLAY only: the last-known list, whether
+ * or not the read that produced it is still authoritative. A resource keeps its
+ * last snapshot while loading, re-validating (`stale`), or after a failed read,
+ * and a display consumer that withheld it would make the host picker disappear
+ * and every remote row's offline badge flip to ONLINE for the length of the
+ * refresh - the retained list is the best available description of what the
+ * reader is looking at (Component 06b review, round nine).
+ *
+ * Only display reads this. Which host a launch may actually use is decided by
+ * selectSources' settled list, so a host the fresh manifest has since removed
+ * is never launchable merely because the UI still shows it. */
+export function selectDisplaySources(state = navigationStore.getState()): Source[] {
+  return state.manifest?.data?.sources ?? NO_SOURCES;
+}
 export const selectResource = (key: ResourceKey) => {
   const resourceKey = canonicalResourceKey(key);
   return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));

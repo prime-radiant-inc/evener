@@ -123,9 +123,11 @@ export interface SaveDefaultsInput {
   // remote cwd would default the next local Spawn to a path that usually does
   // not exist here, and a host-only model would default the next local launch
   // to a model this hub may not serve (Component 06b review, round seven). The
-  // per-project blob keyed by that cwd is still written, minus its model
-  // (round eight - the cwd key cannot distinguish a local checkout of the same
-  // path from the remote one).
+  // per-project blob keyed by that cwd is still written, minus any model of its
+  // OWN (round eight - the cwd key cannot distinguish a local checkout of the
+  // same path from the remote one) while keeping a model already stored there
+  // (round nine - a remote submit must not erase the local project's sticky
+  // choice).
   remoteLaunch?: boolean;
 }
 
@@ -158,6 +160,17 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
+  // ...and the remote launch must not ERASE a model a previous LOCAL launch
+  // stored for this path either. The write below replaces the whole blob, so
+  // omitting model was not "this submit names no model" - it was "this path has
+  // no model", and a later local spawn of the same cwd silently lost its sticky
+  // choice (round nine). A remote submit therefore carries the existing blob's
+  // model over verbatim: it contributes no model of its own (round eight's
+  // intent, above) while leaving the local one exactly as it found it.
+  if (input.remoteLaunch) {
+    const previous = loadDefaultsBlob(input.cwd).model;
+    if (typeof previous === "string" && previous.trim() !== "") blob.model = previous;
+  }
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   else removeRaw(key);
 
