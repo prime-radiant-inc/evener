@@ -182,6 +182,8 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,

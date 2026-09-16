@@ -1,21 +1,18 @@
-// Positional "[image N]" marker helpers (parity-m5-composer.md §G, contracts
-// §Attachments), ported from composer-attachments.js's insertAtCursor/
-// stripMarker/nextMarker.
+// Positional "[image N]" marker helpers for a composer textarea (parity-
+// m5-composer.md §G, contracts §Attachments): markerText renders the
+// placeholder a staged image is anchored to, insertMarker splices it in at
+// the caller's selection, and stripMarker removes it again when the image is
+// dropped. Both apps share these so a draft written on one composer
+// round-trips through the other.
 //
-// Pure string splicing, NOT direct DOM mutation: the composer's textarea is
-// a React-controlled input (value={text}), and React tracks controlled
-// form elements to detect/undo native value drift - a "change"-family
-// native event firing ANYWHERE in the tree (verified: specifically the
-// hidden file-picker <input>'s own change event, not a click or a paste
-// event) triggers React's controlled-input restoration pass, which
-// silently reset a direct `el.value = ...` mutation on this UNRELATED
-// textarea back to its last-rendered value in exactly one of this file's
-// own integration tests (Composer.test.tsx's file-picker attach case) -
-// caught by that test actually failing, not by inspection. The fix is
-// structural, not a workaround: every caller now computes the new text +
-// cursor position as plain values and applies them through the composer's
-// own `text` state (setText), which is the only place React won't fight
-// itself over - see Composer.tsx's writeText/cursor-restore effect.
+// Everything here is pure string splicing that returns the new text and
+// cursor as plain values; nothing writes a DOM node's `.value`. The web
+// composer's textarea is a React-controlled input, and React resets a direct
+// value write on a controlled element back to its last-rendered value
+// whenever a change-family native event fires anywhere in the tree (the
+// hidden file-picker <input>'s own change event is enough). Callers apply
+// the returned value and cursor through their own text state, which is the
+// one place React will not fight them.
 export function markerText(n: number): string {
   return `[image ${n}]`;
 }
@@ -35,8 +32,7 @@ export interface TextEditWithUnknownCursor {
 
 // insertMarker splices `marker` into `value` at [start,end) (replacing any
 // selected range), returning the new value and the cursor position just
-// after the inserted text - the caller applies both via its own controlled
-// state instead of writing a DOM node's `.value` directly.
+// after the inserted text.
 export function insertMarker(value: string, start: number, end: number, marker: string): TextEdit {
   const nextValue = value.slice(0, start) + marker + value.slice(end);
   return { value: nextValue, cursor: start + marker.length };
