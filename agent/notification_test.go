@@ -970,7 +970,9 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {
 		if e.Kind == jobstore.EventJobNotificationDelivered {
-			sess.ClearGoal()
+			if err := sess.ClearGoal(); err != nil {
+				t.Error(err)
+			}
 		}
 		return origAppend(e)
 	}
@@ -1069,7 +1071,9 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 	base4 := adapter.steps[4]
 	adapter.steps[4] = func(req llm.Request) llm.Response {
 		if lastMessageIsNotification(req) {
-			sess.ClearGoal()
+			if err := sess.ClearGoal(); err != nil {
+				t.Error(err)
+			}
 		}
 		return base4(req)
 	}
