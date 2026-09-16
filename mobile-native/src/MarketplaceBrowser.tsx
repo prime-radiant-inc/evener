@@ -64,19 +64,21 @@ export function MarketplaceBrowser({
   }, [model]);
   // A new selection starts clean: the filter and the last action's error
   // belong to the marketplace they were typed against.
-  useEffect(() => {
+  function select(name: string | null) {
     revision.current += 1;
+    setSelected(name);
     setError(null);
     setQuery("");
-  }, [selected]);
+  }
   // The selected catalog is read from the store's cache. A mutation here or a
   // change from another client retires the entry, and an empty slot is this
   // view's cue to request it again - the web's expanded node does the same.
   const catalog = selected ? state.browseCatalogs.get(selected) : undefined;
+  const loaded = catalog?.status === "loaded" ? catalog : undefined;
   useEffect(() => {
     if (selected && !state.browseCatalogs.has(selected))
       void state.browseMarketplace(selected);
-  }, [selected, state]);
+  }, [selected, state.browseCatalogs, state.browseMarketplace]);
   // A marketplace removed here or by another client leaves the list; its
   // selection goes with it.
   useEffect(() => {
@@ -123,9 +125,7 @@ export function MarketplaceBrowser({
     ]);
   }
   const needle = query.trim().toLowerCase();
-  const catalogPlugins = (
-    catalog?.status === "loaded" ? catalog.plugins : []
-  ).filter((item) =>
+  const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
     `${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle),
   );
   const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
@@ -146,12 +146,10 @@ export function MarketplaceBrowser({
       )}
       {selected ? (
         <>
-          <Action onPress={() => setSelected(null)}>All marketplaces</Action>
+          <Action onPress={() => select(null)}>All marketplaces</Action>
           <Copy>{selected}</Copy>
           {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
-          {catalog?.status === "loaded" && catalog.description && (
-            <Copy>{catalog.description}</Copy>
-          )}
+          {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
             <Action
               disabled={busy}
@@ -224,7 +222,7 @@ export function MarketplaceBrowser({
           ListEmptyComponent={
             browsing ? (
               <ActivityIndicator accessibilityLabel="Loading marketplace catalog" />
-            ) : catalog?.status === "loaded" ? (
+            ) : loaded ? (
               <Copy muted>
                 {needle
                   ? "No matching plugins."
@@ -286,7 +284,7 @@ export function MarketplaceBrowser({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Browse ${item.name}`}
-              onPress={() => setSelected(item.name)}
+              onPress={() => select(item.name)}
               style={({ pressed }) => ({
                 minHeight: 56,
                 paddingVertical: 9,

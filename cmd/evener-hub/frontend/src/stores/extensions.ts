@@ -5,10 +5,6 @@
 // via useConnectionStore.getState().connect(client), same as threads.ts/
 // tree.ts - this store has no connect() of its own.
 //
-// One store to the sections, composed of the package's marketplaces store
-// (createMarketplacesStore, mirrored into this store's state below) and the
-// plugins and launch-layer slices still written here.
-//
 // Split, deliberately, into two halves with different failure conventions,
 // mirroring the legacy JS's own two conventions (plugins-manager.html toasts
 // on every mutation failure; plugins.html/skills.html/mcp.html show add-time
@@ -22,18 +18,12 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type {
-  AnyNotification,
-  AppwireClientLike,
-  LaunchConfigLayer,
-  PathValidateResponse,
-  PluginEntry,
-} from "@evener/appwire-client";
+import type { AppwireClientLike, LaunchConfigLayer, PathValidateResponse, PluginEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import { createMarketplacesStore, type MarketplacesState } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore } from "./connection";
+import { connectionStore, onConnectionNotification } from "./connection";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
@@ -84,33 +74,11 @@ function requireClient(): AppwireClientLike {
 
 const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
 
-// Subscribes `handler` to the client connectionStore holds now and to every
-// client it wires later - see the navigation store's identical wiring for the
-// full "why react to the store instead of reading it once" rationale (a
-// mount-order race between this module and AppShell's own connect() effect).
-// A replaced client is detached so it does not keep a live subscription for
-// the rest of the page's life.
-function onConnectionNotification(handler: (n: AnyNotification) => void): () => void {
-  let wired: AppwireClientLike | null = null;
-  let unwire: (() => void) | undefined;
-  const attach = (client: AppwireClientLike | null): void => {
-    if (!client || client === wired) return; // already wired to this exact client
-    unwire?.();
-    wired = client;
-    unwire = client.onNotification(handler);
-  };
-  const unsubscribe = connectionStore.subscribe((state) => attach(state.client));
-  attach(connectionStore.getState().client);
-  return () => {
-    unsubscribe();
-    unwire?.();
-  };
-}
-
 // The marketplaces store proper lives in the package; this is the app's one
 // instance, over a client port that resolves connectionStore's CURRENT client
-// at request time. Its state is mirrored into extensionsStore below so the
-// sections keep reading one store.
+// at request time. It publishes into extensionsStore (below the store) so the
+// sections keep reading one store; the plugins and launch-layer slices are
+// still written here.
 const marketplaces = createMarketplacesStore({
   request: (method, params, opts) => requireClient().request(method, params, opts),
   onNotification: onConnectionNotification,
@@ -220,6 +188,18 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
   },
 }));
 
+// Each marketplaces publish lands here synchronously, as the fields it
+// changed: a whole-snapshot copy would make the core the owner of every
+// marketplaces field and overwrite a value written straight into this store
+// (the section tests seed their fixtures that way).
+marketplaces.subscribe((state, previous) => {
+  const changed: Partial<MarketplacesState> = {};
+  for (const key of Object.keys(state) as (keyof MarketplacesState)[]) {
+    if (state[key] !== previous[key]) Object.assign(changed, { [key]: state[key] });
+  }
+  extensionsStore.setState(changed);
+});
+
 export function useExtensionsStore(): ExtensionsStoreState;
 export function useExtensionsStore<T>(selector: (state: ExtensionsStoreState) => T): T;
 export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) => T): T | ExtensionsStoreState {
@@ -228,11 +208,6 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
   // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(extensionsStore, selector) : useStore(extensionsStore);
 }
-
-// The package's marketplaces store publishes into this one: every change to
-// its state (the list, its loading/error flags, the browse cache) lands here
-// synchronously, so the sections read one store.
-marketplaces.subscribe((state) => extensionsStore.setState(state));
 
 // --- notification-triggered refetch --------------------------------------
 //

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
-import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS } from "./marketplaces";
+import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
 
 const ACME: MarketplaceEntry = { name: "acme", source: { kind: "github", repo: "acme/plugins" }, lastUpdated: 1 };
 const LOCAL: MarketplaceEntry = { name: "local", source: { kind: "directory", path: "/opt/plugins" }, lastUpdated: 2 };
@@ -91,10 +91,10 @@ describe("fetches never throw, mutations reject", () => {
   });
 
   test.each([
-    ["addMarketplace", (s: ReturnType<typeof storeWithFake>["store"]) => s.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } }), "evener/marketplace/add"],
-    ["removeMarketplace", (s: ReturnType<typeof storeWithFake>["store"]) => s.getState().removeMarketplace("acme"), "evener/marketplace/remove"],
-    ["refreshMarketplace", (s: ReturnType<typeof storeWithFake>["store"]) => s.getState().refreshMarketplace("acme"), "evener/marketplace/refresh"],
-    ["editMarketplace", (s: ReturnType<typeof storeWithFake>["store"]) => s.getState().editMarketplace({ name: "acme", newName: "acme2" }), "evener/marketplace/edit"],
+    ["addMarketplace", (s: MarketplacesStore) => s.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } }), "evener/marketplace/add"],
+    ["removeMarketplace", (s: MarketplacesStore) => s.getState().removeMarketplace("acme"), "evener/marketplace/remove"],
+    ["refreshMarketplace", (s: MarketplacesStore) => s.getState().refreshMarketplace("acme"), "evener/marketplace/refresh"],
+    ["editMarketplace", (s: MarketplacesStore) => s.getState().editMarketplace({ name: "acme", newName: "acme2" }), "evener/marketplace/edit"],
   ] as const)("%s rejects with the hub's error and leaves the list alone", async (_name, mutate, method) => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME] }));

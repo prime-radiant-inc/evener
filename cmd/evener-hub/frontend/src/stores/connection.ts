@@ -3,7 +3,7 @@
 // and holds the client reference other stores (threads.ts) ride, since only
 // this store's connect() ever receives one.
 
-import type { AppwireClientLike, ConnectionState, FeatureSet, ServerInfo } from "@evener/appwire-client";
+import type { AnyNotification, AppwireClientLike, ConnectionState, FeatureSet, ServerInfo } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
@@ -87,6 +87,29 @@ export const connectionStore = createStore<ConnectionStoreState>(() => ({
     }
   },
 }));
+
+// Subscribes `handler` to the client this store holds now and to every client
+// it wires later - a store module that loads before AppShell's own connect()
+// effect has no client to read once, so it reacts to the store instead (the
+// navigation store's original rationale). A replaced client is detached so it
+// does not keep a live subscription for the rest of the page's life. Returns
+// the disposer for both halves.
+export function onConnectionNotification(handler: (n: AnyNotification) => void): () => void {
+  let wired: AppwireClientLike | null = null;
+  let unwire: (() => void) | undefined;
+  const attach = (client: AppwireClientLike | null): void => {
+    if (!client || client === wired) return; // already wired to this exact client
+    unwire?.();
+    wired = client;
+    unwire = client.onNotification(handler);
+  };
+  const unsubscribe = connectionStore.subscribe((state) => attach(state.client));
+  attach(connectionStore.getState().client);
+  return () => {
+    unsubscribe();
+    unwire?.();
+  };
+}
 
 export function useConnectionStore(): ConnectionStoreState;
 export function useConnectionStore<T>(selector: (state: ConnectionStoreState) => T): T;

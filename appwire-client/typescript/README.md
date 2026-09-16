@@ -64,7 +64,7 @@ completion affordance and ships its MIT attribution at
 
 ## Published subpaths
 
-Besides the root, `package.json` `exports` publishes three subpaths:
+Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
