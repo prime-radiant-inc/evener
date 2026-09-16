@@ -145,7 +145,7 @@ inline banner.
   own text is `item.name`, plus ` (processing…)` while the PNG round-trip is
   in flight, `Spawn.tsx:573-575`). `promptValue` contains the marker
   `[image 1]`, spliced in at the cursor synchronously
-  (`attachments/textareaMarkers.ts:19-21`). `toast` is empty. Falsification:
+  (`appwire-client/typescript/textareaMarkers.ts#markerText`). `toast` is empty. Falsification:
   `chipCount` is 0, `promptValue` has no marker left in it, **and** the toast
   reads `screenshot.png (image decode failed)`
   (`attachments/useAttachments.ts:188`) — that is the kata `1pgw` failure
