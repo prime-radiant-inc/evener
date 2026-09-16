@@ -1954,10 +1954,7 @@ func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.Thr
 	// in the connection's send loop when the process exits is never written,
 	// and the client reads EOF in its place (#1501). Only a request with no
 	// transport to wait on starts the shutdown right away.
-	start := func() { go fn() }
-	if !appserver.AfterResponseWritten(ctx, start) {
-		start()
-	}
+	appserver.RunAfterResponseWritten(ctx, func() { go fn() })
 	return appwire.EmptyResponse{}, nil
 }
 

@@ -2022,22 +2022,17 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 }
 
 // thread/shutdown owes its reply ("the daemon runs it asynchronously",
-// appwire/protocol.go), and the daemon's shutdown func ends the process,
-// which closes this very socket. The shutdown must therefore wait for the
-// reply frame to reach the transport; a reply still queued in the send loop
-// at that moment never arrives, and the client reads EOF where its reply
-// should be (#1501). The shutdown func here does to the connection what
-// process exit does - cancels it - so a shutdown that starts too early loses
-// the reply the same way the daemon did.
+// appwire/protocol.go) and the shutdown ends the process, which closes this
+// socket (#1501). The shutdown func here does to the connection what process
+// exit does - cancels it - so a shutdown that starts before the reply frame
+// is written loses the reply the same way the daemon did.
 func TestServerAppWireThreadShutdownRepliesBeforeTheShutdownStarts(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	done := make(chan struct{})
 	srv.SetShutdownFunc(func() {
 		defer close(done)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.AppServer().Shutdown(shutdownCtx)
+		_ = srv.AppServer().Shutdown(context.Background())
 	})
 
 	client := dialServerAppWire(t, srv)
