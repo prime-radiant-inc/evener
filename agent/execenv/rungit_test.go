@@ -66,7 +66,9 @@ func TestRunGitFallsBackToShellWithoutArgvExecutor(t *testing.T) {
 // %VAR%, so rendering "a & calc &" as "'a & calc &'" is not quoting there (see
 // internal/shellquote's "POSIX shells only" contract). An environment that
 // reports Windows and lacks ArgvExecutor must get an error instead of a command
-// line — never ExecCommand("git " + ShellEscapeArgs(args...)).
+// line — never ExecCommand("git " + ShellEscapeArgs(args...)). The refusal
+// returns the zero ExecResult with the error: a caller that checks ExitCode
+// before err must not read a synthetic git exit status into it.
 func TestRunGitRefusesShellFallbackOnWindows(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -89,10 +91,39 @@ func TestRunGitRefusesShellFallbackOnWindows(t *testing.T) {
 			if fake.gotCommand != "" {
 				t.Fatalf("RunGit still called ExecCommand with %q", fake.gotCommand)
 			}
-			if res.Stdout != "" || res.ExitCode == 0 {
-				t.Fatalf("RunGit result = %+v, want an empty result with a nonzero exit code", res)
+			if res != (ExecResult{}) {
+				t.Fatalf("RunGit result = %+v, want the zero ExecResult: an error means git did not run, so there is no git exit status to report", res)
 			}
 		})
+	}
+}
+
+// TestRunGitRefusalResultCannotBeMistakenForGitExit pins the refusal's result
+// shape against the ExitCode-first caller idiom this package's callers use
+// (agent/session_tools_worktree.go's gitRunner reads res.ExitCode before err and
+// reports "git <args>: exit N" for any nonzero code). A synthetic 127 on the
+// refusal would discard the actionable errRunGitShellUnsupported message and
+// tell the user git ran and failed. The refusal must therefore return the zero
+// ExecResult — an error means git did not run, so there is no exit status — and
+// this test fails if the refusal ever carries a nonzero code again.
+func TestRunGitRefusalResultCannotBeMistakenForGitExit(t *testing.T) {
+	fake := &shellOnlyEnv{platform: "windows", result: ExecResult{Stdout: "must not run"}}
+	res, err := RunGit(context.Background(), fake, "/work/dir", 1234, "worktree", "add", "wt")
+	if err == nil {
+		t.Fatalf("RunGit built a shell command line for a Windows environment: %q", fake.gotCommand)
+	}
+	if fake.gotCommand != "" {
+		t.Fatalf("RunGit still called ExecCommand with %q", fake.gotCommand)
+	}
+	// The caller idiom, in the same order: ExitCode is read first.
+	if res.ExitCode != 0 {
+		t.Fatalf("ExitCode-first caller sees exit %d and would report a synthetic git status, discarding the real error: %v", res.ExitCode, err)
+	}
+	if !errors.Is(err, errRunGitShellUnsupported) {
+		t.Fatalf("RunGit error = %v, want it to wrap errRunGitShellUnsupported", err)
+	}
+	if res != (ExecResult{}) {
+		t.Fatalf("RunGit result = %+v, want the zero ExecResult", res)
 	}
 }
 

@@ -27,16 +27,15 @@ func TestLiteralAndRemoteWord(t *testing.T) {
 		{name: "unicode with space", in: "héllo wörld", literal: "'héllo wörld'", remote: "'héllo wörld'"},
 		{name: "unicode no space", in: "café", literal: "café", remote: "café"},
 		// An accented path with no metacharacter stays bare: high bytes are not
-		// POSIX metacharacters, and on Windows cmd.exe (which these command
-		// lines reach via ExecCommand) a single quote is a literal character, so
-		// quoting the word would pass the apostrophes through as data. This
+		// POSIX metacharacters, so quoting them buys sh no safety, and leaving
+		// them bare keeps the pre-consolidation rendering byte-for-byte. This
 		// pins the pre-consolidation deny-list behavior.
 		{name: "accented path", in: "/tmp/café/menu", literal: "/tmp/café/menu", remote: "/tmp/café/menu"},
 		{name: "accented with metacharacter", in: "café;rm", literal: "'café;rm'", remote: "'café;rm'"},
 		// A caret is not a POSIX metacharacter and no prior deny-list named it,
-		// so it stays bare; cmd.exe (which these lines reach via ExecCommand)
-		// treats "^" as its escape character, so quoting it would change the
-		// bytes a Windows Grep regex or git revspec receives.
+		// so it stays bare: quoting it would only change the bytes the
+		// pre-consolidation rendering produced, and no remaining caller renders
+		// these words for a shell where a caret is syntax (see the package doc).
 		{name: "caret", in: "^HEAD", literal: "^HEAD", remote: "^HEAD"},
 		{name: "caret with metacharacter", in: "^a b", literal: "'^a b'", remote: "'^a b'"},
 		{name: "substitution", in: "$(id)", literal: "'$(id)'", remote: "'$(id)'"},
@@ -101,16 +100,17 @@ func TestMetacharactersAreQuoted(t *testing.T) {
 // TestHighBytesAreLeftBare pins the allow-list's one deliberate liberty: every
 // byte in 0x80-0xFF is safe to leave bare, because no high byte is a POSIX
 // metacharacter or word separator. Quoting them would be shell-equivalent for sh
-// but wrong for cmd.exe, where the apostrophes are literal (see the package
-// doc). A high byte mixed with a real metacharacter is still quoted whole.
+// while changing bytes the pre-consolidation rendering already produced (see the
+// package doc). A high byte mixed with a real metacharacter is still quoted
+// whole.
 func TestHighBytesAreLeftBare(t *testing.T) {
 	words := []string{"café", "naïve", "Straße", "日本語", "/tmp/Ünïcode/path"}
 	for _, w := range words {
 		if got := Literal(w); got != w {
-			t.Errorf("Literal(%q) = %q, want the bare word for cmd.exe compatibility", w, got)
+			t.Errorf("Literal(%q) = %q, want the bare word for pre-consolidation byte-compatibility", w, got)
 		}
 		if got := RemoteWord(w); got != w {
-			t.Errorf("RemoteWord(%q) = %q, want the bare word for cmd.exe compatibility", w, got)
+			t.Errorf("RemoteWord(%q) = %q, want the bare word for pre-consolidation byte-compatibility", w, got)
 		}
 	}
 
@@ -127,18 +127,18 @@ func TestHighBytesAreLeftBare(t *testing.T) {
 // TestCaretStaysBareAndDELIsQuoted pins the two bytes where the old deny-lists
 // and the new allow-list disagree, together because the finding named them
 // together. The caret is restored to the bare form: it is not a POSIX
-// metacharacter, no prior deny-list named it, and cmd.exe — which runs these
-// command lines via ExecCommand and treats "^" as its escape character — would
-// otherwise receive a literal "'^HEAD'". DEL (0x7F) is the same drift and stays
-// quoted on purpose (see the package doc): it has no cmd.exe role, and a
-// non-printing byte is better surfaced than reproduced.
+// metacharacter, no prior deny-list named it, and keeping it bare preserves the
+// pre-consolidation rendering byte-for-byte on the surviving POSIX paths (see
+// the package doc). DEL (0x7F) is the same drift and stays quoted on purpose: no
+// remaining consumer relies on a bare control byte, and a non-printing byte is
+// better surfaced than reproduced.
 func TestCaretStaysBareAndDELIsQuoted(t *testing.T) {
 	for _, w := range []string{"^", "^HEAD", "a^b", "^v1.2.3", "a^b_c.d"} {
 		if got := Literal(w); got != w {
-			t.Errorf("Literal(%q) = %q, want the bare word so cmd.exe receives the caret unquoted", w, got)
+			t.Errorf("Literal(%q) = %q, want the bare word for pre-consolidation byte-compatibility", w, got)
 		}
 		if got := RemoteWord(w); got != w {
-			t.Errorf("RemoteWord(%q) = %q, want the bare word so cmd.exe receives the caret unquoted", w, got)
+			t.Errorf("RemoteWord(%q) = %q, want the bare word for pre-consolidation byte-compatibility", w, got)
 		}
 	}
 

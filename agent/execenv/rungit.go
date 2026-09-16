@@ -10,7 +10,9 @@ import (
 // errRunGitShellUnsupported reports that RunGit refused to build a shell
 // command line because the environment's platform shell cannot be trusted with
 // ShellEscapeArgs' POSIX quoting. It is unexported: callers of RunGit already
-// treat any error as "git did not run".
+// treat any error as "git did not run", and the refusal returns the zero
+// ExecResult alongside it so even a caller that checks ExitCode before err
+// cannot read a synthetic git exit status into the refusal.
 var errRunGitShellUnsupported = errors.New("execenv: RunGit cannot build a shell command line for this platform")
 
 // RunGit runs `git <args...>` in env. When env implements ArgvExecutor (the
@@ -28,7 +30,9 @@ var errRunGitShellUnsupported = errors.New("execenv: RunGit cannot build a shell
 // survive. The executed paths preserve identical
 // stdout/stderr/exit-code/timeout/cancellation semantics — only the fork
 // mechanism differs — because both terminate in the same
-// execPreparedCommand.
+// execPreparedCommand. An error means git did not run: the Windows refusal
+// returns the zero ExecResult with its error, so a caller may inspect ExitCode
+// before err without reading a synthetic status into a refusal.
 func RunGit(ctx context.Context, env ExecutionEnvironment, workingDir string, timeoutMS int, args ...string) (ExecResult, error) {
 	if direct, ok := env.(ArgvExecutor); ok {
 		return direct.ExecArgv(ctx, "git", args, timeoutMS, workingDir, nil)
@@ -44,9 +48,13 @@ func RunGit(ctx context.Context, env ExecutionEnvironment, workingDir string, ti
 // Windows is refused: the POSIX quoting ShellEscapeArgs emits is not quoting
 // for cmd.exe, so invoking the fallback there would leave `&`, `|`, and
 // `%VAR%` live in a command string assembled from caller-supplied arguments.
+// The refusal returns the zero ExecResult with the error: an error from RunGit
+// means git did not run, so there is no git exit status to report, and a caller
+// that inspects ExitCode before err still reaches the error below instead of
+// reporting "git <args>: exit 127".
 func runGitViaShell(ctx context.Context, env ExecutionEnvironment, platform, workingDir string, timeoutMS int, args ...string) (ExecResult, error) {
 	if strings.ToLower(strings.TrimSpace(platform)) == "windows" {
-		return ExecResult{ExitCode: 127}, fmt.Errorf(
+		return ExecResult{}, fmt.Errorf(
 			"%w: environment reports platform %q, whose shell does not honor POSIX quoting, so the escaped arguments would remain injectable; this environment must implement ArgvExecutor",
 			errRunGitShellUnsupported, platform,
 		)

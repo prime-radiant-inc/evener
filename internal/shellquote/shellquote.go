@@ -33,34 +33,33 @@
 // # High bytes and a caret stay bare on purpose
 //
 // A byte in 0x80-0xFF is not a POSIX metacharacter, so quoting it buys sh no
-// safety, and the deny-lists this package replaced left it bare. It must stay
-// bare because these words are not only handed to sh: callers render a Grep or
-// git command line with Literal/Args and ExecCommand runs it through cmd.exe on
-// Windows, where a single quote is an ordinary character rather than a
-// delimiter. Quoting "café" would hand cmd.exe the literal bytes 'café', quotes
-// included. Leaving high bytes bare keeps the pre-consolidation behavior on
-// every platform; that byte-compatibility is not a claim that these words are
-// cmd.exe-safe (see # POSIX shells only).
+// safety, and the deny-lists this package replaced left it bare. It stays bare
+// to keep the pre-consolidation rendering byte-for-byte: quoting "café" as
+// 'café' would change the bytes every existing caller sees, and the only
+// command-string consumers left — ShellEscapeArgs' documented POSIX fallback
+// and RemoteWord's remote login shell — gain nothing from the quotes. Nothing
+// here claims these words are cmd.exe-safe (see # POSIX shells only).
 //
 // A caret (^, 0x5E) is left bare for the same reason. It is not a POSIX
 // metacharacter, and no shell denies it, so the deny-lists this package replaced
-// returned it unchanged; cmd.exe, however, is where it matters, because there it
-// IS the escape character while a single quote is ordinary text. A Grep regex or
-// git revspec carrying "^" (say "^HEAD"), quoted as '^HEAD', reaches cmd.exe with
-// the apostrophes as data and the caret inert. Leaving the caret bare restores
-// the pre-consolidation behavior on every platform.
+// returned it unchanged. Leaving the caret bare keeps that pre-consolidation
+// rendering byte-for-byte (say "^HEAD"), and no remaining consumer is a shell
+// for which a caret is syntax: the command-string consumers are POSIX paths
+// (above), and the platform whose shell does treat the caret specially is
+// exactly the one RunGit refuses to build a command line for (see agent/execenv's
+// RunGit doc).
 //
 // # Control bytes are quoted on purpose
 //
 // The deny-lists also happened to leave ASCII control bytes bare — they denied
 // only space, tab, and newline — so DEL (0x7F) in particular reaches this
 // allow-list with the same deny-list-to-allow-list drift as the caret. It stays
-// quoted. Unlike the caret, a control byte buys a shell nothing bare (it is not a
-// POSIX metacharacter, but it is also not safer trusted), cmd.exe gives it no
-// special meaning the way it does the caret, and a non-printing byte appearing
-// literally in a rendered command line is a symptom worth surfacing rather than
-// reproducing. This is the allow-list's deliberate tightening, and the tests pin
-// it.
+// quoted. Byte-compatibility does not reach it: no remaining consumer relies on
+// a bare control byte, quoting one buys a POSIX shell nothing (it is not a
+// metacharacter, but it is also not safer trusted), and a non-printing byte
+// appearing literally in a rendered command line is a symptom worth surfacing
+// rather than reproducing. This is the allow-list's deliberate tightening, and
+// the tests pin it.
 //
 // # Two entry points, one divergence
 //
