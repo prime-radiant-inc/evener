@@ -287,13 +287,38 @@ function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDi
   return fromWireDefault(error.data.current);
 }
 
+/** A PATCH reply decoded as THIS write's own outcome: the requested
+ * configuration at the confirmed revision (a no-op write) or one past it,
+ * never a jump the request cannot account for. Both write paths decode here,
+ * so neither can accept a reply the other would refuse. What a path does when
+ * the STORE has moved past the reply meanwhile is the path's own rule, not
+ * the reply's: the direct write refuses it, the checkpointed editor keeps its
+ * proposal for review. */
+function decodePatchReply(
+  result: unknown,
+  layout: ViewportClass,
+  confirmed: HubTranscriptDisplayDefault,
+  requested: TranscriptDisplayConfigV1,
+): HubTranscriptDisplayDefault {
+  const canonical = fromWirePatchResponse(result, layout);
+  const requestedFingerprint = configFingerprint(requested);
+  const isThisWrite =
+    canonical !== undefined &&
+    configFingerprint(canonical.config) === requestedFingerprint &&
+    (canonical.revision === confirmed.revision + 1 ||
+      // A no-op write: the hub kept the revision because the requested
+      // configuration is the confirmed one.
+      (canonical.revision === confirmed.revision && requestedFingerprint === configFingerprint(confirmed.config)));
+  if (canonical === undefined || !isThisWrite) throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
+  return canonical;
+}
+
 function invalidDraft(): never {
   throw new Error("Invalid transcript preference draft.");
 }
 
 /** The strict checkpoint check the draft editor runs on a restored
- * checkpoint. A stored checkpoint from before layouts were recorded is the
- * mobile layer's, the one host that checkpoints. Throws on anything else. */
+ * checkpoint. Throws on anything else. */
 function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
   if (!isRecord(value)) invalidDraft();
   if (
@@ -301,7 +326,7 @@ function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
     !value.id.length ||
     !isRevision(value.baseRevision) ||
     typeof value.writeUncertain !== "boolean" ||
-    (value.layout !== undefined && !isViewportClass(value.layout))
+    !isViewportClass(value.layout)
   )
     invalidDraft();
   let config: TranscriptDisplayConfigV1;
@@ -312,7 +337,7 @@ function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
   }
   return {
     id: value.id,
-    layout: isViewportClass(value.layout) ? value.layout : "mobile",
+    layout: value.layout,
     baseRevision: value.baseRevision,
     config,
     writeUncertain: value.writeUncertain,
@@ -673,32 +698,24 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         config: toWireConfig(config),
       });
       if (!stillMine()) return getState().hub[layout] ?? confirmed;
-      const canonical = fromWirePatchResponse(result, layout);
-      const current = getState().hub[layout] ?? confirmed;
-      // The response must be the write's own outcome: the requested
-      // configuration at the confirmed revision (a no-op write) or one past
-      // it, never a jump the request cannot account for.
-      const requestedFingerprint = configFingerprint(config);
-      const revisionIsValid =
-        canonical !== undefined &&
-        canonical.revision >= current.revision &&
-        (canonical.revision === confirmed.revision || canonical.revision === confirmed.revision + 1);
-      const semanticsValid =
-        canonical !== undefined &&
-        configFingerprint(canonical.config) === requestedFingerprint &&
-        (canonical.revision === confirmed.revision
-          ? requestedFingerprint === configFingerprint(confirmed.config)
-          : canonical.revision === confirmed.revision + 1);
-      if (canonical === undefined || !revisionIsValid || !semanticsValid)
+      const canonical = decodePatchReply(result, layout, confirmed, config);
+      // The direct write's host presents the live value, so a reply the store
+      // has already moved past cannot be shown as this write's outcome.
+      if (canonical.revision < (getState().hub[layout] ?? confirmed).revision)
         throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
       applyHubDefault(layout, canonical, { ...clearPreview(), hubError: null, ...layoutError(layout, undefined) });
       return canonical;
     } catch (error) {
-      const canonical = conflictCurrent(error, layout);
       if (!stillMine()) {
-        if (canonical !== undefined) applyHubDefault(layout, canonical);
-        return getState().hub[layout] ?? canonical ?? confirmed;
+        // A conflict's canonical current is a confirmed payload like any
+        // other, so it lands only while this write is still its own. Past the
+        // fence it belongs to a hub this store has left: applying it would
+        // repopulate a retired payload and mark it confirmed, and the next
+        // hub's refresh - a restart numbering from its own 1 - would then be
+        // eaten by the stale guard.
+        return getState().hub[layout] ?? confirmed;
       }
+      const canonical = conflictCurrent(error, layout);
       if (canonical !== undefined) applyHubDefault(layout, canonical);
       // A malformed success keeps the preview: the hub may well have applied
       // the write, and dropping the preview would show the pre-write value
@@ -715,7 +732,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   /** The draft editor's gate: a confirmed, supported, idle hub state with a
    * usable draft port. Returns the confirmed defaults the edit composes
-   * against. */
+   * against. An in-flight READ does not close it, unlike the direct write's
+   * gate: a checkpointed write is durable before it leaves and its fence
+   * discards the older read's reply, so waiting would only lose the intent. */
   function assertEditable(): HubDefaultsByLayout {
     const state = getState();
     if (
@@ -786,17 +805,35 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         config: toWireConfig(config),
       });
     } catch (error) {
+      if (!stillMine()) throw error;
+      const canonical = conflictCurrent(error, layout);
+      if (canonical !== undefined) {
+        // A revision conflict is not a lost reply: the hub REFUSED this write
+        // and said what the current value is, so the outcome is known. The
+        // canonical lands and the proposal stays for review against it - the
+        // same rule the direct write follows, and the checkpoint is re-marked
+        // settled rather than left claiming an unknown outcome.
+        applyHubDefault(layout, canonical, { saving: false, writeUncertain: false, draftConflict: true });
+        try {
+          persistDraft({ ...checkpoint, writeUncertain: false });
+        } catch {
+          setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
+        }
+        throw error;
+      }
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
-      if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
+      setState({ saving: false, draftConflict: true, writeUncertain: true });
       throw error;
     }
     // The reply is back. One ordered sequence, nothing ahead of the fence:
     // (1) FENCE - a reply that is no longer ours is discarded without
     //     interpretation; retirePayload already published writeUncertain and
     //     the checkpoint on the port is the durable record of it.
-    // (2) DECODE - a malformed reply is hub-sourced: hubError, the outcome
-    //     stays unknown, the checkpoint stays.
+    // (2) DECODE - the shared decodePatchReply, so this path cannot accept a
+    //     reply the direct write would refuse. A malformed reply is
+    //     hub-sourced: hubError, the outcome stays unknown, the checkpoint
+    //     stays.
     // (3) APPLY, settling the in-flight flags on every path. A newer external
     //     revision that landed meanwhile keeps the proposal for review instead
     //     of reporting it applied - `>`, not "differs": an equal revision is
@@ -806,10 +843,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     //     view with the port marked unavailable, and never turns a confirmed
     //     write back into an unknown outcome.
     if (!stillMine()) return getState().hub[layout] ?? confirmed;
-    const value = fromWirePatchResponse(result, layout);
-    if (value === undefined || value.revision < revision) {
+    let value: HubTranscriptDisplayDefault;
+    try {
+      value = decodePatchReply(result, layout, confirmed, config);
+    } catch (error) {
       setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_PATCH_MESSAGE });
-      throw new Error(MALFORMED_PATCH_MESSAGE);
+      throw error;
     }
     const newerExternal = (getState().hub[layout]?.revision ?? -1) > value.revision;
     const settled: Partial<TranscriptDisplayStoreFields> = {

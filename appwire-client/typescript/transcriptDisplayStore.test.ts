@@ -263,6 +263,30 @@ describe("the direct write", () => {
     expect(store.getState().hubErrors.mobile).toBe("revision conflict");
   });
 
+  test("a conflict reply landing after the generation ended applies nothing", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+
+    reply.reject(
+      new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(9, desktopConfig)),
+      }),
+    );
+    await write;
+    // The canonical belongs to the hub this write was fenced out of. Landing
+    // it would repopulate a retired payload AND mark it confirmed, so the next
+    // hub's refresh - a restart numbering from 1 - is eaten by the stale guard.
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().loaded).toBe(false);
+  });
+
   test("a malformed success changes no hub state and reports it", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
@@ -315,6 +339,39 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft("mobile", mobileConfig)).toThrow(/unavailable/);
     await store.getState().refreshHubDefaults();
     expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.current()?.writeUncertain).toBe(false);
+  });
+
+  test("saveDraft refuses a reply that is not this write's own outcome", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    // Structurally a valid reply for this layout, and one revision past the
+    // confirmed one - but it carries a configuration this write never asked
+    // for, so it cannot be this write's outcome.
+    client.on(patchMethod, () => patchAnswer("mobile", hubDefault(3, desktopConfig)));
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow(/malformed/);
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
+  });
+
+  test("a revision conflict is a KNOWN outcome: the canonical lands and the proposal stays for review", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(5, desktopConfig)),
+      });
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    // The hub said what happened: the write was refused and this is the
+    // current value. Nothing about the outcome is unknown.
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, desktopConfig));
+    expect(store.getState().draft?.config).toEqual(proposed);
     expect(drafts.current()?.writeUncertain).toBe(false);
   });
 
@@ -373,6 +430,42 @@ describe("the checkpointed draft editor", () => {
     const broken = createTranscriptDisplayStore({ client, drafts: corrupt.storage });
     expect(broken.getState().storageUnavailable).toBe(true);
     expect(broken.getState().draftError).toMatch(/restore/);
+  });
+
+  test("the draft editor stays open while a read is in flight; the older reply is discarded", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: memoryDrafts().storage });
+    const reply = deferred<TranscriptDisplayDefaults>();
+    client.on(getMethod, () => reply.promise);
+    const refresh = store.getState().refreshHubDefaults();
+    expect(store.getState().hubLoading).toBe(true);
+
+    // The direct write refuses here - it composes an expectedRevision the
+    // in-flight read is about to replace, and its preview is not durable.
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow(/unavailable/);
+    // The checkpointed editor does not: the proposal is on disk before
+    // anything leaves, so the intent survives whatever the read confirms.
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
+
+    reply.resolve({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    });
+    await refresh;
+    expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
+  test("a checkpoint without a layout is undecodable, like any other malformed one", async () => {
+    // The shape the native host wrote before layouts were recorded. A
+    // checkpoint that does not say which layer it proposes names no draft:
+    // it is not restored, and it takes the same path as any other malformed
+    // stored value rather than being guessed at.
+    const legacy = memoryDrafts({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: legacy.storage });
+    expect(store.getState().draft).toBeNull();
+    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState().draftError).toMatch(/restore/);
   });
 
   test("discardDraft drops the proposal and its checkpoint", async () => {
