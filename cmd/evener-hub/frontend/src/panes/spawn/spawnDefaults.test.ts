@@ -136,6 +136,34 @@ describe("saveDefaults", () => {
     saveDefaults({ cwd: "", harness: "evener", harnessUsesEvenerModels: true });
     expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBeNull();
   });
+
+  // The global scalars are controller-wide defaults, and a remote launch's cwd
+  // and model belong to the selected HOST: written here, the next LOCAL spawn
+  // would default to a path this machine usually does not have and to a model
+  // this hub may not serve. The per-project layer keyed by the submitted cwd is
+  // still remembered, so the remote project keeps its own sticky config.
+  test("a remote launch keeps the controller's global defaults out of it (component 07b review, round three)", () => {
+    saveDefaults({ cwd: "/p", model: "anthropic/claude-sonnet-4-5", harnessUsesEvenerModels: true });
+    expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBe("anthropic/claude-sonnet-4-5");
+    expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBe("/p");
+
+    saveDefaults({
+      cwd: "/srv/remote-project",
+      harness: "external",
+      model: "openai/gpt-5",
+      accessMode: "read-only",
+      harnessUsesEvenerModels: true,
+      remoteLaunch: true,
+    });
+
+    expect(loadDefaultsBlob("/srv/remote-project")).toMatchObject({
+      harness: "external",
+      access_mode: "read-only",
+      model: "openai/gpt-5",
+    });
+    expect(localStorage.getItem(GLOBAL_MODEL_KEY)).toBe("anthropic/claude-sonnet-4-5");
+    expect(localStorage.getItem(GLOBAL_WORKING_DIR_KEY)).toBe("/p");
+  });
 });
 
 describe("modelValidityAgainstList (floor §1.10, spawn.js:154-175)", () => {

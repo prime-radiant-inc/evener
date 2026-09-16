@@ -894,14 +894,27 @@ function SpawnForm({
   // after it fails, when a retained catalog would let the user pick a harness
   // the selected host does not have.
   const catalogHostRef = useRef(hostChoice);
+  // The host whose harness/schema answers are the ones in hand (null until the
+  // first load settles). The reconciliation below must not read a catalog that
+  // has not answered yet, or an empty one would read as "the host offers
+  // nothing" and wipe a perfectly valid draft.
+  const [catalogHostSettled, setCatalogHostSettled] = useState<string | null>(null);
+  // True only while a host CHANGE's answers are outstanding. The initial mount is
+  // deliberately not pending: nothing has been invalidated yet, so the form stays
+  // startable exactly as it was before host routing existed. A switch is
+  // different - the catalogs have just been cleared and the draft's host-derived
+  // launch config has not been reconciled against the new host's, so a submit in
+  // that window could carry a value the host does not offer.
+  const [hostCatalogPending, setHostCatalogPending] = useState(false);
   useEffect(() => {
     let active = true;
     if (catalogHostRef.current !== hostChoice) {
       catalogHostRef.current = hostChoice;
       setHarnesses([]);
       setSchemaOptions([]);
+      setHostCatalogPending(true);
     }
-    hostRequest(client, hostChoice, "evener/harnesses/list", {}).then(
+    const harnessesRequest = hostRequest(client, hostChoice, "evener/harnesses/list", {}).then(
       (r) => {
         if (active) setHarnesses(r.data);
       },
@@ -909,7 +922,7 @@ function SpawnForm({
         if (active) setHarnesses([]);
       },
     );
-    hostRequest(client, hostChoice, "evener/launch/schema", {}).then(
+    const schemaRequest = hostRequest(client, hostChoice, "evener/launch/schema", {}).then(
       (r) => {
         if (active) setSchemaOptions(perLaunchEvenerOptions(r));
       },
@@ -917,11 +930,64 @@ function SpawnForm({
         if (active) setSchemaOptions([]);
       },
     );
+    // Both answers settle to SOMETHING even on failure (an empty catalog is an
+    // answer), so a host that refuses one can never hold Start hostage. `active`
+    // is false once this host is superseded, so a previous host's late answer
+    // never certifies the current one.
+    void Promise.all([harnessesRequest, schemaRequest]).then(() => {
+      if (active) {
+        setCatalogHostSettled(hostChoice);
+        setHostCatalogPending(false);
+      }
+    });
     return () => {
       active = false;
     };
   }, [client, hostChoice]);
 
+  // The draft's launch config is chosen from the SELECTED host's catalogs, and
+  // the draft store carries it across a host switch (component 07b review, round
+  // three). Left alone, a harness or Advanced-options override that exists only
+  // on the host that produced it still rides thread/start - and the mismatch is
+  // invisible in the form, because an empty harness catalog falls back to the
+  // "evener" label and an empty schema renders no Advanced fields at all. So
+  // reconcile both against the answers that just landed for the CURRENT host:
+  // anything that host does not offer drops back to the host's own default. The
+  // values are read from the store rather than from the rendered state so this
+  // effect does not re-run on its own writes.
+  useEffect(() => {
+    if (catalogHostSettled !== hostChoice) return;
+    const currentHarness = draft.fields.getState().harness;
+    if (currentHarness !== "" && !harnesses.some((candidate) => candidate.id === currentHarness)) {
+      // The cleared id is the host's own default ("" reads as evener), which
+      // supports plugin selection, so this is not a harness transition
+      // handleHarnessChange's plugin-selection reset would fire on - and the
+      // model is revalidated against the host's own catalog separately.
+      setHarness("");
+    }
+    const offered = new Set(schemaOptions.map((option) => option.wireField));
+    const overrides = draft.fields.getState().advancedOverrides;
+    const keptOverrides = Object.fromEntries(Object.entries(overrides).filter(([field]) => offered.has(field)));
+    if (Object.keys(keptOverrides).length !== Object.keys(overrides).length) {
+      setAdvancedOverrides(keptOverrides);
+    }
+    const values = draft.fields.getState().advancedValues;
+    const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => offered.has(field)));
+    if (Object.keys(keptValues).length !== Object.keys(values).length) {
+      setAdvancedValues(keptValues);
+      setAdvancedErrors({});
+    }
+  }, [
+    catalogHostSettled,
+    hostChoice,
+    harnesses,
+    schemaOptions,
+    draft,
+    setHarness,
+    setAdvancedOverrides,
+    setAdvancedValues,
+    setAdvancedErrors,
+  ]);
   // Persisted defaults span every project, so only an explicitly global Evener
   // catalog has authority to sweep them. Picker catalogs may belong to another
   // harness or directory. Refresh/unmount retires the request for all consumers.
@@ -1473,6 +1539,10 @@ function SpawnForm({
       accessMode,
       reasoningEffort,
       harnessUsesEvenerModels: usesEvenerModels,
+      // A remote launch's cwd/model describe the selected host, not this
+      // controller, so they must not overwrite the global scalar defaults a
+      // later local spawn reads (component 07b review, round three).
+      remoteLaunch: !isLocalHost(hostChoice),
     });
     // Reset transient form state on success, before navigating away (floor
     // §1.14 L186: the pending-attachment bag is cleared and the paste
@@ -1509,6 +1579,11 @@ function SpawnForm({
     // The field's own inline note already says why, so no toast here.
     if ((modelRequired && slashModelBootstrap === null) || providerRequired) return;
     if (pluginSelectionBlocked) return;
+    // The selected host's harness/schema answers are still in flight, so the
+    // draft's launch config has not been reconciled against them yet - a submit
+    // now could carry a value the host does not offer. Same reasoning as the
+    // disabled Start button; this catches the ⌘/Ctrl+Enter chord.
+    if (hostCatalogPending) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -1838,7 +1913,8 @@ function SpawnForm({
                       busy ||
                       (modelRequired && slashModelBootstrap === null) ||
                       providerRequired ||
-                      pluginSelectionBlocked
+                      pluginSelectionBlocked ||
+                      hostCatalogPending
                     }
                   >
                     {busy ? (
