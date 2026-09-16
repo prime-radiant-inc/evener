@@ -81,6 +81,14 @@ export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommand
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
+export type {
+  CommandCatalog,
+  CommandCatalogClient,
+  CommandCatalogState,
+  SessionCommandCatalog,
+  SessionCommandCatalogState,
+} from "./commandCatalog";
+export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
@@ -100,6 +108,8 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
+export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
+export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureState, DisclosureStore } from "./disclosure";

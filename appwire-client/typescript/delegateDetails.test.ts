@@ -1,10 +1,6 @@
 import { expect, test } from "vitest";
-import type { ActivityDelegate } from "@evener/appwire-client";
-import {
-  delegateModel,
-  delegatePacket,
-  delegateTiming,
-} from "./delegateDetails";
+import type { ActivityDelegate } from "./activityData";
+import { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 
 function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
   return {
@@ -55,12 +51,11 @@ test("freezes a terminal delegate at valid end-start or snapshot duration", () =
     quietLive: false,
     terminal: true,
   });
-  expect(
-    delegateTiming(
-      delegate({ terminal: true, runStartedAt: "bad", durationMs: 0 }),
-      1_000,
-    ),
-  ).toMatchObject({ durationMs: 0, durationLive: false, terminal: true });
+  expect(delegateTiming(delegate({ terminal: true, runStartedAt: "bad", durationMs: 0 }), 1_000)).toMatchObject({
+    durationMs: 0,
+    durationLive: false,
+    terminal: true,
+  });
   expect(
     delegateTiming(
       delegate({
@@ -92,10 +87,7 @@ test("does not infer terminal state from a stale outcome on a resumed run", () =
 });
 
 test("uses frozen timing values only when live anchors are unavailable", () => {
-  const result = delegateTiming(
-    delegate({ runningForMs: 0, quietForMs: Number.POSITIVE_INFINITY }),
-    1_000,
-  );
+  const result = delegateTiming(delegate({ runningForMs: 0, quietForMs: Number.POSITIVE_INFINITY }), 1_000);
 
   expect(result).toMatchObject({
     durationMs: 0,
@@ -123,10 +115,7 @@ test("falls back to safe frozen values for invalid clocks and rejects unsafe sna
     quietLive: false,
   });
   expect(
-    delegateTiming(
-      delegate({ runningForMs: Number.MAX_SAFE_INTEGER + 1, quietForMs: -1 }),
-      Number.POSITIVE_INFINITY,
-    ),
+    delegateTiming(delegate({ runningForMs: Number.MAX_SAFE_INTEGER + 1, quietForMs: -1 }), Number.POSITIVE_INFINITY),
   ).toMatchObject({ durationMs: undefined, quietForMs: undefined });
   const future = delegateTiming(
     delegate({
@@ -155,6 +144,14 @@ test("anchors quiet age at the newer valid activity or start timestamp", () => {
   expect(result.quietForMs).toBe(60_000);
 });
 
+test("does not infer a quiet age from runStartedAt alone", () => {
+  const result = delegateTiming(delegate({ runStartedAt: "2026-09-07T00:00:00Z" }), Date.parse("2026-09-07T00:01:00Z"));
+
+  expect(result.durationMs).toBe(60_000);
+  expect(result.quietForMs).toBeUndefined();
+  expect(result.quietLive).toBe(false);
+});
+
 test("selects the resolved model and exposes requested model only when distinct", () => {
   expect(
     delegateModel(
@@ -170,9 +167,7 @@ test("selects the resolved model and exposes requested model only when distinct"
     requestedModel: "requested",
     reasoning: " high ",
   });
-  expect(
-    delegateModel(delegate({ model: " ", requestedModel: "requested" })),
-  ).toEqual({ model: "requested" });
+  expect(delegateModel(delegate({ model: " ", requestedModel: "requested" }))).toEqual({ model: "requested" });
 });
 
 test("formats string packets as markdown and JSON values as pretty JSON", () => {
@@ -191,8 +186,7 @@ test("formats string packets as markdown and JSON values as pretty JSON", () => 
   expect(delegatePacket(undefined)).toBeUndefined();
   const structured = delegatePacket({ nested: [1, false, null] }, true);
   expect(structured).toBeDefined();
-  if (structured)
-    expect(JSON.parse(structured.text)).toEqual({ nested: [1, false, null] });
+  if (structured) expect(JSON.parse(structured.text)).toEqual({ nested: [1, false, null] });
 });
 
 test("omits packets that JSON cannot serialize", () => {

@@ -1007,10 +1007,10 @@ describe("ActivityTree", () => {
     expect(screen.queryByRole("treeitem", { name: "finished build" })).toBeNull();
   });
 
-  test("a delegate with no usage or quiet evidence omits inferred quiet age", () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.setSystemTime(NOW);
-    const sparseTree: ActivityTreeData = {
+  // A tree whose only entry is one live stable delegate with a run start and
+  // nothing else; the overrides supply whatever the rule under test reads.
+  function soleDelegateTree(delegateOverrides: Record<string, unknown>): ActivityTreeData {
+    return {
       revision: 1,
       root: {
         ...TREE.root,
@@ -1018,12 +1018,12 @@ describe("ActivityTree", () => {
           {
             kind: "delegate",
             delegate: {
-              delegateId: "dlg_old",
+              delegateId: "dlg_sole",
               ownerSessionId: "sess_root",
               rootSessionId: "sess_root",
-              childSessionId: "sess_old_child",
-              childRef: "ref_old_child",
-              transcriptRef: "ref_old_child",
+              childSessionId: "sess_sole_child",
+              childRef: "ref_sole_child",
+              transcriptRef: "ref_sole_child",
               type: "delegate",
               lifecycle: "active",
               phase: "running",
@@ -1033,14 +1033,20 @@ describe("ActivityTree", () => {
               resumable: true,
               runStartedAt: "2026-08-05T15:00:00Z",
               branch: {},
+              ...delegateOverrides,
             },
           },
         ],
       },
-    };
-    render(<ActivityTree tree={sparseTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+    } as unknown as ActivityTreeData;
+  }
 
-    const row = screen.getByRole("treeitem", { name: "sess_old_child" });
+  test("a delegate with no usage or quiet evidence omits inferred quiet age", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(<ActivityTree tree={soleDelegateTree({})} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const row = screen.getByRole("treeitem", { name: "sess_sole_child" });
     // No usage to show, so the same status-first meta a live job row renders
     // (#1388) - not a placeholder dash.
     expect(metaText(row)).toBe("running");
@@ -1066,6 +1072,70 @@ describe("ActivityTree", () => {
     });
     expect(row.textContent).toContain("42s");
     expect(row.textContent).not.toContain("12s");
+  });
+
+  // A resumed run keeps the previous run's latestActivityAt until the child
+  // reports again: the quiet anchor is the newer of it and runStartedAt.
+  test("a live delegate's quiet age anchors at the run start when latestActivityAt predates it", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(
+      <ActivityTree
+        tree={soleDelegateTree({
+          mandate: "Sole delegate",
+          latestActivityAt: "2026-08-05T14:59:00Z",
+          quietForMs: 72_000,
+        })}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+      />,
+    );
+    const meta = metaText(screen.getByRole("treeitem", { name: "Sole delegate" }));
+    expect(meta).toContain("12s");
+    expect(meta).not.toContain("1m");
+  });
+
+  test("a live delegate's quiet age ticks from the run start when latestActivityAt does not parse", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(
+      <ActivityTree
+        tree={soleDelegateTree({ mandate: "Sole delegate", latestActivityAt: "not-a-timestamp", quietForMs: 12_000 })}
+        expandedFoldIDs={[]}
+        onToggleFold={vi.fn()}
+      />,
+    );
+    const row = screen.getByRole("treeitem", { name: "Sole delegate" });
+    expect(metaText(row)).toContain("12s");
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(metaText(row)).toContain("42s");
+    expect(metaText(row)).not.toContain("12s");
+  });
+
+  test("a terminal delegate's duration is its run window, not a disagreeing snapshot", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    render(
+      <ActivityTree
+        tree={soleDelegateTree({
+          mandate: "Sole delegate",
+          lifecycle: "idle",
+          phase: "idle",
+          status: "idle",
+          outcome: "completed",
+          terminal: true,
+          runEndedAt: "2026-08-05T15:00:05Z",
+          durationMs: 99_000,
+        })}
+        expandedFoldIDs={[FOLD_ID]}
+        onToggleFold={vi.fn()}
+      />,
+    );
+    const meta = metaText(screen.getByRole("treeitem", { name: "Sole delegate" }));
+    expect(meta).toContain("5s");
+    expect(meta).not.toContain("1m");
   });
 
   test("continuation strip renders after the session's rows and calls onContinue", async () => {

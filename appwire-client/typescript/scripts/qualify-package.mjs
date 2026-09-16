@@ -116,6 +116,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
@@ -143,6 +144,11 @@ assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest:
 assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
 assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
 assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
+const commandCatalog = client.createCommandCatalog({ request: async () => ({ commands: [{ name: "plan", source: "user" }] }), onNotification: () => () => {} });
+const catalogRead = commandCatalog.getState().refresh();
+assert.equal(commandCatalog.getState().loading, true);
+catalogRead.then(() => assert.deepEqual(commandCatalog.getState().commands.map((c) => c.name), ["plan"])).catch((error) => { console.error(error); process.exit(1); });
+assert.deepEqual(client.sessionPluginNames({ plugins: [{ name: "acme" }] }), new Set(["acme"]));
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");
@@ -354,6 +360,33 @@ assert.throws(
   () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
   client.NavigationBaseInvalidError,
 );
+`,
+    },
+    // The credentials state layer: the listing core each app's Providers &
+    // credentials store is an adapter over. A store is built and driven
+    // without a connection, which is the whole of what qualification can do
+    // to it: no request is issued, so the smoke proves the factory, the
+    // pure helpers and the refusal type resolve and behave.
+    "./state/credentials": {
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore();
+const held: boolean = staleListingHeld(store.getState());
+const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
+      cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
+      smoke: `const credentialStore = client.createCredentialInstancesStore();
+assert.deepEqual(credentialStore.getState().instances, []);
+assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.deepEqual(client.listingOf(credentialStore.getState()), {
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+});
+credentialStore.connectionChanged(null, "idle");
+assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
+assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
+assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
+assert.throws(() => credentialStore.requireWritableClient(), /no client connected/);
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins

@@ -19,9 +19,13 @@ attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
 rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
-delegate status rule,
+delegate status rule, the delegate timing and model derivations both apps'
+delegate details render from,
 the slash invocation and catalog visibility rules the palette and composer
-share, the inline slash-completion token parser, menu merge, filter and
+share, the command catalog itself as a framework-free store
+(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
+and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
+beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
@@ -98,6 +102,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   in state and mutations reject), with the installed-plugin and directory
   stores to follow. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
+- `@evener/appwire-client/state/credentials` - the credentials state layer:
+  `createCredentialInstancesStore()` is the framework-free listing core
+  (`instances`) each app's Providers & credentials store adapts, with the
+  stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

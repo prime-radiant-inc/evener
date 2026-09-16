@@ -1,5 +1,6 @@
 import {
   activityDelegateState,
+  delegateModel,
   type EntityView,
   entityOpenTarget,
   formatByteCount,
@@ -129,7 +130,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
     status = activityDelegateState(delegate).status;
     mandateSource = delegate.mandate ?? delegate.task ?? delegate.description;
     agent = delegate.agentType;
-    model = delegate.resolvedModel ?? delegate.model ?? delegate.requestedModel;
+    model = delegateModel(delegate).model;
     durationMs = delegate.durationMs;
     runningForMs = delegate.runningForMs;
     quietForMs = delegate.quietForMs;
@@ -138,7 +139,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
     status = stableDelegateDisplayStatus(stable) ?? "unknown";
     mandateSource = stable.task ?? stable.description;
     agent = stable.agentType;
-    model = stable.resolvedModel ?? stable.model ?? stable.requestedModel;
+    model = delegateModel(stable).model;
     durationMs = stable.durationMs;
     runningForMs = stable.runningForMs;
     quietForMs = stable.quietForMs;
