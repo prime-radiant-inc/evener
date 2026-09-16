@@ -195,7 +195,7 @@ func TestSessionFallbackTokenBudgetReductionEmitsOneWarning(t *testing.T) {
 		t.Fatalf("history token estimate = %d, want fixture-pinned 3000", got)
 	}
 	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("task")}, MaxTokens: new(1_000)}
-	if _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, history, "", 0); err != nil {
+	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), primary, req, history, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
 	sess.Close()
@@ -519,5 +519,66 @@ func TestSessionUnrelatedErrorEmitsNoTokenBudgetRecoveryWarning(t *testing.T) {
 			strings.Contains(warning.Message, "Provider context disagreement") {
 			t.Fatalf("unrelated error emitted token-budget recovery warning: %+v", warning)
 		}
+	}
+}
+
+// A fallback that answers owns the round's context warning: the window must
+// describe the model that handled the request, not the primary the round
+// started on. The primary's window here is wide enough that nothing warns; the
+// fallback's is small enough that the same round must warn, so the reported
+// window proves which model the warning was computed against.
+func TestSessionFallbackContextWarningNamesTheWindowThatHandledTheRequest(t *testing.T) {
+	dir := t.TempDir()
+	client := llm.NewClient()
+	permErr := llm.ErrorFromHTTPStatus("ctxwarn-primary", 403, "primary rejected", nil, nil)
+	client.Register(&agenttest.ModelTrackingAdapter{
+		Provider: "ctxwarn-primary",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			return llm.Response{}, permErr
+		},
+	})
+	client.Register(&agenttest.ModelTrackingAdapter{
+		Provider: "ctxwarn-fallback",
+		Respond: func(req llm.Request) (llm.Response, error) {
+			return communicateResponse(true, "fallback"), nil
+		},
+	})
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	primary := WithContextWindow(testOpenAICompatProfile("ctxwarn-primary", "primary-model", 0), 2_000_000)
+	fallback := WithContextWindow(testOpenAICompatProfile("ctxwarn-fallback", "fallback-model", 0), 120_000)
+	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsDone := captureSessionEvents(sess)
+	// The synthetic fallback row is wired after construction, as the other
+	// fallback tests do: NewSession's own validation resolves through the real
+	// registry, which has no row for it.
+	sess.cfg.ModelFallbacks = []string{"ctxwarn-fallback/fallback-model"}
+	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
+	// ~100k estimated input tokens with the standing prompt: over the fallback's
+	// 80% threshold (96k of 120k) and far under the primary's 2M.
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("x", 300_000)))}
+	if _, err := sess.ProcessInput(context.Background(), "task", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	warnings := warningEvents(<-eventsDone)
+	var ctxWarn *events.WarningData
+	for i := range warnings {
+		if strings.Contains(warnings[i].Message, "Context usage at") {
+			ctxWarn = &warnings[i]
+			break
+		}
+	}
+	if ctxWarn == nil {
+		t.Fatalf("no context-usage warning: the fallback's window is near, not the primary's: %+v", warnings)
+	}
+	if ctxWarn.ContextWindowSize != 120_000 {
+		t.Fatalf("warning window = %d, want the fallback's 120000: %+v", ctxWarn.ContextWindowSize, *ctxWarn)
 	}
 }

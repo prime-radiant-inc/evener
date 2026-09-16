@@ -209,11 +209,17 @@ function ensureMainPane(): void {
 // is keyed on GROUP IDENTITY (is this the main group) instead of a pane
 // count, which is the only thing that was ever supposed to determine it -
 // the main group's one-pane-ness is a permanent invariant of its slot, not a
-// transient count secondary happens to share sometimes.
+// transient count secondary happens to share sometimes. One exception keeps
+// the count check in the rule itself: a RECOVERED layout (the saved main
+// pane was skipped as unregistered) seats the store's main pane inside the
+// old secondary group, which may hold several panes - hiding that group's
+// header would strand them behind a hidden tab bar, the exact one-way door
+// this function exists to prevent. In every normal state the two rules
+// agree: the main pane's group holds it alone.
 function syncGroupHeaders(api: DockviewApi): void {
   const mainPaneId = workspaceStore.getState().mainPane()?.id;
   for (const group of api.groups) {
-    const hidden = group.panels.some((p) => p.id === mainPaneId);
+    const hidden = group.panels.length === 1 && group.panels.some((p) => p.id === mainPaneId);
     if (group.model.header.hidden !== hidden) group.model.header.hidden = hidden;
   }
 }
@@ -413,12 +419,14 @@ export function DockHost() {
     // the saved layout or the routed intent is absent.
     //
     // Failure-mode floor, preserved exactly: restoreLayout()'s own
-    // structural-validation failure (corrupt localStorage, or a restored
-    // panel referencing an unregistered pane type) clears the store back to
-    // empty (see workspace.ts) BEFORE the routed re-apply runs - so a
-    // corrupt saved layout still leaves the routed pane as the ONLY thing
-    // that ends up open, the same "deep link wins alone" guarantee the
-    // pre-merge implementation always provided.
+    // structural-validation failure (a layout dockview itself rejects) clears
+    // the store back to empty (see workspace.ts) BEFORE the routed re-apply
+    // runs - so a corrupt saved layout still leaves the routed pane as the
+    // ONLY thing that ends up open, the same "deep link wins alone"
+    // guarantee the pre-merge implementation always provided. A restored
+    // panel naming an unregistered pane type no longer clears anything:
+    // restoreLayout skips it, removes it from the live api synchronously,
+    // and focus falls to a surviving pane.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS

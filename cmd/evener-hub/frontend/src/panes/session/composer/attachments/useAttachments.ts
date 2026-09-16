@@ -7,13 +7,12 @@
 // composer. A caller can supply an in-memory store to retain the bag and its
 // encode continuations across remounts. Image bytes never go through
 // localStorage.
-import { rejectionReason } from "@evener/appwire-client";
+import { insertMarker, markerText, rejectionReason, stripMarker } from "@evener/appwire-client";
 import { type SetStateAction, useCallback, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { InputAttachment } from "../../../../stores/threads";
 import { reencodeToPng } from "./encodePng";
-import { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 
 export interface PendingAttachment {
   marker: number;

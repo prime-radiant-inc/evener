@@ -65,6 +65,7 @@ assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
+assert.deepEqual(client.stripMarker(client.insertMarker("go", 0, 0, client.markerText(1)).value, 9, 1), { value: "go", cursor: 0 });
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
@@ -168,6 +169,20 @@ assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://e
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
+const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
+const catalogOptions = client.toCatalogOptions([catalogEntry]);
+assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
+assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
+assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
+assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
+assert.equal(client.formatCost(catalogEntry), null);
+assert.equal(client.contextWindowLabel(catalogEntry), "200k");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
+const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
+assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
+assert.equal(client.pickableModelRows(pickerRows).length, 1);
+assert.deepEqual(client.buildPickerRows(null, ""), []);
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
 assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
@@ -196,6 +211,17 @@ const pathRows = client.buildPathRows({
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
 assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.equal(client.parseTaskListData(null), null);
+assert.deepEqual(client.parseTaskListData([]), []);
+const taskRows = client.parseTaskListData([
+  { id: 1, type: "implement", description: "a", prompt: "", status: "done" },
+  { id: 2, type: "verify", description: "b", prompt: "", status: "open" },
+]);
+assert.deepEqual(taskRows.map((row) => row.id), [1, 2]);
+assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks left");
+assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
+assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
+assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

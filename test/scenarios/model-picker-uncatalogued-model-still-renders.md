@@ -24,7 +24,7 @@ selector map. The old `.chip-picker-model-meta` /
 selected, and a meta `<span>` rendered only when the meta string is
 non-empty — `{row.meta !== "" && <span …>{row.meta}</span>}`
 (`widgets/modelCatalog/index.tsx:299-305`), where the meta string comes
-from `rowMeta` (`widgets/modelCatalog/pickerRows.ts:37-45`) and is `""`
+from `rowMeta` (`appwire-client/typescript/modelCatalogPickerRows.ts:37-45`) and is `""`
 when the entry carries no capabilities, no cost and no context window.
 So the assertion is **absence of the element**, not an empty one.
 
@@ -149,7 +149,7 @@ So the assertion is **absence of the element**, not an empty one.
   exists. Same reason step 2 exists at the JSON level.
 - **A blank display name means a different failure.** The picker's label
   falls back to the qualified `provider/model` when `displayName` is
-  empty (`toCatalogOptions`, `widgets/modelCatalog/catalogView.ts`).
+  empty (`toCatalogOptions`, `appwire-client/typescript/modelCatalogView.ts`).
   The typed `model/list` call is the single source for the spawn picker, so a
   request failure is shown by the picker's error alert (`ModelCatalog`'s
   `openPicker`) rather than silently becoming a second, less-informed list.
@@ -165,11 +165,11 @@ So the assertion is **absence of the element**, not an empty one.
   same already-built entry, so the degradation carries over unchanged.
   One difference is expected and is not a badge: a Recent row's meta
   leads with the provider name (`rowMeta(entry, true)`,
-  `pickerRows.ts:96`), so for this model the Recent row's meta is the
+  `appwire-client/typescript/modelCatalogPickerRows.ts:96`), so for this model the Recent row's meta is the
   single word `ollama` and the meta span **is** present there. Assert
   the no-meta-span rule on the provider-group row, not the Recent one.
 - The empty-meta rule itself is pinned in isolation by
-  `widgets/modelCatalog/pickerRows.test.ts:118` ("an entry with no
+  `appwire-client/typescript/modelCatalogPickerRows.test.ts:120` ("an entry with no
   metadata at all yields an empty string"). If that passes and the live
   row still shows a meta line, the enrichment invented metadata — look
   at `model/list`, not at the widget.

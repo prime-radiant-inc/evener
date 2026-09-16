@@ -38,6 +38,7 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -348,6 +349,7 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
@@ -4662,6 +4664,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const indexedDB = new IDBFactory();
       setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
       const fake = connectFakeClient();
+      // A mounted draft consumer implies its session pane in production;
+      // holding the ref keeps the acknowledged draft from the pane-store
+      // eviction sweep this acknowledgment now schedules.
+      act(() => {
+        workspaceStore.setState({
+          panes: [{ id: "p_retry", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+          focusedPaneId: "p_retry",
+        });
+      });
       const snapshot = (humanNote: string) =>
         readResponse("ref_a", {
           evener: { ref: "ref_a", capabilities: CAPABILITIES, humanNote, queue: { revision: 0 } },
@@ -4760,6 +4771,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
     syncHumanNote("ref_a", "A");
+    // The mounted draft consumer implies a session pane in production; hold
+    // the ref so the acknowledgment's eviction sweep keeps the record.
+    act(() => {
+      workspaceStore.setState({
+        panes: [{ id: "p_rejoin", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+        focusedPaneId: "p_rejoin",
+      });
+    });
     const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
     await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
     const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";
