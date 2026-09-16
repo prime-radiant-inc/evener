@@ -1,4 +1,5 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { lazy } from "react";
@@ -9,7 +10,6 @@ import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/wo
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import Transcript from "./Transcript";
 

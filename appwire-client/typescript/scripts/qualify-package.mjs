@@ -226,6 +226,17 @@ const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Ski
 assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
 assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
 client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
+assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
+assert.equal(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }])?.argsText, "fix it");
+const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { tokenCounts: true });
+assert.equal(client.advancedEnabledCount(displayConfig), 1);
+assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
+assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
+assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
+assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
+assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -305,7 +316,11 @@ assert.equal(typeof client.readDocFile, "function");
   for (const module of shippedModules)
     assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
   // One ESM declaration consumer, one CommonJS declaration consumer and one
-  // runtime presence check in each module form, per published specifier.
+  // runtime presence check in each module form, per published specifier. Each
+  // type is named only as an `import type` specifier, the one position that
+  // does not instantiate it, so a generic type qualifies without anyone
+  // supplying its arguments (an import alias cannot name an `export type`
+  // re-export, and a tuple of bare names cannot name a generic).
   const declarationConsumers = [];
   const runtimeConsumers = [];
   const consumerNames = new Set();
@@ -334,7 +349,6 @@ import type {
 ${surface.types.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
 ${surface.esmTypeUses ?? ""}
-declare const shipped: [${surface.types.join(", ")}]; void shipped;
 ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
@@ -342,7 +356,9 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
       join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
-declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+import type {
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
 ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );

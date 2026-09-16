@@ -1,7 +1,7 @@
 import {
 	presetContent,
 	type TranscriptDisplayConfigV1,
-} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+} from "@evener/appwire-client";
 import type {
 	ActivityMember,
 	MobileConversation,

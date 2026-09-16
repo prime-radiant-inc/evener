@@ -1,10 +1,10 @@
 import type { ThreadModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { threadsStore } from "../../../stores/threads";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import {

@@ -61,6 +61,8 @@
     "taskListTime.ts",
     "launchSchema.ts",
     "launchInherited.ts",
-    "launchPathListAdd.ts"
+    "launchPathListAdd.ts",
+    "builtinInvocation.ts",
+    "transcriptDisplayConfig.ts"
   ]
 }

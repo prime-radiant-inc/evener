@@ -1,6 +1,6 @@
+import { decodeLocalConfig, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { decodeLocalConfig, makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import {
   clampSidebarWidth,
   dualWriteTranscriptDisplayLegacy,

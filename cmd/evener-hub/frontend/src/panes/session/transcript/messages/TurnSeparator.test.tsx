@@ -1,8 +1,8 @@
 import type { TurnModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { prefsStore, resetPrefsStoreForTests, usePrefsStore } from "../../../../stores/prefs";
-import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { TurnSeparator } from "./TurnSeparator";
 

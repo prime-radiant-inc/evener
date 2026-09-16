@@ -332,15 +332,23 @@ function notAcceptedError(clientMutationId: string): WireError {
   });
 }
 
-async function seedRejectedRecovery(storage: MutationOutboxIndexedDB, ref: string, text: string) {
-  const input = [{ type: "text", text }];
+// `intent` overrides the record's method and input; the default is a turn/start
+// carrying `text`, and a drain rejected with nothing queued carries no input.
+async function seedRejectedRecovery(
+  storage: MutationOutboxIndexedDB,
+  ref: string,
+  text: string,
+  intent: { method?: string; input?: unknown[] } = {},
+) {
+  const method = intent.method ?? "turn/start";
+  const input = intent.input ?? [{ type: "text", text }];
   const outbox = await storage.enqueueIntent({
     targetRef: ref,
     threadId: "thread_a",
-    method: "turn/start",
+    method,
     payload: { ref, input },
     attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
+    optimisticDisplay: { method, input },
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed recovery");
@@ -556,6 +564,27 @@ test("confirmed goal replacement invalidates pending attachments without later c
   expect(textarea().value).toBe("/goal Keep the session focused");
   expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
+  // A rejected turn/drainAsSteer recovers with no input, so its activation
+  // writes the same empty text the composer already holds (#1308).
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "", { method: "turn/drainAsSteer", input: [] });
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await flushPendingTurnsProjectionForTests();
+  // Activated, then discarded again by the recovery persistence because the
+  // recovered draft is empty: only that path removes the durable row.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(textarea().value).toBe("");
+
+  fireEvent.change(textarea(), { target: { value: "h" } });
+
+  expect(textarea().value).toBe("h");
+  expect(textarea().selectionStart).toBe(1);
+  expect(textarea().selectionEnd).toBe(1);
 });
 
 test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
