@@ -30,13 +30,11 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // controller's "<host>:<thread>" namespace and the remote hub's
 // "local:<thread>" namespace.
 //
-// This is component 05a: the read path (ID, ListThreads, ReadThread, ListTurns,
-// ListModels, and the item-mode paging seam) plus registration, and
-// component 05b: SubscribeThread and the per-host notification fan-out that
-// routes remote notifications to the controller relays watching each remote
-// thread. Turn/thread lifecycle mutations and mutation-unknown mapping (05c)
-// and the capability probe (05d) are staged; their interface methods exist
-// and fail loudly until then.
+// This is components 05a-05c: the read path (ID, ListThreads, ReadThread,
+// ListTurns, ListModels, and the item-mode paging seam) plus registration,
+// subscription fan-out, and the turn/thread lifecycle mutations (including
+// mutation-unknown mapping) that live in remote_hub_mutations.go. The
+// capability probe (05d) is still staged.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -109,15 +107,26 @@ func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
+//
+// A caller cancellation or deadline stays raw at every step, exactly as
+// mutationCall and LocalDaemonSource.withClientCallMapper leave ctx.Err(): the
+// caller's own context ending is not host unavailability, so mapping it through
+// would fire the auto-resume gate for a request the caller abandoned.
 func (s *RemoteHubSource) call(ctx context.Context, method string, params any, out any) error {
 	if err := ctx.Err(); err != nil {
-		return s.mapCallError(err)
+		return err
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
 		return s.mapCallError(err)
 	}
 	return s.translateOut(out)
@@ -1290,107 +1299,4 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
-}
-
-// notImplemented is the staged-method error for interface methods 05b/05c/05d
-// will fill in. It is deliberately loud and names the Go method so a wiring
-// mistake surfaces instead of silently degrading.
-func (s *RemoteHubSource) notImplemented(method string) error {
-	return appwire.InternalError(fmt.Sprintf("remote hub source: %s is not implemented yet", method))
-}
-
-func (s *RemoteHubSource) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	return appwire.ThreadStartResponse{}, s.notImplemented("StartThread")
-}
-
-func (s *RemoteHubSource) ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
-	return appwire.ThreadResumeResponse{}, s.notImplemented("ResumeThread")
-}
-
-func (s *RemoteHubSource) ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
-	return appwire.ThreadForkResponse{}, s.notImplemented("ForkThread")
-}
-
-func (s *RemoteHubSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	return appwire.TurnStartResponse{}, s.notImplemented("StartTurn")
-}
-
-func (s *RemoteHubSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	return appwire.TurnSteerResponse{}, s.notImplemented("SteerTurn")
-}
-
-func (s *RemoteHubSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
-	return s.notImplemented("ResolveSandboxEscalation")
-}
-
-func (s *RemoteHubSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-	return appwire.TurnInterruptResponse{}, s.notImplemented("InterruptTurn")
-}
-
-func (s *RemoteHubSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	return appwire.TurnQueueResponse{}, s.notImplemented("QueueTurn")
-}
-
-func (s *RemoteHubSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	return appwire.TurnDrainAsSteerResponse{}, s.notImplemented("DrainAsSteer")
-}
-
-func (s *RemoteHubSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return appwire.TurnPromoteQueuedAsSteerResponse{}, s.notImplemented("PromoteQueuedAsSteer")
-}
-
-func (s *RemoteHubSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	return appwire.TurnCancelQueuedResponse{}, s.notImplemented("CancelQueued")
-}
-
-func (s *RemoteHubSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
-	return s.notImplemented("CompactThread")
-}
-
-func (s *RemoteHubSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
-	return s.notImplemented("ShutdownThread")
-}
-
-func (s *RemoteHubSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	return s.notImplemented("SetThreadModel")
-}
-
-func (s *RemoteHubSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
-	return s.notImplemented("SetThreadReasoningEffort")
-}
-
-func (s *RemoteHubSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
-	return s.notImplemented("SetThreadVisionModel")
-}
-
-func (s *RemoteHubSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
-	return s.notImplemented("SetThreadName")
-}
-
-func (s *RemoteHubSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
-	return appwire.GoalSetResponse{}, s.notImplemented("GoalSet")
-}
-
-func (s *RemoteHubSource) NotesHumanSet(context.Context, appwire.NotesHumanSetParams) (appwire.NotesHumanSetResponse, error) {
-	return appwire.NotesHumanSetResponse{}, s.notImplemented("NotesHumanSet")
-}
-
-func (s *RemoteHubSource) UrlsRemove(context.Context, appwire.UrlsRemoveParams) (appwire.UrlsRemoveResponse, error) {
-	return appwire.UrlsRemoveResponse{}, s.notImplemented("UrlsRemove")
-}
-
-func (s *RemoteHubSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return appwire.ThreadClearResponse{}, s.notImplemented("ClearThread")
-}
-
-func (s *RemoteHubSource) ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-	return appwire.TaskListResponse{}, s.notImplemented("ListTasks")
-}
-
-func (s *RemoteHubSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
-	return appwire.JobsListResponse{}, s.notImplemented("ListJobs")
-}
-
-func (s *RemoteHubSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
-	return appwire.JobsOutputResponse{}, s.notImplemented("JobOutput")
 }
