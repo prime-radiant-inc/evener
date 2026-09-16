@@ -2,9 +2,8 @@
 // field bag behind the web's General, Hub, Storage, Agents and MCP-discovered
 // settings sections and the native hub settings screen. createHubOverviewStore
 // is a factory - each app builds the one instance it wires up, and tests build
-// their own - and the store is the getState/setState/subscribe triple plus
-// getInitialState, the shape React's useSyncExternalStore (and zustand's
-// useStore over it) binds to without the package depending on either.
+// their own - over the package's framework-free store, with reset() and
+// dispose() as store-bound extras.
 //
 // "Caches" means exactly one thing: once `data` is non-null, fetch() is a
 // no-op. A failed request (data still null) is NOT cached - the next fetch()
@@ -19,6 +18,7 @@
 
 import type { AppwireClient } from "./client";
 import { errorText } from "./errors";
+import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { SettingsOverviewResponse } from "./types.gen";
 
 export type HubOverviewClient = Pick<AppwireClient, "request">;
@@ -37,20 +37,9 @@ export interface HubOverviewState {
   refresh(): Promise<void>;
 }
 
-/** Runs after every state change with the new state and the one it replaced
- * - the listener shape zustand's useStore subscribes with. */
-export type HubOverviewListener = (state: HubOverviewState, previous: HubOverviewState) => void;
+export type HubOverviewListener = StoreListener<HubOverviewState>;
 
-export interface HubOverviewStore {
-  getState(): HubOverviewState;
-  /** The state the store was created with: the snapshot a view binding
-   * (React's useSyncExternalStore, zustand's useStore) reads before its first
-   * subscription. */
-  getInitialState(): HubOverviewState;
-  /** Shallow-merges the partial into the state and notifies every subscriber. */
-  setState(partial: Partial<HubOverviewState>): void;
-  /** Returns the unsubscribe function. */
-  subscribe(listener: HubOverviewListener): () => void;
+export interface HubOverviewStore extends FrameworkFreeStore<HubOverviewState> {
   /** Back to the initial state; a request still in flight publishes nothing
    * when it lands, and the next fetch() requests again. */
   reset(): void;
@@ -82,24 +71,29 @@ function normalizeSettingsOverview(data: SettingsOverviewResponse): SettingsOver
 }
 
 export function createHubOverviewStore(client: HubOverviewClient): HubOverviewStore {
-  const listeners = new Set<HubOverviewListener>();
   let inflight: Promise<void> | null = null;
   // Bumped by reset() and dispose(); a request that started under an older
   // generation publishes nothing when it lands.
   let generation = 0;
   let disposed = false;
-  let state: HubOverviewState;
 
-  const setState: HubOverviewStore["setState"] = (partial) => {
-    const previous = state;
-    state = { ...state, ...partial };
-    for (const listener of listeners) listener(state, previous);
-  };
+  const store = createFrameworkFreeStore<HubOverviewState>((_set, get) => ({
+    data: null,
+    loading: false,
+    error: null,
+    async fetch() {
+      if (get().data !== null) return;
+      await ensureInflight();
+    },
+    async refresh() {
+      await ensureInflight();
+    },
+  }));
 
   async function runRequest(): Promise<void> {
     const started = generation;
     const publish = (partial: Partial<HubOverviewState>) => {
-      if (started === generation) setState(partial);
+      if (started === generation) store.setState(partial);
     };
     publish({ loading: true, error: null });
     try {
@@ -125,36 +119,14 @@ export function createHubOverviewStore(client: HubOverviewClient): HubOverviewSt
     return inflight;
   }
 
-  const initial: HubOverviewState = {
-    data: null,
-    loading: false,
-    error: null,
-    async fetch() {
-      if (state.data !== null) return;
-      await ensureInflight();
-    },
-    async refresh() {
-      await ensureInflight();
-    },
-  };
-  state = initial;
-
   const reset = () => {
     generation += 1;
     inflight = null;
-    setState(initial);
+    store.setState(store.getInitialState());
   };
 
   return {
-    getState: () => state,
-    getInitialState: () => initial,
-    setState,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    ...store,
     reset,
     dispose() {
       disposed = true;
