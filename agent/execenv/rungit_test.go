@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"testing"
 )
@@ -56,6 +57,65 @@ func TestRunGitFallsBackToShellWithoutArgvExecutor(t *testing.T) {
 	}
 	if fake.gotTimeoutMS != 1234 || fake.gotWorkingDir != "/work/dir" {
 		t.Fatalf("ExecCommand timeout/workingDir = %d/%q, want 1234//work/dir", fake.gotTimeoutMS, fake.gotWorkingDir)
+	}
+}
+
+// TestRunGitRefusesShellFallbackOnWindows proves RunGit's fallback fails closed
+// on a platform whose shell cannot honor ShellEscapeArgs' POSIX quoting:
+// cmd.exe treats a single quote as an ordinary character and still expands
+// %VAR%, so rendering "a & calc &" as "'a & calc &'" is not quoting there (see
+// internal/shellquote's "POSIX shells only" contract). An environment that
+// reports Windows and lacks ArgvExecutor must get an error instead of a command
+// line — never ExecCommand("git " + ShellEscapeArgs(args...)).
+func TestRunGitRefusesShellFallbackOnWindows(t *testing.T) {
+	cases := []struct {
+		name     string
+		platform string
+	}{
+		{name: "windows", platform: "windows"},
+		{name: "mixed case", platform: "Windows"},
+		{name: "surrounding whitespace", platform: " windows "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &shellOnlyEnv{platform: tc.platform, result: ExecResult{Stdout: "must not run"}}
+			res, err := RunGit(context.Background(), fake, "/work/dir", 1234, "commit", "-m", "a & calc &")
+			if err == nil {
+				t.Fatalf("RunGit built a shell command line for platform %q: %q", tc.platform, fake.gotCommand)
+			}
+			if !errors.Is(err, errRunGitShellUnsupported) {
+				t.Fatalf("RunGit error = %v, want it to wrap errRunGitShellUnsupported", err)
+			}
+			if fake.gotCommand != "" {
+				t.Fatalf("RunGit still called ExecCommand with %q", fake.gotCommand)
+			}
+			if res.Stdout != "" || res.ExitCode == 0 {
+				t.Fatalf("RunGit result = %+v, want an empty result with a nonzero exit code", res)
+			}
+		})
+	}
+}
+
+// TestRunGitShellFallbackStaysAvailableOnPOSIXPlatforms proves the Windows
+// refusal does not regress any other platform: when the environment's shell
+// does honor POSIX quoting — including fakes that report no real platform —
+// RunGit still hands ExecCommand the escaped command line.
+func TestRunGitShellFallbackStaysAvailableOnPOSIXPlatforms(t *testing.T) {
+	for _, platform := range []string{"test", "linux", "darwin"} {
+		t.Run(platform, func(t *testing.T) {
+			fake := &shellOnlyEnv{platform: platform, result: ExecResult{Stdout: "ok", ExitCode: 0}}
+			res, err := RunGit(context.Background(), fake, "/work/dir", 1234, "commit", "-m", "a & calc &")
+			if err != nil {
+				t.Fatalf("RunGit: %v", err)
+			}
+			if res.Stdout != "ok" {
+				t.Fatalf("RunGit result = %+v", res)
+			}
+			want := "git " + ShellEscapeArgs("commit", "-m", "a & calc &")
+			if fake.gotCommand != want {
+				t.Fatalf("ExecCommand command = %q, want %q", fake.gotCommand, want)
+			}
+		})
 	}
 }
 
@@ -122,7 +182,10 @@ func (e *argvOnlyEnv) ExecArgv(_ context.Context, name string, args []string, ti
 }
 
 type shellOnlyEnv struct {
-	result        ExecResult
+	result ExecResult
+	// platform is what Platform reports; empty keeps the original "test"
+	// fixture value so pre-existing cases are unaffected.
+	platform      string
 	gotCommand    string
 	gotTimeoutMS  int
 	gotWorkingDir string
@@ -131,9 +194,14 @@ type shellOnlyEnv struct {
 func (e *shellOnlyEnv) Initialize() error        { return nil }
 func (e *shellOnlyEnv) Cleanup()                 {}
 func (e *shellOnlyEnv) WorkingDirectory() string { return "" }
-func (e *shellOnlyEnv) Platform() string         { return "test" }
-func (e *shellOnlyEnv) OSVersion() string        { return "test" }
-func (e *shellOnlyEnv) FileExists(string) bool   { return false }
+func (e *shellOnlyEnv) Platform() string {
+	if e.platform == "" {
+		return "test"
+	}
+	return e.platform
+}
+func (e *shellOnlyEnv) OSVersion() string      { return "test" }
+func (e *shellOnlyEnv) FileExists(string) bool { return false }
 func (e *shellOnlyEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
