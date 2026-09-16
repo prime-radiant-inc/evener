@@ -6017,3 +6017,35 @@ test("a failed turn/completed for a superseded turn leaves the active session al
   expect(folded.status.type).toBe("active");
   expect(folded.activeTurnId).toBe("turn_2");
 });
+
+// askPending stays wire-authoritative and the wire can now refresh it: the hub
+// stamps the flag on thread/status/changed, which is the frame that goes with
+// every clear of the pending set (a resolving user turn, an interrupt), so a
+// client stops saying "question waiting" without a reread (#1613). Absent still
+// means "no update", so an older hub cannot blank a flag the hydrate gave us.
+test("thread/status/changed carries askPending, and absence leaves it alone", () => {
+  const asking = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+  });
+  expect(asking.askPending).toBe(true);
+
+  const answered = applyNotification(
+    asking,
+    {
+      method: "thread/status/changed",
+      params: { threadId: asking.threadId, ref: "ref_t", status: { type: "active" }, askPending: false },
+    } as AnyNotification,
+    1_000,
+  );
+  expect(answered.askPending).toBe(false);
+
+  const olderHub = applyNotification(
+    asking,
+    {
+      method: "thread/status/changed",
+      params: { threadId: asking.threadId, ref: "ref_t", status: { type: "active" } },
+    } as AnyNotification,
+    2_000,
+  );
+  expect(olderHub.askPending).toBe(true);
+});
