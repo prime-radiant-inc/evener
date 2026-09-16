@@ -27,9 +27,11 @@ marketplace source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
 with, the credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
-flat row builder with the path helpers both apps' path fields share, and the
-doc-pane URL builders, which hang their hrefs off a base origin the host
-supplies (empty for a same-origin web page). The doc-pane data layer is
+flat row builder with the path helpers both apps' path fields share, the
+built-in slash invocation matcher and argument lookup both composers run a
+draft through before sending it, and the doc-pane URL builders, which hang
+their hrefs off a base origin the host supplies (empty for a same-origin web
+page). The doc-pane data layer is
 published at the `./docContent` subpath as well, where `readDocFile` takes
 the host's `DocPort` - that base origin paired with a fetch: the package
 issues no request of its own and names neither an origin nor a credentials

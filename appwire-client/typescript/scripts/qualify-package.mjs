@@ -196,6 +196,8 @@ const pathRows = client.buildPathRows({
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
 assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
+assert.equal(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }])?.argsText, "fix it");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -275,7 +277,11 @@ assert.equal(typeof client.readDocFile, "function");
   for (const module of shippedModules)
     assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
   // One ESM declaration consumer, one CommonJS declaration consumer and one
-  // runtime presence check in each module form, per published specifier.
+  // runtime presence check in each module form, per published specifier. Each
+  // type is named only as an `import type` specifier, the one position that
+  // does not instantiate it, so a generic type qualifies without anyone
+  // supplying its arguments (an import alias cannot name an `export type`
+  // re-export, and a tuple of bare names cannot name a generic).
   const declarationConsumers = [];
   const runtimeConsumers = [];
   const consumerNames = new Set();
@@ -304,7 +310,6 @@ import type {
 ${surface.types.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
 ${surface.esmTypeUses ?? ""}
-declare const shipped: [${surface.types.join(", ")}]; void shipped;
 ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
@@ -312,7 +317,9 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
       join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
-declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+import type {
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
 ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );
