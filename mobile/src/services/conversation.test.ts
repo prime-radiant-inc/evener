@@ -519,35 +519,52 @@ describe("ConversationService", () => {
       expect(result.nextCursor).toBe("next-cursor");
     });
 
-    it("merges overlapping fragment items by transcriptKey and orders by position", async () => {
+    // A page goes through the package's page merge, so a reload page that
+    // carries a tool call and its result as two items sharing a callId (in
+    // separate wire turns, as apptranscript mints them) shows one settled
+    // tool row carrying the result, exactly as the web renders that page.
+    it("folds a page's tool call and result into one row through the package's page merge", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
-      const items = [
-        {
-          id: "wire-new",
-          transcriptKey: "stable-item",
-          position: { entry: 2, item: 0 },
-          type: "userMessage",
-          text: "new payload",
-        },
-        {
-          id: "wire-old",
-          transcriptKey: "stable-item",
-          position: { entry: 1, item: 0 },
-          type: "userMessage",
-          text: "old payload",
-        },
-      ] as ThreadItem[];
       client.on(
         "thread/turns/list",
         () =>
           ({
             data: [
               {
-                id: "turn-older",
+                id: "turn-call",
                 itemsView: "fragment",
                 status: "completed",
-                items,
+                items: [
+                  {
+                    id: "item_tool_1",
+                    type: "commandExecution",
+                    toolName: "shell",
+                    callId: "call-1",
+                    argumentsJson: '{"command":"make"}',
+                    status: "inProgress",
+                    transcriptKey: "k:call",
+                    position: { entry: 1, item: 0 },
+                  },
+                ] as ThreadItem[],
+              },
+              {
+                id: "turn-result",
+                itemsView: "fragment",
+                status: "completed",
+                items: [
+                  {
+                    id: "item_tool_result_1",
+                    type: "commandExecution",
+                    toolName: "shell",
+                    callId: "call-1",
+                    output: "ok",
+                    exitCode: 0,
+                    status: "completed",
+                    transcriptKey: "k:result",
+                    position: { entry: 2, item: 0 },
+                  },
+                ] as ThreadItem[],
               },
             ],
           }) as ThreadTurnsListResponse,
@@ -556,9 +573,10 @@ describe("ConversationService", () => {
       const result = await service.loadOlder("opaque-cursor");
       expect(result.items).toHaveLength(1);
       expect(result.items[0]).toMatchObject({
-        kind: "user",
-        id: "wire-old",
-        text: "old payload",
+        kind: "activity",
+        id: "item_tool_1",
+        state: "completed",
+        detail: { arguments: '{"command":"make"}', output: "ok", exitCode: 0 },
       });
     });
 
