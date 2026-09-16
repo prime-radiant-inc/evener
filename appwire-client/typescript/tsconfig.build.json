@@ -87,6 +87,7 @@
     "state/mutation/index.ts",
     "state/mutation/records.ts",
     "state/mutation/pendingEntries.ts",
+    "state/mutation/secureUUID.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
     "spawnHarnessModels.ts",

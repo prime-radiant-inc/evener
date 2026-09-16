@@ -134,16 +134,22 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
   `MutationRecoveryRecord`), generic over the attachment type so a host's own
   attachment bytes (the web's `Blob`) never enter the package, and the client
-  provenance a shared outbox's readers need (`ownClientId`, backed by a
-  structural `ClientIdentityStorage` port defaulting to
-  `globalThis.sessionStorage`, and `isOwnMutationRecord`, which a durable
-  record written before the field existed satisfies too), and the pure
-  reconciliation (`reconcilePendingEntries`) that turns those durable records
-  plus a live `ThreadModel` into the `PendingTurnEntry` rows a composer's
-  queue renders - identity-based, so an authoritative projection replaces the
-  same outbox entry rather than duplicating it. No storage, scheduling or DOM
-  type lives here - just the shape, the rule and the reconciliation. Resolves
-  to `state/mutation/index.ts`, a barrel.
+  provenance a shared outbox's readers need. `createClientIdentity(storage)`
+  is a factory, not a module singleton - the package names no browser global,
+  so a host builds one instance over its own `ClientIdentityStorage` port (the
+  web passes a lazy `sessionStorage` adapter; a host with none gets a
+  per-process identity) and gets back `{ ownClientId, isOwnMutationRecord }`,
+  each memoized per instance. `isOwnMutationRecord` claims an unattributed
+  record (written before the field existed) as well as this instance's own.
+  `createSecureUUID` (with its `SecureRandomSource` port) is the strong
+  identifier source both the record shapes' `clientMutationId` convention and
+  a generated client identity use. The pure reconciliation
+  (`reconcilePendingEntries`) turns those durable records plus a live
+  `ThreadModel` into the `PendingTurnEntry` rows a composer's queue renders -
+  identity-based, so an authoritative projection replaces the same outbox
+  entry rather than duplicating it. No storage, scheduling or DOM type lives
+  here - just the shape, the identity and the reconciliation. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

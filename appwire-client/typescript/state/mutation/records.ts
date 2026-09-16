@@ -1,3 +1,5 @@
+import { createSecureUUID } from "./secureUUID";
+
 // The durable shape of a mutation this client submitted, and the one question
 // every reader of a shared outbox has to answer about it: did THIS client
 // submit it?
@@ -89,73 +91,73 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
 // --- client provenance -------------------------------------------------------
 
 // The store this client's identity is remembered in: per client, stable across
-// that client's restarts. The web passes sessionStorage (per tab, surviving a
-// reload); a host without one passes nothing and gets a per-process identity
-// that lives as long as the module does. Structural on purpose — no DOM types
-// here — and every access is guarded, because a storage can throw as easily as
-// it can be missing.
+// that client's restarts. The web passes a lazy sessionStorage adapter (per
+// tab, surviving a reload); a host without one passes `undefined` and gets a
+// per-process identity that lives as long as the instance does. Structural on
+// purpose — no DOM types here — and every access is guarded, because a
+// storage can throw as easily as it can be missing.
 export interface ClientIdentityStorage {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
 }
 
+export interface ClientIdentity {
+  ownClientId(): string;
+  isOwnMutationRecord(record: { originClientId?: string }): boolean;
+}
+
 const STORAGE_KEY = "evener-hub.mutation-client-identity";
 
-let identity: string | undefined;
-
-function defaultStorage(): ClientIdentityStorage | undefined {
-  const storage = (globalThis as { sessionStorage?: ClientIdentityStorage }).sessionStorage;
-  return storage ?? undefined;
-}
-
-// A fresh storeable identity. crypto.randomUUID is this codebase's strong
-// identifier source (mutation ids use it); the random/timestamp string remains
-// the fallback for runtimes that do not expose it.
+// A fresh storeable identity, over the same secure-UUID helper mutation ids
+// use: createSecureUUID already prefers crypto.randomUUID and falls back to
+// an RFC4122-shaped id built from getRandomValues, so this module carries no
+// second, weaker fallback of its own.
 function newClientIdentity(): string {
-  const uuid = globalThis.crypto?.randomUUID?.();
-  if (uuid !== undefined) return `mutation-client-${uuid}`;
-  return `mutation-client-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  return `mutation-client-${createSecureUUID()}`;
 }
 
-// The identity of THIS client for durable mutation provenance: stamped on
-// every record it enqueues, and compared against records read back out of
-// shared storage.
+// One identity per instance, not a module singleton: the package names no
+// browser global (sessionStorage is the web's, not every host's), and a host
+// that builds a second instance over a second storage — a second tab's
+// worker, a test double — must get a second identity rather than silently
+// inheriting the first instance's.
 //
-// One client, one identity: once this module has an identity — adopted from
+// One client, one identity: once an instance has an identity — adopted from
 // storage or generated — it is returned as-is and never replaced. In
 // particular an identity created while storage was unavailable must survive
 // storage becoming available later; reading storage again would switch
 // identity mid-life and make records stamped with the first one look like
 // another client's.
-export function ownClientId(storage: ClientIdentityStorage | undefined = defaultStorage()): string {
-  if (identity !== undefined) return identity;
-  try {
-    const stored = storage?.getItem(STORAGE_KEY);
-    if (stored !== null && stored !== undefined && stored !== "") {
-      identity = stored;
-      return stored;
+export function createClientIdentity(storage: ClientIdentityStorage | undefined): ClientIdentity {
+  let identity: string | undefined;
+
+  function ownClientId(): string {
+    if (identity !== undefined) return identity;
+    try {
+      const stored = storage?.getItem(STORAGE_KEY);
+      if (stored !== null && stored !== undefined && stored !== "") {
+        identity = stored;
+        return stored;
+      }
+    } catch {
+      // Best-effort: the identity below keeps this client consistent either way.
     }
-  } catch {
-    // Best-effort: the identity below keeps this client consistent either way.
+    identity = newClientIdentity();
+    try {
+      storage?.setItem(STORAGE_KEY, identity);
+    } catch {
+      // Best-effort, same rationale.
+    }
+    return identity;
   }
-  identity = newClientIdentity();
-  try {
-    storage?.setItem(STORAGE_KEY, identity);
-  } catch {
-    // Best-effort, same rationale.
+
+  // Whether a durable record belongs to this client: unattributed records
+  // (written before the field existed) stay claimable so an in-flight
+  // submission survives a deploy, but a record naming another client is
+  // never ours.
+  function isOwnMutationRecord(record: { originClientId?: string }): boolean {
+    return record.originClientId === undefined || record.originClientId === ownClientId();
   }
-  return identity;
-}
 
-// Whether a durable record belongs to this client: unattributed records
-// (written before the field existed) stay claimable so an in-flight submission
-// survives a deploy, but a record naming another client is never ours.
-export function isOwnMutationRecord(record: { originClientId?: string }): boolean {
-  return record.originClientId === undefined || record.originClientId === ownClientId();
-}
-
-// Test seam: simulates reading shared storage as a different client. No
-// production code may call this.
-export function setMutationClientIdentityForTests(value: string | undefined): void {
-  identity = value;
+  return { ownClientId, isOwnMutationRecord };
 }
