@@ -2594,13 +2594,72 @@ func TestRemoteHubSubscribeThreadAttachRequestOmitsTurnPayload(t *testing.T) {
 	}
 }
 
+// A caller that cancels while its attach is unanswered must release the remote
+// side only once the request is actually settled, and the connection ending is
+// such a settlement: appwire fails a pending request when its read loop exits,
+// and the remote hub reaps a connection's subscriptions when the connection goes
+// away — the one cancellation the remote can observe. Nothing may be released
+// while the attach is unconfirmed (the routing entry is what keeps a
+// predecessor's unsubscribe deferred to this attachment), and cleanup must run
+// once the connection ends rather than waiting on a local timer that no longer
+// exists.
+func TestRemoteHubSubscribeCancelReleasesWhenConnectionEnds(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+
+	remote := newPushableRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadRead {
+			// Parked: the attach never answers while the connection is alive.
+			<-release
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{}}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := remote.source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "host:S"})
+		done <- err
+	}()
+	waitForRemoteSubscribeCall(t, remote)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SubscribeThread after the caller cancelled = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SubscribeThread did not return after the caller cancelled")
+	}
+
+	// Unconfirmed: the attachment keeps its routing slot and nothing is released.
+	if installedSubscriberIn(t, remote.source, "S") == nil {
+		t.Fatal("an unconfirmed attach was released before its subscribe was settled")
+	}
+	for _, call := range remote.calls() {
+		if call.method == appwire.MethodThreadUnsubscribe {
+			t.Fatalf("release ran while the subscribe was unconfirmed: %s", string(call.params))
+		}
+	}
+
+	// The connection ends, which settles the pending request and runs cleanup.
+	_ = remote.client.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for installedSubscriberIn(t, remote.source, "S") != nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the connection-settled attach was never released")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A successful subscribe that a concurrent replacement displaces before
-// settlement must still record the canonical remote ref the snapshot named.
-// The caller-derived provisional target can be a thread ID the remote
-// canonicalizes to its stable ref, so cleanup that released the provisional
-// target names a subscription the remote never held and leaves the stable-ref
-// subscription active with no local owner. Displaced settlement returned before
-// recording the snapshot identity.
+// settlement must still record the canonical remote ref the snapshot named. The
+// caller-derived provisional target can be a thread ID the remote canonicalizes
+// to its stable ref, so cleanup that released the provisional target names a
+// subscription the remote never held and leaves the stable-ref subscription
+// active with no local owner. Displaced settlement returned before recording the
+// snapshot identity.
 func TestRemoteHubDisplacedSettleUnsubscribesCanonicalRef(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
