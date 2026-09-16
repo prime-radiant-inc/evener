@@ -23,13 +23,23 @@ func registerFavoriteHandler(server *appserver.Server, cfg hubcore.WebConfig, na
 		if cfg.Favorite == nil {
 			return appwire.FavoriteSetResponse{}, appwire.InternalError("favorite store not configured")
 		}
-		if err := cfg.Favorite.Set(params.Kind, params.ID, params.Favorited, time.Now()); err != nil {
+		// The owning source qualifies the favorite: two hosts' projects share an
+		// ID, so keying by (source, id) keeps their favorites distinct. The
+		// wire default "local" names the controller's own projects.
+		source := hubcore.NormalizeDecisionSource(params.Source)
+		if err := validateDecisionSource(cfg, source); err != nil {
+			return appwire.FavoriteSetResponse{}, err
+		}
+		if err := cfg.Favorite.Set(source, params.Kind, params.ID, params.Favorited, time.Now()); err != nil {
 			return appwire.FavoriteSetResponse{}, appwire.InternalError("favorite store error: " + err.Error())
 		}
 		if navigation == nil {
 			return appwire.FavoriteSetResponse{}, appwire.Unavailable("navigation service not configured")
 		}
-		mutation, err := navigation.Refresh(ctx, navigationChangeHint{Projects: []string{params.ID}})
+		// The favorite decision's effect on the tree reaches navigation through
+		// the source fingerprint delta; navigationChangeHint.Projects is not
+		// consumed, so no per-project hint is fabricated here.
+		mutation, err := navigation.Refresh(ctx, navigationChangeHint{})
 		if err != nil {
 			return appwire.FavoriteSetResponse{}, appwire.Unavailable(err.Error())
 		}

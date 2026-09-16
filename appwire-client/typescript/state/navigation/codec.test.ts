@@ -678,6 +678,93 @@ test("codec enforces the projector graph-depth boundary", () => {
   }
 });
 
+// The projector emits a project summary with the sources that own its rows
+// ("local" for this hub's own sessions, a configured host name for each remote
+// host's) whenever it is not controller-only, because every project-level
+// mutation is keyed by (source, project ID). The normalizer emits that summary
+// verbatim as the catalog entity's value, and entity validation is fail-closed
+// — one unreadable row rejects the resource — so the catalog only decodes at
+// all if the key is admitted with the projector's own bounds: at most one
+// entry per source the inputs admit, each a non-empty identity.
+test("codec decodes a catalog whose project rows carry owning sources", () => {
+  const projects: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 };
+  const mergedEntity = entityKey(projects, "3");
+  const remoteEntity = entityKey(projects, "4");
+  const catalogSnapshot = (projectRows: Array<Record<string, unknown>>): NavigationSnapshot => ({
+    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 100, remaining: 0 },
+    entities: projectRows.map((value, index) => ({
+      key: index === 0 ? mergedEntity : remoteEntity,
+      kind: "project",
+      value,
+    })),
+    containers: [
+      {
+        key: navigationRootContainerKey(projects, "projects"),
+        owner: { kind: "resource_root", slot: "projects" },
+        children: [mergedEntity, remoteEntity],
+      },
+    ],
+  });
+  // The exact summary shape a merged project (a local checkout plus a remote
+  // host's clone under the same canonical ID and path) marshals to, beside the
+  // remote-only shape that names a single host.
+  const mergedProject = {
+    key: "p-merged",
+    name: "Merged Project",
+    working_dir: "/shared/proj",
+    rollup_state: "working",
+    rollup_live: 2,
+    rollup_attn: 1,
+    default_expanded: true,
+    more_recent: 1,
+    worktrees: 2,
+    is_archived: false,
+    favorite: true,
+    sources: ["local", "host-a"],
+    session_count: 3,
+  };
+  const remoteProject = { key: "p-remote", name: "Remote Project", sources: ["host-a"], session_count: 1 };
+  const decodeCatalog = (projectRows: Array<Record<string, unknown>>) =>
+    decodeNavigationResponse(projects, undefined, snapshotResponse(projects, catalogSnapshot(projectRows)));
+  expect(decodeCatalog([mergedProject, remoteProject]).status).toBe("snapshot");
+  // A controller-only summary omits the field; an explicitly empty list is the
+  // same default the hub's decision readers apply to an empty source list.
+  expect(decodeCatalog([mergedProject, { ...remoteProject, sources: [] }]).status).toBe("snapshot");
+  // Each entry is a decision key, so the resource is rejected outright rather
+  // than one row being dropped: an empty or unbounded identity, a non-string,
+  // a bare string rather than a list, and the manifest's object shape (which
+  // describes the connected sources, not a project's owners) all fail closed.
+  for (const sources of [
+    "",
+    "local",
+    null,
+    {},
+    [""],
+    ["local", ""],
+    ["local", 7],
+    ["local", undefined],
+    ["local", "x".repeat(1025)],
+    [{ id: "host-a", label: "Host A", kind: "remote", online: true }],
+    Array.from({ length: 66 }, (_, index) => `host-${index}`),
+  ]) {
+    expect(() => decodeCatalog([mergedProject, { ...remoteProject, sources }])).toThrow();
+  }
+});
+
+// The manifest's `sources` and a project summary's `sources` share a key name
+// but nothing else: the manifest carries connected-source records for the
+// source rail, a project carries the owner names its mutation is keyed by. Each
+// shape must reject the other so neither test can pass by validating the wrong
+// contract.
+test("codec keeps the manifest's source records and a project's owner names apart", () => {
+  const fixtures = schemaFixtures();
+  const manifest = fixtures.find((fixture) => fixture.key.kind === "manifest");
+  if (manifest?.key.kind !== "manifest") throw new Error("missing manifest fixture");
+  const withOwnerNames = cloneSnapshot(manifest.snapshot);
+  withOwnerNames.metadata = { ...(withOwnerNames.metadata as object), sources: ["local", "host-a"] };
+  expectContentFreeRejection(manifest.key, withOwnerNames);
+});
+
 test.each([
   {
     name: "section",

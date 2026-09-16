@@ -286,6 +286,7 @@ An embedded type contributes its own fields inline.
 | `id` | `string` |  |  |
 | `workingDir` | `string` | yes |  |
 | `archived` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ArchiveResponse`
@@ -631,6 +632,7 @@ _(no fields)_
 | `kind` | `string` |  |  |
 | `id` | `string` |  |  |
 | `favorited` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `FavoriteSetResponse`
@@ -1402,6 +1404,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `key` | `string` |  |  |
 | `workingDir` | `string` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ProjectDeleteResponse`
@@ -1820,6 +1823,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `harness` | `string` | yes |  |
+| `source` | `string` | yes |  |
 | `cwd` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 | `modelProvider` | `string` | yes |  |

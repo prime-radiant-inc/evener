@@ -39,6 +39,12 @@ export interface RailProject {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  // The navigation summary's owning sources ("local" for this hub's own
+  // sessions, a configured host name for each remote host's). Project-level
+  // mutations are keyed by (source, project ID), so the rail passes them
+  // through to favorite/archive/delete instead of letting the request default
+  // to this hub's own project of the same ID or path.
+  sources?: string[];
   session_count?: number;
   sessions: RailSession[];
   loaded?: boolean;
