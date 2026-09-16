@@ -388,16 +388,7 @@ credentialStore.connectionChanged(null, "idle");
 assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
 assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
 assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
-credentialStore
-  .getState()
-  .fetch()
-  .then(
-    () => {
-      console.error("a store without a connection must refuse to read");
-      process.exit(1);
-    },
-    (err) => assert.match(String(err), /no client connected/),
-  );
+assert.rejects(credentialStore.getState().fetch(), /no client connected/);
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins

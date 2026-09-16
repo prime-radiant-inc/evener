@@ -2,6 +2,7 @@ import {
   safeCredentialTestResult,
   sessionActionError,
 } from "@evener/appwire-client";
+import { randomUUID } from "expo-crypto";
 import type {
   AuthTestResponse,
   InstanceCreateParams,
@@ -34,7 +35,7 @@ interface ProviderState {
 // This app's identity on the auth mutations it issues: the hub echoes it in
 // evener/auth/updated so every client attributes the change to its origin.
 // One per process is enough - nothing durable compares it later.
-const nativeClientId = `native-${globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)}`;
+const nativeClientId = `native-${randomUUID()}`;
 
 /** Provider data and operations owned by one connected hub's screen lifetime:
  * the package's credential instances store core, driven for one client and
@@ -85,13 +86,18 @@ export class ProviderInstances {
       // The rows a credential test was checked against are gone with the
       // listing, whoever changed it - this screen, another client, the TUI -
       // so a shown result comes down and a probe still in flight is discarded.
-      this.testRevision += 1;
-      change.credentialTest = null;
+      Object.assign(change, this.invalidateTest());
     }
     if (state.loading !== previous.loading) change.loading = state.loading;
     if (state.error !== previous.error)
       change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
     if (Object.keys(change).length > 0) this.publish(change);
+  }
+  // invalidateTest retires any credential test - a shown result, or a probe
+  // still in flight - and returns the state change that takes it down.
+  private invalidateTest(): Pick<ProviderState, "credentialTest"> {
+    this.testRevision += 1;
+    return { credentialTest: null };
   }
   start() {
     if (this.disposed || this.started) return;
@@ -101,8 +107,7 @@ export class ProviderInstances {
   refresh = async (): Promise<void> => {
     if (this.disposed) return;
     this.connect();
-    this.testRevision += 1;
-    this.publish({ credentialTest: null });
+    this.publish(this.invalidateTest());
     if (this.state.busy) return;
     await this.core.getState().fetch();
   };
@@ -112,8 +117,7 @@ export class ProviderInstances {
     if (configuration && (!this.state.data || this.state.data.writesRefused))
       throw new Error("Provider configuration is unavailable for editing");
     this.connect();
-    this.testRevision += 1;
-    this.publish({ busy: true, credentialTest: null });
+    this.publish({ busy: true, ...this.invalidateTest() });
     try {
       await action();
     } catch (error) {

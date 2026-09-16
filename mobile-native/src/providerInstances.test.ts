@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type {
   AnyNotification,
   InstanceListResponse,
@@ -7,6 +7,11 @@ import type { CredentialListing } from "@evener/appwire-client/state/credentials
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
+
+vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // The core's normalized listing: every optional wire field present.
 const listing = (
@@ -40,6 +45,17 @@ function boundary() {
   } as ConversationClientLike;
   const model = new ProviderInstances(client);
   return { model, io, requests, handlers };
+}
+// Another client (or the TUI) changed a provider's credentials: the hub's
+// broadcast reaches every listener on the connection.
+function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>) {
+  for (const notify of handlers)
+    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
+}
+// answerProbeWith scripts the client so a credential test gets `probe`'s
+// answer and every listing read reports rows changed elsewhere.
+function answerProbeWith(io: { request: (method: string, params: unknown) => Promise<unknown> }, probe: () => Promise<unknown>) {
+  io.request = (method) => (method === "evener/auth/test" ? probe() : Promise.resolve(listing("changed elsewhere")));
 }
 it("retains the last provider list after a failed refresh", async () => {
   const { model, io } = boundary();
@@ -75,11 +91,7 @@ it("refetches when auth changes during a read instead of publishing the stale re
   io.request = () =>
     ++reads === 1 ? pending.promise : Promise.resolve(listing("updated"));
   model.start();
-  for (const notify of handlers)
-    notify({
-      method: "evener/auth/updated",
-      params: { provider: "test", activeSource: "store" },
-    });
+  foreignAuthChange(handlers);
   pending.resolve(listing("stale"));
   await model.refresh();
   expect(model.getSnapshot().data).toEqual(listing("updated"));
@@ -87,19 +99,19 @@ it("refetches when auth changes during a read instead of publishing the stale re
   model.dispose();
 });
 it("refuses configuration writes while allowing independent credential repair", async () => {
+  vi.useFakeTimers();
   const { model, io, requests } = boundary();
   io.request = async () => listing("bad provider file", true);
   await model.refresh();
   await expect(model.remove("test")).rejects.toThrow("configuration");
   await model.clearStoredKey("test");
   // The post-write read is the core's own coalesced refresh.
-  await vi.waitFor(() =>
-    expect(requests.map((r) => r.method)).toEqual([
-      "evener/instance/list",
-      "evener/auth/apiKey/clear",
-      "evener/instance/list",
-    ]),
-  );
+  await vi.advanceTimersByTimeAsync(300);
+  expect(requests.map((r) => r.method)).toEqual([
+    "evener/instance/list",
+    "evener/auth/apiKey/clear",
+    "evener/instance/list",
+  ]);
 });
 it("does not replay a failed mutation and reconciles with a read", async () => {
   const { model, io, requests } = boundary();
@@ -185,32 +197,29 @@ it("discards credential results invalidated by a provider refresh", async () => 
   expect(model.getSnapshot().credentialTest).toBeNull();
 });
 it("a foreign auth change clears a shown credential test result", async () => {
+  vi.useFakeTimers();
   const { model, io, handlers } = boundary();
   await model.refresh();
-  io.request = async (method) =>
-    method === "evener/auth/test"
-      ? { provider: "test", status: "success", message: "" }
-      : listing("changed elsewhere");
+  answerProbeWith(io, async () => ({ provider: "test", status: "success", message: "" }));
   await model.testCredentials("test");
   expect(model.getSnapshot().credentialTest?.result?.status).toBe("success");
-  // Another client (or the TUI) changed this provider's credentials: the
-  // listing the result was checked against is gone with it.
-  for (const notify of handlers)
-    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
-  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("changed elsewhere")));
+  // The listing the result was checked against is gone with the change.
+  foreignAuthChange(handlers);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(model.getSnapshot().data).toEqual(listing("changed elsewhere"));
   expect(model.getSnapshot().credentialTest).toBeNull();
   model.dispose();
 });
 it("a foreign auth change discards a credential test still in flight", async () => {
+  vi.useFakeTimers();
   const { model, io, handlers } = boundary();
   await model.refresh();
   const pending = deferred<unknown>();
-  io.request = (method) =>
-    method === "evener/auth/test" ? pending.promise : Promise.resolve(listing("changed elsewhere"));
+  answerProbeWith(io, () => pending.promise);
   const check = model.testCredentials("test");
-  for (const notify of handlers)
-    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
-  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("changed elsewhere")));
+  foreignAuthChange(handlers);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(model.getSnapshot().data).toEqual(listing("changed elsewhere"));
   pending.resolve({ provider: "test", status: "success", message: "" });
   await check;
   expect(model.getSnapshot().credentialTest).toBeNull();
@@ -253,6 +262,7 @@ it("stores credential JSON once, reconciles a lost reply and never publishes its
 });
 
 it("reconciles a successful credential JSON write through the authoritative list", async () => {
+  vi.useFakeTimers();
   const { model, io, requests } = boundary();
   await model.refresh();
   const credential = '{"type":"authorized_user","refresh_token":"fixture"}';
@@ -264,14 +274,13 @@ it("reconciles a successful credential JSON write through the authoritative list
   await model.setCredentialJson("vertex", credential);
 
   // The post-write read is the core's own coalesced refresh.
-  await vi.waitFor(() =>
-    expect(requests.map((request) => request.method)).toEqual([
-      "evener/instance/list",
-      "evener/auth/credentialJson/set",
-      "evener/instance/list",
-    ]),
-  );
-  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("credential-json-saved")));
+  await vi.advanceTimersByTimeAsync(300);
+  expect(requests.map((request) => request.method)).toEqual([
+    "evener/instance/list",
+    "evener/auth/credentialJson/set",
+    "evener/instance/list",
+  ]);
+  expect(model.getSnapshot().data).toEqual(listing("credential-json-saved"));
   expect(JSON.stringify(model.getSnapshot())).not.toContain(credential);
 });
 

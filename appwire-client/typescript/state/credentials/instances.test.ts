@@ -327,6 +327,7 @@ describe("never echo a secret", () => {
 
 describe("credential mutations", () => {
   test("a listing read in flight when a credential write is issued cannot publish after it", async () => {
+    vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = new FakeClient("ready");
     const preWrite = deferred<InstanceListResponse>();
@@ -347,7 +348,8 @@ describe("credential mutations", () => {
     await save;
     expect(store.getState().loading).toBe(false);
     // The store's own post-write refresh lands the post-write rows.
-    await vi.waitFor(() => expect(store.getState().instances).toEqual([WORK]));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().instances).toEqual([WORK]);
   });
 
   test("a landed write refreshes the listing once, self-marked; a foreign echo refreshes unmarked", async () => {

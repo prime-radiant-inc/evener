@@ -220,7 +220,10 @@ function listState(resp: InstanceListResponse): CredentialListing {
 /** listingOf picks the listing out of a store snapshot, for a consumer that
  * hands the rows on as one value rather than selecting fields. */
 export function listingOf(state: CredentialListing): CredentialListing {
-  return Object.fromEntries(LISTING_FIELDS.map((field) => [field, state[field]])) as CredentialListing;
+  // Spelled out rather than looped: CredentialListing derives from
+  // LISTING_FIELDS, so a field added there fails to compile here.
+  const { instances, availableProviders, diagnostics, userLayer, writesRefused } = state;
+  return { instances, availableProviders, diagnostics, userLayer, writesRefused };
 }
 
 /** listingChanged reports whether a store transition replaced the listing:
@@ -337,8 +340,11 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
 
-  function noteLandedMutation(instance: string): void {
-    bump(landedMutations, instance);
+  // settleLoading drops the loading flag a retired read left behind, once the
+  // request that retired it is itself the latest and has settled. Guarded on
+  // the flag because the store notifies on a no-op set.
+  function settleLoading(version: number): void {
+    if (version === requestVersion && store.getState().loading) store.setState({ loading: false });
   }
 
   // keepRefreshedModels keeps, for the instances a refresh landed for during a
@@ -437,7 +443,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     try {
       const response = await request();
       const sameClient = connection.client === client;
-      if (sameClient) noteLandedMutation(reconcile.instance);
+      if (sameClient) bump(landedMutations, reconcile.instance);
       if (version !== requestVersion) {
         // A superseded answer from a client that is gone describes a listing
         // this client never had: reconciling it would write the dead client's
@@ -459,7 +465,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       store.setState({ ...applied, loading: false, error: null, listingFromPreviousConnection: false });
       return true;
     } finally {
-      if (version === requestVersion) store.setState({ loading: false });
+      settleLoading(version);
     }
   }
 
@@ -672,6 +678,14 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     else localAuthMutations.set(provider, { count: existing.count - 1, issuedAt: existing.issuedAt });
   }
 
+  // restampLocalAuthMutation moves the provider's echo window to now, when its
+  // RPC response lands; a marker an early echo already consumed is gone, so
+  // this is then a no-op.
+  function restampLocalAuthMutation(provider: string): void {
+    const existing = localAuthMutations.get(provider);
+    if (existing !== undefined) localAuthMutations.set(provider, { count: existing.count, issuedAt: Date.now() });
+  }
+
   // True exactly when this notification is this client's own echo of a
   // just-issued auth mutation; consumes one outstanding marker, so a stale
   // entry cannot suppress a later notification. A stale entry (its latest
@@ -746,7 +760,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // own restore load covers whatever the old connection's write did.
   async function authMutation<T>(
     provider: string,
-    request: (client: CredentialInstancesClient) => Promise<T>,
+    request: (client: CredentialInstancesClient, origin: { originClientId: string }) => Promise<T>,
     landed: (result: T) => boolean = () => true,
   ): Promise<T> {
     const client = requireWritableClient();
@@ -754,22 +768,21 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const version = ++requestVersion;
     noteLocalAuthMutation(provider);
     try {
-      const result = await request(client);
+      const result = await request(client, { originClientId: deps.ownClientId() });
       if (connection !== issued) return result;
       if (landed(result)) {
-        const marker = localAuthMutations.get(provider);
-        if (marker !== undefined) localAuthMutations.set(provider, { count: marker.count, issuedAt: Date.now() });
+        restampLocalAuthMutation(provider);
         scheduleRefetch(true);
         // A write landed: count it against the instance it named so only that
         // instance's in-flight refreshModels is retired (see landedMutations).
-        noteLandedMutation(provider);
+        bump(landedMutations, provider);
       } else retireLocalAuthMutation(provider);
       return result;
     } catch (err) {
       if (connection === issued) retireLocalAuthMutation(provider); // refused: no echo will follow
       throw err;
     } finally {
-      if (version === requestVersion && store.getState().loading) store.setState({ loading: false });
+      settleLoading(version);
     }
   }
 
@@ -801,11 +814,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     async remove(name, expectedEndpointFingerprint) {
       const client = requireWritableClient();
       return applyMutation(
-        () =>
-          client.request("evener/instance/remove", {
-            name,
-            ...(expectedEndpointFingerprint ? { expectedEndpointFingerprint } : {}),
-          }),
+        () => client.request("evener/instance/remove", { name, ...withFingerprint(expectedEndpointFingerprint) }),
         { instance: name },
       );
     },
@@ -839,44 +848,40 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshModels,
 
     setApiKey(provider, value, expectedEndpointFingerprint) {
-      return authMutation(provider, (client) =>
+      return authMutation(provider, (client, origin) =>
         client.request("evener/auth/apiKey/set", {
           provider,
           value,
           ...withFingerprint(expectedEndpointFingerprint),
-          originClientId: deps.ownClientId(),
+          ...origin,
         }),
       );
     },
 
     setCredentialJson(provider, value, expectedEndpointFingerprint) {
-      return authMutation(provider, (client) =>
+      return authMutation(provider, (client, origin) =>
         client.request("evener/auth/credentialJson/set", {
           provider,
           value,
           ...withFingerprint(expectedEndpointFingerprint),
-          originClientId: deps.ownClientId(),
+          ...origin,
         }),
       );
     },
 
     clearStoredKey(provider, expectedEndpointFingerprint) {
-      return authMutation(provider, (client) =>
+      return authMutation(provider, (client, origin) =>
         client.request("evener/auth/apiKey/clear", {
           provider,
           ...withFingerprint(expectedEndpointFingerprint),
-          originClientId: deps.ownClientId(),
+          ...origin,
         }),
       );
     },
 
     logout(provider, expectedEndpointFingerprint) {
-      return authMutation(provider, (client) =>
-        client.request("evener/auth/logout", {
-          provider,
-          ...withFingerprint(expectedEndpointFingerprint),
-          originClientId: deps.ownClientId(),
-        }),
+      return authMutation(provider, (client, origin) =>
+        client.request("evener/auth/logout", { provider, ...withFingerprint(expectedEndpointFingerprint), ...origin }),
       );
     },
 
@@ -885,13 +890,8 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     },
 
     loginComplete(provider, flowId, redirectUrl) {
-      return authMutation(provider, (client) =>
-        client.request("evener/auth/login/complete", {
-          provider,
-          flowId,
-          redirectUrl,
-          originClientId: deps.ownClientId(),
-        }),
+      return authMutation(provider, (client, origin) =>
+        client.request("evener/auth/login/complete", { provider, flowId, redirectUrl, ...origin }),
       );
     },
 
@@ -907,7 +907,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // polling dialog may already be closed by the time authorization lands.
       return authMutation(
         provider,
-        (client) => client.request("evener/auth/device/poll", { provider, flowId, originClientId: deps.ownClientId() }),
+        (client, origin) => client.request("evener/auth/device/poll", { provider, flowId, ...origin }),
         (resp) => resp.state === "authorized",
       );
     },
