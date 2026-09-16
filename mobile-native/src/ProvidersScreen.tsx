@@ -27,7 +27,7 @@ import {
 } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
-import { createNativeCredentialStore } from "./credentialStore";
+import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderInstances } from "./providerInstances";
@@ -45,14 +45,7 @@ export function ProvidersScreen({
     flow: ProviderSignIn;
   } | null>(null);
   const [revision, setRevision] = useState(0);
-  // One credential store per hub, shared by the provider list and a sign-in
-  // flow: the flow outlives a client replacement, so the store lives here
-  // and this screen tells it which connection the rows belong to.
-  const store = useMemo(() => createNativeCredentialStore(), [activeProfile?.id]);
-  useEffect(() => {
-    store.connectionChanged(client, state);
-  }, [store, client, state]);
-  useEffect(() => () => store.connectionChanged(null, "closed"), [store]);
+  const store = useCredentialStore();
   useEffect(() => () => signIn?.flow.dispose(), [signIn]);
   useEffect(() => {
     if (!signIn) return;

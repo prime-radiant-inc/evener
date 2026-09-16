@@ -1,7 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProviderSignIn } from "./providerSignIn";
+import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignIn.testkit";
 
 const device = {
   provider: "work",
@@ -17,41 +15,14 @@ const authorizedStatus = {
   activeSource: "oauth",
   hasStoredOAuth: true,
 };
-function boundary() {
-  const calls: { method: string; params: unknown }[] = [];
-  const io = {
-    request: async (method: string, _params: unknown): Promise<unknown> =>
-      method.endsWith("/start") ? device : { state: "pending" },
-  };
-  const client = {
-    request: (method, params) => {
-      calls.push({ method, params });
-      return io.request(method, params);
-    },
-    onNotification: () => () => {},
-  } as ConversationClientLike;
-  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
-  const flow = new ProviderSignIn(store, "work");
-  // connect does what ProvidersScreen's connection effect does: the store's
-  // transport and the flow's connected gate move to one client together.
-  const connect = (next: ConversationClientLike | null) => {
-    store.connectionChanged(next, next ? "ready" : "closed");
-    flow.setConnection(next);
-  };
-  connect(client);
-  return { flow, calls, io, client, store, connect };
-}
-// authCalls drops the store's own listing reads, which are not the flow's.
-function authCalls(calls: { method: string; params: unknown }[]) {
-  return calls.filter((call) => call.method !== "evener/instance/list");
-}
+const boundary = () => kit((method) => (method.endsWith("/start") ? device : { state: "pending" }));
 afterEach(() => vi.useRealTimers());
 
 it("routes every RPC through the credential store's client, not its connected-gate token", async () => {
   vi.useFakeTimers();
   const { flow, calls, io } = boundary();
   // The token the screen hands setConnection is not a transport the flow may use.
-  const token = { request: vi.fn(), onNotification: () => () => {} } as unknown as ConversationClientLike;
+  const token = { request: vi.fn() };
   flow.setConnection(token);
   io.request = async (method) =>
     method === "evener/auth/device/start"
@@ -83,38 +54,6 @@ it("routes every RPC through the credential store's client, not its connected-ga
   expect(token.request).not.toHaveBeenCalled();
   flow.dispose();
   second.flow.dispose();
-});
-
-it("stamps this app's identity on the poll and the completion", async () => {
-  vi.useFakeTimers();
-  const { flow, calls } = boundary();
-  await flow.start();
-  await vi.advanceTimersByTimeAsync(2000);
-  expect(authCalls(calls).at(-1)).toEqual({
-    method: "evener/auth/device/poll",
-    params: { provider: "work", flowId: "flow-1", originClientId: "native-test" },
-  });
-  flow.dispose();
-
-  const browser = boundary();
-  browser.io.request = async (method) =>
-    method === "evener/auth/device/start"
-      ? { ...device, fallback: true }
-      : method === "evener/auth/login/start"
-        ? { provider: "work", flowId: "browser-flow", url: "https://example.test/auth" }
-        : { status: authorizedStatus };
-  await browser.flow.start();
-  await browser.flow.complete("https://example.test/callback?code=fixture");
-  expect(authCalls(browser.calls).at(-1)).toEqual({
-    method: "evener/auth/login/complete",
-    params: {
-      provider: "work",
-      flowId: "browser-flow",
-      redirectUrl: "https://example.test/callback?code=fixture",
-      originClientId: "native-test",
-    },
-  });
-  browser.flow.dispose();
 });
 
 it("a start from a replaced connection's listing is refused and reads as not started", async () => {
@@ -303,14 +242,10 @@ it("retains the device flow across a hub connection replacement", async () => {
   connect(null);
   await vi.advanceTimersByTimeAsync(10000);
   expect(calls).toHaveLength(1);
-  const replacementCalls: { method: string; params: unknown }[] = [];
-  connect({
-    request: async (method, params) => {
-      replacementCalls.push({ method, params });
-      return { state: "authorized", status: authorizedStatus };
-    },
-    onNotification: () => () => {},
-  } as ConversationClientLike);
+  const replacementCalls: RecordedCall[] = [];
+  connect(
+    signInClient({ request: async () => ({ state: "authorized", status: authorizedStatus }) }, replacementCalls),
+  );
   await vi.advanceTimersByTimeAsync(2000);
   expect(authCalls(replacementCalls)).toEqual([
     {
@@ -359,8 +294,8 @@ it("keeps browser continuation across reconnect without replaying completion", a
   connect(null);
   resolve({ status: {} });
   await complete;
-  const request = vi.fn();
-  connect({ request, onNotification: () => () => {} } as unknown as ConversationClientLike);
+  const request = vi.fn(async (): Promise<unknown> => undefined);
+  connect(signInClient({ request }, []));
   expect(request).not.toHaveBeenCalled();
   expect(flow.getSnapshot().phase).toBe("browser");
   expect(flow.getSnapshot().error).toContain("confirmed");

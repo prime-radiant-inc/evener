@@ -1,7 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProviderSignIn } from "./providerSignIn";
+import { boundary as kit } from "./providerSignIn.testkit";
 
 const device = {
   provider: "work",
@@ -22,30 +20,7 @@ const status = {
   hasStoredOAuth: true,
   activeSource: "oauth",
 };
-function boundary() {
-  const calls: { method: string; params: unknown }[] = [];
-  const io = {
-    request: async (_method: string, _params: unknown): Promise<unknown> =>
-      device,
-  };
-  const client = {
-    request(method: string, params: unknown) {
-      calls.push({ method, params });
-      return io.request(method, params);
-    },
-    onNotification: () => () => {},
-  } as ConversationClientLike;
-  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
-  const flow = new ProviderSignIn(store, "work");
-  // connect does what ProvidersScreen's connection effect does: the store's
-  // transport and the flow's connected gate move to one client together.
-  const connect = (next: ConversationClientLike | null) => {
-    store.connectionChanged(next, next ? "ready" : "closed");
-    flow.setConnection(next);
-  };
-  connect(client);
-  return { calls, io, client, flow, store, connect };
-}
+const boundary = () => kit(() => device);
 afterEach(() => vi.useRealTimers());
 
 it("retains uncertainty when a device exchange outlives its connection", async () => {

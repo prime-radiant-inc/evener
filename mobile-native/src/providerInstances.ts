@@ -30,14 +30,12 @@ interface ProviderState {
   error: string | null;
 }
 
-/** Provider data and operations for one connected hub's provider list: the
- * screen's credential store (createNativeCredentialStore, shared with any
- * sign-in flow open on the screen; the screen drives its connection),
- * projected into the snapshot the Providers list renders. The core owns the
- * listing, its ordering, the evener/auth/updated refetch and the post-write
- * refresh; the list's own rules stay here - one write at a time (`busy`), a
- * reconciling read after a write whose reply was lost, and a credential test
- * that never echoes the wire. */
+/** Provider data and operations for one hub's provider list: the credential
+ * store it is handed, projected into the snapshot the list renders. The
+ * core owns the listing, its ordering, the evener/auth/updated refetch and the
+ * post-write refresh; the list's own rules stay here - one write at a time
+ * (`busy`), a reconciling read after a write whose reply was lost, and a
+ * credential test that never echoes the wire. */
 export class ProviderInstances {
   private state: ProviderState = {
     credentialTest: null,
@@ -94,6 +92,17 @@ export class ProviderInstances {
   start() {
     if (this.disposed || this.started) return;
     this.started = true;
+    this.connect();
+    // Rows the store already holds for this connection - a list remounted
+    // after a sign-in, say - are published as they are: the store's own
+    // refresh keeps them current, and a read here would only repeat it. Rows
+    // that belong to a replaced connection are read past, as ever.
+    const held = this.core.getState();
+    const rows = held.instances.length > 0 || held.availableProviders.length > 0;
+    if (rows && !held.listingFromPreviousConnection) {
+      this.publish({ data: listingOf(held) });
+      return;
+    }
     void this.refresh();
   }
   refresh = async (): Promise<void> => {

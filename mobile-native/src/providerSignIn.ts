@@ -4,7 +4,6 @@ import type {
   AuthStatusResponse,
 } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface SignInState {
   phase:
@@ -28,11 +27,11 @@ interface SignInState {
 // is longer than any interval a device flow has reason to ask for.
 const MAX_POLL_SECONDS = 60;
 
-/** One sign-in flow bound to one provider instance on one hub connection. The
- * RPCs go through the screen's credential store (shared with the provider
- * list, its connection driven by the screen); `client` is the connected gate
- * the screen sets alongside, and the token whose identity tells a replaced
- * connection from a same-client transition. */
+/** One sign-in flow bound to one provider instance on one hub. Its RPCs go
+ * through the credential store it is handed; `connection` is an opaque token
+ * for the hub connection the screen says is usable - null while there is
+ * none, and a new identity when the connection was replaced, which is what
+ * tells an interrupted exchange from a same-connection transition. */
 export class ProviderSignIn {
   private state: SignInState = {
     phase: "idle",
@@ -48,7 +47,7 @@ export class ProviderSignIn {
   private uncertain = false;
   private pendingOperation: "devicePoll" | "completion" | "status" | null =
     null;
-  private client: ConversationClientLike | null = null;
+  private connection: object | null = null;
   constructor(
     private readonly store: CredentialInstancesStore,
     private provider: string,
@@ -76,7 +75,7 @@ export class ProviderSignIn {
     this.clearTimer();
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.phase !== "device" ||
       this.state.busy ||
@@ -92,12 +91,15 @@ export class ProviderSignIn {
       void this.poll();
     }, delay * 1000);
   }
-  /** Replace only the transport for the same hub. Dispose when changing hubs. */
-  setConnection(client: ConversationClientLike | null) {
-    if (this.disposed || this.client === client) return;
+  /** The screen's word on the hub connection: null while none is usable, a
+   * fresh token when it was replaced, the same token while it merely
+   * transitions. A change retires whatever exchange was in flight and marks
+   * it uncertain where a write may have landed. Dispose when changing hubs. */
+  setConnection(connection: object | null) {
+    if (this.disposed || this.connection === connection) return;
     this.clearTimer();
     this.generation += 1;
-    this.client = client;
+    this.connection = connection;
     const interruptedWrite =
       this.state.busy &&
       (this.state.phase === "starting" ||
@@ -125,7 +127,7 @@ export class ProviderSignIn {
     else this.clearTimer();
   }
   start = async (): Promise<void> => {
-    if (this.disposed || !this.client || this.state.busy) return;
+    if (this.disposed || !this.connection || this.state.busy) return;
     const generation = ++this.generation;
     this.uncertain = false;
     this.pendingOperation = null;
@@ -192,7 +194,7 @@ export class ProviderSignIn {
   private poll = async (): Promise<void> => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.busy ||
       this.state.phase !== "device" ||
@@ -250,7 +252,7 @@ export class ProviderSignIn {
   retryPoll = () => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.busy ||
       this.state.phase !== "device" ||
@@ -263,7 +265,7 @@ export class ProviderSignIn {
   complete = async (value: string): Promise<void> => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       this.state.busy ||
       this.state.phase !== "browser" ||
       !this.state.browser
@@ -309,7 +311,7 @@ export class ProviderSignIn {
     }
   };
   checkStatus = async (): Promise<void> => {
-    if (this.disposed || !this.client || this.state.busy) return;
+    if (this.disposed || !this.connection || this.state.busy) return;
     const generation = this.generation;
     this.clearTimer();
     this.pendingOperation = "status";

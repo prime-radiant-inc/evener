@@ -168,11 +168,9 @@ export interface CredentialInstancesState {
   loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
   deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
   devicePoll(provider: string, flowId: string): Promise<AuthDevicePollResponse>;
-  // authStatus reads one provider's credential status: a plain read, so it
-  // takes the read gate (available while the rows on screen are a replaced
-  // connection's), arms no echo marker and refreshes nothing. A reply that
-  // arrives after the connection it was asked on is gone describes a hub that
-  // is no longer wired, so it is refused rather than returned.
+  // authStatus reads one provider's credential status: a plain read, arming no
+  // echo marker and refreshing nothing; a reply from a connection since
+  // replaced is refused (CONNECTION_REPLACED_ERROR) rather than returned.
   authStatus(provider: string): Promise<AuthStatusResponse>;
   // testCredentials is a probe, not a listing read: it dials the endpoint the
   // row names and asserts the fingerprint it carries, so it takes the same gate
@@ -332,6 +330,13 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       throw new Error("credentials store: no client connected; call connectionChanged(client, state) first");
     }
     return connection.client;
+  }
+
+  // connectionStillCurrent reports whether a reply asked for on `client` may
+  // still be used: one that arrives after the connection it was asked on is
+  // gone describes a hub that is no longer wired.
+  function connectionStillCurrent(client: CredentialInstancesClient): boolean {
+    return connection.client === client;
   }
 
   function requireWritableClient(): CredentialInstancesClient {
@@ -498,7 +503,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     store.setState({ loading: true, error: null, ...mark() });
     try {
       const resp = await client.request("evener/instance/list", {});
-      if (version !== requestVersion || connection.client !== client) return false;
+      if (version !== requestVersion || !connectionStillCurrent(client)) return false;
       listEstablished = true;
       const instances = mergeNewerRows(resp.instances, writes, refreshes);
       store.setState({
@@ -509,7 +514,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       });
       return true;
     } catch (err) {
-      if (version !== requestVersion || connection.client !== client) return false;
+      if (version !== requestVersion || !connectionStillCurrent(client)) return false;
       store.setState({ loading: false, error: errorText(err), ...mark() });
       return false;
     }
@@ -568,7 +573,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       if (
         refreshVersions.get(name) !== version ||
         (landedMutations.get(name) ?? 0) !== basis ||
-        connection.client !== client
+        !connectionStillCurrent(client)
       )
         return;
       const row = response.instances.find((entry) => entry.name === name);
@@ -908,7 +913,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     async authStatus(provider) {
       const client = requireClient();
       const status = await client.request("evener/auth/status", { provider });
-      if (connection.client !== client) throw new Error(CONNECTION_REPLACED_ERROR);
+      if (!connectionStillCurrent(client)) throw new Error(CONNECTION_REPLACED_ERROR);
       return status;
     },
 
