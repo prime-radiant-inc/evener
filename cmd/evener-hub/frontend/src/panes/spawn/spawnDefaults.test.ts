@@ -208,6 +208,41 @@ describe("saveDefaults", () => {
     expect(loadDefaultsBlob("/srv/fresh")).toEqual({ harness: "evener" });
   });
 
+  // Round nine's carry-over, generalized to every field rather than the model
+  // alone. A remote form names only the fields it re-supplied, so rebuilding
+  // the blob from those fields deleted every stored field the remote form left
+  // empty - and the model carry-over HID that: it was what kept the write
+  // non-empty, so the erasure was silent whenever the path also had a stored
+  // model (component 07b review, residual).
+  test("a remote launch keeps the stored layer's fields the remote form did not name", () => {
+    saveDefaults({
+      cwd: "/srv/app",
+      harness: "evener",
+      accessMode: "full",
+      reasoningEffort: "high",
+      model: "local/gpt-5",
+      harnessUsesEvenerModels: true,
+    });
+    expect(loadDefaultsBlob("/srv/app")).toEqual({
+      harness: "evener",
+      access_mode: "full",
+      reasoning_effort: "high",
+      model: "local/gpt-5",
+    });
+
+    // The remote form named its own harness and nothing else: no access mode,
+    // no effort, and - by round eight - never a model of its own.
+    saveDefaults({ cwd: "/srv/app", harness: "external", harnessUsesEvenerModels: true, remoteLaunch: true });
+
+    // Everything it did not name is still the local project's stored layer.
+    expect(loadDefaultsBlob("/srv/app")).toEqual({
+      harness: "external",
+      access_mode: "full",
+      reasoning_effort: "high",
+      model: "local/gpt-5",
+    });
+  });
+
   // The global scalars are controller-wide defaults, and a remote launch's cwd
   // and model belong to the selected HOST: written here, the next LOCAL spawn
   // would default to a path this machine usually does not have and to a model
