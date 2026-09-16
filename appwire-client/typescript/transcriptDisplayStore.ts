@@ -22,14 +22,15 @@
 // `writeUncertain` until an authoritative read). Which one a host uses is the
 // host's product decision; the hub state they confirm is one.
 //
-// Every post-await site fences through one predicate (readStillMine /
-// writeStillMine) and every reset site retires the payload through one helper
-// (retirePayload), so a reply that arrives after the generation ended, support
-// dropped or the hub was replaced lands nothing.
+// Every post-await site fences through one predicate of the shared ready
+// generation fence (readyGenerationFence.ts) and every reset site retires the
+// payload through one helper (retirePayload), so a reply that arrives after
+// the generation ended, support dropped or the hub was replaced lands nothing.
 
 import type { AppwireClient } from "./client";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
+import { createReadyGenerationFence } from "./readyGenerationFence";
 import {
   configFingerprint,
   fromWireConfig,
@@ -350,14 +351,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   const { client } = deps;
   const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
 
-  // Ready-generation wiring. `activeEpoch` is -1 while no generation is
-  // active; every refresh and write captures the epoch it started under and
-  // fences its reply on it still being the active one.
-  let epoch = 0;
-  let activeEpoch = -1;
+  // Ready-generation wiring: every refresh and write captures the generation
+  // it started under and fences its reply on the shared fence.
+  const fence = createReadyGenerationFence(isSupported);
   let unwireNotification: (() => void) | null = null;
-  let disposed = false;
-  let refreshSerial = 0;
   /** Set when a changed-notification is dropped because the current
    * generation has no confirmed state yet: the refresh that lands the state
    * may carry a response PREDATING the dropped change, so a successful
@@ -367,12 +364,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * supersedes an earlier one's reply. Bumped for every layout by retirement. */
   const patchTokens = new Map<ViewportClass, number>();
   let patchSerial = 0;
-  /** Bumps when any write leaves. A reply is a write's own only while no later
-   * write has left, and a GET that started BEFORE a write says nothing about
-   * that write's outcome, so only a read that started after it may settle
-   * `writeUncertain`. */
-  let writeSerial = 0;
-
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
     ...initialState(),
     // The draft restore is part of the initial state so a host that builds
@@ -410,36 +401,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     }
   }
 
-  function isCurrent(generation: number): boolean {
-    return !disposed && generation >= 0 && activeEpoch === generation;
-  }
-
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
-  }
-
-  /** The hub a piece of work started against is still the one being acted
-   * on: its ready generation is current and support is still advertised. */
-  function liveHub(generation: number): boolean {
-    return isCurrent(generation) && isSupported();
-  }
-
-  /** A read's reply is its own to land: live hub, and no later read or
-   * payload retirement has superseded it. */
-  function readStillMine(generation: number, serial: number): boolean {
-    return liveHub(generation) && serial === refreshSerial;
   }
 
   /** A direct write's reply is its own to land: live hub, and no later write
    * on its layout or payload retirement has superseded it. */
   function patchStillMine(generation: number, layout: ViewportClass, token: number): boolean {
-    return liveHub(generation) && patchTokens.get(layout) === token;
-  }
-
-  /** A checkpointed write's reply is its own to land: live hub, and no later
-   * write or payload retirement has superseded it. */
-  function writeStillMine(generation: number, token: number): boolean {
-    return liveHub(generation) && token === writeSerial;
+    return fence.liveHub(generation) && patchTokens.get(layout) === token;
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
@@ -452,8 +421,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * checkpointed write's, and the host shows it until a confirmed value
    * replaces it. `extra` is the site's own addition in the same publish. */
   function retirePayload(extra: Partial<TranscriptDisplayStoreFields> = {}): void {
-    refreshSerial += 1;
-    writeSerial += 1;
+    fence.supersede();
     for (const layout of LAYOUTS) patchTokens.set(layout, ++patchSerial);
     const state = getState();
     setState({
@@ -498,21 +466,19 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   }
 
   function endReadyGeneration(): void {
-    activeEpoch = -1;
-    epoch += 1;
+    fence.end();
     unwireNotification?.();
     unwireNotification = null;
     retirePayload();
   }
 
   function beginReadyGeneration(): void {
-    if (disposed) return;
-    activeEpoch = ++epoch;
+    const generation = fence.begin();
+    if (generation < 0) return;
     missedChangeNotification = false;
-    const generation = activeEpoch;
     unwireNotification?.();
     unwireNotification = client.onNotification((notification) => {
-      if (!isCurrent(generation)) return;
+      if (!fence.isCurrent(generation)) return;
       onNotification(notification, generation);
     });
   }
@@ -528,12 +494,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // the unknown window (a transient disconnect keeps its state and its
       // in-flight work) leave the generation intact.
       if (state.hubSupport === support) return;
-      if (state.hubSupport === "unsupported" && activeEpoch >= 0) beginReadyGeneration();
+      if (state.hubSupport === "unsupported" && fence.generation >= 0) beginReadyGeneration();
       setState({ hubSupport: support });
       // The transition INTO supported with a ready generation active is the
       // load trigger - from unknown (the handshake's features resolving after
       // the client was ready) as much as from unsupported.
-      if (activeEpoch >= 0) void refreshFor(activeEpoch);
+      if (fence.generation >= 0) void refreshFor(fence.generation);
       return;
     }
     if (support === "unsupported") {
@@ -601,7 +567,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * or landed while one is in flight, says nothing about that write. */
   function settledWrite(writeSerialAtStart: number): Partial<TranscriptDisplayStoreFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (writeSerialAtStart !== writeSerial || saving) return {};
+    if (writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
       try {
         persistDraft({
@@ -618,10 +584,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   }
 
   async function refreshFor(generation: number): Promise<void> {
-    if (!liveHub(generation)) return;
-    const serial = ++refreshSerial;
-    const writeSerialAtStart = writeSerial;
-    const stillMine = () => readStillMine(generation, serial);
+    if (!fence.liveHub(generation)) return;
+    const serial = fence.claimRead();
+    const writeSerialAtStart = fence.writeToken;
+    const stillMine = () => fence.readStillMine(generation, serial);
     setState({ hubLoading: true, hubError: null });
     try {
       const result = await client.request("evener/settings/transcriptDisplay/get", {});
@@ -662,8 +628,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       setState(restoreDraft(getState()));
       if (getState().storageUnavailable) return;
     }
-    if (activeEpoch < 0) return;
-    await refreshFor(activeEpoch);
+    if (fence.generation < 0) return;
+    await refreshFor(fence.generation);
   }
 
   function detachHub(): void {
@@ -683,8 +649,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     input: TranscriptDisplayConfigV1,
   ): Promise<HubTranscriptDisplayDefault> {
     const state = getState();
-    const generation = activeEpoch;
-    if (!liveHub(generation) || !state.loaded || state.hubLoading) {
+    const generation = fence.generation;
+    if (!fence.liveHub(generation) || !state.loaded || state.hubLoading) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
       throw new Error(UNAVAILABLE_MESSAGE);
     }
@@ -692,7 +658,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const confirmed = state.hub[layout] ?? shippedDefault(layout);
     const token = ++patchSerial;
     patchTokens.set(layout, token);
-    writeSerial += 1;
+    fence.claimWrite();
     const stillMine = () => patchStillMine(generation, layout, token);
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
     const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
@@ -753,7 +719,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   function assertEditable(): HubDefaultsByLayout {
     const state = getState();
     if (
-      disposed ||
+      fence.disposed ||
       state.saving ||
       state.storageUnavailable ||
       state.writeUncertain ||
@@ -804,9 +770,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const revision = existing?.layout === layout ? existing.revision : confirmed.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ layout, baseRevision: revision, config, writeUncertain: true });
-    const token = ++writeSerial;
-    const generation = activeEpoch;
-    const stillMine = () => writeStillMine(generation, token);
+    const token = fence.claimWrite();
+    const generation = fence.generation;
+    const stillMine = () => fence.writeStillMine(generation, token);
     setState({ saving: true, draft: { layout, revision, config }, draftError: null });
     let result: unknown;
     try {
@@ -901,9 +867,9 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       setState({ ...initialState() });
     },
     dispose() {
-      if (disposed) return;
+      if (fence.disposed) return;
       endReadyGeneration();
-      disposed = true;
+      fence.dispose();
     },
   };
 }

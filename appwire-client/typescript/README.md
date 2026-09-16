@@ -83,7 +83,12 @@ lifecycle methods, a direct write with a per-layout preview for a host that
 edits live and a checkpointed draft editor over the injected storage port for
 a host that edits offline; `writeUncertain` can only be set through a draft
 port, so a host without one, the web, ignores it, and a host's own local
-override layer stays with the host) - and the doc-pane URL builders, which hang
+override layer stays with the host); the ready-generation fence both of those
+stores fence every await on (`createReadyGenerationFence(isSupported)`: the
+generation, read-serial and write-token bookkeeping behind `liveHub`,
+`readStillMine` and `writeStillMine`, so a reply arriving after the generation
+ended, support dropped or the hub was replaced lands nothing) - and the
+doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired

@@ -92,6 +92,7 @@
     "keybindingOverrides.ts",
     "keybindingRegistry.ts",
     "keybindingValidation.ts",
-    "keybindingsStore.ts"
+    "keybindingsStore.ts",
+    "readyGenerationFence.ts"
   ]
 }
