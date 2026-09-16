@@ -436,7 +436,7 @@ func TestForceStopSerializesResumeAndDeletionEntryPoints(t *testing.T) {
 					currentID, stableID = stableID, currentID
 				}
 				runDir := t.TempDir()
-				writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
+				writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: currentID, ThreadID: currentID, WorkspaceRef: "local:" + stableID, StateDir: stateDir})
 				process := &waitingForceStopProcess{entered: make(chan struct{}), release: make(chan struct{})}
 				spawned := make(chan struct{}, 1)
 				cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1026,7 +1026,7 @@ func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: exitedPID(t), SessionID: sessionID, ThreadID: sessionID, StateDir: stateDir, StartedAt: time.Now()})
 	var events []string
 	var resumes atomic.Int32
 	cfg := hubcore.WebConfig{RunDir: runDir, Past: past, ResumeLocks: hubcore.NewResumeLocks(),
@@ -1644,4 +1644,29 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	if got := locks.RecoveryState("B").ResumeSessionID; got != "C" {
 		t.Fatalf("durable current target overwritten: %q", got)
 	}
+}
+
+// exitedPID is the PID of a fixture process that has already exited: a
+// rendezvous file naming it is a crashed daemon's on any host. A fixed number
+// is dead on one machine and somebody's live process on another - on a
+// GitHub runner it was - and the roster probes the file's PID against the
+// real process table.
+func exitedPID(t *testing.T) int {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "cat")
+	input, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	process := &fixtureExitProcess{input: input, command: command}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return command.Process.Pid
 }

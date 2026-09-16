@@ -154,6 +154,14 @@ test("describeAppImports names every line that reaches into the app", () => {
   assert.match(message, /b\.ts: imports .*shell\/palette\/commands/);
 });
 
+test("describeAppImports flags a reach into the app's tooling, not only its src", () => {
+  const files = [path.join(dir, "a.test.ts")];
+  const sources = { [files[0]]: 'import { x } from "../../cmd/evener-hub/frontend/scripts/x.mjs";\n' };
+  const message = describeAppImports(files, (file) => sources[file], dir);
+  assert.match(message, /must not import from the app or the mobile trees/);
+  assert.match(message, /a\.test\.ts: imports .*frontend\/scripts\/x\.mjs/);
+});
+
 test("describeAppImports flags a relative import into the mobile trees, not only the app", () => {
   const files = [path.join(dir, "a.test.ts")];
   const sources = { [files[0]]: 'import { x } from "../../mobile/src/state";\n' };

@@ -63,7 +63,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 				id = entry.ThreadID
 			}
 			if id != "" {
-				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, OK: true}
+				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, ProtocolMismatch: true, OK: true}
 			}
 		}
 		return ProbeResult{}
@@ -83,6 +83,13 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	root := rootResponse.Thread
 	rootID := statusThreadID(root)
 	if strings.TrimSpace(root.ID) == "" || rootID == "" {
+		return ProbeResult{}
+	}
+	// The answer names the answering daemon's session, and a daemon keeps its
+	// entry's session id current (rvreg.UpdateSessionID). An endpoint that
+	// answers for a session the entry does not name is another daemon that
+	// re-bound the port; its answer is not this entry's.
+	if named := strings.TrimSpace(entry.SessionID); named != "" && rootID != named {
 		return ProbeResult{}
 	}
 
