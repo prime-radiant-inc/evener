@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 // hostAdminCall is one request the scripted remote hub received.
@@ -757,6 +758,74 @@ func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminFanOutStopsWhenServerShutdown pins round eight's lifecycle
+// finding end to end: the fan-out's context is the RPC server's own lifetime
+// handle, so shutting the server down releases the fan-out's subscription and
+// stops its worker. Server recreation is the case that matters — a hub server
+// rebuilt in-process over the same source registry must not end up with the
+// previous server's fan-out still subscribed beside its own, retaining the old
+// server's sources and relaying every host notification twice.
+func TestHostAdminFanOutStopsWhenServerShutdown(t *testing.T) {
+	client, _, _ := newScriptedRemoteClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		RemoteHosts:  []hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+	}
+
+	server := newHubAppServer(cfg, sources)
+	waitForHostNotificationSubscribers(t, source, 1, "the fan-out never subscribed to the remote host")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-server.Lifetime().Done():
+	default:
+		t.Fatal("the server lifetime handle is still open after Shutdown; a fan-out bound to it has nothing to stop on")
+	}
+	waitForHostNotificationSubscribers(t, source, 0,
+		"the fan-out stayed subscribed after its server was shut down")
+
+	// Recreation: the replacement server must own the only fan-out. With the
+	// old worker still alive this count reaches 2, which is exactly the
+	// duplicate-notification leak this binding exists to prevent.
+	replacement := newHubAppServer(cfg, sources)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_ = replacement.Shutdown(cleanupCtx)
+	})
+	waitForHostNotificationSubscribers(t, source, 1,
+		"the replacement server's fan-out is not the only host-notification subscriber")
+}
+
+// waitForHostNotificationSubscribers waits for the source's host-level
+// subscriber count to reach want, failing with why after a bounded wait.
+func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHubSource, want int, why string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := source.HostNotificationSubscribers(); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: host-notification subscribers = %d, want %d",
+				why, source.HostNotificationSubscribers(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -250,8 +250,9 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 
 // registerHostAdminHandlers installs the proxy handler and starts one
 // notification fan-out per remote host. ctx bounds the fan-out goroutines'
-// lifetime; production passes a process-lifetime context, mirroring the hub's
-// other background workers.
+// lifetime; production passes the RPC server's own lifetime handle
+// (appserver.Server.Lifetime), so a shut-down server stops its fan-outs instead
+// of leaving them subscribed to the previous server's sources.
 func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
 	hosts, err := hostreg.New(cfg.RemoteHosts)
 	if err != nil {

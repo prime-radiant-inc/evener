@@ -267,6 +267,17 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 // transportUnavailable maps a non-wire transport failure. Caller cancellation
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.
+//
+// A write-side connection failure counts as transport loss, which is what makes
+// io.ErrClosedPipe one of the shapes listed here (round eight). The send path
+// reports it when the stream's write side is already gone — a partial write
+// onto a connection the peer has torn down — and it is deliberately not
+// distinguishable from the read-side failures around it: like io.EOF or EPIPE
+// it says the connection failed mid-call, not that the request was never sent.
+// For a forwarded read that is SessionUnavailable either way, and for a
+// forwarded mutation remoteHubAdminMutationCallError re-labels exactly this
+// unavailability to outcome-unknown/blocked, so a closed pipe cannot escape as
+// a raw error a caller might blind-retry.
 func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if err == nil {
 		return nil
@@ -294,6 +305,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, io.ErrClosedPipe) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, context.DeadlineExceeded) {
@@ -318,6 +330,7 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "connection refused"),
 		strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "broken pipe"),
+		strings.Contains(lower, "closed pipe"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):
 		return true
@@ -1596,6 +1609,19 @@ func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-cha
 	s.subMu.Unlock()
 	go s.pumpHostSubscription(ctx, sub)
 	return sub.out, nil
+}
+
+// HostNotificationSubscribers reports how many host-level notification
+// consumers are attached to this source right now. A subscription is counted
+// from registration until its pump exits — on its own context ending or on the
+// owning client's teardown — so the count is the observable form of "a consumer
+// like the component-07a fan-out is still subscribed". A server-lifecycle test
+// uses it to prove a shut-down hub released its fan-out's subscription, the
+// same way SubscriberCount exposes thread subscriptions on the RPC server.
+func (s *RemoteHubSource) HostNotificationSubscribers() int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return len(s.hostSubs)
 }
 
 // publishHostNotification delivers one remote notification to every host-level
