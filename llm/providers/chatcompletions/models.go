@@ -18,9 +18,16 @@ import (
 
 // modelEntry is one /models row: the core OpenAI shape plus OpenRouter's
 // extensions, which are absent (and therefore not advertised) elsewhere.
+// The unprefixed limit fields are what OpenAI-compatible gateways publish at
+// the row's top level (with no top_provider object and no
+// supported_parameters), so they are read as a fallback.
 type modelEntry struct {
 	ID                  string   `json:"id"`
 	ContextLength       int      `json:"context_length"`
+	ContextWindow       int      `json:"context_window"`
+	MaxInputTokens      int      `json:"max_input_tokens"`
+	MaxCompletionTokens int      `json:"max_completion_tokens"`
+	MaxOutputTokens     int      `json:"max_output_tokens"`
 	SupportedParameters []string `json:"supported_parameters"`
 	Architecture        struct {
 		InputModalities []string `json:"input_modalities"`
@@ -59,9 +66,18 @@ func (m modelEntry) row() registry.Model {
 	caps := registry.Caps{}
 	if m.ContextLength > 0 {
 		caps.ContextWindow = new(m.ContextLength)
+	} else if m.ContextWindow > 0 {
+		caps.ContextWindow = new(m.ContextWindow)
+	}
+	if m.MaxInputTokens > 0 {
+		caps.MaxInputTokens = new(m.MaxInputTokens)
 	}
 	if m.TopProvider.MaxCompletionTokens != nil && *m.TopProvider.MaxCompletionTokens > 0 {
 		caps.MaxOutputTokens = new(*m.TopProvider.MaxCompletionTokens)
+	} else if m.MaxCompletionTokens > 0 {
+		caps.MaxOutputTokens = new(m.MaxCompletionTokens)
+	} else if m.MaxOutputTokens > 0 {
+		caps.MaxOutputTokens = new(m.MaxOutputTokens)
 	}
 	if len(m.SupportedParameters) > 0 {
 		caps.Tools = new(advertises(m.SupportedParameters, "tools"))
