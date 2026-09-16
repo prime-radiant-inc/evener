@@ -740,21 +740,24 @@ test("a stale overlapping failure does not toast after a newer fetch succeeded",
       <Toast />
     </>,
   );
-  // A tasks push refires the fetch effect, starting a second overlapping fetch.
+  // A tasks push refires the fetch effect while the first fetch is still in
+  // flight: the store folds it into that run (one request at a time) and
+  // reads again once the first settles, dropping the first fetch's answer.
   rerender(
     <>
       <TasksPanelBody sessionRef="ref_stale" model={testModel({ ref: "ref_stale", tasks: { total: 3, done: 1 } })} />
       <Toast />
     </>,
   );
+  await waitFor(() => expect(calls).toHaveLength(1));
+
+  await act(async () => calls[0]?.reject(new Error("tasks boom")));
   await waitFor(() => expect(calls).toHaveLength(2));
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 
   await act(async () => calls[1]?.resolve({ data: TASKS_DATA }));
   await screen.findByText("Wire up session actions");
-  await act(async () => calls[0]?.reject(new Error("tasks boom")));
-
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
-  expect(screen.getByText("Wire up session actions")).toBeTruthy();
 });
 
 // The hub resumes a cold session before it can list anything

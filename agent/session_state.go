@@ -382,8 +382,11 @@ func (s *Session) recomputeRestoredState() {
 // SessionIdle, so interrupt/failure paths (which never reach the settle) and
 // closed sessions are untouched.
 func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
+	// Runnable user steering is queued input for this purpose: a carrier that
+	// returned its steer undelivered leaves it for the next wake, and a
+	// session that will move on its own is not waiting on the user.
 	target := settleTerminalState(hadOutput, goalKicked,
-		s.peekNotifications() > 0, s.QueueDepth() > 0, len(s.liveSubagentSessions()) > 0)
+		s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
 	if target != SessionAwaiting {
 		return
 	}

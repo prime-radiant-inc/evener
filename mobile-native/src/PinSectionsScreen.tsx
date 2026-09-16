@@ -90,7 +90,6 @@ export function PinnedSectionScreen({
 		pin.ready &&
 		pin.focused &&
 		pin.confirmed &&
-		!pin.page?.stale &&
 		!pin.action?.pending &&
 		!pin.action?.uncertain &&
 		!!section;
@@ -99,10 +98,7 @@ export function PinnedSectionScreen({
 			<Copy>{section?.name ?? title}</Copy>
 			<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 			<ErrorMessage message={pin.action?.error ?? pin.page?.error ?? null} />
-			{!pin.ready ||
-			!pin.confirmed ||
-			pin.page?.stale ||
-			pin.action?.uncertain ? (
+			{!pin.ready || !pin.confirmed || pin.action?.uncertain ? (
 				<Action
 					disabled={!!pin.action?.pending}
 					onPress={() => {
