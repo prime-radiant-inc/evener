@@ -2342,16 +2342,16 @@ describe("ConversationService", () => {
 
   // R4-Important: open/readProjection must not commit ref/capabilities until ALL
   // response-derived projection work succeeds. After await, compute/validate
-  // projectThread, activity projection, olderCursor/result locals first; only
+  // projectConversation, activity projection, olderCursor/result locals first; only
   // then, if epoch current, atomically commit ref+caps. Any malformed
-  // response/projectThread/activity projection throw leaves pair null/fail-closed.
+  // response/projectConversation/activity projection throw leaves pair null/fail-closed.
   // Stale successful result may return without committing.
   describe("projection throw leaves pair fail-closed (R4-Important)", () => {
-    it("open: projectThread throw leaves pair null — all operations fail before wire", async () => {
+    it("open: projectConversation throw leaves pair null — all operations fail before wire", async () => {
       const { client, service } = setup();
       await service.open("ref-1"); // initial valid open
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementation(() => {
           throw new Error("malformed projection");
         });
@@ -2395,11 +2395,11 @@ describe("ConversationService", () => {
       }
     });
 
-    it("readProjection: projectThread throw leaves pair null — all operations fail before wire", async () => {
+    it("readProjection: projectConversation throw leaves pair null — all operations fail before wire", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementation(() => {
           throw new Error("malformed projection");
         });
@@ -2499,7 +2499,7 @@ describe("ConversationService", () => {
     });
 
     it("stale successful open result returns without committing pair", async () => {
-      // An older open whose projectThread succeeds but resolves after a newer
+      // An older open whose projectConversation succeeds but resolves after a newer
       // open must return its result but NOT commit ref+caps.
       const { client, service } = setup();
       const threadA = makeThread({
@@ -2532,7 +2532,7 @@ describe("ConversationService", () => {
       // Start open A (deferred), then open B (immediate, commits pair).
       const openAPromise = service.open("ref-A");
       await service.open("ref-B");
-      // Resolve A's stale open — it returns projectThread(threadA) but must
+      // Resolve A's stale open — it returns projectConversation(threadA) but must
       // NOT commit A's pair over B's.
       resolveARead(makeReadResponse(threadA));
       const convA = await openAPromise;
@@ -2615,7 +2615,7 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       await service.open("ref-1");
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementationOnce(() => {
           throw new Error("malformed projection");
         });
@@ -3323,6 +3323,8 @@ describe("observed queue guards", () => {
   beforeEach(() => {
     idCounter = 0;
   });
+  // A hub-served past session carries no evener.instanceId; the conversation
+  // still shows the fence the service mutates under (the thread id).
   it("retains the instance identity used by the displayed queue", async () => {
     const { service } = setup();
     expect((await service.open("ref-1")).instanceId).toBe("thread-1");
