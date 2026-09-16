@@ -268,7 +268,15 @@ export function resetExtensionsStoreForTests(): void {
   pluginRefetchTimer = undefined;
   clearTimeout(launchLayerRefetchTimer);
   launchLayerRefetchTimer = undefined;
+  // The marketplaces fields are written here as well as by the core's reset:
+  // the mirror above forwards only what the core changed, so a value a test
+  // seeded straight into this store, over a core already at its initial
+  // state, would otherwise survive the reset.
   extensionsStore.setState({
+    marketplaces: null,
+    marketplacesLoading: false,
+    marketplacesError: null,
+    browseCatalogs: new Map(),
     plugins: null,
     pluginRevision: 0,
     pluginsLoading: false,

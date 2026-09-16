@@ -170,7 +170,14 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     refetchTimer = undefined;
   }
 
-  const store = createFrameworkFreeStore<MarketplacesState>((set, get) => {
+  const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
+    // Every write goes through here: a request that resolves after dispose()
+    // - a mutation, whose response no generation or revision fences - must
+    // publish nothing to a host whose screen is gone.
+    const set: typeof publish = (partial) => {
+      if (!disposed) publish(partial);
+    };
+
     /** Runs one mutation: its response's list is written only if no later
      * revision has committed since, and the catalogs it names are retired
      * either way (retiring is monotonic). Rejects as the request does. */

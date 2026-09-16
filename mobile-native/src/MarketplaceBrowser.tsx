@@ -21,6 +21,7 @@ import { createMarketplacesStore } from "@evener/appwire-client/state/extensions
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import type { InstalledPlugins } from "./installedPlugins";
+import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The marketplaces store keeps each failed request's own text; this screen
@@ -75,10 +76,14 @@ export function MarketplaceBrowser({
   // view's cue to request it again - the web's expanded node does the same.
   const catalog = selected ? state.browseCatalogs.get(selected) : undefined;
   const loaded = catalog?.status === "loaded" ? catalog : undefined;
+  const browseTarget = catalogToBrowse(
+    selected,
+    state.marketplaces,
+    state.browseCatalogs,
+  );
   useEffect(() => {
-    if (selected && !state.browseCatalogs.has(selected))
-      void state.browseMarketplace(selected);
-  }, [selected, state.browseCatalogs, state.browseMarketplace]);
+    if (browseTarget) void state.browseMarketplace(browseTarget);
+  }, [browseTarget, state.browseMarketplace]);
   // A marketplace removed here or by another client leaves the list; its
   // selection goes with it.
   useEffect(() => {

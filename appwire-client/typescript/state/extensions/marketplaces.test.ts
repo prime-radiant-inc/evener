@@ -26,7 +26,7 @@ function failing(message: string): () => never {
 // flight. FakeClient.request() defers the handler by one microtask, so the
 // resolver exists only after that has flushed; the callers below await a
 // microtask before releasing.
-function defer<T>(fake: FakeClient, method: "evener/marketplace/browse" | "evener/marketplace/list") {
+function defer<T>(fake: FakeClient, method: Parameters<FakeClient["on"]>[0]) {
   let release!: (value: T) => void;
   fake.on(
     method,
@@ -282,6 +282,30 @@ describe("notifications", () => {
 
     expect(store.getState()).toBe(before);
     expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(1);
+  });
+});
+
+describe("dispose fences mutations", () => {
+  test("a mutation that resolves after dispose() publishes nothing", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [] }));
+    await store.getState().browseMarketplace("acme");
+    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
+    const removing = store.getState().removeMarketplace("acme");
+    await Promise.resolve();
+    const before = store.getState();
+    let notified = 0;
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    store.dispose();
+    release({ marketplaces: [] });
+    await removing;
+
+    expect(notified).toBe(0);
+    expect(store.getState()).toBe(before);
+    expect(store.getState().browseCatalogs.has("acme")).toBe(true);
   });
 });
 
