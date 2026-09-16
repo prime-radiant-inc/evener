@@ -70,9 +70,10 @@ function onConnectionChange(
   state: ReturnType<typeof connectionStore.getState>,
   previous: ReturnType<typeof connectionStore.getState>,
 ): void {
-  // Support FIRST (see connectedClient). On a flap back to supported the
-  // store begins a new ready generation here (finding 24), and the flap-back
-  // refresh at the end runs under that new epoch.
+  // Support FIRST (see connectedClient). The store owns what a support
+  // transition means: a flap back to supported begins a new ready generation
+  // (finding 24), and any transition into supported with a generation active
+  // refreshes under it.
   keybindingsStore.setSupport(keybindingsSupport(state.features));
   if (state.client !== wiredClient && state.client !== null) rewireClient(state.client);
   if (
@@ -88,14 +89,6 @@ function onConnectionChange(
     unwireReady?.();
     unwireReady = null;
     wiredClient = null;
-  }
-  if (
-    state.client === wiredClient &&
-    state.features?.keybindingsSettings === true &&
-    previous.features?.keybindingsSettings !== true &&
-    state.client?.state === "ready"
-  ) {
-    void keybindingsStore.getState().refreshOverrides();
   }
 }
 

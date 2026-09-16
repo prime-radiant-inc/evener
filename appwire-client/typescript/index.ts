@@ -203,7 +203,9 @@ export type {
   KeybindingDraftStorage,
   KeybindingsClient,
   KeybindingsStore,
+  KeybindingsStoreActions,
   KeybindingsStoreDeps,
+  KeybindingsStoreFields,
   KeybindingsStoreState,
   KeybindingsSupport,
 } from "./keybindingsStore";

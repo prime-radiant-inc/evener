@@ -34,7 +34,7 @@ import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
-import { type OverrideRule, type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
+import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -69,7 +69,13 @@ export interface KeybindingDraftStorage {
   removeIf(checkpoint: KeybindingDraftCheckpoint): void;
 }
 
-export interface KeybindingsStoreState {
+/** The draft port a store without one runs on: the proposal lives in the
+ * store's state only and does not survive the instance. */
+function memoryDraftStorage(): KeybindingDraftStorage {
+  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
+}
+
+export interface KeybindingsStoreFields {
   hubSupport: KeybindingsSupport;
   hubLoading: boolean;
   hubError: string | null;
@@ -82,13 +88,13 @@ export interface KeybindingsStoreState {
   appliedSerial: number;
   /** The validated rules currently applied to the registry (the raw rules
    * verbatim when the store has no registry to validate against). */
-  overrides: readonly OverrideRule[];
+  overrides: readonly KeybindingsRule[];
   /** The hub payload's rules VERBATIM, before validation filtering. The
    * editor composes whole-payload PATCHes from THIS set, not from
    * `overrides`: a rule validation skips (an unknown action from a newer
    * client, an unparseable chord) is still the hub's state, and a PATCH
    * composed from the validated set would silently delete it. */
-  rawOverrides: readonly OverrideRule[];
+  rawOverrides: readonly KeybindingsRule[];
   /** Semantic-validation warnings from the last applied payload. */
   warnings: readonly ValidationWarning[];
   /** True only while the applied state (revision/overrides/rawOverrides and
@@ -121,9 +127,13 @@ export interface KeybindingsStoreState {
    * under it, or a write's outcome is unknown): saveDraft refuses until
    * rebaseDraft reviews the current rules. */
   draftConflict: boolean;
-  /** The draft editor's own message (storage failures, an unconfirmed
-   * write); hub-sourced failures ride hubError. */
+  /** The draft port's own failures (save, discard, restore, cleanup);
+   * hub-sourced failures ride hubError and an unconfirmed write is the
+   * `writeUncertain` fact itself. */
   draftError: string | null;
+}
+
+export interface KeybindingsStoreActions {
   /** Refreshes from the hub under the current ready generation; a no-op
    * without one, while unsupported, or while the draft port is unavailable. */
   refreshOverrides(): Promise<void>;
@@ -133,7 +143,7 @@ export interface KeybindingsStoreState {
    * then-current rawOverrides) - a rules array composed at call time would
    * race the in-flight write it queues behind: same expectedRevision, and a
    * payload missing the first edit's confirmed change. */
-  patchOverrides(rules: readonly OverrideRule[] | (() => readonly OverrideRule[])): Promise<KeybindingsOverrides>;
+  patchOverrides(rules: readonly KeybindingsRule[] | (() => readonly KeybindingsRule[])): Promise<KeybindingsOverrides>;
   /** Replaces the draft with `rules`, checkpointed through the draft port.
    * Throws while the store is not editable (see assertEditable). */
   editDraft(rules: readonly KeybindingsRule[]): void;
@@ -148,6 +158,8 @@ export interface KeybindingsStoreState {
    * throws when the hub has moved again since. */
   rebaseDraft(reviewedRevision: number): void;
 }
+
+export type KeybindingsStoreState = KeybindingsStoreFields & KeybindingsStoreActions;
 
 export interface KeybindingsStore extends FrameworkFreeStore<KeybindingsStoreState> {
   /** Publishes the connection's support for keybinding settings. Resolving to
@@ -194,12 +206,7 @@ export interface KeybindingsStoreDeps {
   drafts?: KeybindingDraftStorage;
 }
 
-type StateFields = Omit<
-  KeybindingsStoreState,
-  "refreshOverrides" | "patchOverrides" | "editDraft" | "saveDraft" | "discardDraft" | "rebaseDraft"
->;
-
-function initialState(): StateFields {
+function initialState(): KeybindingsStoreFields {
   return {
     hubSupport: "unknown",
     hubLoading: false,
@@ -230,9 +237,8 @@ const UNAPPLY_ROLLED_BACK_MESSAGE =
   "Could not restore the built-in default shortcuts: a conflicting binding is holding a default chord. This hub's keybinding overrides are still in effect; restoring retries on the next refresh or connection change.";
 const UNAVAILABLE_MESSAGE = "Hub keybindings settings are unavailable.";
 const MALFORMED_MESSAGE = "Hub returned malformed keybindings overrides";
-/** The draft editor's fixed failure copy: a raw client or storage error may
- * carry a token or a local path, so it never reaches state verbatim. */
-const WRITE_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
+/** The draft port's fixed failure copy: a raw storage error may carry a local
+ * path, so it never reaches state verbatim. */
 const DRAFT_SAVE_FAILED_MESSAGE = "Could not save the shortcut draft locally.";
 const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the shortcut draft locally.";
 const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft. Check current shortcuts to retry.";
@@ -262,7 +268,7 @@ export function fromWireOverrides(value: unknown): KeybindingsOverrides | undefi
   return value as KeybindingsOverrides;
 }
 
-function cloneRules(rules: readonly OverrideRule[]): OverrideRule[] {
+function cloneRules(rules: readonly KeybindingsRule[]): KeybindingsRule[] {
   return rules.map((rule) => ({ action: rule.action, chord: rule.chord }));
 }
 
@@ -314,17 +320,16 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
   };
 }
 
-/** The draft port with every checkpoint validated on the way in and out, so
- * a malformed stored draft surfaces as a storage failure, never as state. */
+/** The draft port with load() as the trust boundary: a malformed stored
+ * draft surfaces as a storage failure, never as state. Writes pass through -
+ * every checkpoint written here was built from checked rules. */
 function draftRepository(storage: KeybindingDraftStorage) {
   return {
-    createId: () => storage.createId(),
+    ...storage,
     load(): KeybindingDraftCheckpoint | null {
       const value = storage.load();
       return value === null || value === undefined ? null : draftCheckpoint(value);
     },
-    save: (value: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(value)),
-    removeIf: (value: KeybindingDraftCheckpoint) => storage.removeIf(draftCheckpoint(value)),
   };
 }
 
@@ -346,11 +351,11 @@ function rejectionPayload(error: unknown, info: string, key: string): Keybinding
  * rollback; the verbatim one is for a host with no dispatcher. */
 interface OverrideReconciler {
   /** Reconciles the host to `rules`; throws with the host rolled back. */
-  apply(rules: readonly OverrideRule[]): Pick<StateFields, "overrides" | "warnings">;
+  apply(rules: readonly KeybindingsRule[]): Pick<KeybindingsStoreFields, "overrides" | "warnings">;
   /** See registryReconciler's doc. Returns false when the restore rolled back. */
   unapplyAll(): boolean;
   /** The warnings `rules` would introduce over what `baseline` already produces. */
-  introducedWarnings(baseline: readonly OverrideRule[], rules: readonly OverrideRule[]): ValidationWarning[];
+  introducedWarnings(baseline: readonly KeybindingsRule[], rules: readonly KeybindingsRule[]): ValidationWarning[];
   /** Mirrors the character-key pref into the host before a re-apply. */
   prepareReapply(): void;
 }
@@ -390,7 +395,7 @@ function registryReconciler(registry: KeybindingsRegistry, characterKeyTriggers:
     }
   }
 
-  function validate(rules: readonly OverrideRule[], pref: boolean) {
+  function validate(rules: readonly KeybindingsRule[], pref: boolean) {
     return validateOverrideRules(rules, registry, undefined, new Set(applied.keys()), pref);
   }
 
@@ -538,7 +543,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     deps.registry === undefined
       ? verbatimReconciler()
       : registryReconciler(deps.registry, deps.characterKeyTriggers ?? (() => true));
-  const drafts = deps.drafts === undefined ? null : draftRepository(deps.drafts);
+  const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
 
   // Ready-generation wiring. `activeEpoch` is -1 while no generation is
   // active; every refresh, write and notification captures the epoch it
@@ -548,7 +553,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   let unwireNotification: (() => void) | null = null;
   let disposed = false;
   let refreshSerial = 0;
-  let patchSerial = 0;
   /** Set when an un-apply rolled back against a wedged registry (findings 31
    * and 32): the overrides are STILL firing, so the rollback hubError is not
    * stale and refreshFor's entry clear must not wipe it. Cleared by the next
@@ -566,17 +570,18 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * rest of the wiring state so a never-resolving write cannot leak into the
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
-  /** Bumps when a checkpointed write leaves: a GET that started BEFORE the
-   * write says nothing about the write's outcome, so only a read that started
-   * after it may settle `writeUncertain`. */
-  let writeEpoch = 0;
+  /** Bumps when any write leaves (a direct PATCH or a checkpointed one). A
+   * reply is a write's own only while no later write has left, and a GET
+   * that started BEFORE a write says nothing about that write's outcome, so
+   * only a read that started after it may settle `writeUncertain`. */
+  let writeSerial = 0;
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
     // The draft restore is part of the initial state so a host that builds
     // the store synchronously (native, per connection) sees the persisted
     // proposal on its first read, before any refresh.
-    ...(drafts === null ? {} : restoreDraft({ loaded: false, revision: 0 })),
+    ...restoreDraft({ loaded: false, revision: 0 }),
     refreshOverrides,
     patchOverrides,
     editDraft,
@@ -589,9 +594,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   /** The fields a restored checkpoint (or its absence, or a failed restore)
    * sets; `confirmed` is passed in because the creation-time restore runs
    * before there is any state to read. */
-  function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<StateFields> {
+  function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
     try {
-      const checkpoint = drafts?.load() ?? null;
+      const checkpoint = drafts.load();
       const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
       return {
         draft,
@@ -623,7 +628,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * payload stays retryable and a later `changed` with the same revision is
    * not eaten by the stale guard. `extra` lands in the same publish as the
    * confirmed state. Returns false for an ignored payload. */
-  function applyHubOverrides(payload: KeybindingsOverrides, extra: Partial<StateFields> = {}): boolean {
+  function applyHubOverrides(payload: KeybindingsOverrides, extra: Partial<KeybindingsStoreFields> = {}): boolean {
     const state = getState();
     if (payload.revision < state.revision && payload.loadError === undefined) {
       if (Object.keys(extra).length > 0) setState(extra);
@@ -684,15 +689,20 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // revision - applyHubOverrides' stale guard would otherwise reject that
     // authoritative payload on every refresh, leaving the old hub's shortcuts
     // live and editing silently disabled (roborev PR #884 round 11).
-    // A checkpointed write still in flight is fenced out with the generation:
-    // its reply will land nothing, so `saving` ends here (a host that reuses
-    // the instance across a reconnect would otherwise stay uneditable) and
-    // the write's outcome is UNKNOWN - exactly what writeUncertain means,
-    // and what its checkpoint already says on disk. The next generation's
-    // authoritative read settles it.
+    // Everything in flight is fenced out with the generation, so its flags
+    // end here: a refresh's hubLoading, and a checkpointed write's saving (a
+    // host that reuses the instance across a reconnect would otherwise stay
+    // uneditable). That write's outcome is UNKNOWN - exactly what
+    // writeUncertain means, and what its checkpoint already says on disk;
+    // the next generation's authoritative read settles it.
     const state = getState();
-    if (state.loaded || state.revision !== 0 || state.saving)
-      setState({ loaded: false, revision: 0, ...(state.saving ? { saving: false, writeUncertain: true } : {}) });
+    setState({
+      hubLoading: false,
+      saving: false,
+      writeUncertain: state.writeUncertain || state.saving,
+      loaded: false,
+      revision: 0,
+    });
   }
 
   function beginReadyGeneration(): void {
@@ -717,17 +727,23 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // dispatched before the transition. Begin a NEW ready generation on
       // the transition (the epoch bump fences all three paths; the
       // notification rewire drops the old wrapper): isCurrent fails for
-      // every token captured pre-flap. The host's flap-back refresh runs
-      // AFTER this and fires under the NEW epoch, so the new generation's
-      // own refresh is not fenced out by its own bump.
+      // every token captured pre-flap. The refresh below runs AFTER the bump
+      // and fires under the NEW epoch, so the new generation's own refresh is
+      // not fenced out by its own bump.
       // Only the TRANSITION bumps: a same-value re-notification (hubSupport
       // already "supported") and the unknown window (a transient disconnect
       // keeps its state and its in-flight work) leave the generation intact.
       // The DOWNWARD flap needs no bump: isSupported() gates every path for
       // the unsupported window itself, and refreshFor's entry guard refuses
       // to run while unsupported.
+      if (state.hubSupport === support) return;
       if (state.hubSupport === "unsupported" && activeEpoch >= 0) beginReadyGeneration();
-      if (state.hubSupport !== support) setState({ hubSupport: support });
+      setState({ hubSupport: support });
+      // The transition INTO supported with a ready generation active is the
+      // load trigger - from unknown (the handshake's features resolving after
+      // the client was ready) as much as from unsupported. Before the
+      // generation exists the host's first refresh loads.
+      if (activeEpoch >= 0) void refreshFor(activeEpoch);
       return;
     }
     let unrestored = false;
@@ -827,17 +843,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
   }
 
-  /** What a read that started after the last checkpointed write settles for
-   * the draft editor. Any such read supersedes the write's own failure copy
-   * (draftError): the hub's answer is now the truth about that write. An
-   * AUTHORITATIVE read (no loadError) also settles the outcome itself: the
-   * checkpoint is re-marked and writeUncertain clears, so edits unblock. A
-   * read that started before the write left, or landed while one is in
-   * flight, says nothing about that write and settles nothing. */
-  function settledWrite(payload: KeybindingsOverrides, writeEpochAtStart: number): Partial<StateFields> {
+  /** What an authoritative read (a GET without loadError) settles for the
+   * draft editor: an uncertain write's outcome is now whatever the hub
+   * confirmed, so the checkpoint is re-marked and edits unblock. A read that
+   * started before the write left, or landed while one is in flight, says
+   * nothing about that write and settles nothing. */
+  function settledWrite(payload: KeybindingsOverrides, writeSerialAtStart: number): Partial<KeybindingsStoreFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (writeEpochAtStart !== writeEpoch || saving) return {};
-    if (payload.loadError !== undefined) return { draftError: null };
+    if (payload.loadError !== undefined || writeSerialAtStart !== writeSerial || saving) return {};
     if (draft !== null && writeUncertain) {
       try {
         persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
@@ -845,13 +858,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
       }
     }
-    return { writeUncertain: false, draftError: null };
+    return { writeUncertain: false };
   }
 
   async function refreshFor(generation: number): Promise<void> {
     if (!isCurrent(generation) || !isSupported()) return;
     const serial = ++refreshSerial;
-    const writeEpochAtStart = writeEpoch;
+    const writeSerialAtStart = writeSerial;
     // The read that lands is this one, under the generation it started in,
     // with support still advertised (finding 23: a refresh rejecting after
     // support was lost would otherwise overwrite the support-drop cleanup
@@ -864,7 +877,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      applyHubOverrides(payload, { hubLoading: false, ...settledWrite(payload, writeEpochAtStart) });
+      applyHubOverrides(payload, { hubLoading: false, ...settledWrite(payload, writeSerialAtStart) });
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
@@ -884,7 +897,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // A draft port that failed gets one more restore attempt per refresh; the
     // hub read waits until the local proposal is in hand again, so an edit
     // cannot compose against a confirmed payload with the draft unknown.
-    if (drafts !== null && getState().storageUnavailable) {
+    if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
       if (getState().storageUnavailable) return;
     }
@@ -945,7 +958,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function patchOverrides(
-    rulesOrCompose: readonly OverrideRule[] | (() => readonly OverrideRule[]),
+    rulesOrCompose: readonly KeybindingsRule[] | (() => readonly KeybindingsRule[]),
   ): Promise<KeybindingsOverrides> {
     // Fence the write to the ready generation it was CREATED under. A queued
     // write executes only after the previous write settles, which can be
@@ -995,12 +1008,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // hubError/conflict untouched: nothing hub-sourced happened.
       const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
       if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
-      const token = ++patchSerial;
+      const token = ++writeSerial;
       // The reply that lands is this write's, under the generation it left
       // in, with support still advertised: a response landing after support
       // loss must not re-apply - the unsupported branch already un-applied and
       // reset the hub state.
-      const stillMine = () => token === patchSerial && isCurrent(generation) && isSupported();
+      const stillMine = () => token === writeSerial && isCurrent(generation) && isSupported();
       try {
         const result = await client.request("evener/settings/keybindings/patch", {
           expectedRevision: state.revision,
@@ -1050,7 +1063,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   /** The draft editor's gate: a confirmed, supported, idle hub state with a
    * usable draft port. Returns the confirmed payload the edit composes
    * against. */
-  function assertEditable(): { revision: number; rules: readonly OverrideRule[] } {
+  function assertEditable(): { revision: number; rules: readonly KeybindingsRule[] } {
     const state = getState();
     if (
       disposed ||
@@ -1067,8 +1080,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
     try {
-      const checkpoint = { ...input, id: drafts?.createId() ?? "memory" };
-      drafts?.save(checkpoint);
+      const checkpoint = { ...input, id: drafts.createId() };
+      drafts.save(checkpoint);
       return checkpoint;
     } catch {
       setState({ storageUnavailable: true });
@@ -1093,7 +1106,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
-    writeEpoch += 1;
+    writeSerial += 1;
     const generation = activeEpoch;
     setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
     let value: KeybindingsOverrides;
@@ -1112,12 +1125,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         throw new Error(MALFORMED_MESSAGE);
       value = decoded;
     } catch (error) {
+      // The write's outcome is unknown; that fact is the state (writeUncertain)
+      // rather than a message. A malformed reply is hub-sourced and rides
+      // hubError like patchOverrides' does.
       if (isCurrent(generation))
         setState({
           saving: false,
-          draftError: errorText(error) === MALFORMED_MESSAGE ? MALFORMED_MESSAGE : WRITE_UNCONFIRMED_MESSAGE,
           draftConflict: true,
           writeUncertain: true,
+          ...(errorText(error) === MALFORMED_MESSAGE ? { hubError: MALFORMED_MESSAGE } : {}),
         });
       throw error;
     }
@@ -1130,12 +1146,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     let storageError: string | null = null;
     try {
       if (conflict) persistDraft({ ...checkpoint, writeUncertain: false });
-      else drafts?.removeIf(checkpoint);
+      else drafts.removeIf(checkpoint);
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
     if (!isCurrent(generation)) return value;
-    const settled: Partial<StateFields> = {
+    const settled: Partial<KeybindingsStoreFields> = {
       saving: false,
       draft: conflict || storageError !== null ? getState().draft : null,
       draftConflict: conflict,
@@ -1151,8 +1167,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function discardDraft(): void {
     assertEditable();
     try {
-      const checkpoint = drafts?.load();
-      if (checkpoint) drafts?.removeIf(checkpoint);
+      const checkpoint = drafts.load();
+      if (checkpoint) drafts.removeIf(checkpoint);
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
@@ -1179,7 +1195,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     reset() {
       endReadyGeneration();
       refreshSerial += 1;
-      patchSerial += 1;
+      writeSerial += 1;
       missedChangeNotification = false;
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();

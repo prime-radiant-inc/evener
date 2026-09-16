@@ -37,8 +37,14 @@ export interface PreferenceState<T> {
 	storageUnavailable: boolean;
 }
 
+/** The confirmed payload as the shared store holds it: its rule list is the
+ * store's own (identity-stable until the next applied payload), read-only. */
+export type ConfirmedKeybindings = Omit<KeybindingsOverrides, "rules"> & {
+	rules: readonly KeybindingsRule[];
+};
+
 export interface NativePreferencesSnapshot {
-	keybindings: PreferenceState<KeybindingsOverrides>;
+	keybindings: PreferenceState<ConfirmedKeybindings>;
 	transcriptMobile: PreferenceState<{
 		revision: number;
 		config: TranscriptDisplayConfigV1;
@@ -102,40 +108,32 @@ function hubErrorMessage(state: KeybindingsStoreState): string | null {
 }
 
 // The keybinding domain is a projection of the shared store's state: the
-// confirmed payload is rebuilt from the store's revision and raw rules, and a
+// confirmed payload is the store's revision and raw rules (the rule array is
+// the store's own, a fresh one per applied payload and identity-stable
+// otherwise, which the shortcut screen's preview memo keys on), and a
 // hub-sourced failure surfaces as fixed copy (a raw client error may carry a
-// token or a path) while the draft editor's own messages pass through. The
-// projection keeps `confirmed.rules` identity-stable across notifications
-// that did not apply a payload: the shortcut screen memoizes its preview
-// (a registry build plus validation) on that array.
-function keybindingsProjection() {
-	let rules: {
-		raw: readonly KeybindingsRule[];
-		copy: KeybindingsRule[];
-	} | null = null;
-	return (
-		state: KeybindingsStoreState,
-	): PreferenceState<KeybindingsOverrides> => {
-		if (rules?.raw !== state.rawOverrides)
-			rules = { raw: state.rawOverrides, copy: [...state.rawOverrides] };
-		return {
-			support: state.hubSupport,
-			loading: state.hubLoading,
-			saving: state.saving,
-			confirmed: state.loaded
-				? {
-						version: 1,
-						revision: state.revision,
-						rules: rules.copy,
-						...(state.loadError === null ? {} : { loadError: state.loadError }),
-					}
-				: null,
-			draft: state.draft,
-			error: state.draftError ?? hubErrorMessage(state),
-			conflict: state.draftConflict,
-			writeUncertain: state.writeUncertain,
-			storageUnavailable: state.storageUnavailable,
-		};
+// token or a path) while the draft port's own messages pass through. An
+// unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
+function keybindingsDomain(
+	state: KeybindingsStoreState,
+): PreferenceState<ConfirmedKeybindings> {
+	return {
+		support: state.hubSupport,
+		loading: state.hubLoading,
+		saving: state.saving,
+		confirmed: state.loaded
+			? {
+					version: 1,
+					revision: state.revision,
+					rules: state.rawOverrides,
+					...(state.loadError === null ? {} : { loadError: state.loadError }),
+				}
+			: null,
+		draft: state.draft,
+		error: state.draftError ?? hubErrorMessage(state),
+		conflict: state.draftConflict,
+		writeUncertain: state.writeUncertain,
+		storageUnavailable: state.storageUnavailable,
 	};
 }
 
@@ -169,7 +167,6 @@ export class NativePreferences {
 		});
 		this.keybindings.setSupport(keybindingsSupport(features));
 		this.keybindings.beginReadyGeneration();
-		const keybindingsDomain = keybindingsProjection();
 		this.state = {
 			keybindings: keybindingsDomain(this.keybindings.getState()),
 			transcriptMobile: {

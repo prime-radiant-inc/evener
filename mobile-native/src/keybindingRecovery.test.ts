@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
 	KeybindingDraftCheckpoint,
-	KeybindingDraftStorage,
 	KeybindingsOverrides,
 	KeybindingsRule,
 } from "@evener/appwire-client";
+import { memoryKeybindingDraftStorage } from "@evener/appwire-client/testing/keybindingDraftStorage";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -16,20 +16,8 @@ const rules: KeybindingsRule[] = [
 ];
 
 function fixture() {
-	let stored: unknown = null;
-	let id = 0;
-	let failSave = false;
-	const storage: KeybindingDraftStorage = {
-		createId: () => String(++id),
-		load: () => structuredClone(stored),
-		save: (value) => {
-			if (failSave) throw new Error("disk unavailable");
-			stored = structuredClone(value);
-		},
-		removeIf: (value) => {
-			if (JSON.stringify(value) === JSON.stringify(stored)) stored = null;
-		},
-	};
+	const drafts = memoryKeybindingDraftStorage();
+	const storage = drafts.storage;
 	const requests: { method: string; params: unknown }[] = [];
 	const listeners = new Set<(value: AnyNotification) => void>();
 	const handlers = new Map<string, (params: unknown) => unknown>([
@@ -52,15 +40,9 @@ function fixture() {
 		storage,
 		requests,
 		handlers,
-		failSave: () => {
-			failSave = true;
-		},
-		allowSave: () => {
-			failSave = false;
-		},
-		corrupt: () => {
-			stored = { invalid: true };
-		},
+		failSave: () => drafts.failSave(true),
+		allowSave: () => drafts.failSave(false),
+		corrupt: drafts.corrupt,
 		create: () =>
 			new NativePreferences(
 				client,
