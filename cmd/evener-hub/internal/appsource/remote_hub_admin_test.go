@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"syscall"
@@ -150,6 +151,103 @@ func TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown(t *tes
 	}
 	if !strings.Contains(wire.Message, "host") {
 		t.Fatalf("message = %q, want it to name the host", wire.Message)
+	}
+}
+
+// closedPipeTransport is a client transport whose send path fails the way a
+// partially-written stream does: the write side is already gone, so the frame
+// write is refused. Nothing reaches the peer, so the response the caller waits
+// for can never arrive.
+type closedPipeTransport struct{ err error }
+
+func (t closedPipeTransport) Send(context.Context, appwire.Message) error { return t.err }
+
+func (t closedPipeTransport) Recv(ctx context.Context) (appwire.Message, error) {
+	<-ctx.Done()
+	return appwire.Message{}, ctx.Err()
+}
+
+func (t closedPipeTransport) Close() error { return nil }
+
+// TestRemoteHubSourceAdminMutationCallMapsClosedPipeWriteToOutcomeUnknown pins
+// round eight's medium finding: io.ErrClosedPipe is the transport loss the send
+// path reports when a write is refused on a connection that is already gone,
+// and transportUnavailable must recognize it so the mutation path can re-label
+// it. Unrecognized, the failure escaped as a raw error — which reads as
+// "nothing happened, retry" for a forwarded instance/create or plugin/install
+// that may well have been applied before the write side closed. Both the bare
+// error and a wrapped one are covered, because a real transport reports it
+// through its own message.
+func TestRemoteHubSourceAdminMutationCallMapsClosedPipeWriteToOutcomeUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "bare", err: io.ErrClosedPipe},
+		{name: "wrapped", err: fmt.Errorf("appwire send: %w", io.ErrClosedPipe)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+				return appwire.NewClient(closedPipeTransport{err: tc.err}), nil
+			})
+
+			var out json.RawMessage
+			err := source.AdminMutationCall(context.Background(), appwire.MethodEvenerPluginInstall, nil, &out)
+			if err == nil {
+				t.Fatal("AdminMutationCall succeeded after the write side closed")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+			}
+			if wire.Code != appwire.CodeInternalError {
+				t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeInternalError)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok {
+				t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+			}
+			if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
+				t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMutationOutcomeUnknown)
+			}
+			if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+				t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+			}
+			// Blocked, not Automatic: the admin forward carries no idempotency
+			// key, exactly as TestRemoteHubSourceAdminMutationCallMapsResponseLossToOutcomeUnknown pins.
+			if data.RetryDisposition != appwire.RetryDispositionBlocked {
+				t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
+			}
+			if !strings.Contains(wire.Message, "host") {
+				t.Fatalf("message = %q, want it to name the host", wire.Message)
+			}
+		})
+	}
+}
+
+// TestRemoteHubSourceAdminCallClosedPipeWriteStaysSessionUnavailable pins that
+// the read path keeps AdminCall's mapping for the same write-side loss: a read
+// is idempotent, so SessionUnavailable — a safe retry — is correct there, and
+// the blocked disposition stays scoped to mutations.
+func TestRemoteHubSourceAdminCallClosedPipeWriteStaysSessionUnavailable(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return appwire.NewClient(closedPipeTransport{err: io.ErrClosedPipe}), nil
+	})
+
+	var out json.RawMessage
+	err := source.AdminCall(context.Background(), appwire.MethodEvenerInstanceList, nil, &out)
+	if err == nil {
+		t.Fatal("AdminCall succeeded after the write side closed")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeUnavailable)
+	}
+	if info := wireErrorInfo(wire); info != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", info, appwire.ErrorSessionUnavailable)
 	}
 }
 
