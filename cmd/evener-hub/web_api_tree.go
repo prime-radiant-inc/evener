@@ -265,9 +265,10 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	var unconfirmedOwnership bool
 	var ownershipErr error
 	if s.cfg.Roster != nil {
-		ownershipErr = s.cfg.Roster.OwnershipError()
-		live = s.cfg.Roster.List()
-		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
+		roster := s.cfg.Roster.Snapshot()
+		ownershipErr = roster.OwnershipError
+		live = roster.Live
+		unconfirmedOwnership = len(roster.Unconfirmed) > 0
 	}
 	var metas []schema.SessionMeta
 	var pastEntries []hubcore.PastEntry

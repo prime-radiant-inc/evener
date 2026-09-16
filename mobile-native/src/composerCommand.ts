@@ -7,7 +7,7 @@ import type { ThreadClearResponse } from "@evener/appwire-client";
 import {
   effortLabel,
   effortOptionLevels,
-} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
+} from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
   ConversationClearActions,

@@ -167,6 +167,9 @@ assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://e
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
+assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

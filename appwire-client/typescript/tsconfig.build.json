@@ -47,6 +47,7 @@
     "slashCompletion.ts",
     "sharedNotesAvailability.ts",
     "marketplaceSourceLabel.ts",
-    "railSessionState.ts"
+    "railSessionState.ts",
+    "reasoningEffort.ts"
   ]
 }
