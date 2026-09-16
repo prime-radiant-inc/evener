@@ -78,23 +78,67 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 }
 
 // escapeHistoryWithSessionProvenance escapes a restored history for the model
-// copy. Turns before the session's divergence point came from a parent, whose
-// journal this session does not hold -- and a child mutation may reuse a parent's
-// client mutation id -- so they are decided by their own kinds and the write-path
-// text shape alone; only the turns the session itself created consult the
-// provenance its journal persists. divergenceTurn is expressed in the units of
-// the history being escaped, not the transcript's (see the caller's shift), so a
-// compacted fork keeps its own turns' provenance.
-func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
-	inherited := divergenceTurn - 1
-	if inherited <= 0 {
-		return escapeNotesHistoryTurns(history, origins)
+// copy. A turn that came from a parent belongs to a session whose journal this
+// one does not hold -- and a child mutation may reuse a parent's client mutation
+// id -- so it is decided by its own kind and the write-path text shape alone;
+// only the turns the session itself created consult the provenance its journal
+// persists. inherited marks that per turn, positionally against history: a fold
+// interleaves provenance (its own head marker, the older turns it retained, its
+// own tail), so no single boundary index can express it. A shorter or nil
+// inherited leaves the remaining turns the session's own.
+func escapeHistoryWithSessionProvenance(history []schema.Turn, inherited []bool, origins map[string]steeringOrigin) []schema.Turn {
+	out := make([]schema.Turn, 0, len(history))
+	for i := range history {
+		turnOrigins := origins
+		if i < len(inherited) && inherited[i] {
+			turnOrigins = nil
+		}
+		out = append(out, escapeNotesHistoryTurns(history[i:i+1], turnOrigins)...)
 	}
-	if inherited >= len(history) {
-		return escapeNotesHistoryTurns(history, nil)
+	return out
+}
+
+// inheritedProvenanceTurns marks, for each turn of a resumed history, whether it
+// came from the fork's inherited prefix. divergenceTurn indexes the full
+// transcript, so an entry is inside the prefix when its index is below
+// divergenceTurn-1. A resumed history is a re-ordered subset of the transcript
+// (a fold heads it with its own markers and then re-inserts the older turns it
+// retained), so origins -- the entry index each pre-repair resumed turn came
+// from -- decides per turn. Absent origins the history IS the transcript's
+// order and position decides. repairInsertions names each synthetic repair
+// turn's index in post-repair coordinates; a synthetic completes the call
+// before it and takes that turn's provenance.
+func inheritedProvenanceTurns(length, divergenceTurn int, origins, repairInsertions []int) []bool {
+	if divergenceTurn <= 1 || length == 0 {
+		return nil
 	}
-	out := escapeNotesHistoryTurns(history[:inherited], nil)
-	return append(out, escapeNotesHistoryTurns(history[inherited:], origins)...)
+	prefix := divergenceTurn - 1
+	if origins == nil {
+		inherited := make([]bool, length)
+		for i := range inherited {
+			inherited[i] = i < prefix
+		}
+		return inherited
+	}
+	inherited := make([]bool, 0, length)
+	next := 0
+	carry := func() bool {
+		if len(inherited) == 0 {
+			return false
+		}
+		return inherited[len(inherited)-1]
+	}
+	for _, at := range repairInsertions {
+		for len(inherited) < at && next < len(origins) {
+			inherited = append(inherited, origins[next] < prefix)
+			next++
+		}
+		inherited = append(inherited, carry())
+	}
+	for ; next < len(origins); next++ {
+		inherited = append(inherited, origins[next] < prefix)
+	}
+	return inherited
 }
 
 // escapeInheritedHistory escapes a forked session's inherited prefix for the
@@ -906,41 +950,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// history becomes model context. The projection record is read first, because
 	// it is compared against raw renders (see lastNotesProjection).
 	restoredNotesBlock, notesEverProjected := lastNotesProjection(resumeHistory)
-	// A fork's inherited prefix belongs to the parent's session, so only the
+	// A fork's inherited turns belong to the parent's session, so only the
 	// session's own turns consult its journal (see
-	// escapeHistoryWithSessionProvenance). DivergenceTurn indexes the full
-	// transcript; a resumed history is a re-ordered subset of it (a fold puts
-	// its own markers at the head, ahead of the older turns it retained), so
-	// the boundary is the count of leading resumed turns that still come from
-	// entries inside the inherited prefix. resumeOrigins gives each pre-repair
-	// resumed turn its source entry index; escapeHistoryWithSessionProvenance
-	// treats history[:divergenceTurn-1] as inherited, so an entry is inside the
-	// prefix when its origin < DivergenceTurn-1. The scan stops at the first
-	// own turn: a fold's head markers (own, newest entries) end the prefix
-	// immediately, which correctly makes a compacted fork all-own.
-	divergenceTurn := meta.DivergenceTurn
-	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 && meta.DivergenceTurn > 0 {
-		inheritedPrefix := 0
-		for _, origin := range resumeOrigins {
-			if origin < meta.DivergenceTurn-1 {
-				inheritedPrefix++
-				continue
-			}
-			break
-		}
-		divergenceTurn = inheritedPrefix + 1
-		// Repair splices a synthetic result wherever an orphaned tool call was,
-		// so every insertion at or before the boundary shifts it right by one:
-		// the synthetic completes the call it repairs, which sits inside the
-		// inherited prefix (history_repair.go shifts the in-flight boundary the
-		// same way).
-		for _, idx := range repairInsertions {
-			if idx <= divergenceTurn-1 {
-				divergenceTurn++
-			}
-		}
-	}
-	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
+	// escapeHistoryWithSessionProvenance and inheritedProvenanceTurns).
+	inheritedTurns := inheritedProvenanceTurns(len(resumeHistory), meta.DivergenceTurn, resumeOrigins, repairInsertions)
+	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, inheritedTurns, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
 	restoredClientMutationItems := make(map[string]clientMutationTranscriptItems)
 	for _, entry := range transcriptEntries {
