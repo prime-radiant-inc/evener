@@ -431,6 +431,7 @@ before acting on it.
 | C6 | #1227 | **merged** as `2b1e02939` — `stores/attachmentMarkers.ts` → `protocol/attachmentMarkers.ts` |
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
+| C22 | — | open — `widgets/pathfield/pathRows.ts` → `appwire-client/typescript/pathRows.ts` (name kept: nothing at the root exported `basename`, `parentOf`, `childrenPrefix`, `isDirEntry`, `buildPathRows` or `pickableRows`); its 337-line test moves with it, all six importers (four web, two native) move to the package name, qualification smoke-calls `buildPathRows` and `pickableRows`, no stub at the old path |
 | C14 | #1401 | open — `shell/rail/sessionState.ts` → `appwire-client/typescript/railSessionState.ts` (renamed: a bare `sessionState` beside `sessionErrors` in the package root is ambiguous); `humanizeState` gets its first test, both importers move to the package name, no stub at the old path |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |

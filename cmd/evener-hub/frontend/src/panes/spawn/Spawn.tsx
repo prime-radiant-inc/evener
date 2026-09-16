@@ -4,6 +4,7 @@
 
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption, ModelListResponse } from "@evener/appwire-client";
 import {
+  basename,
   filterSlashMenuItems,
   friendlyLaunchErrorMessage,
   mergeSlashCommands,
@@ -48,7 +49,6 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
-import { basename } from "../../widgets/pathfield/pathRows";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";

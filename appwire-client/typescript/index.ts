@@ -120,6 +120,8 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { PathPickableRow, PathRow } from "./pathRows";
+export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
