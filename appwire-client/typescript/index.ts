@@ -179,6 +179,14 @@ export type {
   ValidationWarningReason,
 } from "./keybindingValidation";
 export { actionDisplayLabel, currentKeybindingsPlatform, validateOverrideRules } from "./keybindingValidation";
+export type {
+  LaunchConfigClient,
+  LaunchConfigListener,
+  LaunchConfigStore,
+  LaunchConfigStoreState,
+  LaunchSettingsState,
+} from "./launchConfig";
+export { createLaunchConfigStore, LaunchSettings } from "./launchConfig";
 export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
 export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
 export { validatePathListAdd } from "./launchPathListAdd";
