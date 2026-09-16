@@ -208,7 +208,7 @@ manager → remote hub source → fleet view → remote administration.
 Multi-master or election; automatic host discovery; remote *tool execution*
 (`agent/execenv`) — a separate concern from where a session runs.
 
-## Tracked code follow-ups (rounds 7–21)
+## Tracked code follow-ups (rounds 7–22)
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
@@ -244,11 +244,15 @@ exact scope. None is a present fact.
   check.
 - **[04] deploy/restart** — `buildinfo` gains a stamped `ReleaseTag`;
   the installer fallback passes `EVENER_INSTALL_VERSION` and
-  `BINDIR`/`EVENER_SHARE_BINDIR` derived from `evener_path` (else `ErrDeploy`),
-  and verifies `backend_git_sha` for `snapshot`; `ensureOnce` gains the
+  `BINDIR`/`EVENER_SHARE_BINDIR` derived from `evener_path` (else `ErrDeploy`);
+  `ensureOnce` gains the
   first-attach bootstrap branch (explicit ad hoc argv, `mkdir -p` for the log
   dir, supervisor detection by unit definition); `hubArgvFromCommandLine`
   canonicalizes `argv[0]`; darwin restart uses `gui/<numeric-uid>/<label>`.
+  (Corrected round 22: the fallback's `snapshot` arm is **removed** — it is
+  admitted only for the immutable, checksum-verified `release` reference, so a
+  snapshot controller must use the atomic push path; the expected-`backend_git_sha`
+  verification survives for a pushed snapshot build's health probe.)
 - **[04] health probe** — `sshconn/version.go` `waitHealthy` must invoke
   `curl -fsS --noproxy '*' http://<loopback(addr)>/api/health` (explicit scheme
   for bracketed IPv6 literals) on the host.
@@ -401,7 +405,13 @@ exact scope. None is a present fact.
   signaling through an **atomic process handle** (a `pidfd` for the identified
   process) or a host-side helper holding an equivalent identity pin across the
   signal; when neither is available the restart refuses `ErrRestart` and emits
-  no signal. Mirrors component-04 acceptance criterion 20.
+  no signal. (Corrected round 22: **no** atomic handle is reachable today on any
+  platform, not only Darwin — a `pidfd` must be opened and signaled by a process
+  on the host, this component's only host interface is `ssh <dest> <command>`,
+  and no host-side helper is specified, installed, or invoked. Supervisorless
+  restart therefore refuses `ErrRestart` with no signal on Linux exactly as on
+  Darwin; see the round-19/22 item below.) Mirrors component-04 acceptance
+  criterion 20.
 - **[05/06] remote-originated `thread/start` resolution (round 17)** — at the
   **receiving** hub, `hubThreadStart` (`app_threadlifecycle.go`) and the
   request-context `origin` plumbing (`cmd/evener-hub/app_rpc.go`) must refuse
@@ -461,16 +471,25 @@ exact scope. None is a present fact.
   wildcard, superseding component 04's restart-identity normalization (check 4)
   and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
   validation plus `sshconn/version.go` and `sshconn/preflight.go`.
-- **[04] Darwin supervised-restart requirement / atomic-signal helper (round 19)**
-  — the restart's atomic-identity pin (round 17) is a `pidfd`, which is
-  Linux-only, so a supervisorless Darwin hub has no way to pin the identified
-  process across the signal and must refuse `ErrRestart` with no signal. A
-  restart-capable Darwin deployment must therefore be **supervised** (launchd
-  `kickstart -k` pins by label, not PID), or a host-side atomic-signal helper
-  must be specified and provisioned by the installer to make ad hoc Darwin
-  restart safe. Scope: `sshconn/version.go` (`restartBare` / the restart path),
-  the installer/`deploy.go` provisioning, and component-04 §"Stop/restart
-  mechanics". Mirrors component-04 acceptance criterion 20.
+- **[04] supervised-only restart / atomic-signal helper (round 19; widened round
+  22)** — the restart's atomic-identity pin (round 17) is a `pidfd`, which must
+  be opened and signaled by a process **on the host**. This component's only
+  host interface is `ssh <dest> <command>` shell execution, and the series
+  specifies, installs, and invokes no host-side helper that could hold the pin,
+  so the guarantee is **not implementable through the described interfaces on
+  any platform** — a supervisorless hub, Linux included, has no way to pin the
+  identified process across the signal and must refuse `ErrRestart` with no
+  signal (never the bare unguarded `kill`, and never a promise of a pidfd path
+  it cannot execute). A restart-capable deployment must therefore be
+  **supervised** (systemd unit `systemctl [--user] restart`; launchd
+  `kickstart -k` pins by label, not PID), or wait for a host-side atomic-signal
+  helper that is specified, provisioned by the installer, and invoked over the
+  channel. The **start** of a stopped hub (last-known-state bootstrap, no PID to
+  signal) is unaffected and keeps its detached launch. Scope:
+  `sshconn/version.go` (`restartBare` / the restart path), the
+  installer/`deploy.go` provisioning, and component-04 §"Stop/restart
+  mechanics" + acceptance criterion 20. Mirrors component-04 acceptance
+  criterion 20.
 - **[04] dedicated executable probe for a missing `run_path` (round 19)** — the
   verified missing-executable result (round 18) must be recognized from a
   dedicated probe with a stable exit-code sentinel (`test -x <run_path>`: `0`
@@ -538,3 +557,88 @@ exact scope. None is a present fact.
   `cmd/evener-hub/internal/appsource/remote_hub_source.go` (+ its paging
   tests). Mirrors component-05 §"Remote item paging requires a source-owned
   cursor identity".
+- **[06] source-qualified project identity through navigation (round 22, High)**
+  — the host-qualified project identity must be **one** string,
+  `"<sourceID>:<projectID>"` (the `appwire.Ref` form, `local` canonical), and it
+  must reach every surface, not only the projection: the catalog row keys
+  (`hubapi.NavigationProjectSummary.Key`, `NavigationProjectPage.Key`), the
+  read params (`appwire.NavigationReadParams.ProjectKey`) and the server
+  resource key/scope chain (`navigationReadKeyWithFields`, `app_navigation.go`;
+  `navigationResourceKey.canonical`, `navigationViewScope`,
+  `navigationEntityKey`, `navigationRootContainerKey`,
+  `cmd/evener-hub/navigation_cache.go`), the projection lookups
+  (`navigation_projection.go` `p.Project`/`ProjectPage`),
+  `hubapi.NavigationSessionLocation.ProjectKey`,
+  `appwire.NavigationInvalidationTarget.ProjectKey` with the target-key join in
+  `navigation_service.go`, the `(source, id)` receipt key
+  (`navigationChangeHint.Projects`), and the frontend
+  `ResourceKey`/`keyID`/`navigationViewScope`/`targetBase`/`canonicalResourceKey`/
+  `selectProjectResource` chain (`stores/navigation/types.ts`,
+  `selectors.ts`) plus the mobile `projectKey` route/reveal/readback keys. One
+  format/parse pair owns the encoding; `canonicalResourceKey` must normalize a
+  bare project key to `local:` exactly as it does a ref. Requires the two-host
+  same-key behavior test (distinct rows, reads, view scopes, and invalidation
+  targets; a bare key still local). Scope: the files above plus
+  `cmd/evener-hub/web_api_tree.go` (`selectNavigationProjects`). Mirrors
+  component-06 §"The one source-qualified project identity must be the key on
+  every navigation surface" and acceptance criterion 8.
+- **[05/06] non-dialing direct remote actions (round 22)** — every
+  `RemoteHubSource` call that is not an explicit attach trigger must resolve its
+  client through the shipped `sshconn.Manager.ClientIfAttached`
+  (`cmd/evener-hub/internal/sshconn/manager.go`) and return
+  `appwire.SessionUnavailable("remote hub unavailable: <host>")` when the host
+  is not attached, instead of dialing through the `Ensure`-backed
+  `RemoteHubClientFunc` (`remote_hub_source.go`) — reads, mutations,
+  subscriptions, host-proxy calls, and probes alike. `Ensure` is reached only
+  from `evener/host/attach`, from the explicit-host `thread/list` fan-out seam
+  (which attaches before calling the source), and from the first-attach
+  bootstrap they drive. Scope:
+  `cmd/evener-hub/internal/appsource/remote_hub_source.go` (the client resolver
+  + its tests), `cmd/evener-hub/app_threadlist.go` (the explicit-host attach
+  seam). Mirrors component-05 §"Every other remote call is non-dialing, not just
+  the snapshot and the non-explicit list" and component-06 acceptance
+  criterion 13.
+- **[04] run target must be `evener` (round 22)** — `installableEvenerBasename`
+  (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts
+  `evener-dev`, which is the development/test tooling binary
+  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
+  configured with an `evener-dev` run target installs and then fails preflight,
+  health, and restart. Narrow the acceptance to `evener` and refuse an
+  `evener-dev` (or otherwise unshipped) run-target basename with `ErrDeploy`
+  before any install, push, or write. Scope:
+  `cmd/evener-hub/internal/sshconn/version.go`,
+  `cmd/evener-hub/internal/sshconn/deploy.go` (+ its tests). No stamped,
+  hub-capable development artifact is defined by this series. Mirrors
+  component-04 §"The installer install path must equal the run target" and
+  acceptance criterion 17.
+- **[04] installer fallback is release-only (round 22)** — the fallback must be
+  admitted only for an **immutable, checksum-verified-before-unpacking**
+  artifact reference, i.e. `Channel == "release"` (immutable tag +
+  `install.sh:88-130`'s sha256 check against that release's `checksums.txt`);
+  a `snapshot` controller must now be refused with `ErrDeploy` (its tag is
+  force-moved and its `checksums.txt` re-uploaded with `--clobber`, so the
+  checksum pins nothing about the commit) instead of installing first and
+  failing the identity probe afterwards. `installerRefFor`
+  (`sshconn/deploy.go`) loses its `snapshot` arm; `deployInstaller`'s
+  post-install `probeLaunchCheck`/terminal `ErrVersionMismatch` stays as the
+  last verification, never as the pin. Scope:
+  `cmd/evener-hub/internal/sshconn/deploy.go` (`installerRefFor`,
+  `deployInstaller`), `install.sh` only if a per-commit reference is added
+  later, and the deploy tests. Mirrors component-04 §"No deploy path may
+  replace the installed binary before the artifact's identity is pinned" and
+  acceptance criterion 16.
+- **[05] `evener/session/image` AppWire method (round 22, extends the round-21
+  image item)** — the image proxy needs a fully specified typed contract:
+  `MethodEvenerSessionImage = "evener/session/image"` (`ScopeHub`,
+  `appwire/protocol.go` + regenerated bindings),
+  `SessionImageParams{SessionID, SHA, Path}` with exactly one of `SHA`/`Path`
+  set, `SessionImageResponse{MediaType, Size, SHA, Data}`, sha-pattern and
+  session-relative-containment validation (`fspaths.ResolveInRoot`), the
+  `outputImageMaxBytes` (8 MiB) bound, media type re-derived with
+  `supportedOutputImageMedia`, `InvalidParams`/`ResourceNotFound` mapping, a
+  refusal for a remote-originated (`origin` non-empty) caller, and no HTTP
+  route. Scope: `appwire/protocol.go`, `appwire/types.go`, the host handler
+  (`cmd/evener-hub/app_rpc.go`), the controller route/handler
+  (`cmd/evener-hub/web.go`, `image_serve.go`, `doc_serve.go`), and the
+  controller-side client call. Mirrors component-05 §"Image URLs are host-scoped
+  and must be rewritten through the controller" (its catalog-entry bullet).

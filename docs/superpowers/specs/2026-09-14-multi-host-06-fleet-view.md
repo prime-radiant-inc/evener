@@ -332,6 +332,96 @@ only `local`, so the fan-out currently degenerates to one source.
   unqualified shape today; the source field, store namespacing, and the
   non-local validation rule are the implementing PR's requirement, not a
   present fact.
+  **The one source-qualified project identity must be the key on every
+  navigation surface, not only inside the projection.** The grouping rule above
+  is worthless if the identity is rebuilt or dropped one layer up: the browser
+  asks for a project by a `projectKey` string, the navigation store caches by
+  that string, and the invalidation poke names it. Two hosts whose projects
+  share a project ID (or a path) then collide again at the first cache lookup
+  even though the projection kept them apart — the browser is served, and
+  invalidates, the wrong host's project. There must be **one** identity,
+  formatted once and parsed once, carried end to end:
+
+  - **Encoding (one pair of functions owns it).** The qualified project key is
+    `"<sourceID>:<projectID>"` — the same `"<sourceID>:<id>"` form
+    `appwire.Ref.String()` / `appwire.ParseRef` already define for session
+    refs (`appwire/refs.go`), so a remote project on host `alpha` is
+    `alpha:<projectID>` and a local one is `local:<projectID>`; both parts
+    satisfy `appwire.ValidRefPart` and the project ID is a
+    `identifier.Project.ID` (ASCII alphanumerics and `-`, `identifier/project.go`
+    `projectID`), so the `:` separator is unambiguous. `"local"` is the
+    canonical local-source token (the store migration above); an empty/absent
+    source normalizes to it before keying and a bare (unqualified) key is
+    accepted only as the local form. No layer may re-encode the pair
+    differently (a `\x00` join, base64 of a struct, a path-derived id) and no
+    layer may rebuild the key from the working directory.
+  - **Wire types.** `NavigationProjectSummary.Key` and
+    `NavigationProjectPage.Key` (the catalog and project rows,
+    `hubapi/navigation.go`), `appwire.NavigationReadParams.ProjectKey` (the
+    `project` / `project_page` reads), `hubapi.NavigationSessionLocation.ProjectKey`
+    (the deep-link owner the session chrome renders,
+    `panes/session/chrome/SessionChrome.tsx`), and
+    `appwire.NavigationInvalidationTarget.ProjectKey` all carry that one string.
+  - **Reads and server resource keys.** `navigationReadKeyWithFields`
+    (`app_navigation.go`) parses the qualified key — refusing a malformed key or
+    an unknown/non-configured source typed, before any lookup — into a
+    `navigationResourceKey{Kind: navigationResourceProject…, ProjectKey}` whose
+    `ProjectKey` stays the qualified string through `canonical()`,
+    `navigationViewScope`, `navigationEntityKey`, and
+    `navigationRootContainerKey` (`navigation_cache.go`). The projection
+    lookups (`p.Project(key.ProjectKey)`, `p.ProjectPage`, both refusing an
+    unknown key typed, `navigation_projection.go`) resolve exactly that host's
+    project, and a qualified key never falls back to a controller-side
+    `identifier.ResolveProject`.
+  - **Invalidation targets and receipts.** The invalidation target identity
+    (`navigation_service.go`'s target-key join) and the emitted
+    `appwire.NavigationInvalidationTarget{Kind: appwire.NavigationTargetProject, ProjectKey}`
+    carry the qualified key, and `navigationChangeHint.Projects`
+    stays keyed by `(source, id)` for the same reason. A poke for one host's
+    project must reach the *same* `ResourceKey` the browser registered
+    (`targetBase`) and must not stale or refresh another host's entry.
+  - **Frontend caches, routes, and selectors.** `ResourceKey`'s
+    `{kind: "project"; projectKey}` and
+    `{kind: "project_page"; projectKey; tier; …}`
+    (`stores/navigation/types.ts`) hold the qualified string, and so do
+    `keyID`, `navigationViewScope`, `navigationEntityKey`,
+    `navigationRootContainerKey`, `targetBase`, the
+    `selectProjectResource`/`selectProjectPage` selectors —
+    which key `keyID({kind: "project"|"project_page", projectKey})` and must
+    therefore see the qualified string (`stores/navigation/selectors.ts`) — and
+    the deep-link/route parameter the
+    rail, project browser, and session chrome pass. `canonicalResourceKey`
+    (which today normalizes only a bare `location` ref to `local:`) must
+    normalize a bare project key to its `local:` form the same way, or a
+    pre-qualification key misses the qualified cache entry. The mobile client
+    follows the same string in its `projectKey` route parameter, its reveal /
+    readback target validation (`navigationPages.ts`,
+    `navigationActionRepository.ts`, `navigationReveal.ts`) and its cache keys.
+
+  **Requirement.** One source-qualified project identity, in the
+  `"<sourceID>:<projectID>"` encoding above with `local` canonical, is the
+  `projectKey`/`Key`/`ProjectKey` value on every surface listed — the project
+  catalog rows, the `project`/`project_page` read parameters, the server
+  resource key and its view/entity/container scopes, the session location's
+  owning project, the invalidation target and the `(source, id)` receipt key,
+  and the frontend `ResourceKey`, cache scope, selector, and route parameter.
+  **A two-host same-key behavior test is mandatory:** two sources (one of them
+  `local`) whose projects share a project ID and a working-directory path must
+  produce two distinct catalog rows with two distinct qualified keys, resolve
+  two distinct `project`/`project_page` reads (asking for one host's key never
+  returns the other's sessions), stay in two distinct cache/view scopes and
+  entity keys, take two distinct invalidation targets so a poke for one host
+  leaves the other's cached entry settled, and a bare key still resolves to the
+  local project. The reverse direction is asserted too: a qualified read for an
+  unconfigured source is refused typed rather than degrading to local.
+  **Implementation status:** none of this exists today. Project keys are bare
+  `identifier.Project.ID` path-derived strings everywhere on the wire
+  (`NavigationProjectSummary.Key`, `NavigationReadParams.ProjectKey`), on the
+  server (`navigationResourceKey`, `navigationViewScope`,
+  `navigation_projection.go`), and in the frontend (`ResourceKey`, `keyID`,
+  `navigationViewScope`, `selectProjectResource`); `canonicalResourceKey`
+  normalizes only refs. The qualification, the shared format/parse pair, and
+  the two-host test are the implementing PR's requirement.
   **Migration of existing decisions — the uniqueness keys must be rebuilt, not
   just widened.** The controller-side favorite and archive stores are keyed by
   `(kind, id)` today, with no source column: `favorite` declares
@@ -771,12 +861,26 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
   remote ref on an offline host resolves to the registered-but-offline source,
   so the refusal belongs in the source/connection layer and must surface
   unchanged.
+  **The refusal must be non-dialing.** A direct remote read or mutation
+  resolves its client through the **attached-only** accessor
+  `sshconn.Manager.ClientIfAttached(name) (*appwire.Client, bool)` (shipped by
+  component 04a, `cmd/evener-hub/internal/sshconn/manager.go`) — never through
+  the `Ensure`-backed `RemoteHubClientFunc` — so an offline host is refused with
+  `appwire.SessionUnavailable(...)`/`appwire.Unavailable(...)` instead of being
+  reconnected by the very action that was supposed to be refused (component 05,
+  §"Every other remote call is non-dialing, not just the snapshot and the
+  non-explicit list"). `Ensure` belongs only to the **explicit attach
+  triggers** — this component's Connect action (`evener/host/attach`) and an
+  explicit host named in `thread/list`'s `SourceIDs` — and to the first-attach
+  bootstrap those drive. Nothing else attaches a host on the user's behalf.
 - **Start on an offline host**: the picker must disable offline hosts *for a
   spawn* and offer the connect action instead (above) — a never-attached host is
   therefore reachable, not dead UI. If a start request still arrives,
   `hubThreadStart`'s source branch returns
   `Unavailable("spawn source is not available: <id>")`
-  (`app_threadlifecycle.go`) — confirm and keep that contract.
+  (`app_threadlifecycle.go`) — confirm and keep that contract, and resolve the
+  source through the attached-only lookup so the refusal never dials the host
+  back.
 - **Connect action failure**: `evener/host/attach` returns the manager's typed
   error unchanged — `Unavailable` for an unreachable/refused host, component
   04's `ErrDeploy`/`ErrProtocolIncompatible` for a deploy/version failure — and
@@ -835,6 +939,24 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     with distinct identities, neither resolved from a local path; a remote
     path that exists on the controller's filesystem does not adopt the
     controller's project identity.
+  - Source-qualified navigation identity (the two-host same-key test): two
+    sources — one of them `local` — whose projects share a project ID **and** a
+    working-directory path produce two distinct catalog keys in the qualified
+    `"<source>:<projectID>"` encoding, two distinct `project` and
+    `project_page` reads (asking for one host's key never returns the other's
+    sessions), two distinct server view/entity/container scopes and two
+    distinct invalidation targets (a poke for one leaves the other's cached
+    entry settled), and a bare (unqualified) key that still resolves to the
+    local project; a qualified key naming an unconfigured source is refused
+    typed, never degraded to local. Extend the navigation cache/service tests
+    (`navigation_cache.go`, `navigation_service.go`) and drive the frontend
+    half through the same fixture in the `stores/navigation`
+    codec/store/revalidator tests (distinct `keyID`/`navigationViewScope`
+    values, and a `targetBase` round trip that lands on the registered key).
+  - Direct remote actions stay non-dialing: a `thread/read`, a mutation, or a
+    subscription against an **unattached** source asserts `Ensure` is never
+    called (and no dial happens) and returns the typed unavailable error; the
+    same call against an attached source reaches the host.
   - Source-qualified session pins: two hosts' sessions with the **same bare
     thread ID** (`host:<id>` and `local:<id>`) hold separate pin assignments —
     assigning one does not move the other, unpinning one leaves the other, and
@@ -890,10 +1012,18 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    (`ErrTooManyHosts`), so the manifest's 64-source cap (including `local`) can
    never be exceeded by configuration.
 8. Two hosts whose sessions share a working-directory path appear as two
-   distinct projects (host-qualified identity), and no remote row's project is
-   resolved against the controller's filesystem; the refresh attaches no host
-   that was not already attached (assert no `Ensure`/`ListThreads` on an
-   unattached source).
+   distinct projects (host-qualified identity), and that one qualification is
+   carried as a single `"<source>:<projectID>"` string (with `local` canonical)
+   through the project catalog row keys, the `project`/`project_page` read
+   parameters and their server resource keys, the session location's owning
+   project, the invalidation target, and the frontend `ResourceKey`, cache
+   scope, and selector — so two hosts whose projects share a project ID *and* a
+   path share no key, read, cache entry, or invalidation target on any of those
+   surfaces, a bare key still resolves to the local project, and a key naming an
+   unconfigured source is refused typed. No remote row's project is resolved
+   against the controller's filesystem; the refresh attaches no host that was
+   not already attached (assert no `Ensure`/`ListThreads` on an unattached
+   source).
 9. A configured-but-never-attached host is not dead UI: its first host action
    issues the browser-reachable `evener/host/attach` RPC (component 04's
    `Ensure`) and surfaces progress and failure mapped from its typed errors; on
@@ -925,6 +1055,14 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     survives the `source = "local"` migration — including a bare/empty local
     lookup, which normalizes to the canonical `"local"` key rather than missing
     the migrated row.
+13. A direct remote read or mutation against an **unattached** host returns the
+    typed unavailable error (`appwire.SessionUnavailable`/`Unavailable`, naming
+    the host) and never dials it: the call resolves
+    `Manager.ClientIfAttached` and the test asserts `Ensure` is called zero
+    times and no transport is opened. The only paths that may attach are the
+    explicit attach triggers — this component's Connect action and an explicit
+    host in `thread/list`'s `SourceIDs` — plus the first-attach bootstrap they
+    drive.
 
 ## PR size estimate (LOC)
 

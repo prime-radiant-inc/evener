@@ -742,15 +742,26 @@ Two paths, chosen per host (open question: which wins when both are viable):
     (`-X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}` in
     `.goreleaser.yml`, a new `ReleaseTag` var), and the installer is invoked
     with `EVENER_INSTALL_VERSION=<buildinfo.ReleaseTag>`.
-  - **snapshot** (`Channel == "snapshot"`): pass
-    `EVENER_INSTALL_VERSION=snapshot`, but the tag is mutable and tracks `main`,
-    so the tag alone does **not** pin the controller's commit. The pin is the
-    commit check: after install, the running hub's `/api/health`
-    `backend_git_sha` must equal `buildinfo.GitSHA`, and a snapshot that has
-    moved past (or not yet reached) the controller's commit is `ErrDeploy`. The
-    installer fallback therefore only converges a snapshot controller whose
-    commit **is** the published snapshot; a controller ahead of or behind `main`
-    must use the atomic push path.
+  - **snapshot** (`Channel == "snapshot"`): the `snapshot` tag is **mutable** —
+    `.github/workflows/binaries.yml` force-moves the tag *and* re-uploads
+    `checksums.txt` with `--clobber` on every green `main` build — so neither
+    the tag nor the checksum it publishes pins the controller's commit. The
+    checksum proves only that the downloaded archive is the one that release
+    published *now*; it says nothing about which commit that is. The installer
+    fallback is therefore **refused for a snapshot controller** with `ErrDeploy`
+    ("the installer fallback needs an immutable artifact reference; use the
+    atomic push path or an explicit `Options.BuildBinary`"), exactly as the
+    dev/dirty rule below refuses it. Running `install.sh` first and discovering
+    the mismatch afterwards is **not** an acceptable substitute: `install.sh`
+    has no commit-pinned mode, so it has already replaced the installed
+    `evener`, and the after-the-fact identity probe (`deployInstaller`'s
+    `probeLaunchCheck` → terminal `ErrVersionMismatch`, `deploy.go`) leaves the
+    host holding a build from a commit the controller never intended while the
+    deploy reports failure. A future snapshot-like channel may re-enable the
+    fallback only together with a **per-commit immutable artifact reference** (a
+    tag that names the commit, e.g. `snapshot-<sha>`, published once and never
+    re-pointed) whose bytes `install.sh` verifies against that reference's
+    `checksums.txt` before it replaces anything.
   - **dev / dirty** (`Channel == ""`/"dev", or `GitDirty == "true"`): there is
     no publishable identity to pin, so the installer fallback is **refused**
     (`ErrDeploy`, the same rule as §"Dev builds must not auto-match"); the
@@ -759,10 +770,34 @@ Two paths, chosen per host (open question: which wins when both are viable):
 
   `latest` is never passed. After the installer runs, the same on-host
   `/api/health` probe and identity check below must confirm the *pinned* build —
-  `version` equal to `buildinfo.Version()` and, for a snapshot pin,
-  `backend_git_sha` equal to `buildinfo.GitSHA` — before attachment; a host that
-  cannot be pinned or resolves the wrong build is a **failed verification**
-  (`ErrDeploy`), never an attach.
+  `version` equal to `buildinfo.Version()`, and `backend_git_sha` equal to
+  `buildinfo.GitSHA` where the channel's stamping carries it — before
+  attachment; a host that cannot be pinned or resolves the wrong build is a
+  **failed verification** (`ErrDeploy`), never an attach.
+
+  **No deploy path may replace the installed binary before the artifact's
+  identity is pinned to the controller's build.** The atomic push path already
+  has this property: the binary is cross-compiled by the controller from a
+  source revision it verified (`verifyBuildRevision` refuses a dirty tree and an
+  ignored-but-compiled `.go` file), stamped with the controller's own buildinfo
+  (`-X buildinfo.GitSHA`/`BuildTime`/`ReleaseTag`), streamed into a `mktemp`
+  temp file whose byte count must equal the staged file's length before
+  `chmod +x` and a single `mv` onto the resolved run target
+  (`pushBinaryRemote`/`pushBinary`, `deploy.go` — the round-eleven byte-count
+  verification) — a short or dropped transfer fails, the trap removes the temp
+  file, and `run_path` holds either the whole verified build or exactly the file
+  it already had. The installer fallback has no such property of its own:
+  `install.sh` copies the archive's binaries into `share_bindir` and re-points
+  the `bindir` symlinks (`install.sh:140-152`), which is neither an atomic swap
+  nor an identity check — the `checksums.txt` it verifies belongs to whatever
+  the tag resolves to at that moment. It is therefore admitted only for a
+  channel whose artifact reference is **immutable and checksum-verified before
+  unpacking** — today `release` alone: an immutable tag, plus
+  `install.sh:88-130`'s sha256 verification of the archive against that
+  release's `checksums.txt`, which fails closed and installs nothing on any
+  mismatch — and is refused for every other channel (`snapshot`, `dev`,
+  dirty). The post-install `/api/health` identity probe stays as the last
+  verification, but it checks an already-replaced file; it is never the pin.
 
 - **Push target resolution (shipped).** A push must install to the absolute path
   of the executable the host will *run*, or version auto-match deploys the new
@@ -804,11 +839,28 @@ Two paths, chosen per host (open question: which wins when both are viable):
   installer fallback must install to the target the manager will run.
   - When `evener_path` is set, pass the installer an explicit
     `BINDIR=<dirname(evener_path)>` (with `EVENER_SHARE_BINDIR` under the same
-    prefix) so the symlink lands at `evener_path`. The basename must be one of
-    the installer's shipped binary names (`evener` or `evener-dev`,
-    `install.sh:4`), and the directory must exist and be writable on the host —
-    the same `test -d` precondition `deployTarget` already applies to
-    `evener_path` (§"Push target resolution").
+    prefix) so the symlink lands at `evener_path`. The basename must be
+    **`evener`**, and the directory must exist and be writable on the host — the
+    same `test -d` precondition `deployTarget` already applies to `evener_path`
+    (§"Push target resolution"). **`evener-dev` is not a valid remote hub run
+    target.** It is the development/test tooling binary (`cmd/evener-dev/bin`:
+    `dev`, `module-lint`, `fuzz-*`, `internalcheck`, `tomlcheck`,
+    `transcript-v2-upgrade`) — it has no `hub` subcommand and no `launch-check`,
+    so a host whose `evener_path` names it installs "successfully" and then
+    fails preflight, health, and restart on a binary that can never serve the
+    hub. A configured `evener_path` whose basename is `evener-dev` (or any other
+    name the installer does not ship as the runtime binary) is therefore
+    **refused with `ErrDeploy`** — "evener-dev is the development tooling binary
+    and does not provide the hub command; configure the `evener` binary" —
+    before any install, push, or write, and `installableEvenerBasename`'s
+    acceptance is narrowed to `evener` with it. There is no stamped,
+    hub-capable development artifact in this series: a dev build reaches a host
+    only through the atomic push path (§"Push target resolution",
+    `Options.BuildBinary`) at an `evener`-named target.
+    **Implementation status:** the shipped `installableEvenerBasename`
+    (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts both
+    `evener` and `evener-dev`, so the narrowing is the implementing PR's
+    requirement, not a present fact.
   - When `evener_path` is empty, the installer targets the host's resolved
     `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
     resolves): when `command -v evener` resolved, that is its directory, and
@@ -824,11 +876,16 @@ Two paths, chosen per host (open question: which wins when both are viable):
   the same resolved target, so a successful install that left a different file
   running is a **failed verification**, never an attach.
 
-Both paths must preserve the original file (`install` replaces atomically;
-the push writes a temp name and `mv`s it into place — `pushBinary` in
-`deploy.go`) so an interrupted deploy never leaves a truncated `evener` on the
-host. Record the binary's source (`git SHA`) so the version-match can verify the
-deploy landed.
+Both paths must leave the host with either the whole expected build or exactly
+the file it already had. The push writes a temp name and `mv`s it into place
+(`pushBinaryRemote`/`pushBinary` in `deploy.go`), so an interrupted push never
+leaves a truncated `evener`. The installer path's own copy is **not** atomic
+(`install -m 0755` into `share_bindir`, then `ln -sfn`, `install.sh:140-152`),
+which is precisely why it is admitted only for the immutable, checksum-verified
+release reference above — there, re-running the same pinned install converges
+the same verified bytes idempotently, so a torn install is recoverable rather
+than silently different. Record the binary's source (`git SHA`) so the
+version-match can verify the deploy landed.
 
 ### 5. Version auto-match + restart — `version.go`
 
@@ -938,7 +995,9 @@ deploy landed.
   (`version.go`): it polls the host's `/api/health` until the response reports
   the *expected build identity*, or the bound is exhausted (`ErrRestart`). That
   identity is **passed into** `waitHealthy` as an argument — the expected
-  `version` always, and, for a **snapshot** pin, the expected `backend_git_sha`
+  `version` always, and, for a controller on the **snapshot build channel** (a
+  build the installer fallback can no longer produce, since it is release-only,
+  but which the atomic push path still deploys), the expected `backend_git_sha`
   from `buildinfo.GitSHA` — because a version-only probe cannot tell two snapshot
   builds that share a `version` apart. A bare 200 — or any non-empty body — is
   not sufficient, and a body that is not a `hubapi.HealthResponse` is not usable
@@ -1103,19 +1162,38 @@ deploy landed.
      identified process, the manager **refuses with `ErrRestart` and emits no
      signal** rather than falling back to a check-then-act kill; the bare
      unguarded `kill` is never acceptable (see the limit below).
-     **Platform reality: the atomic-handle form exists only on Linux today.**
-     `pidfd_open`/`pidfd_send_signal` are Linux-only, so supported Darwin hosts
-     have no `pidfd`, and this series defines no host-side pin helper and the
-     installer provisions none. A supervisorless (ad hoc) Darwin hub therefore
-     cannot satisfy this requirement, so its restart **refuses `ErrRestart` with
-     no signal** rather than falling back to an unguarded `kill` (the ad hoc
-     path below states the same restriction). A **restart-capable Darwin
-     deployment must be supervised** (launchd): the supervised path signals
-     through `launchctl kickstart -k`, which names the job by label rather than
-     signaling a reused PID, so it needs no `pidfd`. Ad hoc Darwin restart
-     becomes safe only once a host-side atomic-signal helper is specified and
-     installed; that helper is a tracked round-19 code follow-up (keystone
-     §"Tracked code follow-ups"), not a present fact.
+     **Platform reality: no atomic-handle form is reachable today, on any
+     platform.** This is stronger than "Darwin has no `pidfd`" and it is what
+     the design actually supports: a `pidfd` must be **opened and signaled by a
+     process running on the host**, and this component's only host interface is
+     `ssh <dest> <command>` shell execution (`Runner`, §"SSH channel argv") —
+     the controller cannot call `pidfd_open` on a remote PID from a shell
+     command, and there is no host-side helper it could invoke. `pidfd_open`/
+     `pidfd_send_signal` are Linux-only, and this series specifies **no**
+     host-side pin helper, the installer provisions none (it installs `evener`
+     and `evener-dev`, both of which are evener binaries, not signal helpers),
+     and nothing in the invocation surface invokes one. The shipped ad hoc path
+     is the opposite of the requirement: `restartBare` runs an unguarded
+     `kill <pid>` (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`).
+     **Consequence — supervisorless (ad hoc) restart is unsupported on every
+     platform in this series, Linux included.** Where the manager cannot pin the
+     identified process it **refuses with `ErrRestart`, emits no signal, and
+     performs no relaunch**; it never falls back to a check-then-act `kill`. A
+     **restart-capable deployment must be supervised**, because the supervised
+     paths name a unit/label rather than a PID and need no `pidfd`:
+     `launchctl kickstart -k gui/<uid>/<label>` on darwin,
+     `systemctl [--user] restart <unit>` on linux. A supervisorless host whose
+     binary must be replaced can
+     still be deployed to (the push path is unaffected), but it cannot be
+     restarted by the controller: the restart refuses, attach fails with
+     `ErrRestart`, and the operator must supervise the hub or restart it out of
+     band (the documented recipe in
+     `docs/evener-hub-remote-operations.md`) before reconnecting. Supervisorless
+     restart becomes automated only once a host-side atomic-signal helper is
+     specified, provisioned by the installer, and invoked over the channel —
+     that helper is a tracked code follow-up (keystone §"Tracked code
+     follow-ups"), not a present fact, and until it lands no pidfd path may be
+     promised.
 
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
@@ -1194,7 +1272,11 @@ deploy landed.
      exit and its PID be reused between that read and the signal. Only signaling
      through an atomic handle that pins the process identity — a `pidfd` opened
      for the identified process, or a host-side helper holding an equivalent pin
-     — closes it. The
+     — closes it, and **neither form is reachable through this component's `ssh
+     <dest> <command>` interface** (a `pidfd` must be opened by a process on the
+     host; no helper is specified, installed, or invoked): a supervisorless
+     restart therefore refuses rather than signaling, on every platform
+     (check 5, and the ad hoc path below). The
   shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
   `kill <pid>` with no re-validation at all. **Consequence:** on a host where
   the hub exits during identification and the PID is reused, the restart can
@@ -1233,13 +1315,22 @@ deploy landed.
      clear**, then relaunch detached, appending to the recovered log
      (`nohup <quoted argv…> >> <log> 2>&1 </dev/null &`). `SysProcAttr` is
      local-only, which is why the host-side detach is a remote shell idiom.
-     This path is available only where an atomic process handle can pin the
-     identified process — today, Linux through `pidfd`. On a Darwin host with
-     no supervisor and no provisioned helper, the manager **refuses the restart
-     (`ErrRestart`, no signal, no relaunch)** and the operator must supervise
-     the hub or install the helper; it never issues the bare unguarded `kill`,
-     because signaling an unpinned PID can terminate an unrelated process after
-     PID reuse (check 5; the limit above).
+     **This signal path is unavailable on every platform in this series.** No
+     atomic process handle is reachable through this component's interfaces: a
+     `pidfd` must be opened and signaled by a process on the host, the only
+     host interface here is `ssh <dest> <command>`, and no host-side pin helper
+     is specified, installed, or invoked (check 5). So on a host with no
+     supervisor the manager **refuses the restart (`ErrRestart`, no signal, no
+     relaunch) on Linux exactly as on Darwin** and the operator must supervise
+     the hub, restart it out of band with the recipe above, and reconnect; it
+     never issues the bare unguarded `kill`, because signaling an unpinned PID
+     can terminate an unrelated process after PID reuse (check 5; the limit
+     above). The recipe above is the *operator's* documented procedure, not a
+     manager-automated path, until the host-side helper is specified and
+     provisioned (keystone §"Tracked code follow-ups"). The **start** of a
+     stopped hub (the first-attach bootstrap, where no process exists to
+     identify or signal) is unaffected: it has no PID to pin, so it keeps the
+     detached `nohup` launch.
      The recovered log is used **only** when both fd 1 and fd 2 point at the
      same regular file (`parseLogPath`): a pty, a pipe, `/dev/null`, or two
      different destinations yields no log path. With no recovered log the
@@ -1600,14 +1691,26 @@ with the remote hub and its daemons still running.
     log under `<stateRoot>`), so a host on a non-default port becomes healthy
     rather than failing on the default address.
 16. The installer fallback passes an artifact reference derived from
-    `buildinfo.BuildChannel()` — the stamped release tag for `release`,
-    `snapshot` (with the mandatory `backend_git_sha == buildinfo.GitSHA`
-    verification) for `snapshot` — and is `ErrDeploy` for a `dev`/`dirty`
-    controller; `buildinfo.Version()` (a short SHA, possibly `-dirty`) is never
-    passed as the tag.
+    `buildinfo.BuildChannel()` and is admitted only for an **immutable,
+    checksum-verified-before-unpacking** one: the stamped release tag for
+    `release`, whose archive `install.sh` verifies by sha256 against that
+    release's `checksums.txt` before extracting it. It is `ErrDeploy` for
+    `snapshot` — the tag is force-moved and its `checksums.txt` re-uploaded with
+    `--clobber`, so neither pins the controller's commit, and the fallback is
+    refused **before** `install.sh` replaces anything rather than
+    install-then-verify — and for a `dev`/`dirty` controller;
+    `buildinfo.Version()` (a short SHA, possibly `-dirty`) is never passed as
+    the tag. No deploy path replaces the installed binary before the artifact's
+    identity is pinned to the controller's build (the atomic push path pins it
+    by construction: locally cross-compiled from a verified revision, stamped,
+    byte-count-verified, then `mv`). The post-install `/api/health` identity
+    probe stays as the final verification, never as the pin; a future
+    snapshot-like channel needs a per-commit immutable reference.
 17. The installer fallback installs to the run target: with `evener_path` set
-    it passes `BINDIR=<dirname(evener_path)>` (refusing an unshipped basename or
-    a missing directory with `ErrDeploy`); with `evener_path` empty it passes
+    it passes `BINDIR=<dirname(evener_path)>` (refusing any basename other than
+    `evener` — `evener-dev` is the development tooling binary with no `hub`
+    command and no `launch-check`, so it is never a valid run target — or a
+    missing directory, with `ErrDeploy`); with `evener_path` empty it passes
     `BINDIR=dirname(run_path)` for the host's one resolved `run_path` —
     `command -v evener` when it resolves, else the installer's default
     `<home>/.local/bin/evener` — and that same `run_path` is the path the manager
@@ -1638,10 +1741,13 @@ with the remote hub and its daemons still running.
     **not** sufficient. When neither form is available for the identified
     process the manager refuses with `ErrRestart` and emits no signal. This
     criterion makes checks 1–5 of §"Stop/restart mechanics" testable end to
-    end, and its refusal is the Darwin case: a host with no `pidfd` and no
-    provisioned helper (a supervisorless Darwin hub) refuses rather than
-    signaling, so a restart-capable Darwin deployment must be supervised (the
-    supervised path pins by launchd label, not PID).
+    end, and its refusal is **every supervisorless host on every platform**: no
+    atomic handle is reachable through this component's `ssh <dest> <command>`
+    interface, so a supervisorless Linux hub refuses exactly as a
+    supervisorless Darwin one does, rather than signaling. A restart-capable
+    deployment must therefore be supervised (the supervised paths pin by
+    systemd unit / launchd label, not by PID), or wait for the tracked
+    host-side atomic-signal helper.
 21. A fresh host whose `run_path` does not exist is a **verified missing
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`

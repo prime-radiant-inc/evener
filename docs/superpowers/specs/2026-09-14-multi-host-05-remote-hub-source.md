@@ -507,6 +507,14 @@ it does so by construction:
   per-host lock and installs the replacement channel only when it is attached,
   so a resolution returns the old live client, the new one, or an error — never
   a half-swapped pair.
+  **The handoff is unaffected by the attached-only rule**
+  (§"Every other remote call is non-dialing, not just the snapshot and the
+  non-explicit list"): the accessor returns whatever channel component 04
+  currently has installed, so a reconnected host's new client is picked up on
+  the next call exactly as before. The only change is what happens when nothing
+  is installed — a typed unavailable error, where the old wiring would have
+  dialed (that dial is now the explicit attach triggers' job) — so an
+  in-flight call during a reconnect window refuses rather than reattaching.
 - **The capability cache is keyed to the client.** The probe result is stored as
   `remoteHubProbe{client, caps}` and reused only while `probe.client == client`
   (`remote_hub_probe.go`); a new client re-probes on the next
@@ -700,6 +708,38 @@ that explicit list is one of the intended attach triggers (alongside component
 06's Connect action), the opposite of the implicit empty-filter fan-out. So the
 rule is: empty filter ⇒ attached-only, no dial; explicit host in `SourceIDs` ⇒
 may attach.
+
+**Every other remote call is non-dialing, not just the snapshot and the
+non-explicit list.** The gate above covers the background snapshot and the
+fleet-wide list, but the same `Ensure`-backed `RemoteHubClientFunc` also sits
+behind every *direct* call the source serves — a `thread/read`, a
+`thread/turns/list` or item page, a subscription add, `turn/start` or any other
+mutation, a `host/request` proxy, a capability/launch-resolve probe. Resolving
+any of those through `Ensure` silently reconnects a host the user did not ask
+to connect and turns a refusal into a dial: an action against an **offline**
+host must fail with a typed unavailable error (component 06, §"Error handling"
+and acceptance criterion 13), not quietly attach the host and then succeed. So
+the source resolves the client for **every** call through the shipped
+attached-only accessor
+`sshconn.Manager.ClientIfAttached(name) (*appwire.Client, bool)`
+(`cmd/evener-hub/internal/sshconn/manager.go`, shipped by component 04a — the
+same seam component 06's snapshot gate uses), and when it reports "not
+attached" the source returns a typed unavailable error —
+`appwire.SessionUnavailable("remote hub unavailable: <host>")`, mirroring
+`LocalDaemonSource`'s dial-error mapping (`local_daemon.go`) so the hub's
+auto-resume and mutation-retry gates keep working — without dialing.
+`Ensure` is reserved for the **explicit attach triggers**: component 06's
+Connect action (`evener/host/attach`), an explicit host named in
+`thread/list`'s `SourceIDs` (which attaches at the fan-out seam *before* it
+calls the source, so the source's own resolver still never dials), and the
+first-attach bootstrap those two drive (component 04 §5). In particular a spawn
+on an offline host is refused, not attached: component 06 disables an offline
+host for a spawn and offers the Connect action instead, so `thread/start` never
+reaches `Ensure` either. **Implementation status:** `ClientIfAttached` exists on
+the manager (04a), but the shipped `RemoteHubClientFunc` is wired to
+`Ensure` + `ch.Client()` for *all* calls (`remote_hub_source.go`), so the
+attached-only resolution for direct calls is the implementing PR's requirement,
+not a present fact.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
@@ -980,11 +1020,60 @@ CWD). The remote path must therefore:
   `s.id` and the remote session/thread, so the browser never requests a
   remote-stamped URL from the controller;
 - serve that route by fetching the bytes from the owning host over the attached
-  channel (an AppWire image-fetch request on that host's client). The host
-  hub's HTTP endpoint is dialed over loopback by the bridge and is not
-  reachable from the controller, so the controller must proxy the bytes, not
-  redirect; an unattached or unknown host is refused typed and never falls back
-  to a local read;
+  channel. The host hub's HTTP endpoint is dialed over loopback by the bridge
+  and is not reachable from the controller, so the controller must proxy the
+  bytes, not redirect. The proxy resolves the **attached-only** client
+  (`Manager.ClientIfAttached`, §"Every other remote call is non-dialing, not just
+  the snapshot and the non-explicit list"), so an
+  unattached or unknown host is refused typed (`appwire.SessionUnavailable`) and
+  never falls back to a local read. The proxy is one new AppWire request,
+  specified in full here because it is the one path by which a hub reads bytes
+  out of another hub's filesystem:
+
+  - **Catalog entry.** Method `MethodEvenerSessionImage = "evener/session/image"`,
+    scope `ScopeHub`, registered in `appwire/protocol.go`'s `Methods` with its
+    params/result types so the host hub's router serves it and the catalog↔router
+    cross-check covers it, plus the regenerated Go and TypeScript bindings. It
+    is an AppWire method, **not** an HTTP route: it must not be added to the
+    hub's loopback mux, and a request whose connection role is
+    remote-originated (`origin` non-empty) is refused — a hub federated to
+    another hub must not chain image reads out of its own filesystem (the
+    component-05 loop guard).
+  - **Params.** `SessionImageParams{SessionID string (json:"sessionId"); SHA string (json:"sha,omitempty"); Path string (json:"path,omitempty")}`.
+    Exactly one selector must be set, matching the two stamped URL forms: `SHA`
+    for the sha-addressed replay form (`/s/<session>/images/<sha>`), `Path` for
+    the file-backed form (`/doc/image?session=<session>&path=<rel>`). Both set,
+    or neither, is `InvalidParams`.
+  - **Result.** `SessionImageResponse{MediaType string (json:"mediaType"); Size int64 (json:"size"); SHA string (json:"sha,omitempty"); Data []byte (json:"data")}`
+    — `Data` is the raw bytes (base64 inside the JSON frame),
+    `Size` is `len(Data)`, and `SHA` is the lowercase hex sha256 of `Data`
+    (echoed for the sha-addressed form, and the value the controller uses for
+    the file-backed form's `ETag`).
+  - **Validation and bounds.** The host validates before it reads anything:
+    `SHA` must match `^[0-9a-f]{64}$` (`imageShaRegexp`, `image_serve.go`).
+    `Path` must be **session-relative** and must resolve inside the session's
+    working directory (`fspaths.ResolveInRoot`, the same containment
+    `handleDocImage`/`outputImagesForToolCall` use) — an absolute path, a
+    non-regular file, or any escape is refused, so the method can never read an
+    arbitrary host file. The bytes are bounded by the existing
+    `outputImageMaxBytes` (8 MiB, `output_images.go`): an image over the bound is
+    refused, never streamed, and the response stays far inside the transport's
+    frame limit (`appWireWebSocketReadLimit`, 128 MiB) — the 8 MiB application
+    bound is what keeps the read bounded, not the frame. The media type is
+    re-derived from the bytes with the `supportedOutputImageMedia` allow-list
+    (`image/png`, `image/jpeg`, `image/gif`, `image/webp`, plus the RIFF/WEBP
+    signature fallback) and is never the stored value: the sha-addressed form
+    must not trust the transcript's `Image.MediaType`, and an image outside the
+    allow-list is not servable.
+  - **Errors.** Malformed request fields (both/neither selector, a non-hex
+    `SHA`, a non-relative or escaping `Path`) are `appwire.InvalidParams`; an
+    unknown session, a missing transcript, a sha or path that resolves to
+    nothing, empty bytes, an unsupported media type, and an over-bound image are
+    `appwire.ResourceNotFound`, which the controller's route answers as a 404 to
+    the browser exactly as `handleSessionImage`/`handleDocImage` do locally.
+    Transport and authorization failures surface from the channel unchanged. No
+    refusal falls back to a local read, and none may return bytes belonging to a
+    different session or host.
 - keep the controller's file-backed enrichment pass off remote threads
   (`threadReadLocalImagePolicy` / `EnrichThreadFileBackedImages`, `app_rpc.go`),
   so the controller never probes controller-local paths named by remote data —
