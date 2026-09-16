@@ -1203,9 +1203,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // frame behind it, so it settles the session idle; a failed completion
         // for a turn another turn has since superseded (the id names a
         // different turn) is bookkeeping about the past and leaves the status.
+        // The work-clock anchor goes with the status (the invariant
+        // thread/status/changed keeps below: no live anchor at rest).
         const failedWithoutId =
           params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
-        return failedWithoutId ? { ...folded, status: { type: "idle" } } : folded;
+        return failedWithoutId ? { ...folded, status: { type: "idle" }, activeTurnStartedAt: undefined } : folded;
       }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;

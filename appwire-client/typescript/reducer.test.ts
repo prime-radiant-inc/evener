@@ -5957,6 +5957,33 @@ test("a failed turn/completed with no active turn id still settles an active ses
   expect(failed.status.type).toBe("idle");
 });
 
+// The same settle drops the work-clock anchor with the status: a hydrate can
+// carry a live anchor with no turn id, and StatusRow clocks now-minus-anchor
+// for as long as the model holds one.
+test("a failed turn/completed with no active turn id clears the work-clock anchor", () => {
+  const initial = hydrateThread(
+    { thread: testThread({ status: { type: "active" }, evener: { activeTurnStartedAt: 900 } }) },
+    "ref_t",
+    1000,
+  );
+  expect(initial.activeTurnId).toBeUndefined();
+  expect(initial.activeTurnStartedAt).toBeDefined();
+  const failed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_x", status: "failed", itemsView: "", error: { message: "boom" } },
+      },
+    },
+    2000,
+  );
+  expect(failed.status.type).toBe("idle");
+  expect(failed.activeTurnStartedAt).toBeUndefined();
+});
+
 // A failed completion for a turn that another turn has since superseded is
 // stale bookkeeping about the past, not the session's state.
 test("a failed turn/completed for a superseded turn leaves the active session alone", () => {
