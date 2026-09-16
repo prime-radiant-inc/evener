@@ -17,7 +17,8 @@ attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
 rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
-delegate status rule,
+delegate status rule, the delegate timing and model derivations both apps'
+delegate details render from,
 the slash invocation and catalog visibility rules the palette and composer
 share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels

@@ -88,6 +88,8 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
+export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
+export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureState, DisclosureStore } from "./disclosure";

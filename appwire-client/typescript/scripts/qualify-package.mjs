@@ -115,6 +115,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
