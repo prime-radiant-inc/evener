@@ -221,6 +221,9 @@ describe("hub defaults", () => {
     store.beginReadyGeneration();
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.desktop).toEqual(hubDefault(1, proposed));
+    // Every layer of that first payload is the new hub's, not just the one
+    // that happened to be applied first.
+    expect(store.getState().hub.mobile).toEqual(hubDefault(1, proposed));
     expect(store.getState().loaded).toBe(true);
   });
 });

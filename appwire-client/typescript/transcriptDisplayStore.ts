@@ -473,16 +473,20 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * current generation has confirmed state, a revision at or below the held
    * one is stale and ignored; a new generation's first payload is
    * authoritative at ANY revision, because revision numbering is the hub's
-   * and a reconnect can be a hub restart. `extra` lands in the same publish.
-   * Returns false for an ignored payload. */
+   * and a reconnect can be a hub restart. That exception is the PAYLOAD's,
+   * not one layer's: `authoritative` defaults to the store's own confirmed
+   * state and a caller applying several layouts of one payload pins it once
+   * up front, so the first layer's apply does not fence the rest. `extra`
+   * lands in the same publish. Returns false for an ignored payload. */
   function applyHubDefault(
     layout: ViewportClass,
     value: HubTranscriptDisplayDefault,
     extra: Partial<TranscriptDisplayStoreFields> = {},
+    authoritative: boolean = !getState().loaded,
   ): boolean {
     const state = getState();
     const previous = state.hub[layout];
-    if (state.loaded && previous !== undefined && value.revision <= previous.revision) {
+    if (!authoritative && previous !== undefined && value.revision <= previous.revision) {
       if (Object.keys(extra).length > 0) setState(extra);
       return false;
     }
@@ -623,9 +627,18 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const defaults = fromWireDefaults(result);
       if (defaults === undefined) throw new Error(MALFORMED_DEFAULTS_MESSAGE);
       // One transition per layout, so a host announcing effective changes
-      // sees each layer move on its own.
-      applyHubDefault("desktop", defaults.desktop);
-      applyHubDefault("mobile", defaults.mobile, { hubLoading: false, ...settledWrite(writeSerialAtStart) });
+      // sees each layer move on its own. Both layers are one payload from
+      // one hub, so whether this generation's confirmed state exists yet is
+      // read ONCE: the desktop apply flips `loaded`, and without the pin the
+      // mobile layer would then be fenced by the previous hub's revision.
+      const authoritative = !getState().loaded;
+      applyHubDefault("desktop", defaults.desktop, {}, authoritative);
+      applyHubDefault(
+        "mobile",
+        defaults.mobile,
+        { hubLoading: false, ...settledWrite(writeSerialAtStart) },
+        authoritative,
+      );
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state and THIS get's response may predate it. One
