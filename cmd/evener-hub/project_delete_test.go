@@ -645,7 +645,7 @@ func TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails(t *testing.T)
 		SessionID: webTestSessionID,
 	})
 	prober := &fakeProber{sessionID: webTestSessionID, status: "active"}
-	roster := hubcore.NewRoster(runDir, prober)
+	roster := liveClaimRoster(runDir, prober)
 	roster.Refresh()
 	if entry, ok := roster.Find(webTestSessionID); !ok || entry.Crashed {
 		t.Fatalf("precondition: session must be live and not crashed after the first refresh, ok=%v crashed=%v", ok, entry.Crashed)

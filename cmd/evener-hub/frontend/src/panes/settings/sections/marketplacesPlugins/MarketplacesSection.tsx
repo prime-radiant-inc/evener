@@ -7,14 +7,13 @@
 // than here.
 
 import type { MarketplaceSourceInput } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
+import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { type FormEvent, useId, useState } from "react";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 import styles from "./marketplacesPlugins.module.css";
-import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -100,7 +99,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
                   <div className={CLASS.rowText}>
                     {m.name} <span className={CLASS.rowKind}>{m.source.kind}</span>
                   </div>
-                  <div className={CLASS.rowMeta}>{sourceLabel(m.source)}</div>
+                  <div className={CLASS.rowMeta}>{marketplaceSourceLabel(m.source)}</div>
                 </div>
                 <span className={CLASS.rowChevron} aria-hidden="true">
                   <Chevron direction="right" />
