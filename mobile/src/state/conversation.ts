@@ -888,15 +888,44 @@ export function createConversationStore() {
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
   }
-  // The write a frame replays onto a rehydrate snapshot. A turn/started whose
-  // turn the snapshot already carries is not replayed: the read happened after
-  // the turn began, so the snapshot is the newer truth, and re-applying the
-  // sparse start frame would take the reducer's duplicate-turn path — a false
-  // invariant report, and the snapshot's items for that turn replaced.
+  // Whether a rehydrate snapshot already carries what a buffered frame would
+  // append to the model — the turn a turn/started opens, or the steering item
+  // an evener/steering/injected adds (by clientMutationId when the frame has
+  // one, else by kind, text and start time). The protocol orders the read
+  // response at the snapshot cut, so a frame buffered before the response is
+  // already in it: for a field write the replay is then a no-op, but for an
+  // append it would add a second copy (and turn/started would take the
+  // reducer's duplicate-turn path, a false invariant report that replaces the
+  // snapshot's turn with the sparse start frame). This is the identity form
+  // of that cut rule for the frames where a replay is not idempotent.
+  function snapshotReflects(model: MobileConversation, n: AnyNotification): boolean {
+    switch (n.method) {
+      case "turn/started":
+        return model.turns.some((turn) => turn.id === n.params.turn.id);
+      case "evener/steering/injected": {
+        const { clientMutationId, kind, text, startedAt } = n.params;
+        const startedAtISO =
+          startedAt === undefined ? undefined : new Date(startedAt).toISOString();
+        return model.turns.some((turn) =>
+          turn.items.some(
+            (item) =>
+              item.type === "steering" &&
+              (clientMutationId
+                ? item.clientMutationId === clientMutationId
+                : item.steeringKind === kind &&
+                  item.text === (text ?? "") &&
+                  item.startedAt === startedAtISO),
+          ),
+        );
+      }
+      default:
+        return false;
+    }
+  }
+  // The write a frame replays onto a rehydrate snapshot.
   function replayedWrite(n: AnyNotification): LiveWrite {
     return (conversation) =>
-      n.method === "turn/started" &&
-      conversation.turns.some((turn) => turn.id === n.params.turn.id)
+      snapshotReflects(conversation, n)
         ? conversation
         : applyThreadNotification(conversation, n);
   }

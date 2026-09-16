@@ -7536,7 +7536,7 @@ describe("ConversationStore", () => {
     ctrl.release();
     await ctrl.completed(1);
     await yieldMicrotask();
-    return store.getState().conversation;
+    return store;
   }
   const target = { threadId: "thread-1", ref: "ref-1" };
   const evenerWith = (over: Partial<EvenerThread>): Thread["evener"] => ({
@@ -7548,18 +7548,20 @@ describe("ConversationStore", () => {
 
   describe("a capability publication during a reread wins over the snapshot", () => {
     it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
-      const conv = await rereadRacing(
-        () => {},
-        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
-        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
-      );
+      const conv = (
+        await rereadRacing(
+          () => {},
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
+        )
+      ).getState().conversation;
       expect(conv?.capabilities.send).toBe(false);
     });
 
     it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
       // The snapshot carries send=false; the publication that raced it also
       // turned queue off, and that newer set is what the commit shows.
-      const conv = await rereadRacing(
+      const conv = (await rereadRacing(
         (store) =>
           store.getState().applyNotification({
             method: "thread/status/changed",
@@ -7571,7 +7573,7 @@ describe("ConversationStore", () => {
           } as AnyNotification),
         makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
         makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
-      );
+      )).getState().conversation;
       expect(conv?.capabilities.send).toBe(false);
       expect(conv?.capabilities.queue).toBe(false);
     });
@@ -7666,14 +7668,14 @@ describe("ConversationStore", () => {
         expected: [liveEscalation],
       },
     ])("keeps $name", async ({ method, params, snapshot, read, expected }) => {
-      const conv = await rereadRacing(
+      const conv = (await rereadRacing(
         (store) =>
           store.getState().applyNotification({
             method,
             params: { ...target, ...params },
           } as AnyNotification),
         snapshot,
-      );
+      )).getState().conversation;
       if (!conv) throw new Error("conversation gone");
       expect(read(conv)).toEqual(expected);
     });
@@ -7685,7 +7687,7 @@ describe("ConversationStore", () => {
     it("does not replay a started turn the snapshot already carries", async () => {
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        const conv = await rereadRacing(
+        const conv = (await rereadRacing(
           (store) =>
             store.getState().applyNotification({
               method: "turn/started",
@@ -7701,13 +7703,57 @@ describe("ConversationStore", () => {
             ],
             evener: evenerWith({ activeTurnId: "t-live" }),
           }),
-        );
+        )).getState().conversation;
         expect(conv?.activeTurnId).toBe("t-live");
         expect(conv?.turns.map((turn) => [turn.id, turn.items.length])).toEqual([["t-live", 1]]);
         expect(consoleError).not.toHaveBeenCalled();
       } finally {
         consoleError.mockRestore();
       }
+    });
+
+    // Same race for an append-style frame: the steering the server injected
+    // during the read is already an item of the snapshot's turn. Replaying it
+    // would append a second copy, and the next live steering would take an
+    // inflated per-turn index.
+    it("does not replay a steering injection the snapshot already carries", async () => {
+      const steer = { text: "go left", kind: "user", source: "user", startedAt: 1000 };
+      const activeTurn = (items: ThreadItem[]) =>
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        });
+      const store = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/steering/injected",
+            params: { ...target, ...steer },
+          } as AnyNotification),
+        activeTurn([
+          {
+            id: "item_steering_0",
+            turnId: "t1",
+            type: "steering",
+            text: steer.text,
+            steeringKind: steer.kind,
+            source: steer.source,
+            startedAt: steer.startedAt,
+            status: "completed",
+          } as ThreadItem,
+        ]),
+        activeTurn([]),
+      );
+      const steeringIds = (conv: MobileConversation | null) =>
+        conv?.turns.flatMap((turn) => turn.items.filter((item) => item.type === "steering").map((item) => item.id));
+      expect(steeringIds(store.getState().conversation)).toEqual(["item_steering_0"]);
+      store.getState().applyNotification({
+        method: "evener/steering/injected",
+        params: { ...target, text: "then right", kind: "user", source: "user", startedAt: 2000 },
+      } as AnyNotification);
+      expect(steeringIds(store.getState().conversation)).toEqual([
+        "item_steering_0",
+        "item_steering_live_t1_1",
+      ]);
     });
 
     // The buffer belongs to the conversation the reread was for: closing it
