@@ -3,7 +3,7 @@ import { ClientNotReadyError } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
+import { activitySummaryStore, initActivitySummary, resetActivitySummaryStoreForTests } from "./activitySummary";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 describe("activitySummaryStore", () => {
@@ -33,6 +33,7 @@ describe("activitySummaryStore", () => {
   test("a root completion already in flight cannot overwrite continuation counts", async () => {
     resetActivitySummaryStoreForTests();
     activityPanelStore.getState().resetForTests();
+    initActivitySummary();
     let resolveRoot!: (value: unknown) => void;
     const root = new Promise<unknown>((resolve) => {
       resolveRoot = resolve;
@@ -124,6 +125,7 @@ describe("activitySummaryStore", () => {
   test("a failed continuation invalidates a discarded root refresh", async () => {
     resetActivitySummaryStoreForTests();
     activityPanelStore.getState().resetForTests();
+    initActivitySummary();
     const initialRoot: ActivityTree = {
       revision: 1,
       root: {
@@ -297,6 +299,7 @@ describe("activitySummaryStore", () => {
   test("publishes root counts to both stores without letting a continuation change the badge", async () => {
     resetActivitySummaryStoreForTests();
     activityPanelStore.getState().resetForTests();
+    initActivitySummary();
     const root = {
       revision: 1,
       root: {
@@ -524,6 +527,7 @@ describe("activitySummaryStore", () => {
   test("a fetch still pending mid-reconnect calls neither onFailure nor flips to failed - the routine, self-healing case", async () => {
     resetActivitySummaryStoreForTests();
     activityPanelStore.getState().resetForTests();
+    initActivitySummary();
     const failures: string[] = [];
     let resolvePending!: (value: unknown) => void;
     const pending = new Promise<unknown>((resolve) => {
@@ -572,6 +576,7 @@ describe("activitySummaryStore", () => {
   test("a genuinely hub-unreachable rejection shows the friendly sentence, not raw error text", async () => {
     resetActivitySummaryStoreForTests();
     activityPanelStore.getState().resetForTests();
+    initActivitySummary();
     const failures: string[] = [];
     const err = new ClientNotReadyError("threads store: timed out waiting for a ready client after 15000ms");
 
