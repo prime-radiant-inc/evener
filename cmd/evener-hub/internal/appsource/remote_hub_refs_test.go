@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -518,4 +519,267 @@ func TestRemoteHubListThreadsKeepsValidRowsWhenRowUnrepresentable(t *testing.T) 
 	if resp.Data[0].ID != "S" || resp.Data[0].Source != "host" || resp.Data[0].Evener.Ref != "host:S" {
 		t.Fatalf("row = %+v, want the translated local thread", resp.Data[0])
 	}
+}
+
+// TestRemoteHubJobsListPreservesUnrecognizedPayloads pins the pass-through half
+// of the jobs/list activity-ref translation through the real stream client: a
+// Data payload that is not a recognized activity tree reaches the controller as
+// the value it arrived as, with no nested ref rewritten.
+//
+// Spec 05 requires the translator to RECOGNIZE a tree before walking it —
+// `revision` a non-negative integer and `root` an object carrying `sessionId`
+// and `ref` as strings — and names these cases as pass-through: an empty object,
+// an object carrying `root` without its required fields, a payload whose required
+// fields carry another type, and an unrelated object. The cases carrying a
+// tree-shaped `root.ref` are the discriminating ones: a walk that follows the
+// container names alone rewrites exactly those refs, so the controller would
+// receive an address the remote hub never minted for a payload it does not
+// understand.
+//
+// Each payload is served as raw JSON (JobsListResponse.Data is `any`, so the
+// client decodes it into generic maps) and compared against a decode of the same
+// bytes that never went through the source; deep equality on that value is the
+// byte-for-byte pin, and assertNoRewrittenRefs makes a rewrite that slipped past
+// it explicit instead of a whole-payload diff.
+func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"empty object", `{}`},
+		{"root without required fields", `{"root":{}}`},
+		{"root without revision", `{"root":{"sessionId":"S","ref":"local:S"}}`},
+		{"root missing its own ref", `{"revision":3,"root":{"sessionId":"S"}}`},
+		{"tree-shaped root without revision", `{"root":{"sessionId":"S","ref":"local:S","entries":[{"kind":"delegate","delegate":{"childRef":"local:S"}}]}}`},
+		{"revision is a string", `{"revision":"3","root":{"sessionId":"S","ref":"local:S"}}`},
+		{"revision is an object", `{"revision":{"value":3},"root":{"sessionId":"S","ref":"local:S"}}`},
+		{"revision is negative", `{"revision":-1,"root":{"sessionId":"S","ref":"local:S"}}`},
+		{"revision is fractional", `{"revision":1.5,"root":{"sessionId":"S","ref":"local:S"}}`},
+		{"sessionId is not a string", `{"revision":3,"root":{"sessionId":3,"ref":"local:S"}}`},
+		{"ref is not a string", `{"revision":3,"root":{"sessionId":"S","ref":["local:S"]}}`},
+		{"root is not an object", `{"revision":3,"root":"local:S"}`},
+		{"unrelated object", `{"unrelated":{"ref":"local:main","transcriptRef":"local:main","childRef":"local:main"}}`},
+		{"declared containers outside root", `{"entries":[{"delegate":{"childRef":"local:main"}}]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var want any
+			if err := json.Unmarshal([]byte(tc.payload), &want); err != nil {
+				t.Fatalf("decode the expected payload %s: %v", tc.payload, err)
+			}
+			source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+				if method != appwire.MethodEvenerJobsList {
+					return scriptedReply{result: map[string]any{}}
+				}
+				return scriptedReply{result: appwire.JobsListResponse{Data: json.RawMessage(tc.payload)}}
+			})
+
+			resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+			if err != nil {
+				t.Fatalf("ListJobs: %v", err)
+			}
+			if !reflect.DeepEqual(resp.Data, want) {
+				t.Fatalf("Data = %#v, want the unrecognized payload preserved as %#v", resp.Data, want)
+			}
+			assertNoRewrittenRefs(t, resp.Data)
+		})
+	}
+}
+
+// assertNoRewrittenRefs walks a decoded JSON value and fails on any string that
+// names the controller namespace. It is a failure-mode aid for the pass-through
+// cases, whose authoritative pin is the deep-equality assertion against an
+// independent decode of the same bytes.
+func assertNoRewrittenRefs(t *testing.T, value any) {
+	t.Helper()
+	var walk func(path string, node any)
+	walk = func(path string, node any) {
+		switch typed := node.(type) {
+		case string:
+			if strings.HasPrefix(typed, "host:") {
+				t.Errorf("%s = %q, want it left in the remote namespace", path, typed)
+			}
+		case map[string]any:
+			for key, child := range typed {
+				walk(path+"."+key, child)
+			}
+		case []any:
+			for index, child := range typed {
+				walk(fmt.Sprintf("%s[%d]", path, index), child)
+			}
+		}
+	}
+	walk("data", value)
+}
+
+// TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees pins the other half of
+// the recognition boundary: a payload that DOES satisfy it — `revision` a
+// non-negative integer, `root` an object carrying `sessionId` and `ref` as
+// strings — is walked, and every ref field the JobActivity* nodes declare is
+// rewritten into the controller namespace. Recognition must be permissive about
+// everything the wire types do not require: `revision: 0` is a non-negative
+// integer, the required strings may be empty (neither JobActivityTree.Root or
+// .Revision nor JobActivitySession.SessionID or .Ref carries omitempty), and a
+// forward-compatible field this controller does not know must not make the
+// payload unrecognizable.
+func TestRemoteHubJobsListTranslatesRefsOfRecognizedTrees(t *testing.T) {
+	t.Run("every declared ref field", func(t *testing.T) {
+		payload := `{
+			"revision": 0,
+			"forwardCompatible": {"ref": "local:future", "transcriptRef": "local:future"},
+			"root": {
+				"sessionId": "root",
+				"ref": "local:root",
+				"label": "root session",
+				"futureField": "kept",
+				"entries": [
+					{"kind": "shell", "job": {"jobId": "job_a", "ownerRef": "local:root", "transcriptRef": "job:job_a"}},
+					{"kind": "delegate", "delegate": {
+						"delegateId": "dlg_1",
+						"childRef": "local:child",
+						"turns": [{"jobId": "turn_1", "ownerRef": "local:root", "transcriptRef": "local:child"}],
+						"child": {"sessionId": "child", "ref": "local:child", "entries": [
+							{"kind": "shell", "job": {"jobId": "job_b", "ownerRef": "local:child", "transcriptRef": "job:job_b"}}
+						]}
+					}}
+				]
+			}
+		}`
+		tree := listJobsData(t, payload)
+
+		root := activityMap(t, tree["root"], "root")
+		if root["ref"] != "host:root" {
+			t.Errorf("root.ref = %v, want %q", root["ref"], "host:root")
+		}
+		if root["sessionId"] != "root" {
+			t.Errorf("root.sessionId = %v, want the bare id %q (ids are not refs)", root["sessionId"], "root")
+		}
+		if root["futureField"] != "kept" {
+			t.Errorf("root.futureField = %v, want the forward-compatible field preserved", root["futureField"])
+		}
+		entries, ok := root["entries"].([]any)
+		if !ok || len(entries) != 2 {
+			t.Fatalf("root.entries = %#v, want two entries", root["entries"])
+		}
+		shellJob := activityMap(t, activityMap(t, entries[0], "entry 0")["job"], "job_a")
+		if shellJob["ownerRef"] != "host:root" {
+			t.Errorf("shell job ownerRef = %v, want %q", shellJob["ownerRef"], "host:root")
+		}
+		if shellJob["transcriptRef"] != "job:job_a" {
+			t.Errorf("shell job transcriptRef = %v, want the opaque %q", shellJob["transcriptRef"], "job:job_a")
+		}
+		delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
+		if delegate["childRef"] != "host:child" {
+			t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
+		}
+		turns, ok := delegate["turns"].([]any)
+		if !ok || len(turns) != 1 {
+			t.Fatalf("delegate.turns = %#v, want one turn", delegate["turns"])
+		}
+		turn := activityMap(t, turns[0], "turn 0")
+		if turn["ownerRef"] != "host:root" {
+			t.Errorf("turn ownerRef = %v, want %q", turn["ownerRef"], "host:root")
+		}
+		if turn["transcriptRef"] != "host:child" {
+			t.Errorf("turn transcriptRef = %v, want %q", turn["transcriptRef"], "host:child")
+		}
+		child := activityMap(t, delegate["child"], "child session")
+		if child["ref"] != "host:child" {
+			t.Errorf("child.ref = %v, want %q", child["ref"], "host:child")
+		}
+		childEntries, ok := child["entries"].([]any)
+		if !ok || len(childEntries) != 1 {
+			t.Fatalf("child.entries = %#v, want one entry", child["entries"])
+		}
+		childJob := activityMap(t, activityMap(t, childEntries[0], "child entry")["job"], "job_b")
+		if childJob["ownerRef"] != "host:child" {
+			t.Errorf("child job ownerRef = %v, want %q", childJob["ownerRef"], "host:child")
+		}
+		if childJob["transcriptRef"] != "job:job_b" {
+			t.Errorf("child job transcriptRef = %v, want the opaque %q", childJob["transcriptRef"], "job:job_b")
+		}
+		// An undeclared top-level key is not walked: its contents are data, not
+		// addresses this source knows how to re-point.
+		forward := activityMap(t, tree["forwardCompatible"], "forwardCompatible")
+		if forward["ref"] != "local:future" || forward["transcriptRef"] != "local:future" {
+			t.Errorf("undeclared top-level key was rewritten: %#v", forward)
+		}
+	})
+
+	t.Run("empty required strings", func(t *testing.T) {
+		payload := `{"revision":0,"root":{"sessionId":"","ref":"","entries":[{"kind":"shell","job":{"jobId":"job_a","ownerRef":"local:S","transcriptRef":"local:S"}}]}}`
+		tree := listJobsData(t, payload)
+
+		root := activityMap(t, tree["root"], "root")
+		entries, ok := root["entries"].([]any)
+		if !ok || len(entries) != 1 {
+			t.Fatalf("root.entries = %#v, want one entry", root["entries"])
+		}
+		job := activityMap(t, activityMap(t, entries[0], "entry 0")["job"], "job_a")
+		if job["ownerRef"] != "host:S" || job["transcriptRef"] != "host:S" {
+			t.Errorf("job refs = %#v, want both translated to host:S: an empty required string still recognizes a tree", job)
+		}
+	})
+}
+
+// listJobsData serves one raw jobs/list payload through the real stream client
+// and returns the generic value the source handed back.
+func listJobsData(t *testing.T, payload string) map[string]any {
+	t.Helper()
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: json.RawMessage(payload)}}
+	})
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	return activityMap(t, resp.Data, "tree")
+}
+
+// TestRemoteHubJobsListPreservesUnaddressableLegacyTranscriptRefs complements
+// TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs, which pins a
+// session-valued transcriptRef being translated and the opaque "job:<id>" being
+// preserved. The remaining value classes a retired flat array can carry — a bare
+// id from an older daemon, a ref in a namespace this controller cannot address,
+// and an empty value — must reach the controller exactly as they arrived rather
+// than failing the list or being re-pointed at this source.
+func TestRemoteHubJobsListPreservesUnaddressableLegacyTranscriptRefs(t *testing.T) {
+	legacy := `[
+		{"jobId": "turn_1", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": "child"},
+		{"jobId": "turn_2", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": "proj:project:thread"},
+		{"jobId": "turn_3", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": "other:thread"},
+		{"jobId": "turn_4", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": ""}
+	]`
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: json.RawMessage(legacy)}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	jobs, ok := resp.Data.([]any)
+	if !ok || len(jobs) != 4 {
+		t.Fatalf("Data = %#v, want the legacy flat array of four jobs", resp.Data)
+	}
+	want := []struct{ name, ref string }{
+		{"bare id", "child"},
+		{"foreign namespace", "proj:project:thread"},
+		{"nested hub namespace", "other:thread"},
+		{"empty ref", ""},
+	}
+	for index, tc := range want {
+		job := activityMap(t, jobs[index], tc.name)
+		if job["transcriptRef"] != tc.ref {
+			t.Errorf("%s transcriptRef = %v, want it preserved as %q", tc.name, job["transcriptRef"], tc.ref)
+		}
+	}
+	assertNoRewrittenRefs(t, resp.Data)
 }

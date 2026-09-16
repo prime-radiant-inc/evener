@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -573,6 +574,14 @@ func (s *RemoteHubSource) translateOut(out any) error {
 // undeclared key such as a delegate-level "transcriptRef" (JobActivityDelegate
 // has no such field) — survives byte-for-byte.
 //
+// The walk runs ONLY on a payload recognized as an activity tree
+// (activityTreeRecognized). A container name outside a tree is just data, and
+// descending into an unrecognized object would re-point a ref inside a payload
+// this source does not understand: a payload that fails recognition — an empty
+// object, an object carrying `root` without its required fields, a payload whose
+// required fields carry another type, or any unrelated object — is returned as
+// the `any` value it arrived as, never rewritten.
+//
 // An older daemon may still answer with the retired flat array of EvenerJobInfo
 // (docs/appwire-protocol.md, evener/jobs/list); that shape is translated by the
 // same declared-field policy as the tree's job nodes.
@@ -583,11 +592,52 @@ func (s *RemoteHubSource) translateOut(out any) error {
 func (s *RemoteHubSource) translateActivityRefs(value any) any {
 	switch node := value.(type) {
 	case map[string]any:
+		if !activityTreeRecognized(node) {
+			return value
+		}
 		s.translateActivitySession(node["root"])
 	case []any:
 		s.translateLegacyJobRefs(node)
 	}
 	return value
+}
+
+// activityTreeRecognized reports whether a decoded jobs/list object is the
+// activity-tree shape, by the required fields and their types. The wire types
+// state them: JobActivityTree.Revision is a uint64, and neither it nor
+// JobActivityTree.Root, JobActivitySession.SessionID, or JobActivitySession.Ref
+// carries omitempty, so a tree the Go encoder wrote always carries `revision` as
+// a JSON number and `root` as an object with `sessionId` and `ref` as strings.
+//
+//   - `revision` must be a JSON number holding a non-negative integer. A string,
+//     an object, an array, a negative number, or a fractional number is not a
+//     revision, so the payload is not a tree.
+//   - `root` must be a JSON object carrying `sessionId` and `ref` as strings.
+//     Both may be empty: the encoder emits them unconditionally.
+//
+// Nothing else is constrained, so a newer remote hub may add fields this
+// controller does not know and the tree stays recognizable; the walk itself only
+// touches the ref fields the declared nodes own. "It decoded without error" is
+// deliberately not the test: `{}` and any unrelated object decode with no error,
+// and they are exactly the payloads that must reach the controller untouched.
+//
+// The value is the generic decode of the wire response (appwire.Client decodes
+// JobsListResponse.Data with json.Unmarshal), so a JSON number arrives as a
+// float64.
+func activityTreeRecognized(node map[string]any) bool {
+	revision, ok := node["revision"].(float64)
+	if !ok || revision < 0 || revision != math.Trunc(revision) {
+		return false
+	}
+	root, ok := node["root"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, ok := root["sessionId"].(string); !ok {
+		return false
+	}
+	_, ok = root["ref"].(string)
+	return ok
 }
 
 // translateLegacyJobRefs rewrites the declared ref field of each element of the
