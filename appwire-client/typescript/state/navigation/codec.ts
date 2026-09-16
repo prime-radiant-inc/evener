@@ -68,6 +68,10 @@ const MAX_NAVIGATION_DEPTH = 32;
 const MAX_NAVIGATION_SESSION_ENTITIES = 2000;
 const MAX_NAVIGATION_GRAPH_ENTITIES = MAX_NAVIGATION_SESSION_ENTITIES + 1;
 const MAX_NAVIGATION_GRAPH_CONTAINERS = MAX_NAVIGATION_SESSION_ENTITIES + 3;
+// MAX_NAVIGATION_PROJECT_SOURCES mirrors the projector's
+// maxNavigationProjectSources: one entry per configured source plus the
+// controller's own, which a merged project spells "local".
+const MAX_NAVIGATION_PROJECT_SOURCES = 65;
 
 function rfc3339Timestamp(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -140,6 +144,7 @@ const PROJECT_OPTIONAL = [
   "worktrees",
   "is_archived",
   "favorite",
+  "sources",
 ];
 
 function jobValue(value: unknown): boolean {
@@ -242,7 +247,18 @@ function projectValue(value: unknown): value is Record<string, unknown> {
     optional(value.more_archived, count) &&
     optional(value.worktrees, count) &&
     optional(value.is_archived, bool) &&
-    optional(value.favorite, bool)
+    optional(value.favorite, bool) &&
+    // The sources that own the project's rows, spelled "local" for this hub's
+    // own and a host name for each remote owner. Every entry is a decision
+    // key, so an empty one would address no source: each must be a bounded,
+    // non-empty identity, and the list is capped at the registry's own bound.
+    optional(
+      value.sources,
+      (item) =>
+        Array.isArray(item) &&
+        item.length <= MAX_NAVIGATION_PROJECT_SOURCES &&
+        item.every((source) => identity(source)),
+    )
   );
 }
 

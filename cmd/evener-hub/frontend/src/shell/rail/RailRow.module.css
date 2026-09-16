@@ -399,6 +399,27 @@
   font-size: var(--font-size-caption);
 }
 
+/* A non-local session's host (Component 06b), rendered inline on the title
+ * line after the row's own trailing chevron. A quiet LABEL, not tree
+ * structure: .titleLine's own gap spaces it, and it stays at the caption size
+ * and lowest ink so it never competes with the title it follows. Reachability
+ * gets no semantic hue - none of attention/alive/danger means "offline" - so
+ * the offline modifier reads through italics and dimmed ink instead. This
+ * stylesheet is not a widget stylesheet and cannot reach the semantic-var
+ * allowlist; using only ink tokens is also the honest choice for a fact that
+ * is neither an error nor an appeal for attention. */
+.host {
+  flex: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.hostOffline {
+  font-style: italic;
+  opacity: 0.7;
+}
+
 .star {
   flex: none;
   color: var(--ink-mid);

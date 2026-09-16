@@ -54,8 +54,8 @@ func TestIndexFavoriteProjectsEmptyID(t *testing.T) {
 		{ID: "project-1"},
 	}
 	index := indexFavoriteProjects(authorities)
-	if len(index.byID) != 1 {
-		t.Fatalf("byID = %v, want 1 entry", index.byID)
+	if len(index.byKey) != 1 {
+		t.Fatalf("byKey = %v, want 1 entry", index.byKey)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestIndexFavoriteProjectsAmbiguous(t *testing.T) {
 		{ID: "project-1", ClaimKey: "b"},
 	}
 	index := indexFavoriteProjects(authorities)
-	if !index.ambiguousIDs["project-1"] {
+	if !index.ambiguousKeys[projectDecisionKey{id: "project-1"}] {
 		t.Fatalf("project-1 should be ambiguous with different claim keys")
 	}
 }
@@ -80,7 +80,7 @@ func TestIndexFavoriteProjectsAmbiguousEmptyClaim(t *testing.T) {
 		{ID: "project-1", ClaimKey: "a"},
 	}
 	index := indexFavoriteProjects(authorities)
-	if !index.ambiguousIDs["project-1"] {
+	if !index.ambiguousKeys[projectDecisionKey{id: "project-1"}] {
 		t.Fatalf("project-1 should be ambiguous with mixed empty/non-empty claim keys")
 	}
 }

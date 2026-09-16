@@ -415,6 +415,20 @@ test("delegate card carries status, mandate, agent/model, duration, and usage", 
   expect(text).toContain("↑1k ↓300");
 });
 
+// A blank resolvedModel is absence, not a model name: the card falls through
+// to the next name the projection carries.
+test("delegate card skips a blank resolved model", () => {
+  vi.useFakeTimers();
+  render(
+    <EntityRef
+      view={delegateView("dlg_blank_model", {}, { resolvedModel: "  ", model: "fallback-model" })}
+      id="dlg_blank_model"
+    />,
+  );
+
+  expect(focusCard().textContent).toContain("fallback-model");
+});
+
 test("an ended running job shows ended without a live indicator or stale caption", () => {
   vi.useFakeTimers();
   render(

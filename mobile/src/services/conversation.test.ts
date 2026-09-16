@@ -302,8 +302,8 @@ describe("ConversationService", () => {
     it("projects thread to MobileConversation", async () => {
       const { service } = setup();
       const conv = await service.open("ref-1");
-      expect(conv.id).toBe("thread-1");
-      expect(conv.status).toBe("ready");
+      expect(conv.threadId).toBe("thread-1");
+      expect(conv.status).toEqual({ type: "ready" });
       expect(conv.capabilities.send).toBe(true);
     });
 
@@ -340,7 +340,7 @@ describe("ConversationService", () => {
         idFactory: fakeIdFactory,
       });
       const conv = await service2.open("ref-2");
-      expect(conv.id).toBe("thread-2");
+      expect(conv.threadId).toBe("thread-2");
     });
   });
 
@@ -519,25 +519,75 @@ describe("ConversationService", () => {
       expect(result.nextCursor).toBe("next-cursor");
     });
 
-    it("merges overlapping fragment items by transcriptKey and orders by position", async () => {
+    // A page goes through the package's page merge, so a reload page that
+    // carries a tool call and its result as two items sharing a callId (in
+    // separate wire turns, as apptranscript mints them) shows one settled
+    // tool row carrying the result, exactly as the web renders that page.
+    it("folds a page's tool call and result into one row through the package's page merge", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
-      const items = [
-        {
-          id: "wire-new",
-          transcriptKey: "stable-item",
-          position: { entry: 2, item: 0 },
-          type: "userMessage",
-          text: "new payload",
-        },
-        {
-          id: "wire-old",
-          transcriptKey: "stable-item",
-          position: { entry: 1, item: 0 },
-          type: "userMessage",
-          text: "old payload",
-        },
-      ] as ThreadItem[];
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [
+              {
+                id: "turn-call",
+                itemsView: "fragment",
+                status: "completed",
+                items: [
+                  {
+                    id: "item_tool_1",
+                    type: "commandExecution",
+                    toolName: "shell",
+                    callId: "call-1",
+                    argumentsJson: '{"command":"make"}',
+                    status: "inProgress",
+                    transcriptKey: "k:call",
+                    position: { entry: 1, item: 0 },
+                  },
+                ] as ThreadItem[],
+              },
+              {
+                id: "turn-result",
+                itemsView: "fragment",
+                status: "completed",
+                items: [
+                  {
+                    id: "item_tool_result_1",
+                    type: "commandExecution",
+                    toolName: "shell",
+                    callId: "call-1",
+                    output: "ok",
+                    exitCode: 0,
+                    status: "completed",
+                    transcriptKey: "k:result",
+                    position: { entry: 2, item: 0 },
+                  },
+                ] as ThreadItem[],
+              },
+            ],
+          }) as ThreadTurnsListResponse,
+      );
+
+      const result = await service.loadOlder("opaque-cursor");
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({
+        kind: "activity",
+        id: "item_tool_1",
+        state: "completed",
+        detail: { arguments: '{"command":"make"}', output: "ok", exitCode: 0 },
+      });
+    });
+
+    // A replayed input image reaches a page with no bytes and no stamped url,
+    // only its content sha; the package resolves it to the hub's
+    // /s/{session}/images/{sha} route, so the page must hydrate under the real
+    // thread id — a placeholder id would name a session the hub cannot serve.
+    it("routes an older page's sha-only image through the real thread id", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const sha = "a".repeat(64);
       client.on(
         "thread/turns/list",
         () =>
@@ -547,18 +597,24 @@ describe("ConversationService", () => {
                 id: "turn-older",
                 itemsView: "fragment",
                 status: "completed",
-                items,
+                items: [
+                  {
+                    id: "u-older",
+                    type: "userMessage",
+                    text: "see attached",
+                    images: [{ type: "image", name: "shot.png", metadata: { sha } }],
+                  },
+                ] as ThreadItem[],
               },
             ],
           }) as ThreadTurnsListResponse,
       );
 
       const result = await service.loadOlder("opaque-cursor");
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0]).toMatchObject({
-        kind: "user",
-        id: "wire-old",
-        text: "old payload",
+      expect(result.items[1]).toMatchObject({
+        kind: "attachments",
+        id: "u-older:attachments",
+        items: [{ id: "u-older:0", src: `/s/thread-1/images/${sha}`, name: "shot.png" }],
       });
     });
 
@@ -1348,7 +1404,7 @@ describe("ConversationService", () => {
       const result = await service.readProjection("ref-1");
       expect(result).toBeDefined();
       expect(result?.conversation).toBeDefined();
-      expect(result?.conversation.id).toBe("thread-1");
+      expect(result?.conversation.threadId).toBe("thread-1");
       expect(result?.activity).toBeDefined();
       expect(result?.activity.tasks).toEqual([]);
       expect(result?.activity.work).toEqual([]);
@@ -2342,16 +2398,16 @@ describe("ConversationService", () => {
 
   // R4-Important: open/readProjection must not commit ref/capabilities until ALL
   // response-derived projection work succeeds. After await, compute/validate
-  // projectThread, activity projection, olderCursor/result locals first; only
+  // projectConversation, activity projection, olderCursor/result locals first; only
   // then, if epoch current, atomically commit ref+caps. Any malformed
-  // response/projectThread/activity projection throw leaves pair null/fail-closed.
+  // response/projectConversation/activity projection throw leaves pair null/fail-closed.
   // Stale successful result may return without committing.
   describe("projection throw leaves pair fail-closed (R4-Important)", () => {
-    it("open: projectThread throw leaves pair null — all operations fail before wire", async () => {
+    it("open: projectConversation throw leaves pair null — all operations fail before wire", async () => {
       const { client, service } = setup();
       await service.open("ref-1"); // initial valid open
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementation(() => {
           throw new Error("malformed projection");
         });
@@ -2395,11 +2451,11 @@ describe("ConversationService", () => {
       }
     });
 
-    it("readProjection: projectThread throw leaves pair null — all operations fail before wire", async () => {
+    it("readProjection: projectConversation throw leaves pair null — all operations fail before wire", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementation(() => {
           throw new Error("malformed projection");
         });
@@ -2499,7 +2555,7 @@ describe("ConversationService", () => {
     });
 
     it("stale successful open result returns without committing pair", async () => {
-      // An older open whose projectThread succeeds but resolves after a newer
+      // An older open whose projectConversation succeeds but resolves after a newer
       // open must return its result but NOT commit ref+caps.
       const { client, service } = setup();
       const threadA = makeThread({
@@ -2532,12 +2588,12 @@ describe("ConversationService", () => {
       // Start open A (deferred), then open B (immediate, commits pair).
       const openAPromise = service.open("ref-A");
       await service.open("ref-B");
-      // Resolve A's stale open — it returns projectThread(threadA) but must
+      // Resolve A's stale open — it returns projectConversation(threadA) but must
       // NOT commit A's pair over B's.
       resolveARead(makeReadResponse(threadA));
       const convA = await openAPromise;
       // A's result is returned (stale successful result returns).
-      expect(convA.id).toBe("thread-A");
+      expect(convA.threadId).toBe("thread-A");
       // B's pair is committed: send reaches wire with ref-B (capsB.send=true).
       client.on(
         "turn/start",
@@ -2592,7 +2648,7 @@ describe("ConversationService", () => {
       resolveARead(makeReadResponse(threadA));
       const resultA = await rpAPromise;
       // A's result is returned (stale successful result returns).
-      expect(resultA.conversation.id).toBe("thread-A");
+      expect(resultA.conversation.threadId).toBe("thread-A");
       // B's pair is committed: send reaches wire with ref-B.
       client.on(
         "turn/start",
@@ -2615,7 +2671,7 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       await service.open("ref-1");
       const spy = vi
-        .spyOn(projectModule, "projectThread")
+        .spyOn(projectModule, "projectConversation")
         .mockImplementationOnce(() => {
           throw new Error("malformed projection");
         });
@@ -2626,7 +2682,7 @@ describe("ConversationService", () => {
         // Now a successful open — restores the pair.
         client.on("thread/read", () => makeReadResponse(makeThread()));
         const conv = await service.open("ref-3");
-        expect(conv.id).toBe("thread-1");
+        expect(conv.threadId).toBe("thread-1");
         // Operations reach the wire now.
         client.on(
           "turn/start",
@@ -3000,7 +3056,7 @@ describe("ConversationService", () => {
       // Now a successful open with valid caps.
       client.on("thread/read", () => makeReadResponse(makeThread()));
       const conv = await service.open("ref-2");
-      expect(conv.id).toBe("thread-1");
+      expect(conv.threadId).toBe("thread-1");
       // Operations reach the wire.
       client.on(
         "turn/start",
@@ -3323,6 +3379,8 @@ describe("observed queue guards", () => {
   beforeEach(() => {
     idCounter = 0;
   });
+  // A hub-served past session carries no evener.instanceId; the conversation
+  // still shows the fence the service mutates under (the thread id).
   it("retains the instance identity used by the displayed queue", async () => {
     const { service } = setup();
     expect((await service.open("ref-1")).instanceId).toBe("thread-1");
@@ -3337,9 +3395,33 @@ describe("observed queue guards", () => {
       client.calls.filter((c) => c.method === "turn/cancelQueued"),
     ).toHaveLength(0);
   });
-  it("can run a held queue from idle without an active-turn steer capability", async () => {
+  // The hub advertises steer as harness support (not "a turn is running"), so
+  // a steering harness carries steer:true at idle too, and a held queue can be
+  // promoted or drained from idle; the status half of that rule is the
+  // caller's (the SDK's sessionControls). A harness that advertises no steer
+  // cannot take a drain at all, whatever else it advertises.
+  it("refuses to run a held queue when the harness advertises no steer, even with send", async () => {
     const thread = makeThread();
     thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: false, send: true };
+    const { service, client } = setup({ thread });
+    await service.open("ref-1");
+    await expect(
+      service.promoteQueuedAsSteer(0, "held-entry", "thread-1"),
+    ).rejects.toThrow(/unavailable for this session/);
+    await expect(service.drainAsSteer(3, "thread-1")).rejects.toThrow(
+      /unavailable for this session/,
+    );
+    expect(
+      client.calls.filter(
+        (c) =>
+          c.method === "turn/promoteQueuedAsSteer" ||
+          c.method === "turn/drainAsSteer",
+      ),
+    ).toHaveLength(0);
+  });
+  it("can run a held queue from idle on a harness that advertises steer", async () => {
+    const thread = makeThread();
+    thread.evener.capabilities = { ...ALL_TRUE_CAPS, steer: true, send: true };
     const { service, client } = setup({ thread });
     client.on("turn/promoteQueuedAsSteer", ({ clientMutationId }) => ({
       receipt: makeReceipt("steer", {

@@ -21,9 +21,12 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/appserver"
@@ -399,6 +402,31 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	pluginRoot := plugins.NewManager("").Root
 
 	// Web
+	hostEntries := hostRegistryEntries(cfg)
+	// Config loading already validated these through hostreg.New; build the
+	// real registry used by the SSH manager and handle the (impossible) error
+	// like any other startup failure.
+	hostRegistry, err := hostreg.New(hostEntries)
+	if err != nil {
+		_ = hubListener.Close()
+		return fmt.Errorf("validate hosts: %w", err)
+	}
+	// sshStateInvalidatedNavigation is late-bound: the sshconn manager is
+	// constructed before the WebServer it must invalidate, and it is only ever
+	// invoked once the background loops start attaching hosts.
+	var sshStateInvalidatedNavigation func()
+	sshManager := sshconn.New(hostRegistry, sshconn.Options{
+		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		OnEvent: hubSSHStateInvalidation(func() {
+			if sshStateInvalidatedNavigation != nil {
+				sshStateInvalidatedNavigation()
+			}
+		}),
+	})
+	// The manager owns every live SSH channel; tie their lifetime to this
+	// process so they die with the hub.
+	defer func() { _ = sshManager.Close() }()
+
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -431,16 +459,52 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PokeAttention:             pokeAttention,
 		Inputs:                    inputs,
 		RemoteThreadCache:         remoteCache,
-	}, appwireTrace)
-	if appwireTrace != nil {
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
-				_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire trace connections: %v\n", shutdownErr)
+		RemoteHosts:               hostEntries,
+		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
+			ch, err := sshManager.Ensure(ctx, host)
+			if err != nil {
+				return nil, err
 			}
-		}()
-	}
+			return ch.Client(), nil
+		},
+		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
+			ch, err := sshManager.Ensure(ctx, host)
+			if err != nil {
+				return appsource.HostFacts{}, err
+			}
+			// The facts must describe the same connection generation the probe
+			// ran its wire reads on. Ensure is idempotent while attached, so it
+			// normally hands back the channel behind client; if a component-04
+			// reconnect swapped the generation in between, refuse rather than
+			// cache facts from one connection against another's reads. The
+			// probe is not cached on failure, so the next call re-probes the new
+			// generation cleanly.
+			if ch.Client() != client {
+				return appsource.HostFacts{}, fmt.Errorf("remote hub %q: connection changed during capability probe", host)
+			}
+			return remoteHostFacts(ch.Preflight(), ch.Client().Features()), nil
+		},
+		RemoteHostOnline: sshManager.Attached,
+	}, appwireTrace)
+	// Drain the AppWire RPC server on every exit path, tracing or not (round
+	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
+	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
+	// server left one fan-out goroutine per remote host subscribed to the
+	// previous server's sources — a leak, and duplicate host notifications once
+	// a replacement server subscribed too. This drain used to be registered
+	// only with --appwire-trace, where it existed to close the trace's
+	// connections.
+	//
+	// It is registered after the SSH manager's teardown, so it runs first: the
+	// fan-outs stop while the transports they read from are still open, rather
+	// than discovering a closed channel and re-dialling on their next retry.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire connections: %v\n", shutdownErr)
+		}
+	}()
 
 	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
 	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
@@ -454,6 +518,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	// A connection-state transition flips sshconn.Manager.Attached, which is the
+	// online signal every remote row's liveness and the manifest's
+	// sources[].online are derived from. Roster/PastIndex/remoteCache hooks do not
+	// observe it on their own: the remote cache only refreshes on its ~30s tick and
+	// only invalidates when its contents changed, and a detached host whose last
+	// list already failed changes nothing there. Without this the fleet view can
+	// keep reporting a host online after it dropped, or keep its rows metas-only
+	// after it reconnected.
+	sshStateInvalidatedNavigation = func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) }
 	if pinSections != nil {
 		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	}
@@ -565,6 +638,45 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	return nil
 }
 
+// hostRegistryEntries maps the validated [[hosts]] entries onto the host
+// registry's values. runMain hands the result to hostreg.New (the registry
+// sshconn consumes) and to the web config's RemoteHosts (one source per host),
+// so this mapping is the last place a configured field can be lost before
+// either consumer sees it: every field belongs here, including the host's
+// non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
+// manager attaching with the host's own hub.toml and probing its own listener.
+func hostRegistryEntries(cfg Config) []hostreg.Host {
+	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		entries = append(entries, hostreg.Host{
+			Name:       h.Name,
+			SSH:        h.SSH,
+			User:       h.User,
+			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
+			Roots:      h.Roots,
+		})
+	}
+	return entries
+}
+
+// hubSSHStateInvalidation adapts an sshconn lifecycle hook to navigation
+// invalidation, calling invalidate only on the transitions that change
+// Manager.Attached: an attach, a detach, or a terminal attach failure.
+// Intermediate EventState transitions (preflighting, attaching, reconnecting)
+// never change the attached answer, so they do not force a rebuild.
+func hubSSHStateInvalidation(invalidate func()) func(sshconn.Event) {
+	return func(ev sshconn.Event) {
+		switch ev.Kind {
+		case sshconn.EventAttached, sshconn.EventDetached, sshconn.EventFailed:
+			if invalidate != nil {
+				invalidate()
+			}
+		}
+	}
+}
+
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	opts := hubOptions{configPath: DefaultConfigPath()}
 	fs := flag.NewFlagSet("evener hub", flag.ContinueOnError)
@@ -586,6 +698,27 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	return opts, err
+}
+
+// remoteHostFacts assembles the preflight half of a remote host's capability
+// snapshot from the channel's captured facts and the freshly initialized
+// client's advertised features.
+//
+// The channel's facts are captured before attach: when the host's build differs
+// from the controller's, sshconn's ensureOnce redeploys the controller's build
+// and restarts the host hub before attaching, but the channel keeps those
+// pre-deploy facts. pf.Version is therefore stale exactly in that case, while
+// Features come from the newly initialized client. A successful Ensure
+// guarantees the attached hub runs the controller's build — the only build the
+// manager deploys — so report that version rather than the pre-deploy string.
+func remoteHostFacts(pf sshconn.Preflight, features appwire.FeatureSet) appsource.HostFacts {
+	return appsource.HostFacts{
+		ProtocolVersion: pf.Protocol,
+		HubVersion:      buildinfo.Version(),
+		OS:              pf.OS,
+		Arch:            pf.Arch,
+		Features:        features,
+	}
 }
 
 // printVersionInfo prints version information including backend git SHA and frontend hash.

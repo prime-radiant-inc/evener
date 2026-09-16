@@ -441,8 +441,9 @@ func TestE2E_TurnControlReachesANotificationTurn(t *testing.T) {
 
 // awaitActiveTurn waits for the thread to report an active turn whose id is
 // not `excluding`, and returns it. The status flip and the turn/started
-// notification that populates activeTurnId land separately, which is exactly
-// why the composer's own isTurnActive requires both.
+// notification that populates activeTurnId land separately; the composer's
+// isTurnActive reads the status alone, and this helper waits for the id
+// because the id is what it returns.
 func awaitActiveTurn(ctx context.Context, t *testing.T, client *appwire.Client, ref, excluding string) string {
 	t.Helper()
 	var turnID string

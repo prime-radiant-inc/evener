@@ -413,7 +413,31 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue    []steeringMessage
+	steeringQueue []steeringMessage
+	// steeringInFlight holds the client steers popSteeringHead has taken out of
+	// steeringQueue whose incorporation the store has not yet recorded
+	// (consumeSteeringMessage finalizes it after the transcript append lands).
+	// The store keeps such a steer accepted until then, so
+	// reflectDurableClientSteering must not put it back in the queue. The value
+	// is "" while the append is in flight, and the steer's terminal state --
+	// "incorporated", or "failed" for a skill selection that could not be
+	// prepared -- once the transcript holds it and only the store's write
+	// failed: recorded, and marked by reconcileRecordedSteering at the input's
+	// settle, the next wake, a Stop or restore. Guarded by mu.
+	steeringInFlight map[string]string
+	// steeringParked is set when an attempt to run pending user steering failed
+	// short of the model -- the append refused, the failure record refused,
+	// the carrier claim's write refused -- and cleared by the next wake sender
+	// (wakePendingUserInput: an accepted client mutation, attach, a store write
+	// that landed). While set, a wake the daemon had already buffered before
+	// the failure stands down instead of spending a second attempt on the same
+	// steer, and no autonomous turn runs while the steer is queued -- the
+	// drain ladder's notification and goal rungs, a deferred continuation,
+	// the settle's goal kick and the entry gate for a daemon-started
+	// notification or continuation all stand down (steeringParkedNow) -- so
+	// nothing drains it under a turn id that is not its receipt's. Guarded by
+	// mu.
+	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 
@@ -1104,8 +1128,7 @@ func (s *Session) SetNotifyFunc(f func()) {
 	// the user, not work in progress, and waking for it at attach would restart
 	// the session and deliver the steer the user just stopped -- the open
 	// steering rail issue #174 closes (issue #146, Option C — park in place).
-	steeringHeld := s.clientMutations != nil && s.clientMutations.steeringHeld()
-	if pending || (!steeringHeld && s.hasPendingUserSteering()) || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
+	if pending || s.hasRunnableUserSteering() || s.QueueDepth() > 0 || s.hasPendingDelegateDeliveries() || s.hasPendingRootDelegateAttention() || s.hasPendingStableDelegateAttention() || (s.jobManager != nil && s.jobManager.hasPendingStableWatchSettlementRetry()) {
 		f()
 	}
 }
@@ -1753,18 +1776,23 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
 	// The environment tracker is a durability owner: it may only claim the
-	// model saw a turn once that turn is durably in the transcript, or a
-	// restart renders every later block as a diff against a baseline the model
-	// never received. So the write goes through AppendSynced (records AND
-	// syncs, or errors) via the pair helper: on success the pair commits
-	// (history + pair log) and the tracker advance below stands; on error the
-	// turn is not durably in front of the model, so the tracker rewinds to the
-	// last state it did see and the next turn re-renders the whole observation.
-	// A failed AppendSynced can leave a retained record behind — a redundant
-	// entry a reader reconciles — which is strictly safer than a tracker
-	// advanced past context no restart can see. RenderDiff advanced the tracker
-	// before the write so it could render the diff; attentionMu holds the pair
-	// whole against a fold publication exactly as the clean path's is held.
+	// model saw a turn once that turn is a record, or a restart renders every
+	// later block as a diff against a baseline the model never received. So the
+	// write goes through AppendSynced (records AND syncs, else reports) via the
+	// pair helper, which resolves to one of three things (see
+	// appendTurnAfterTranscriptWriteLocked):
+	//   - nil (durable): the pair committed history + pair log, and the tracker
+	//     advance below stands;
+	//   - a retained record (ErrRetainedUnsynced): the whole line is in the
+	//     file, so the pair ADOPTS it and returns nil — the tracker still
+	//     advances, and the next fsync settles the debt. The entry is recorded
+	//     once; the tracker is NOT rewound and the block is NOT re-emitted,
+	//     which is what keeps a restart from carrying the environment twice;
+	//   - any other error: nothing was recorded, so the tracker rewinds to the
+	//     last state the model saw and the next turn re-renders the observation.
+	// RenderDiff advanced the tracker before the write so it could render the
+	// diff; attentionMu holds the pair whole against a fold publication exactly
+	// as the clean path's is held.
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },

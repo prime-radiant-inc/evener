@@ -1844,21 +1844,23 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 	}
 }
 
-// heldProber blocks each probe of the gated session until released, in call
-// order, so two refreshes can be held open together; every other session
-// fails its probe.
+// heldProber blocks each probe of the gated session until released, so two
+// refreshes can be held open together; every other session fails its probe.
+// A probe reports itself on started with the channel that releases it, so
+// the test decides which refresh a release reaches by the probe it saw
+// start, not by which probe parked first.
 type heldProber struct {
 	gated   string
-	started chan struct{}
-	release chan struct{}
+	started chan chan struct{}
 }
 
 func (p *heldProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if entry.SessionID != p.gated {
 		return ProbeResult{}
 	}
-	p.started <- struct{}{}
-	<-p.release
+	release := make(chan struct{})
+	p.started <- release
+	<-release
 	return ProbeResult{SessionID: p.gated, Status: appwire.ThreadStatusIdle, OK: true}
 }
 
@@ -1871,7 +1873,7 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	steady := rendezvous.Entry{PID: 1002, SessionID: "01STEADY", ThreadID: "01STEADY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
 	writeRendezvous(t, dir, parked)
 	writeRendezvous(t, dir, steady)
-	prober := &heldProber{gated: "01STEADY", started: make(chan struct{}, 2), release: make(chan struct{})}
+	prober := &heldProber{gated: "01STEADY", started: make(chan chan struct{}, 2)}
 	roster := NewRoster(dir, prober)
 	roster.SetProcessAlive(func(int) bool { return true })
 	var mu sync.Mutex
@@ -1885,8 +1887,7 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	// unresolved (its probe missed, its process answers).
 	initial := make(chan struct{})
 	go func() { roster.Refresh(); close(initial) }()
-	<-prober.started
-	prober.release <- struct{}{}
+	close(<-prober.started)
 	<-initial
 	if len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatalf("unconfirmed = %+v, want the parked claim", roster.UnconfirmedEntries())
@@ -1899,12 +1900,12 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	}
 	first, second := make(chan struct{}), make(chan struct{})
 	go func() { roster.Refresh(); close(first) }()
-	<-prober.started
+	releaseFirst := <-prober.started
 	go func() { roster.Refresh(); close(second) }()
-	<-prober.started
-	prober.release <- struct{}{}
+	releaseSecond := <-prober.started
+	close(releaseFirst)
 	<-first
-	prober.release <- struct{}{}
+	close(releaseSecond)
 	<-second
 	mu.Lock()
 	defer mu.Unlock()

@@ -155,9 +155,11 @@ func TestHubThreadListZeroSourceTimeoutPreservesOptionalAndExplicitErrors(t *tes
 
 func TestHubThreadListOptionalAndExplicitSourceErrors(t *testing.T) {
 	sources := appsource.NewRegistry()
+	sources.Add(&scriptedAppSource{id: "healthy", thread: appwire.Thread{ID: "healthy-thread", Source: "healthy"}})
 	sources.Add(&failingThreadListSource{scriptedAppSource: &scriptedAppSource{id: "optional"}, err: context.DeadlineExceeded})
-	if response, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, time.Second); err != nil || len(response.Data) != 0 {
-		t.Fatalf("optional error response=%+v err=%v", response, err)
+	if response, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, appwire.ThreadListParams{}, time.Second); err != nil ||
+		len(response.Data) != 1 || response.Data[0].ID != "healthy-thread" {
+		t.Fatalf("optional mid-list error response=%+v err=%v, want the healthy source's row only", response, err)
 	}
 	params := appwire.ThreadListParams{SourceIDs: []string{"optional"}}
 	if _, err := hubThreadListWithSourceTimeout(context.Background(), hubcore.WebConfig{}, sources, params, time.Second); err == nil {

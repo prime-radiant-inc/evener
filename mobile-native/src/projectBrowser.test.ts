@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type {
 	AnyNotification,
+	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationReadResponse,
 } from "@evener/appwire-client";
-import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/testing";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { createProjectBrowserController } from "./projectBrowser";
 
@@ -31,7 +32,7 @@ function boundary() {
 	};
 	return { client, requests, listeners };
 }
-function response(params: NavigationReadParams, data: unknown) {
+function response(params: NavigationReadParams, data: unknown, revision = 1) {
 	return wireV2(
 		{
 			...params,
@@ -40,8 +41,8 @@ function response(params: NavigationReadParams, data: unknown) {
 			limit: params.limit ?? 50,
 		},
 		data,
-		`etag-${params.offset ?? 0}`,
-		1,
+		`etag-${params.offset ?? 0}-${revision}`,
+		revision,
 		"generation-test",
 	);
 }
@@ -220,6 +221,182 @@ describe("project browser", () => {
 		);
 		await retry;
 		expect(controller.getSnapshot().groups[0]?.sessions).toHaveLength(25);
+		controller.dispose();
+	});
+
+	async function loadedProject() {
+		const { client, requests, listeners } = boundary();
+		const controller = createProjectBrowserController(client);
+		const loading = controller.initialLoad();
+		requests[0]?.resolve(
+			response(requests[0].params, { projects: [project("a")], remaining: 0 }),
+		);
+		await tick();
+		requests[1]?.resolve(
+			response(requests[1].params, {
+				key: "a",
+				tier: "current",
+				sessions: [session("a1")],
+				remaining: 0,
+				truncated: false,
+			}),
+		);
+		requests[2]?.resolve(
+			response(requests[2].params, {
+				key: "a",
+				tier: "recent",
+				sessions: [],
+				remaining: 0,
+				truncated: false,
+			}),
+		);
+		await loading;
+		const invalidate = (target: NavigationInvalidationTarget, sequence = 1) => {
+			for (const listener of listeners)
+				listener({
+					method: "evener/navigation/invalidated",
+					params: {
+						generationId: "generation-test",
+						sequence,
+						targets: [target],
+					},
+				});
+		};
+		return { controller, requests, invalidate };
+	}
+
+	it("re-reads an invalidated project's sessions without a refresh call", async () => {
+		const { controller, requests, invalidate } = await loadedProject();
+		invalidate({ kind: "project", projectKey: "a", revision: 2 });
+		expect(requests).toHaveLength(5);
+		expect(
+			requests.slice(3).map((r) => [r.params.tier, r.params.offset]),
+		).toEqual([
+			["current", 0],
+			["recent", 0],
+		]);
+		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
+			stale: true,
+			loading: true,
+			rows: [{ ref: "a1" }],
+		});
+		requests[3]?.resolve(
+			response(
+				requests[3].params,
+				{
+					key: "a",
+					tier: "current",
+					sessions: [session("a1"), session("a3")],
+					remaining: 0,
+					truncated: false,
+				},
+				2,
+			),
+		);
+		requests[4]?.resolve(
+			response(
+				requests[4].params,
+				{
+					key: "a",
+					tier: "recent",
+					sessions: [],
+					remaining: 0,
+					truncated: false,
+				},
+				2,
+			),
+		);
+		await tick();
+		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
+			stale: false,
+			loading: false,
+			error: null,
+		});
+		expect(
+			controller.getSnapshot().groups[0]?.sessions.map((row) => row.ref),
+		).toEqual(["a1", "a3"]);
+		controller.dispose();
+	});
+
+	it("retries a session page whose re-read failed by reading it again from the top", async () => {
+		const { controller, requests, invalidate } = await loadedProject();
+		invalidate({ kind: "project", projectKey: "a", revision: 2 });
+		requests[3]?.reject(new Error("offline"));
+		requests[4]?.reject(new Error("offline"));
+		await tick();
+		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
+			stale: true,
+			error: "offline",
+		});
+		const retry = controller.retry("a", "current");
+		await tick();
+		expect(requests).toHaveLength(6);
+		expect(requests[5]?.params).toMatchObject({ tier: "current", offset: 0 });
+		requests[5]?.resolve(
+			response(
+				requests[5].params,
+				{
+					key: "a",
+					tier: "current",
+					sessions: [session("a9")],
+					remaining: 0,
+					truncated: false,
+				},
+				2,
+			),
+		);
+		await retry;
+		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
+			stale: false,
+			error: null,
+			rows: [{ ref: "a9" }],
+		});
+		controller.dispose();
+	});
+
+	it("retries a project catalog whose re-read failed by reading it again from the top", async () => {
+		const { controller, requests, invalidate } = await loadedProject();
+		invalidate({ kind: "catalog", catalog: "projects", revision: 2 });
+		expect(requests).toHaveLength(4);
+		requests[3]?.reject(new Error("offline"));
+		await tick();
+		expect(controller.getSnapshot().projects).toMatchObject({
+			stale: true,
+			error: "offline",
+		});
+		const retry = controller.retry();
+		await tick();
+		expect(requests).toHaveLength(5);
+		expect(requests[4]?.params).toMatchObject({
+			resource: "catalog",
+			offset: 0,
+		});
+		requests[4]?.resolve(
+			response(
+				requests[4].params,
+				{ projects: [project("a"), project("b")], remaining: 0 },
+				2,
+			),
+		);
+		await retry;
+		expect(controller.getSnapshot().projects).toMatchObject({
+			stale: false,
+			error: null,
+		});
+		expect(
+			controller.getSnapshot().projects.rows.map((row) => row.key),
+		).toEqual(["a", "b"]);
+		controller.dispose();
+	});
+
+	it("holds re-reads while paused and catches up on resume", async () => {
+		const { controller, requests, invalidate } = await loadedProject();
+		controller.pause();
+		invalidate({ kind: "project", projectKey: "a", revision: 2 });
+		expect(requests).toHaveLength(3);
+		expect(controller.getSnapshot().groups[0]?.current.stale).toBe(true);
+		controller.resume();
+		expect(requests).toHaveLength(5);
 		controller.dispose();
 	});
 

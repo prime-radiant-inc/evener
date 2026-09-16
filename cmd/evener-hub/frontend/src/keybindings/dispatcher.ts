@@ -24,11 +24,11 @@
 // the pre-dispatcher AppShell ⌘K/⌘I/⌘J, Settings Escape, and SelectionQuote
 // ⌘' listeners - but NOT RailHost's ⌘B listener, which had no
 // defaultPrevented check and so binds with ignoreIfDefaultPrevented: false
-// in defaults.ts.
+// in the package's keybindingDefaults.ts.
 
+import { GLOBAL_SCOPE, type KeybindingsRegistry, type KeybindingsState, serializeChord } from "@evener/appwire-client";
 import { createKeybindingsHandler, type KeybindingsMap } from "tinykeys";
-import { serializeChord } from "./chord";
-import { GLOBAL_SCOPE, type KeybindingsRegistry, type KeybindingsState, keybindingsRegistry } from "./registry";
+import { keybindingsRegistry } from "./appRegistry";
 
 export type ModalOpenPredicate = (event: KeyboardEvent) => boolean;
 export type EditableTargetPredicate = (target: EventTarget | null) => boolean;
@@ -82,7 +82,7 @@ export const isModalOpenTarget: ModalOpenPredicate = (event) => {
 };
 
 export interface DispatcherOptions {
-  /** Defaults to the app-wide registry singleton. */
+  /** Defaults to the app-wide registry (appRegistry.ts). */
   registry?: KeybindingsRegistry;
   isModalOpen?: ModalOpenPredicate;
   isEditableTarget?: EditableTargetPredicate;

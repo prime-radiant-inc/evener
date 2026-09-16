@@ -39,7 +39,6 @@ func TestDelegateEntryRequiresReport(t *testing.T) {
 	}{
 		{name: "user input", kind: EntryUserInput, want: true},
 		{name: "continuation", kind: EntryContinuation, want: true},
-		{name: "steering carrier", kind: EntrySteeringCarrier, want: true},
 		{name: "notification", kind: EntryNotification, want: false},
 		{name: "delegate attention", kind: EntryDelegateAttention, want: false},
 	}

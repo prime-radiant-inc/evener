@@ -1,3 +1,4 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -340,6 +341,23 @@ const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
 
+// The one projection of the pending entries a ref shows, over a snapshot of
+// the store's records and the thread's model.
+function projectPendingEntries(
+  ref: string,
+  method: PendingMethod | undefined,
+  state: Pick<PendingTurnsStoreState, "outbox" | "optimistic" | "submittedHere">,
+  model: ThreadModel | undefined,
+): PendingTurnEntry[] {
+  const matches = reconcilePendingEntries(
+    ref,
+    [...state.outbox.values(), ...state.optimistic.values()],
+    model,
+    state.submittedHere,
+  ).filter((entry) => method === undefined || entry.method === method);
+  return matches.length > 0 ? matches : NO_ENTRIES;
+}
+
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
   const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
@@ -348,15 +366,17 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
-  return useMemo(() => {
-    const matches = reconcilePendingEntries(
-      ref,
-      [...outbox.values(), ...optimistic.values()],
-      model,
-      submittedHere,
-    ).filter((entry) => method === undefined || entry.method === method);
-    return matches.length > 0 ? matches : NO_ENTRIES;
-  }, [outbox, optimistic, submittedHere, model, ref, method]);
+  return useMemo(
+    () => projectPendingEntries(ref, method, { outbox, optimistic, submittedHere }, model),
+    [outbox, optimistic, submittedHere, model, ref, method],
+  );
+}
+
+// The same projection read from the stores as they are now, not as a component
+// rendered them: for the press handlers that re-derive their verdict at the
+// press (stores/liveControls.ts is the rule; this is its pending-send input).
+export function pendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
+  return projectPendingEntries(ref, method, pendingTurnsStore.getState(), threadsStore.getState().threads.get(ref));
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {

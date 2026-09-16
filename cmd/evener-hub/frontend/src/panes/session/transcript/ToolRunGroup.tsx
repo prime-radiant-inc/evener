@@ -12,6 +12,7 @@
 // coordinator's list whether it is open or closed rather than a set of
 // anchors that appear and vanish with a click.
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
+import { scopedDisclosureId } from "@evener/appwire-client";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
@@ -19,12 +20,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import { Chevron } from "../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ToolCallItem } from "./ToolCallItem";
 import { toolRendererFor } from "./toolRenderers";

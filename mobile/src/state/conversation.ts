@@ -19,31 +19,30 @@
 
 import { create } from "zustand";
 import {
+  applyNotification,
   isStaleCursorError,
+  notificationTargetsThread,
+  sessionControls,
   WireError,
 } from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
-  QueueState,
   ThreadCapabilities,
   ThreadItem,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
-  MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
   ActivityMember,
-} from "../conversation/model";
+} from "../conversation/project";
 import {
   activityState,
   clusterActivities,
   isActiveItem,
-  projectApproval,
   projectItemAttachments,
-  projectQueue,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -731,16 +730,28 @@ function isActionUnavailableError(err: unknown): boolean {
   );
 }
 
-// Check a capability on the current conversation and throw if false. This
-// mirrors the service's requireCap but runs in the store so the fake
-// service (which has no capability gating) still respects capabilities.
-function requireCap(
+// A mutation's precondition, re-evaluated at the mutation boundary rather than
+// trusted from the render that offered the control: the session's controls
+// (the SDK's sessionControls over the wire's status, the harness's
+// capabilities and the queue depth). A status that flipped between the render
+// and the submit refuses the mutation here, with the control's own reason.
+// Runs in the store so the fake service (which gates on nothing) still
+// respects what the hub would refuse.
+function requireControl(
   conv: MobileConversation,
-  cap: keyof MobileCapabilities,
+  control: "stop" | "steer" | "drain" | "queue" | "send",
   action: string,
 ): void {
-  if (!conv.capabilities[cap]) {
-    throw new Error(`Action "${action}" is not available for this thread`);
+  const controls = sessionControls(
+    conv.status.type,
+    conv.capabilities,
+    conv.queue?.depth ?? 0,
+  );
+  if (!controls[control]) {
+    throw new Error(
+      controls.reason[control] ??
+        `Action "${action}" is not available for this thread`,
+    );
   }
 }
 
@@ -832,18 +843,6 @@ function projectSingleItem(
   return null;
 }
 
-// Known notification methods that we handle explicitly. The default branch
-// only resyncs for unsupported item/* transitions, not for all unknown
-// notifications, to avoid reread storms from unrelated notification families.
-const ITEM_NOTIFICATION_METHODS = new Set([
-  "item/started",
-  "item/completed",
-  "item/agentMessage/delta",
-  "item/agentMessage/reset",
-  "item/reasoning/summaryTextDelta",
-  "item/toolOutput/delta",
-]);
-
 export function createConversationStore() {
   let conversationGen = 0;
   let mutationIdCounter = 0;
@@ -868,18 +867,28 @@ export function createConversationStore() {
   // entry; if it changed during the await, the rehydrate is stale with
   // respect to the error owner and must not clear or overwrite error.
   let errorOwnerRev = 0;
-  // I2: Monotonic capability-owner revision — increments on every capability
-  // publication/transition (thread/status/changed, cap refresh, rehydrate
-  // commit). Rehydrate captures this at entry; if it changed during the
-  // await, a newer capability owner published caps and the rehydrate must
-  // preserve the current caps instead of overwriting with its stale
-  // projection. If unchanged, the rehydrate commits authoritative projected
-  // capabilities.
-  let capabilityOwnerRev = 0;
-  let approvalOwnerRev = 0;
-  let goalOwnerRev = 0;
-  let turnOwnerRev = 0;
-  let tasksOwnerRev = 0;
+  // The reread's snapshot is authoritative over every thread-level write that
+  // preceded its response. AppWire orders a thread/read response at the
+  // snapshot cut and delivers frames in producer order on the one socket
+  // (docs/superpowers/plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-
+  // rejoin.md:19, 372-373), so a frame this store applied while the read was
+  // in flight is already folded into the snapshot that arrives, and a frame
+  // that arrives after the response lands on top of it through the normal
+  // path. Nothing awaits between the response and the commit (the service's
+  // readProjection and rehydrate below each await the read alone), so there
+  // is no window to buffer for; the web's applyHydrationResponseCut drops its
+  // buffer at the same point for the same reason. Item-level notifications
+  // still merge through liveOwnedRevs below until D23c routes them here too.
+  //
+  // The package reducer over the conversation. Every reducer case spreads the
+  // model it was given, so the display rows (and anything else native keeps
+  // on the conversation) survive untouched.
+  function applyThreadNotification(
+    conversation: MobileConversation,
+    n: AnyNotification,
+  ): MobileConversation {
+    return applyNotification(conversation, n, Date.now()) as MobileConversation;
+  }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -1168,7 +1177,7 @@ export function createConversationStore() {
           // publication — the two stores stay atomically consistent. The
           // plain-open path (no sink) still updates conversation caps.
           const identity: ActivityIdentity = {
-            threadId: currentConv.id,
+            threadId: currentConv.threadId,
             ref,
             generation: gen,
           };
@@ -1177,13 +1186,12 @@ export function createConversationStore() {
               ? boundSink.setLiveCapabilities(refreshed, identity)
               : true;
           if (!sinkAccepted) return;
-          // I2: increment capability-owner revision for this publication.
-          capabilityOwnerRev += 1;
+          // A plain publish. If a reread is in flight, the snapshot it
+          // returns is authoritative and supersedes this like any write that
+          // preceded the response cut; a refresh that lands after the commit
+          // writes on top of the snapshot.
           storeSet?.({
-            conversation: {
-              ...currentConv,
-              capabilities: { ...refreshed },
-            },
+            conversation: { ...currentConv, capabilities: { ...refreshed } },
           });
         }
       }
@@ -1518,7 +1526,7 @@ export function createConversationStore() {
           } = replacement ?? (await service.readProjection(ref));
           if (gen !== conversationGen) return;
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -1649,7 +1657,7 @@ export function createConversationStore() {
           }
           const identity = get().conversation
             ? {
-                threadId: get().conversation?.id ?? "",
+                threadId: get().conversation?.threadId ?? "",
                 ref,
                 generation: gen,
               }
@@ -1686,7 +1694,7 @@ export function createConversationStore() {
           const conversation = get().conversation;
           if (conversation) {
             const identity = {
-              threadId: conversation.id,
+              threadId: conversation.threadId,
               ref,
               generation: gen,
             };
@@ -1779,14 +1787,6 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
-        // I2: Capture capability-owner revision at entry. If it changed during
-        // the await, a newer capability owner published caps and the rehydrate
-        // must preserve the current caps.
-        const entryCapRev = capabilityOwnerRev;
-        const entryApprovalRev = approvalOwnerRev;
-        const entryGoalRev = goalOwnerRev;
-        const entryTurnRev = turnOwnerRev;
-        const entryTasksRev = tasksOwnerRev;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1967,7 +1967,7 @@ export function createConversationStore() {
           });
           mergedItems = attachToSources(mergedItems);
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -1984,15 +1984,6 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // I2: If the capability-owner revision hasn't changed during the
-          // await, commit the authoritative projected capabilities from the
-          // rehydrate. If it advanced (a newer cap refresh or notification
-          // published caps), preserve the current caps.
-          const capOwnerChanged = entryCapRev !== capabilityOwnerRev;
-          const currentConv = currentState.conversation;
-          const preservedCaps = capOwnerChanged
-            ? currentConv?.capabilities
-            : undefined;
           // Task 2A-Truncation: cap the merged items, reconcile truncation
           // ownership exactly from the FINAL retained (capped) pre-truncation
           // items. mergedItems already contains superseded live/page
@@ -2024,26 +2015,12 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
-          const committedConversation = {
+          // The snapshot's thread-level fields are authoritative (see the
+          // response-cut note by applyThreadNotification); the rows are the
+          // live/page merge above.
+          const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
-            activeTurnId:
-              entryTurnRev === turnOwnerRev
-                ? conversation.activeTurnId
-                : currentConv?.activeTurnId,
-            goal:
-              entryGoalRev === goalOwnerRev
-                ? conversation.goal
-                : currentConv?.goal,
-            tasks:
-              entryTasksRev === tasksOwnerRev
-                ? conversation.tasks
-                : currentConv?.tasks,
-            pendingApprovals:
-              entryApprovalRev === approvalOwnerRev
-                ? conversation.pendingApprovals
-                : (currentConv?.pendingApprovals ?? []),
-            ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -2059,11 +2036,6 @@ export function createConversationStore() {
             }
           }
           pruneEvictedIds(committedItems);
-          // I2: If we're committing the projected capabilities (cap owner
-          // unchanged), increment the capability-owner revision.
-          if (!capOwnerChanged) {
-            capabilityOwnerRev += 1;
-          }
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
@@ -2286,7 +2258,7 @@ export function createConversationStore() {
       async send(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "send", "send");
+        requireControl(state.conversation, "send", "send");
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), zero request/state change.
         const opBinding = captureOperationBinding(service);
@@ -2377,7 +2349,7 @@ export function createConversationStore() {
       async steer(service, input, expectedQueueRevision) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "steer", "steer");
+        requireControl(state.conversation, "steer", "steer");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2455,7 +2427,7 @@ export function createConversationStore() {
       async queue(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "queue", "queue");
+        requireControl(state.conversation, "queue", "queue");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2532,7 +2504,7 @@ export function createConversationStore() {
       async interrupt(service) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "interrupt", "interrupt");
+        requireControl(state.conversation, "stop", "interrupt");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2651,183 +2623,17 @@ export function createConversationStore() {
       applyNotification(n) {
         const state = get();
         if (state.conversation === null) return;
-
-        // Check threadId/ref against the current conversation and silently drop
-        // mismatches.
-        const nref = notificationRef(n);
-        if (nref !== null) {
-          const currentId = state.conversation.id;
-          const currentRef = state.ref;
-          const idMatch =
-            nref.threadId === undefined || nref.threadId === currentId;
-          const refMatch = nref.ref === undefined || nref.ref === currentRef;
-          if (!idMatch || !refMatch) return;
-        }
-
         const conv = state.conversation;
+
+        // The package reducer's routing: a frame names its thread by ref
+        // when it carries one, else by threadId; a frame naming neither is
+        // not about this thread. Silently drop everything else.
+        if (!notificationTargetsThread(n, conv)) return;
+
+        // The cases below are what native still applies onto its display
+        // rows itself (D23c hands them to the package reducer one by one);
+        // every other frame about this thread is the reducer's, in `default`.
         switch (n.method) {
-          case "evener/sandbox/escalation/requested": {
-            approvalOwnerRev++;
-            const approval = projectApproval(n.params);
-            set({
-              conversation: {
-                ...conv,
-                pendingApprovals: [
-                  ...conv.pendingApprovals.filter(
-                    (value) => value.id !== approval.id,
-                  ),
-                  approval,
-                ],
-              },
-            });
-            break;
-          }
-          case "evener/sandbox/escalation/resolved": {
-            approvalOwnerRev++;
-            set({
-              conversation: {
-                ...conv,
-                pendingApprovals: conv.pendingApprovals.filter(
-                  (value) => value.id !== n.params.escalationId,
-                ),
-              },
-            });
-            break;
-          }
-          case "thread/status/changed": {
-            const params = n.params as {
-              status: { type: string };
-              capabilities?: ThreadCapabilities;
-            };
-            // I2: increment capability-owner revision if capabilities are
-            // being published.
-            if (params.capabilities !== undefined) {
-              capabilityOwnerRev += 1;
-            }
-            set({
-              conversation: {
-                ...conv,
-                status: params.status.type,
-                capabilities: params.capabilities
-                  ? { ...params.capabilities }
-                  : conv.capabilities,
-              },
-            });
-            break;
-          }
-
-          case "thread/queueChanged": {
-            const params = n.params as {
-              queue: QueueState;
-            };
-            set({
-              conversation: {
-                ...conv,
-                queue: projectQueue(params.queue),
-              },
-            });
-            break;
-          }
-
-          case "evener/task/updated": {
-            tasksOwnerRev++;
-            const { total, done, cancelled, remaining, current } = n.params;
-            set({
-              conversation: {
-                ...conv,
-                tasks: { total, done, cancelled, remaining, current },
-              },
-            });
-            break;
-          }
-
-          case "evener/goal/updated": {
-            goalOwnerRev++;
-            set({ conversation: { ...conv, goal: n.params.goal } });
-            break;
-          }
-
-          case "evener/thread/name/changed": {
-            const params = n.params as { name: string };
-            set({
-              conversation: { ...conv, name: params.name },
-            });
-            break;
-          }
-
-          case "thread/model/changed": {
-            const params = n.params as {
-              modelProvider: string;
-              reasoningEffortLevels?: string[];
-              supportsReasoning?: boolean;
-            };
-            set({
-              conversation: {
-                ...conv,
-                modelProvider: params.modelProvider,
-                reasoningEffortLevels: params.reasoningEffortLevels,
-                supportsReasoning: params.supportsReasoning,
-              },
-            });
-            break;
-          }
-
-          case "thread/reasoning-effort/changed": {
-            const params = n.params as { reasoningEffort?: string };
-            set({
-              conversation: {
-                ...conv,
-                reasoningEffort: params.reasoningEffort,
-              },
-            });
-            break;
-          }
-
-          case "thread/vision-model/changed": {
-            const params = n.params as { visionModel: string };
-            set({
-              conversation: { ...conv, visionModel: params.visionModel },
-            });
-            break;
-          }
-
-          case "turn/started": {
-            turnOwnerRev++;
-            set({
-              conversation: {
-                ...conv,
-                status: "running",
-                activeTurnId: n.params.turn.id,
-              },
-            });
-            break;
-          }
-
-          case "turn/completed": {
-            const params = n.params as {
-              turn: { id: string; status: string };
-            };
-            const completedActive = conv.activeTurnId === params.turn.id;
-            // Completion is newer than an in-flight read even when this
-            // client missed the corresponding start notification.
-            turnOwnerRev++;
-            // params.turn.usage is this one turn's totals, not the session's
-            // cumulative usage — publish completion state only and leave
-            // usage as whatever the last authoritative projection set.
-            set({
-              conversation: {
-                ...conv,
-                activeTurnId: completedActive ? undefined : conv.activeTurnId,
-                status:
-                  conv.status === "running" &&
-                  (!conv.activeTurnId || completedActive)
-                    ? "ready"
-                    : conv.status,
-              },
-            });
-            break;
-          }
-
           case "item/started":
           case "item/completed": {
             const params = n.params as { item: ThreadItem };
@@ -3183,19 +2989,20 @@ export function createConversationStore() {
             break;
           }
 
-          // Default: only resync for unsupported item/* transitions, not for
-          // all unknown notifications — to avoid reread storms from unrelated
-          // notification families.
           default: {
-            if (
-              typeof n.method === "string" &&
-              n.method.startsWith("item/") &&
-              !ITEM_NOTIFICATION_METHODS.has(n.method)
-            ) {
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
+            // An item/* transition the cases above do not handle needs the
+            // canonical projection; only those resync, not every unknown
+            // family, to avoid reread storms from unrelated notifications.
+            if (n.method.startsWith("item/")) {
+              if (state.ref !== null) requestRehydrate(state.ref);
+              break;
             }
+            // Everything else about this thread is the package reducer's. It
+            // reads the ThreadModel half of the conversation and leaves the
+            // display rows alone.
+            const applied = applyThreadNotification(conv, n);
+            if (applied === conv) break;
+            set({ conversation: applied });
             break;
           }
         }
@@ -3363,7 +3170,3 @@ async function handleMutationError(
     }
   }
 }
-
-// Re-export the MobileCapabilities type for consumers that import from the
-// store module.
-export type { MobileCapabilities, MobileConversation, MobileTimelineItem };

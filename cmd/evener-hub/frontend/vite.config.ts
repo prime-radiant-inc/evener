@@ -55,6 +55,8 @@ export default defineConfig({
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
+      "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
+      "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
       "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
       // Resolution runs from the importer, and the package's test files sit
@@ -71,6 +73,10 @@ export default defineConfig({
       // without it. scripts/package-test-files.mjs now holds every bare
       // specifier in the package's test graph against the keys of this block.
       typescript: path.join(__dirname, "node_modules", "typescript"),
+      // The keybinding suites inject tinykeys' real parseKeybinding through
+      // the package's KeybindingParser port; the package itself never names
+      // tinykeys, so this alias serves only its tests.
+      tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
     },
   },
   server: {
@@ -125,7 +131,10 @@ export default defineConfig({
     // giving the package its own dev dependencies would change what
     // `npm ci --prefix appwire-client/typescript` fetches for the
     // qualification gate, which needs only typescript and ws.
-    include: ["**/*.{test,spec}.?(c|m)[jt]s?(x)", "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    include: [
+      "**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+    ],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],

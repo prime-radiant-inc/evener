@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { NavigationWatchSummary } from "@evener/appwire-client";
+import type { NavigationManifest, NavigationWatchSummary } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import {
   keyID,
@@ -13,6 +13,7 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
+import { manifest } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
@@ -79,6 +80,29 @@ function seedPinCatalogForPicker(): void {
   };
   navigationStore.setState({ mode: "v2", resources: new Map([[keyID(resource.key), resource]]) });
   navigationStore.setState({ loadPinCatalogPages: vi.fn(async () => undefined) as LoadPinCatalogPages });
+}
+
+// Seeds the manifest's launch sources, which a row's host badge/offline
+// affordance derives from (Component 06b). A row whose host the manifest does
+// not name reads as online, so the default empty manifest adds no affordance.
+function seedSources(
+  sources: NavigationManifest["sources"],
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): void {
+  const resource: ResourceState<NavigationManifest> = {
+    key: { kind: "manifest" },
+    data: manifest({ sources }),
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "e",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+    ...overrides,
+  };
+  navigationStore.setState({ manifest: resource });
 }
 
 function PaneFixture() {
@@ -202,6 +226,13 @@ function apiProject(overrides: Partial<RailProject> = {}): RailProject {
     nextOffsets: {},
     ...overrides,
   };
+}
+
+/** A project summary stamped with the owning sources the navigation read model
+ * carries (component 06a's field; RailProject's own interface on this branch
+ * predates it, so the row reads it structurally). */
+function withSources(project: RailProject, sources: string[]): RailProject {
+  return { ...project, sources } as RailProject;
 }
 
 function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
@@ -2087,11 +2118,109 @@ describe("project row", () => {
 
   test("menu offers 'Delete project…' and calls onDeleteProjectRequest on select", async () => {
     const acts = actions();
-    const project = apiProject();
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
+  });
+
+  // Deletion is local-only (cmd/evener-hub/project_delete.go refuses any
+  // non-local or unknown source), but the row does not withhold the item on
+  // that account: the judgement lives one level up, where the Rail's
+  // onDeleteProjectRequest refuses a project a remote host also owns, with a
+  // toast that names the hosts (Rail.test.tsx pins that). The person gets an
+  // explanation instead of an item that is silently missing. These tests pin
+  // the row's half of that split: the item is offered whatever the row's
+  // ownership state reads as.
+  test("menu offers 'Delete project…' for a project row a remote host also owns", async () => {
+    const acts = actions();
+    const project = apiProject({
+      loaded: true,
+      session_count: 2,
+      sessions: [
+        apiNode({ row_id: "project:p1:local:a" }),
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    // The rest of the project menu is untouched - and the row is still a
+    // project row with its own actions.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+    expect(acts.onDeleteProjectRequest).not.toHaveBeenCalled();
+  });
+
+  test("menu offers 'Delete project…' for a remote-only project row", async () => {
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [
+        apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
+      ],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  // A collapsed project loads its sessions on expand, so an unexpanded row
+  // reads sessions: [] whatever a remote host owns - which is exactly why the
+  // row's menu no longer reads ownership from them: the item is offered, and
+  // the Rail's refusal is the guard.
+  test("menu offers 'Delete project…' when the project's sessions have not loaded", async () => {
+    const project = apiProject({ loaded: false, session_count: 2, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    // The rest of the project menu is unaffected.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+  });
+
+  // The one unloaded row that is still knowably controller-only: a project with
+  // no rows at all. session_count counts every source's top-level rows
+  // (hubcore.TreeProject.TotalSessionCount), so zero means no host owns a
+  // session here and the source-less request cannot address another project.
+  test("menu keeps 'Delete project…' for an empty controller project", async () => {
+    const project = apiProject({ loaded: false, session_count: 0, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  // The navigation summary's own owning sources, which a controller-only
+  // project omits: a present list settles ownership, and it lands on the Rail
+  // side of the split, not the row's.
+  test("menu offers 'Delete project…' when the summary names a remote owner", async () => {
+    const project = withSources(apiProject(), ["local", "buildbox"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "New session" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' when the summary names only this controller as an owner", async () => {
+    const project = withSources(apiProject(), ["local"]);
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
+  test("menu keeps 'Delete project…' for a project row only this controller owns", async () => {
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
   });
 
   test("a childless project renders no chevron; a parent project's chevron trails its name", () => {
@@ -2493,4 +2622,66 @@ test.each(["subagent", "job"] as const)("restart explanation survives %s activit
   const gloss = screen.getByTestId("rail-row-activity").textContent;
   expect(gloss).toContain("restart required");
   expect(gloss).toContain(kind === "subagent" ? "1 subagent working" : "1 job running");
+});
+
+// --- host badge / offline affordance (Component 06b) -----------------------
+
+test("a non-local row renders its host as a badge", () => {
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  const badge = screen.getByTestId("rail-row-host");
+  expect(badge.textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a local row renders no host badge", () => {
+  renderRow({ ref: "local:abc", host_id: "local" });
+  expect(screen.queryByTestId("rail-row-host")).toBeNull();
+});
+
+test("a row on an offline host renders the offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+});
+
+test("a row on an online host has no offline affordance", () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("buildbox");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+test("a host the manifest does not name defaults to online (no offline affordance)", () => {
+  renderRow({ ref: "mystery:abc", host_id: "mystery" });
+  expect(screen.getByTestId("rail-row-host").textContent).toContain("mystery");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+// The badge is a DISPLAY of the last reading, and the store retains that reading
+// while the fresh manifest is in flight (loading/stale). A display read that
+// withheld it turned every offline badge back into an ONLINE host for the length
+// of the refresh (round nine).
+test("an offline host's badge survives a manifest revalidation", () => {
+  const sources: NavigationManifest["sources"] = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ];
+  seedSources(sources);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  act(() => seedSources(sources, { loading: true, stale: true }));
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  // The FRESH manifest, once it settles, is the authority again: a host it no
+  // longer names is the unchanged "unknown host" case and reads as online.
+  act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
 });

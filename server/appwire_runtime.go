@@ -1078,13 +1078,15 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 // stampCapabilitiesOnStatusChange rides the action set that goes with the
 // announced status along on every thread/status/changed (kata 06t8).
 //
-// The set is otherwise snapshot-only, refreshed by thread/read — and Send,
-// Steer and Queue are all defined by whether a turn is in flight
-// (appCapabilities). So a client that hydrated while the session was idle, or
-// while it was a cold exited session the hub answered from the past index,
-// holds steer=false/queue=false for the whole turn its own send starts: the
-// composer knows the turn is live (it has the status change and turn/started)
-// and still renders no Steer, no Stop and a disabled Send until a reload.
+// The set is otherwise snapshot-only, refreshed by thread/read — and Send
+// and Queue are defined by whether a turn is in flight (appCapabilities;
+// Steer is harness support alone and the client applies the status). So a
+// client that hydrated while the session was idle, or while it was a cold
+// exited session the hub answered from the past index, holds queue=false
+// (and, from the past index, steer=false) for the whole turn its own send
+// starts: the composer knows the turn is live (it has the status change and
+// turn/started) and still renders no Steer, no Stop and a disabled Send until
+// a reload.
 // Every capability change is a status transition, so this refreshes them
 // exactly when they can have moved and never polls — the same shape
 // stampFailureCountOnStatusChange already uses for the failure count.
@@ -1937,7 +1939,7 @@ func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire
 	return appwire.EmptyResponse{}, fn(ctx)
 }
 
-func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
@@ -1947,7 +1949,12 @@ func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.Threa
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("shutdown not available")
 	}
-	go fn()
+	// The shutdown ends the process, which closes this socket, so the reply
+	// this handler owes has to reach the transport first: a reply still queued
+	// in the connection's send loop when the process exits is never written,
+	// and the client reads EOF in its place (#1501). Only a request with no
+	// transport to wait on starts the shutdown right away.
+	appserver.RunAfterResponseWritten(ctx, func() { go fn() })
 	return appwire.EmptyResponse{}, nil
 }
 
@@ -2756,10 +2763,18 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	clearAvailable := s.clearFunc != nil && !active && !closed && s.clearBlockedReasonLocked() == ""
 	return appwire.ThreadCapabilities{
-		Send:  !active && !closed,
-		Steer: steerAvailable && active && !closed,
+		Send: !active && !closed,
+		// Steer answers "can this harness steer", not "is there a turn to steer
+		// right now": clients apply the status themselves (the web's canSteer
+		// requires active for turn/steer), and the daemon accepts
+		// turn/drainAsSteer and turn/promoteQueuedAsSteer with no turn in
+		// flight -- they are two of the runs that release a queue a Stop parked
+		// (agent/session_client_mutation_queue.go). Folding `active` in here
+		// left an idle client unable to tell a harness that cannot steer from
+		// one that can, so a parked queue had no affordance to run it (#1363).
+		Steer: steerAvailable && !closed,
 		// Interrupt answers "is there work to stop", which is the same `active`
-		// Steer is derived from -- deliberately NOT the ambient cancelFunc.
+		// Send is the complement of -- deliberately NOT the ambient cancelFunc.
 		//
 		// That field is armed and cleared once per turn by the session loop, on
 		// a different goroutine and a different clock from the reservation the
@@ -2785,8 +2800,8 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		ChangeModel:       s.modelFunc != nil && !closed,
 		ChangeVisionModel: s.visionModelFunc != nil && !closed,
 		Rename:            s.nameFunc != nil && !closed,
-		// Queue mirrors Steer's "active turn" gate: only meaningful while
-		// a turn is in flight or reserved by turn/start (kata 111a).
+		// Queue keeps the "active turn" gate: only meaningful while a turn is
+		// in flight or reserved by turn/start (kata 111a).
 		Queue: s.queueFunc != nil && active && !closed,
 		// Goal is available whenever the engine is wired and the session is
 		// open. It is intentionally NOT gated on !active: a goal may be set

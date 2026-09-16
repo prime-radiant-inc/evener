@@ -2,10 +2,18 @@
 // Covers generation safety, notification routing, draft preservation,
 // conflict restore, and no auto-retry.
 
-import { describe, expect, it } from "vitest";
-import { WireError } from "@evener/appwire-client";
+import { describe, expect, it, vi } from "vitest";
+import {
+  hydrateThread,
+  QUEUE_UNAVAILABLE,
+  SEND_UNAVAILABLE,
+  sessionControls,
+  TURN_RUNNING,
+  WireError,
+} from "@evener/appwire-client";
 import type {
   AnyNotification,
+  EvenerThread,
   InputItem,
   MutationReceipt,
   Thread,
@@ -15,11 +23,10 @@ import type {
 } from "@evener/appwire-client";
 import type {
   ActivityMember,
-  MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/model";
-import { projectThread } from "../conversation/project";
+} from "../conversation/project";
+import { projectConversation } from "../conversation/project";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -119,18 +126,32 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
 function makeConversation(
   over: Partial<MobileConversation> = {},
 ): MobileConversation {
-  return {
+  // Hydrated through the package from a minimal wire Thread, so the fixture
+  // tracks hydrateThread's defaults instead of restating every model field.
+  const thread: Thread = {
     id: "thread-1",
     sessionId: "session-1",
     preview: "hello",
+    ephemeral: false,
     modelProvider: "anthropic",
-    status: "ready",
-    items: [],
-    capabilities: ALL_TRUE_CAPS,
-    queue: { revision: 0, depth: 0, preview: [] },
-    usage: {},
-    askPending: false,
-    pendingApprovals: [],
+    createdAt: 0,
+    updatedAt: 0,
+    // The wire's vocabulary. Idle is the shape the hub publishes when it
+    // advertises Send (Send folds !active at the source); the steering
+    // submissions name a running turn themselves.
+    status: { type: "idle" },
+    cwd: "",
+    cliVersion: "",
+    source: "",
+    turns: [],
+    evener: {
+      ref: "ref-1",
+      capabilities: ALL_TRUE_CAPS,
+      queue: { revision: 0, depth: 0, preview: [] },
+    },
+  };
+  return {
+    ...projectConversation(hydrateThread({ thread }, "ref-1", 0)),
     ...over,
   };
 }
@@ -191,21 +212,34 @@ class FakeConversationService implements LiveConversationService {
   refreshCapsResult: ThreadCapabilities | null = null;
   refreshCapsCallCount = 0;
 
+  // Like the real service, the conversation returned is hydrated under the
+  // ref that was opened: the store routes notifications by the model's ref.
+  private hydratedUnder(
+    ref: string,
+    conversation: MobileConversation,
+  ): MobileConversation {
+    return { ...conversation, ref };
+  }
   async open(ref: string, _cursor?: string): Promise<MobileConversation> {
     this.ref = ref;
-    return this.openConv;
+    return this.hydratedUnder(ref, this.openConv);
   }
   async readProjection(ref: string): Promise<ConversationReadProjection> {
     this.readProjectionCalls.push({ ref });
     if (this.readProjectionBlock) return this.readProjectionBlock;
-    if (this.readProjectionResult) return this.readProjectionResult;
+    if (this.readProjectionResult) {
+      return {
+        ...this.readProjectionResult,
+        conversation: this.hydratedUnder(ref, this.readProjectionResult.conversation),
+      };
+    }
     return {
-      conversation: this.openConv,
+      conversation: this.hydratedUnder(ref, this.openConv),
       activity: {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       },
       olderCursor: this.olderCursor,
     };
@@ -296,7 +330,7 @@ async function beginHeldClusterRehydrate() {
   service.openConv = stale;
   service.readProjectionResult = {
     conversation: stale,
-    activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities },
+    activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
     olderCursor: null,
   };
   const store = createConversationStore();
@@ -321,7 +355,7 @@ describe("ConversationStore", () => {
       expect(s.status).toBe("open");
       expect(s.ref).toBe("ref-1");
       expect(s.conversation).not.toBeNull();
-      expect(s.conversation?.id).toBe("thread-1");
+      expect(s.conversation?.threadId).toBe("thread-1");
     });
 
     it("increments conversation generation on open", async () => {
@@ -480,9 +514,16 @@ describe("ConversationStore", () => {
       },
     ];
 
+    // Send is offered at rest; the steering mutations need a running turn.
+    function serviceFor(kind: MutationKind): FakeConversationService {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
+      return service;
+    }
+
     for (const { kind, call, callCountField } of mutationCases) {
       it(`${kind}: calls the service ${kind} method`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const store = createConversationStore();
         await store.getState().open(service, "ref-1");
         if (kind === "interrupt") {
@@ -494,7 +535,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: sets pending mutation state while in-flight`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         // Make the service hang so we can inspect the in-flight state.
         let resolveFn: (() => void) | null = null as (() => void) | null;
         service.receipt = makeReceipt();
@@ -536,7 +577,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: records exact draft snapshot in mutation state`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         let resolveFn: (() => void) | null = null as (() => void) | null;
         const hangPromise = new Promise<MutationReceipt>((resolve) => {
           resolveFn = () => resolve(makeReceipt());
@@ -567,7 +608,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: clears pending and error on success`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const store = createConversationStore();
         await store.getState().open(service, "ref-1");
         await call(store, service, textInput("test"));
@@ -576,7 +617,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: restores draft and sets failed state on failure`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         const rejectErr = new Error(`${kind} conflict`);
         if (kind === "send") {
           service.sendShouldReject = rejectErr;
@@ -611,7 +652,7 @@ describe("ConversationStore", () => {
       });
 
       it(`${kind}: records generation in mutation state`, async () => {
-        const service = new FakeConversationService();
+        const service = serviceFor(kind);
         let resolveFn: (() => void) | null = null as (() => void) | null;
         const hangPromise = new Promise<MutationReceipt>((resolve) => {
           resolveFn = () => resolve(makeReceipt());
@@ -641,16 +682,19 @@ describe("ConversationStore", () => {
     it("send has an independent capability gate from steer", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      // Only send is disabled
+      // Only send is disabled, in the state that offers it.
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS, send: false },
       });
       await store.getState().open(service, "ref-1");
-      // send should fail, steer should succeed
       await expect(
         store.getState().send(service, textInput("x")),
-      ).rejects.toThrow();
-      // steer should work since steer capability is true
+      ).rejects.toThrow(SEND_UNAVAILABLE);
+      // steer should work since steer capability is true, once a turn runs
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+      } as AnyNotification);
       await store.getState().steer(service, textInput("x"));
       expect(store.getState().error).toBeNull();
     });
@@ -658,14 +702,20 @@ describe("ConversationStore", () => {
     it("queue has an independent capability gate from send", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
+      // Only queue is disabled, in the state that offers it.
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS, queue: false } as MobileCapabilities,
+        status: { type: "active" },
+        capabilities: { ...ALL_TRUE_CAPS, queue: false },
       });
       await store.getState().open(service, "ref-1");
       await expect(
         store.getState().queue(service, textInput("x")),
-      ).rejects.toThrow();
-      // send should work since send capability is true
+      ).rejects.toThrow(QUEUE_UNAVAILABLE);
+      // send should work since send capability is true, once the turn ends
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
       await store.getState().send(service, textInput("x"));
       expect(store.getState().error).toBeNull();
     });
@@ -677,7 +727,7 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       // Initial: all caps true, send enabled
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -719,14 +769,18 @@ describe("ConversationStore", () => {
       },
     );
 
-    it("drops vision changes from another session or thread", async () => {
+    // The package reducer's routing: a frame names its thread by ref when it
+    // carries one, else by threadId; a frame naming neither is not about this
+    // thread.
+    it("drops vision changes that name another session or thread", async () => {
       const store = createConversationStore();
       const service = new FakeConversationService();
       await store.getState().open(service, "ref-1");
       const original = store.getState().conversation;
       for (const params of [
-        { threadId: "other", ref: "ref-1" },
         { threadId: "thread-1", ref: "other" },
+        { threadId: "other" },
+        {},
       ]) {
         store.getState().applyNotification({
           method: "thread/vision-model/changed",
@@ -734,6 +788,17 @@ describe("ConversationStore", () => {
         } as AnyNotification);
       }
       expect(store.getState().conversation).toBe(original);
+    });
+
+    it("routes a vision change by its ref when it carries one", async () => {
+      const store = createConversationStore();
+      const service = new FakeConversationService();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "thread/vision-model/changed",
+        params: { threadId: "other", ref: "ref-1", visionModel: "off" },
+      } as AnyNotification);
+      expect(store.getState().conversation?.visionModel).toBe("off");
     });
     it("drops notifications that don't match current ref", async () => {
       const service = new FakeConversationService();
@@ -763,7 +828,7 @@ describe("ConversationStore", () => {
           status: { type: "running" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).toBe("running");
+      expect(store.getState().conversation?.status.type).toBe("running");
     });
 
     it("updates name on matching evener/thread/name/changed", async () => {
@@ -800,21 +865,21 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.queue.depth).toBe(2);
-      expect(store.getState().conversation?.queue.revision).toBe(7);
-      expect(store.getState().conversation?.queue.ids).toEqual([
+      expect(store.getState().conversation?.queue?.depth).toBe(2);
+      expect(store.getState().conversation?.queue?.revision).toBe(7);
+      expect(store.getState().conversation?.queue?.ids).toEqual([
         "entry-a",
         "entry-b",
       ]);
-      expect(store.getState().conversation?.queue.texts).toEqual([
+      expect(store.getState().conversation?.queue?.texts).toEqual([
         "full first",
         "full second",
       ]);
-      expect(store.getState().conversation?.queue.clientMutationIds).toEqual([
+      expect(store.getState().conversation?.queue?.clientMutationIds).toEqual([
         "send-a",
         "send-b",
       ]);
-      expect(store.getState().conversation?.queue.preview).toEqual([
+      expect(store.getState().conversation?.queue?.preview).toEqual([
         "first",
         "second",
       ]);
@@ -822,6 +887,7 @@ describe("ConversationStore", () => {
 
     it("marks running on turn/started", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "idle" } });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -832,14 +898,17 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "default", status: "running" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).toBe("running");
+      // The status is thread/status/changed's, never turn/started's (the
+      // status frame rides right behind it); the turn id is this frame's.
+      expect(store.getState().conversation?.status.type).toBe("idle");
+      expect(store.getState().conversation?.activeTurnId).toBe("t1");
     });
 
-    it("marks idle on turn/completed", async () => {
+    it("leaves the status to the status frame on turn/completed", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" } });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      // First set running
       store.getState().applyNotification({
         method: "turn/started",
         params: {
@@ -848,7 +917,7 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "default", status: "running" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).toBe("running");
+      expect(store.getState().conversation?.status.type).toBe("active");
       // Now complete
       store.getState().applyNotification({
         method: "turn/completed",
@@ -863,7 +932,118 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).not.toBe("running");
+      // A completed turn is followed by its status frame (idle at session end,
+      // active at an inline boundary); this frame leaves the status alone.
+      expect(store.getState().conversation?.status.type).toBe("active");
+    });
+
+    // The inline turn boundary through the store: turn/completed(previous),
+    // turn/started(next), status(active), one frame each, and the controls
+    // the SDK derives from the store's status never blink (the web's and
+    // TUI's #1330).
+    it("keeps steer and stop through an inline turn boundary", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const frames: AnyNotification[] = [
+        {
+          method: "turn/completed",
+          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "completed" } },
+        } as AnyNotification,
+        {
+          method: "turn/started",
+          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "inProgress" } },
+        } as AnyNotification,
+        {
+          method: "thread/status/changed",
+          params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+        } as AnyNotification,
+      ];
+      for (const frame of frames) {
+        store.getState().applyNotification(frame);
+        const conv = store.getState().conversation;
+        if (conv === null) throw new Error("conversation gone");
+        const controls = sessionControls(conv.status.type, conv.capabilities, conv.queue?.depth ?? 0);
+        expect({ frame: frame.method, steer: controls.steer, stop: controls.stop }).toEqual({
+          frame: frame.method,
+          steer: true,
+          stop: true,
+        });
+      }
+    });
+
+    // A genuine failure ends as turn/completed{status: "failed"} with no
+    // status frame behind it, so the store settles idle on that frame.
+    it("settles idle when the active turn fails", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("idle");
+      expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+    });
+
+    // The status is authoritative and the turn id can be absent while the
+    // session is active (a read cut between turns); a failed completion then
+    // still settles idle, while one for a superseded turn is left alone.
+    it("settles idle on a failed completion with no active turn id, not on a superseded one", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: undefined });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("idle");
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t2" });
+      const store2 = createConversationStore();
+      await store2.getState().open(other, "ref-1");
+      store2.getState().applyNotification({
+        method: "turn/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "failed", error: { message: "late" } } },
+      } as AnyNotification);
+      expect(store2.getState().conversation?.status.type).toBe("active");
+      expect(store2.getState().conversation?.activeTurnId).toBe("t2");
+    });
+
+    // The control is re-evaluated at the mutation boundary: a Steer the
+    // screen offered while active is refused if the status flipped idle
+    // before the submit reached the store.
+    it("refuses a steer submitted after the status flipped idle", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
+      await expect(store.getState().steer(service, textInput("x"))).rejects.toThrow(/no active turn/);
+      expect(service.steerCallCount).toBe(0);
+    });
+
+    // Send is a control like the others: while a turn runs the session queues,
+    // it does not send. The store refuses with the control's reason so the
+    // fake service (which gates on nothing) cannot accept what the hub would
+    // not.
+    it("refuses a send while a turn is running, with the control's reason", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" } });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      await expect(store.getState().send(service, textInput("x"))).rejects.toThrow(TURN_RUNNING);
+      expect(service.sendCallCount).toBe(0);
     });
 
     it("does not merge a completed turn's usage into the cumulative conversation usage", async () => {
@@ -902,8 +1082,8 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.usage.totalTokens).toBe(500);
-      expect(store.getState().conversation?.usage.inputTokens).toBe(300);
+      expect(store.getState().conversation?.usage?.totalTokens).toBe(500);
+      expect(store.getState().conversation?.usage?.inputTokens).toBe(300);
     });
   });
 
@@ -945,20 +1125,21 @@ describe("ConversationStore", () => {
       // Reset (back to idle)
       store.getState().reset();
       // Open ref-2 (gen 2)
-      service.openConv = makeConversation({ id: "thread-2" });
+      service.openConv = makeConversation({ threadId: "thread-2", status: { type: "active" } });
       await store.getState().open(service, "ref-2");
-      expect(store.getState().conversation?.id).toBe("thread-2");
-      // A stale notification for ref-1 should be dropped
+      expect(store.getState().conversation?.threadId).toBe("thread-2");
+      // A stale notification for ref-1 should be dropped: ref-2 keeps the
+      // status it opened with rather than taking ref-1's idle.
       store.getState().applyNotification({
         method: "thread/status/changed",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          status: { type: "running" },
+          status: { type: "idle" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.id).toBe("thread-2");
-      expect(store.getState().conversation?.status).toBe("ready");
+      expect(store.getState().conversation?.threadId).toBe("thread-2");
+      expect(store.getState().conversation?.status.type).toBe("active");
     });
   });
 
@@ -971,15 +1152,15 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-proj" }),
+        conversation: makeConversation({ threadId: "thread-proj" }),
         activity: activityView,
         olderCursor: "cursor-initial",
       };
       await store.getState().openProjected(service, sink, "ref-1");
-      expect(store.getState().conversation?.id).toBe("thread-proj");
+      expect(store.getState().conversation?.threadId).toBe("thread-proj");
       expect(store.getState().olderCursor).toBe("cursor-initial");
       expect(store.getState().status).toBe("open");
       // F4: The sink should have received the activity view via setLiveView.
@@ -1004,7 +1185,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "page-1",
       };
@@ -1024,7 +1205,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -1041,10 +1222,10 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: null,
       };
@@ -1114,13 +1295,13 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-resumed",
       });
       await resume;
       expect(store.getState().status).toBe("open");
-      expect(store.getState().conversation?.id).toBe(before?.id);
+      expect(store.getState().conversation?.threadId).toBe(before?.threadId);
       expect(store.getState().olderCursor).toBe("cursor-resumed");
       expect(service.notificationHandler).not.toBeNull();
     });
@@ -1128,14 +1309,14 @@ describe("ConversationStore", () => {
     it("reopens instead of retaining a display for a different service identity", async () => {
       const service = new FakeConversationService();
       const otherService = new FakeConversationService();
-      otherService.openConv = makeConversation({ id: "thread-2" });
+      otherService.openConv = makeConversation({ threadId: "thread-2" });
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.getState().suspendProjected();
       await store
         .getState()
         .resumeProjected(otherService, createFakeSink(), "ref-1");
-      expect(store.getState().conversation?.id).toBe("thread-2");
+      expect(store.getState().conversation?.threadId).toBe("thread-2");
       expect(store.getState().status).toBe("open");
     });
 
@@ -1162,7 +1343,7 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const sink = createFakeSink();
       const latest = makeConversation({
-        id: "thread-1",
+        threadId: "thread-1",
         instanceId: "instance-1",
         items: [{ kind: "user", id: "new", text: "new" }],
       });
@@ -1172,7 +1353,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -1200,7 +1381,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       });
@@ -1217,7 +1398,7 @@ describe("ConversationStore", () => {
       expect(store.getState().olderCursor).toBe("cursor-2");
 
       const replacement = makeConversation({
-        id: "thread-1",
+        threadId: "thread-1",
         instanceId: "instance-2",
         items: [{ kind: "user", id: "replacement", text: "replacement" }],
       });
@@ -1228,7 +1409,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "fresh-cursor",
       };
@@ -1256,7 +1437,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       });
@@ -1603,7 +1784,7 @@ describe("ConversationStore", () => {
         method: "item/completed",
         params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" } },
       } as AnyNotification);
-      release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      release({ conversation: makeConversation({ items: [] }), activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       expect(store.getState().conversation?.items.filter((item) => item.kind === "activity")).toHaveLength(1);
       const members = store.getState().conversation?.items.flatMap((item) => item.kind === "activity" ? item.members ?? [item] : []) ?? [];
@@ -1629,7 +1810,7 @@ describe("ConversationStore", () => {
       const first = snapshot.members[0];
       if (!first) throw new Error("missing first member");
       snapshot.members[0] = { ...first, state: "completed", detail: { output: "authoritative first" } };
-      release({ conversation: { ...stale, items: [snapshot] }, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      release({ conversation: { ...stale, items: [snapshot] }, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       const activities = store.getState().conversation?.items.filter((item) => item.kind === "activity") ?? [];
       expect(activities).toHaveLength(2);
@@ -1645,7 +1826,7 @@ describe("ConversationStore", () => {
       const stale = makeConversation({ items: [cluster, { kind: "attachments", id: "old-wire:attachments", sourceTranscriptKey: "later", items: [{ id: "old", src: "old" }] }] });
       const service = new FakeConversationService();
       service.openConv = stale;
-      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null };
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -1653,7 +1834,7 @@ describe("ConversationStore", () => {
       service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
       const rehydratePromise = store.getState().rehydrate(service, sink);
       store.getState().applyNotification({ method: "item/completed", params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" } } } as AnyNotification);
-      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       expect(store.getState().conversation?.items.some((item) => item.kind === "attachments")).toBe(false);
     });
@@ -1680,7 +1861,7 @@ describe("ConversationStore", () => {
         ],
       });
       service.openConv = stale;
-      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null };
+      service.readProjectionResult = { conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null };
       const store = createConversationStore();
       const sink = createFakeSink();
       await store.getState().openProjected(service, sink, "ref-1");
@@ -1694,7 +1875,7 @@ describe("ConversationStore", () => {
           item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] },
         },
       } as AnyNotification);
-      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS as MobileCapabilities }, olderCursor: null });
+      release({ conversation: stale, activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS }, olderCursor: null });
       await rehydratePromise;
       const items = store.getState().conversation?.items ?? [];
       const activity = items.find((item) => item.kind === "activity");
@@ -2524,12 +2705,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-after-resync",
       };
@@ -2568,12 +2749,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -2606,7 +2787,7 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-1");
       // Reset to bump generation, then open a new conversation
       store.getState().reset();
-      service.openConv = makeConversation({ id: "thread-2" });
+      service.openConv = makeConversation({ threadId: "thread-2" });
       await store.getState().open(service, "ref-2");
       // A stale completion for thread-1/ref-1 should be dropped
       const before = store.getState().conversation;
@@ -2633,12 +2814,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -2655,12 +2836,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -2677,12 +2858,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "initial-cursor",
       };
@@ -2690,12 +2871,12 @@ describe("ConversationStore", () => {
       expect(store.getState().olderCursor).toBe("initial-cursor");
       // Update the projection result for rehydrate
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "updated-cursor",
       };
@@ -2809,6 +2990,7 @@ describe("ConversationStore", () => {
 
     it("interrupt snapshot is null and does not clear draft", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: { type: "active" } });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my draft text");
@@ -2832,12 +3014,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -2884,10 +3066,10 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: "cursor-1",
       };
@@ -2957,7 +3139,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3001,7 +3183,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3044,7 +3226,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3087,7 +3269,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3120,7 +3302,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3154,7 +3336,7 @@ describe("ConversationStore", () => {
       // Emit a warning — it should be inserted but the cap maintained.
       store.getState().applyNotification({
         method: "warning",
-        params: { message: "test warning" },
+        params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
       } as AnyNotification);
       const conv = store.getState().conversation;
       expect(conv?.items.length).toBeLessThanOrEqual(500);
@@ -3170,7 +3352,7 @@ describe("ConversationStore", () => {
 
       const warning = {
         method: "warning",
-        params: { title: "Provider warning", message: "Retrying" },
+        params: { threadId: "thread-1", ref: "ref-1", title: "Provider warning", message: "Retrying" },
       } as AnyNotification;
       store.getState().applyNotification(warning);
       store.getState().applyNotification(warning);
@@ -3466,12 +3648,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -3496,12 +3678,12 @@ describe("ConversationStore", () => {
       // While rehydrate is in-flight, open a new conversation (new generation).
       service.readProjection = origReadProjection;
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-2" }),
+        conversation: makeConversation({ threadId: "thread-2" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-2",
       };
@@ -3512,7 +3694,7 @@ describe("ConversationStore", () => {
       await rehydratePromise.catch(() => {});
 
       // The stale error must NOT have overwritten the newer conversation.
-      expect(store.getState().conversation?.id).toBe("thread-2");
+      expect(store.getState().conversation?.threadId).toBe("thread-2");
       expect(store.getState().error).toBeNull();
     });
 
@@ -3892,12 +4074,12 @@ describe("ConversationStore", () => {
     it("queued rehydrate for A is suppressed after switch to B (zero serviceA reads/sinkA writes)", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3915,12 +4097,12 @@ describe("ConversationStore", () => {
       // Now set up serviceB and switch to B before the scheduler fires.
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-B" }),
+        conversation: makeConversation({ threadId: "thread-B" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3934,18 +4116,18 @@ describe("ConversationStore", () => {
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
       expect(sinkA.setLiveViewCalls.length).toBe(writesA);
       // B should be the current conversation.
-      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().conversation?.threadId).toBe("thread-B");
     });
 
     it("queued rehydrate for A is suppressed after close (no serviceA reads)", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3967,12 +4149,12 @@ describe("ConversationStore", () => {
     it("queued rehydrate for A is suppressed after reset (no serviceA reads)", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -3992,12 +4174,12 @@ describe("ConversationStore", () => {
     it("plain open clears projected bindings (no projected rehydrate after open)", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4011,7 +4193,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       // Plain open clears projected bindings.
       const serviceB = new FakeConversationService();
-      serviceB.openConv = makeConversation({ id: "thread-B" });
+      serviceB.openConv = makeConversation({ threadId: "thread-B" });
       await store.getState().open(serviceB, "ref-B");
       const readsA = serviceA.readProjectionCalls.length;
       const writesA = sinkA.setLiveViewCalls.length;
@@ -4019,18 +4201,18 @@ describe("ConversationStore", () => {
       // I1: plain open cleared bindings — no projected rehydrate for A.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
       expect(sinkA.setLiveViewCalls.length).toBe(writesA);
-      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().conversation?.threadId).toBe("thread-B");
     });
 
     it("rehydrate can never call serviceA with refB", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4045,12 +4227,12 @@ describe("ConversationStore", () => {
       // Before the scheduler fires, openProjected with a different service+ref.
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-2" }),
+        conversation: makeConversation({ threadId: "thread-2" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4068,7 +4250,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -4093,13 +4275,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4132,7 +4314,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // Script send to reject with actionUnavailable.
@@ -4177,10 +4359,10 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: null,
       };
@@ -4212,12 +4394,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4251,12 +4433,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4295,12 +4477,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4339,12 +4521,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4393,12 +4575,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4414,12 +4596,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const openSink = createFakeSink();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4437,12 +4619,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4460,12 +4642,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const sink = createFakeSink();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4490,10 +4672,10 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: null,
       };
@@ -4509,12 +4691,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const activityStore = createActivityStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4544,12 +4726,12 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       const activityStore = createActivityStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -4588,12 +4770,12 @@ describe("ConversationStore", () => {
       // are never called after the rebind.
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4613,12 +4795,12 @@ describe("ConversationStore", () => {
       // effect is suppressed.
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4660,13 +4842,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4709,13 +4891,13 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4776,7 +4958,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
 
@@ -4804,7 +4986,7 @@ describe("ConversationStore", () => {
       // Reset caps to send=true so the second send can proceed.
       store.setState({
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
       });
       // Second send fails — queues cap refresh for mutationId 2.
@@ -4847,13 +5029,13 @@ describe("ConversationStore", () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4879,14 +5061,14 @@ describe("ConversationStore", () => {
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
         conversation: makeConversation({
-          id: "thread-1",
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          threadId: "thread-1",
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4918,13 +5100,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -4999,13 +5181,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5081,13 +5263,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5158,13 +5340,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5205,13 +5387,13 @@ describe("ConversationStore", () => {
       // before we can update the result.
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5259,12 +5441,12 @@ describe("ConversationStore", () => {
     it("multiple same-key reread requests during a blocker produce exactly one trailing read", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5320,13 +5502,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5528,13 +5710,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5638,13 +5820,13 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
         conversation: makeConversation({
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+          capabilities: { ...ALL_TRUE_CAPS },
         }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5720,12 +5902,12 @@ describe("ConversationStore", () => {
       // returns void (not a promise).
       const service = new FakeConversationService();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -5754,7 +5936,7 @@ describe("ConversationStore", () => {
   // --- Fix round 1: I1/I2/I3/I4 — rehydrate/loadOlder ownership, mutation
   // error clear, raw Thread question lifecycle ---
 
-  // Raw Thread fixture helpers for I4 (projectThread-based question tests).
+  // Raw Thread fixture helpers for I4 (projectConversation-based question tests).
   function makeThread(over: Partial<Thread> = {}): Thread {
     return {
       id: "thread-1",
@@ -5838,12 +6020,14 @@ describe("ConversationStore", () => {
     olderCursor: string | null;
   } {
     return {
-      conversation: projectThread(thread),
+      conversation: projectConversation(
+        hydrateThread({ thread }, thread.evener.ref, 0),
+      ),
       activity: {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       },
       olderCursor: null,
     };
@@ -6026,7 +6210,7 @@ describe("ConversationStore", () => {
       await expect(loadA).resolves.toEqual({ status: "ignored" });
 
       expect(serviceA.readProjectionCalls).toHaveLength(readsBeforeLoad);
-      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().conversation?.threadId).toBe("thread-B");
       expect(store.getState().ref).toBe("ref-B");
     });
 
@@ -6082,7 +6266,7 @@ describe("ConversationStore", () => {
         nextCursor: "cursor-B2",
       };
       await store.getState().loadOlder(service);
-      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().conversation?.threadId).toBe("thread-B");
       // Clear tracked calls — from this point, only A's stale resolution
       // should produce writes. A must produce ZERO.
       setCalls.length = 0;
@@ -6096,7 +6280,7 @@ describe("ConversationStore", () => {
       // The subscriber must NOT have seen any stale writes from A.
       expect(setCalls.length).toBe(0);
       // B's state is intact.
-      expect(store.getState().conversation?.id).toBe("thread-B");
+      expect(store.getState().conversation?.threadId).toBe("thread-B");
       expect(store.getState().loadingOlder).toBe(false);
     });
 
@@ -6147,7 +6331,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // Set an error via a failed send.
@@ -6172,7 +6356,7 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        capabilities: { ...ALL_TRUE_CAPS },
       });
       await store.getState().open(service, "ref-1");
       // First send hangs then fails.
@@ -6261,8 +6445,8 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("I4: raw Thread fixtures through projectThread — question lifecycle", () => {
-    it("completed parseable ask_user drives reread → question rows + askPending via projectThread", async () => {
+  describe("I4: raw Thread fixtures through projectConversation — question lifecycle", () => {
+    it("completed parseable ask_user drives reread → question rows + askPending via projectConversation", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Initial: no turns, no pending ask.
@@ -6270,8 +6454,14 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(false);
       // After the ask_user notification, the reread returns a Thread with a
-      // completed ask_user turn — projectThread produces question rows.
+      // completed ask_user turn — projectConversation produces question rows.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -6300,25 +6490,31 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       // Wait for the rehydrate effect to finish committing.
       await yieldMicrotask();
-      // The reread must have produced actual question rows via projectThread.
+      // The reread must have produced actual question rows via projectConversation.
       const conv = store.getState().conversation;
       expect(conv?.askPending).toBe(true);
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeDefined();
       if (questionItem?.kind === "question") {
-        expect(questionItem.batch.questions).toHaveLength(1);
-        expect(questionItem.batch.questions[0]?.question).toBe("Pick one");
-        expect(questionItem.batch.questions[0]?.options).toHaveLength(2);
+        expect(questionItem.questions).toHaveLength(1);
+        expect(questionItem.questions[0]?.question).toBe("Pick one");
+        expect(questionItem.questions[0]?.options).toHaveLength(2);
       }
       // Bounded reread count: exactly one reread.
       expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
-    it("later user-message answer triggers reread → settled/removal via projectThread", async () => {
+    it("later user-message answer triggers reread → settled/removal via projectConversation", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Initial: has a pending ask_user.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -6332,7 +6528,7 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.askPending).toBe(true);
       const initialReads = service.readProjectionCalls.length;
       // After the user-message, the reread returns a Thread where the ask is
-      // followed by a userMessage — projectThread settles (no question rows,
+      // followed by a userMessage — projectConversation settles (no question rows,
       // askPending false).
       const settledThread = makeThread({
         turns: [
@@ -6680,6 +6876,12 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
       // Set up R's projection to contain a question.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -6987,9 +7189,9 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Residual: R3 — real malformed/incomplete Thread fixtures through projectThread ---
+  // --- Residual: R3 — real malformed/incomplete Thread fixtures through projectConversation ---
 
-  describe("R3: real malformed/incomplete Thread fixtures through projectThread", () => {
+  describe("R3: real malformed/incomplete Thread fixtures through projectConversation", () => {
     it("malformed completed ask_user in raw Thread: conservative activity rows, no question rows, askPending false", async () => {
       // A real raw Thread with a completed ask_user whose argumentsJson is
       // malformed must produce conservative activity rows (not question
@@ -7037,7 +7239,7 @@ describe("ConversationStore", () => {
       // askPending is false — malformed ask does not set pending.
       expect(conv?.askPending).toBe(false);
       // The ask_user is projected as a completed activity row (not a
-      // question), since projectThread's parseAskUserQuestions returns
+      // question), since projectConversation's parseAskUserQuestions returns
       // undefined for malformed argumentsJson.
       const activityItem = conv?.items.find(
         (i) => i.kind === "activity" && i.id === "ask-malformed",
@@ -7309,104 +7511,320 @@ describe("ConversationStore", () => {
     });
   });
 
-  // I2: Monotonic capability-owner revision. Increment on every capability
-  // publication/transition. Capture at rehydrate start. If unchanged after
-  // await, commit authoritative projected capabilities. If advanced during
-  // await, preserve current caps.
-  describe("I2: monotonic capability-owner revision", () => {
+  // The reread's snapshot is authoritative over every thread-level frame that
+  // preceded its response: AppWire orders the response at the snapshot cut,
+  // so such a frame is already folded into the snapshot (docs/superpowers/
+  // plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin.md:19,
+  // 372-373). These fixtures hand the store a snapshot that does NOT reflect
+  // the frame — an ordering the protocol excludes — to pin that the store
+  // does not second-guess the snapshot: no replay, no per-field ownership.
+  async function rereadRacing(
+    liveWrite: (store: ReturnType<typeof createConversationStore>) => void,
+    snapshot: Thread,
+    initial: Thread = makeThread(),
+  ) {
+    const service = new FakeConversationService();
+    service.readProjectionResult = makeReadProjectionResult(initial);
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    service.readProjectionResult = makeReadProjectionResult(snapshot);
+    const ctrl = makeControlledRead(service);
+    store.getState().applyNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thread-1", ref: "ref-1" },
+    } as AnyNotification);
+    await ctrl.started(1);
+    await yieldMicrotask();
+    liveWrite(store);
+    ctrl.release();
+    await ctrl.completed(1);
+    await yieldMicrotask();
+    return store;
+  }
+  const target = { threadId: "thread-1", ref: "ref-1" };
+  const evenerWith = (over: Partial<EvenerThread>): Thread["evener"] => ({
+    ref: "ref-1",
+    capabilities: ALL_TRUE_CAPS,
+    queue: { revision: 0 },
+    ...over,
+  });
+
+  describe("the reread's snapshot is authoritative over pre-response capability writes", () => {
     it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: true },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Initial caps have send=true.
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-      // Reread returns caps with send=false.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: false },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      const ctrl = makeControlledRead(service);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      // No capability owner advanced during the await — rehydrate commits
-      // the projected capabilities (send=false).
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      const conv = (
+        await rereadRacing(
+          () => {},
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
+        )
+      ).getState().conversation;
+      expect(conv?.capabilities.send).toBe(false);
     });
 
-    it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: true },
-            queue: { revision: 0 },
-          },
+    it("a capability publication that preceded the response yields to the snapshot", async () => {
+      // The publication turned queue off before the response arrived; the
+      // snapshot (queue on, send off) is the newer truth and is what commits.
+      const conv = (
+        await rereadRacing(
+          (store) =>
+            store.getState().applyNotification({
+              method: "thread/status/changed",
+              params: {
+                ...target,
+                status: { type: "ready" },
+                capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
+              },
+            } as AnyNotification),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
+        )
+      ).getState().conversation;
+      expect(conv?.capabilities.send).toBe(false);
+      expect(conv?.capabilities.queue).toBe(true);
+    });
+  });
+
+  describe("the reread's snapshot is authoritative over frames that preceded it", () => {
+    const liveEscalation = {
+      ...target,
+      escalationId: "esc-live",
+      mode: "workspace",
+      tool: "exec",
+      kind: "read",
+      deniedPath: "/outside",
+    };
+    it.each<{
+      name: string;
+      method: string;
+      params: Record<string, unknown>;
+      snapshot: Thread;
+      read: (conv: NonNullable<MobileConversation>) => unknown;
+      expected: unknown;
+    }>([
+      {
+        name: "a status change",
+        method: "thread/status/changed",
+        params: { status: { type: "active" } },
+        snapshot: makeThread({ status: { type: "idle" } }),
+        read: (conv) => conv.status,
+        expected: { type: "idle" },
+      },
+      {
+        name: "a queue change",
+        method: "thread/queueChanged",
+        params: { queue: { revision: 4, depth: 1, texts: ["later"] } },
+        snapshot: makeThread(),
+        read: (conv) => conv.queue,
+        expected: { revision: 0 },
+      },
+      {
+        name: "a rename",
+        method: "evener/thread/name/changed",
+        params: { name: "renamed before the response" },
+        snapshot: makeThread({ name: "snapshot name" }),
+        read: (conv) => conv.name,
+        expected: "snapshot name",
+      },
+      {
+        name: "a model change",
+        method: "thread/model/changed",
+        params: {
+          modelProvider: "openai/gpt-x",
+          model: "gpt-x",
+          reasoningEffortLevels: ["low", "high"],
+          supportsReasoning: true,
+        },
+        snapshot: makeThread({ modelProvider: "anthropic" }),
+        read: (conv) => [conv.modelProvider, conv.reasoningEffortLevels],
+        expected: ["anthropic", []],
+      },
+      {
+        name: "a goal update",
+        method: "evener/goal/updated",
+        params: { goal: { objective: "before the response", status: "active", iterations: 2 } },
+        snapshot: makeThread({
+          evener: evenerWith({ goal: { objective: "snapshot", status: "active", iterations: 1 } }),
         }),
-      );
+        read: (conv) => conv.goal,
+        expected: { objective: "snapshot", status: "active", iterations: 1 },
+      },
+      {
+        name: "a task update",
+        method: "evener/task/updated",
+        params: { total: 3, done: 2 },
+        snapshot: makeThread({ evener: evenerWith({ tasks: { total: 3, done: 1 } }) }),
+        read: (conv) => conv.tasks,
+        expected: { total: 3, done: 1 },
+      },
+      {
+        name: "a started turn",
+        method: "turn/started",
+        params: { turn: { id: "t-before", itemsView: "default", status: "inProgress" } },
+        snapshot: makeThread(),
+        read: (conv) => [conv.activeTurnId, conv.turns.length],
+        expected: [undefined, 0],
+      },
+      {
+        name: "an approval request",
+        method: "evener/sandbox/escalation/requested",
+        params: liveEscalation,
+        snapshot: makeThread(),
+        read: (conv) => conv.pendingEscalations,
+        expected: [],
+      },
+    ])("commits the snapshot over $name that preceded the response", async ({ method, params, snapshot, read, expected }) => {
+      const conv = (
+        await rereadRacing(
+          (store) =>
+            store.getState().applyNotification({
+              method,
+              params: { ...target, ...params },
+            } as AnyNotification),
+          snapshot,
+        )
+      ).getState().conversation;
+      if (!conv) throw new Error("conversation gone");
+      expect(read(conv)).toEqual(expected);
+    });
+
+    // The ordering the protocol does allow: a frame delivered after the
+    // response lands on top of the committed snapshot.
+    it("applies a frame that arrives after the response on top of the snapshot", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Start a rehydrate (R) that hangs.
-      const ctrl = makeControlledRead(service);
-      // R's projection has send=false.
       service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: false },
-            queue: { revision: 0 },
-          },
-        }),
+        makeThread({ status: { type: "idle" }, name: "snapshot name" }),
       );
+      const ctrl = makeControlledRead(service);
       store.getState().applyNotification({
         method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
+        params: target,
       } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      // While R is in-flight, a cap refresh publishes caps with send=false,
-      // queue=false (a newer capability owner). Use a notification to change
-      // caps — this is a capability publication that increments capOwnerRev.
-      store.getState().applyNotification({
-        method: "thread/status/changed",
-        params: {
-          status: { type: "ready" },
-          capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
-        },
-      } as AnyNotification);
-      // The current caps now have send=false, queue=false.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().conversation?.capabilities.queue).toBe(false);
-      // Release R — its projected caps have send=false (but not queue=false).
-      // Since the cap owner advanced during the await, R must preserve the
-      // current caps (queue=false), NOT overwrite with its stale projection.
+      await ctrl.ready(1);
       ctrl.release();
       await ctrl.completed(1);
       await yieldMicrotask();
-      // Current caps preserved — queue=false from the notification wins.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().conversation?.capabilities.queue).toBe(false);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { ...target, status: { type: "active" } },
+      } as AnyNotification);
+      expect(store.getState().conversation).toMatchObject({
+        name: "snapshot name",
+        status: { type: "active" },
+      });
+    });
+
+    // Two fences on the same rule for the frames where a second application
+    // would not be idempotent: a turn the snapshot already carries keeps its
+    // items and raises no duplicate-turn report, and a steering the snapshot
+    // already carries is not appended twice, so the next live steering takes
+    // the next index.
+    it("does not replay a started turn the snapshot already carries", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const conv = (
+          await rereadRacing(
+            (store) =>
+              store.getState().applyNotification({
+                method: "turn/started",
+                params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+              } as AnyNotification),
+            makeThread({
+              turns: [
+                makeTurn({
+                  id: "t-live",
+                  status: "inProgress",
+                  items: [userMessageItem("u-live", "started during the read")],
+                }),
+              ],
+              evener: evenerWith({ activeTurnId: "t-live" }),
+            }),
+          )
+        ).getState().conversation;
+        expect(conv?.activeTurnId).toBe("t-live");
+        expect(conv?.turns.map((turn) => [turn.id, turn.items.length])).toEqual([["t-live", 1]]);
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    it("does not replay a steering injection the snapshot already carries", async () => {
+      const steer = { text: "go left", kind: "user", source: "user", startedAt: 1000 };
+      const activeTurn = (items: ThreadItem[]) =>
+        makeThread({
+          turns: [makeTurn({ id: "t1", status: "inProgress", items })],
+          evener: evenerWith({ activeTurnId: "t1" }),
+        });
+      const store = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/steering/injected",
+            params: { ...target, ...steer },
+          } as AnyNotification),
+        activeTurn([
+          {
+            id: "item_steering_0",
+            turnId: "t1",
+            type: "steering",
+            text: steer.text,
+            steeringKind: steer.kind,
+            source: steer.source,
+            startedAt: steer.startedAt,
+            status: "completed",
+          } as ThreadItem,
+        ]),
+        activeTurn([]),
+      );
+      const steeringIds = (conv: MobileConversation | null) =>
+        conv?.turns.flatMap((turn) => turn.items.filter((item) => item.type === "steering").map((item) => item.id));
+      expect(steeringIds(store.getState().conversation)).toEqual(["item_steering_0"]);
+      store.getState().applyNotification({
+        method: "evener/steering/injected",
+        params: { ...target, text: "then right", kind: "user", source: "user", startedAt: 2000 },
+      } as AnyNotification);
+      expect(steeringIds(store.getState().conversation)).toEqual([
+        "item_steering_0",
+        "item_steering_live_t1_1",
+      ]);
+    });
+
+    // A reread belongs to the conversation it was for: closing that
+    // conversation and opening another must leave the next conversation's
+    // frames applied and the dead read's snapshot never committed.
+    it("never commits a dead read's snapshot after the conversation closes", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ name: "old read's snapshot" }),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: target,
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      store.getState().close();
+
+      const next = new FakeConversationService();
+      next.openConv = makeConversation({ threadId: "thread-2", name: "second" });
+      await store.getState().open(next, "ref-2");
+      store.getState().applyNotification({
+        method: "evener/thread/name/changed",
+        params: { threadId: "thread-2", ref: "ref-2", name: "second, renamed live" },
+      } as AnyNotification);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(store.getState().conversation).toMatchObject({
+        threadId: "thread-2",
+        name: "second, renamed live",
+      });
     });
   });
 
@@ -8756,7 +9174,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -8996,7 +9414,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -9013,7 +9431,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -9920,7 +10338,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -9983,7 +10401,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10064,7 +10482,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10100,7 +10518,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10130,7 +10548,7 @@ describe("ConversationStore", () => {
       const largeText = "x".repeat(70_000);
       service.readProjectionResult = {
         conversation: makeConversation({
-          id: "thread-1",
+          threadId: "thread-1",
           items: [
             {
               kind: "assistant",
@@ -10144,7 +10562,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10163,7 +10581,7 @@ describe("ConversationStore", () => {
       const service2 = new FakeConversationService();
       service2.readProjectionResult = {
         conversation: makeConversation({
-          id: "thread-2",
+          threadId: "thread-2",
           items: [
             {
               kind: "assistant",
@@ -10177,7 +10595,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -10382,7 +10800,7 @@ describe("ConversationStore", () => {
   // No vacuous `if` assertions — direct expects on the resolved item.
   describe("Task 2A-Truncation residual: exact reconciliation", () => {
     // Helper: open a conversation via openProjected with the given raw ThreadItem
-    // array (uses projectThread so families are set from the canonical projector).
+    // array (uses projectConversation so families are set from the canonical projector).
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
@@ -11997,7 +12415,7 @@ describe("ConversationStore", () => {
       // Warning pushes to 501, cap trims X (oldest).
       store.getState().applyNotification({
         method: "warning",
-        params: { message: "test warning" },
+        params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
       } as AnyNotification);
 
       // Assert actual cap/IDs/order.
@@ -12842,7 +13260,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -12868,7 +13286,7 @@ describe("ConversationStore", () => {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -12943,6 +13361,7 @@ describe("ConversationStore", () => {
     for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
       it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
         const serviceA = new FakeConversationService();
+        serviceA.openConv = makeConversation({ status: { type: kind === "send" ? "idle" : "active" } });
         const store = createConversationStore();
         await store
           .getState()
@@ -13258,12 +13677,12 @@ describe("ConversationStore", () => {
     it("page: controlled A->B then late A success => entire state unchanged", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-A",
       };
@@ -13287,12 +13706,12 @@ describe("ConversationStore", () => {
       // Rebind to B via rehydrate.
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-B" }),
+        conversation: makeConversation({ threadId: "thread-B" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13318,12 +13737,12 @@ describe("ConversationStore", () => {
     it("page: controlled A->B then late A failure => entire state unchanged", async () => {
       const serviceA = new FakeConversationService();
       serviceA.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-A" }),
+        conversation: makeConversation({ threadId: "thread-A" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-A",
       };
@@ -13346,12 +13765,12 @@ describe("ConversationStore", () => {
       // Rebind to B.
       const serviceB = new FakeConversationService();
       serviceB.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-B" }),
+        conversation: makeConversation({ threadId: "thread-B" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13372,12 +13791,12 @@ describe("ConversationStore", () => {
       it(`mutation: controlled A->B then late A ${kind} failure => entire state unchanged`, async () => {
         const serviceA = new FakeConversationService();
         serviceA.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-A" }),
+          conversation: makeConversation({ threadId: "thread-A", status: { type: kind === "send" ? "idle" : "active" } }),
           activity: {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13413,12 +13832,12 @@ describe("ConversationStore", () => {
         // Rebind to B.
         const serviceB = new FakeConversationService();
         serviceB.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-B" }),
+          conversation: makeConversation({ threadId: "thread-B" }),
           activity: {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13452,12 +13871,12 @@ describe("ConversationStore", () => {
       it(`mutation: controlled A->B then late A ${kind} success => entire state unchanged`, async () => {
         const serviceA = new FakeConversationService();
         serviceA.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-A" }),
+          conversation: makeConversation({ threadId: "thread-A", status: { type: kind === "send" ? "idle" : "active" } }),
           activity: {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13499,12 +13918,12 @@ describe("ConversationStore", () => {
         const generationBeforeRebind = store.getState().conversationGeneration;
         const serviceB = new FakeConversationService();
         serviceB.readProjectionResult = {
-          conversation: makeConversation({ id: "thread-B" }),
+          conversation: makeConversation({ threadId: "thread-B" }),
           activity: {
             tasks: [],
             work: [],
             usage: {},
-            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+            capabilities: ALL_TRUE_CAPS,
           },
           olderCursor: null,
         };
@@ -13516,7 +13935,7 @@ describe("ConversationStore", () => {
         const stateB = store.getState();
         expect(stateB.ref).toBe(refBeforeRebind);
         expect(stateB.conversationGeneration).toBe(generationBeforeRebind);
-        expect(stateB.conversation?.id).toBe("thread-B");
+        expect(stateB.conversation?.threadId).toBe("thread-B");
 
         // A's pending mutation was settled by the rebind — verify it is null.
         expect(stateB.pendingMutation).toBeNull();
@@ -13584,12 +14003,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1", askPending: false }),
+        conversation: makeConversation({ threadId: "thread-1", askPending: false }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: "cursor-1",
       };
@@ -13639,11 +14058,11 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 3 }],
         work: [{ kind: "job", label: "shell", tone: "terminal" }],
         usage: { totalTokens: 42 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
         reasoningEffort: "high",
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: null,
       };
@@ -13670,12 +14089,12 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: {
           tasks: [],
           work: [],
           usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13730,17 +14149,17 @@ describe("ConversationStore", () => {
         tasks: [{ status: "done", count: 5 }],
         work: [],
         usage: { totalTokens: 100 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        capabilities: ALL_TRUE_CAPS,
       };
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
+        conversation: makeConversation({ threadId: "thread-1" }),
         activity: activityView,
         olderCursor: null,
       };
       const sink = wrapActivityStoreAsSink(activityStore);
       await store.getState().openProjected(service, sink, "ref-1");
       expect(activityStore.getState().view).not.toBeNull();
-      expect(store.getState().conversation?.id).toBe("thread-1");
+      expect(store.getState().conversation?.threadId).toBe("thread-1");
 
       // Simulate RootShell-required separate activity reset.
       activityStore.getState().reset();
@@ -13752,12 +14171,12 @@ describe("ConversationStore", () => {
 
       // Next openProjected — sink.reset() called internally, then setLiveView.
       service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-2" }),
+        conversation: makeConversation({ threadId: "thread-2" }),
         activity: {
           tasks: [{ status: "open", count: 2 }],
           work: [],
           usage: { totalTokens: 50 },
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          capabilities: ALL_TRUE_CAPS,
         },
         olderCursor: null,
       };
@@ -13767,7 +14186,7 @@ describe("ConversationStore", () => {
       // Both views commit under the new identity.
       expect(activityStore.getState().view).not.toBeNull();
       expect(activityStore.getState().view?.tasks[0]?.status).toBe("open");
-      expect(store.getState().conversation?.id).toBe("thread-2");
+      expect(store.getState().conversation?.threadId).toBe("thread-2");
 
       // Late prior-generation notification rejected by both stores.
       const lateNotification = {

@@ -27,14 +27,16 @@ import {
   decideSubmitRoute,
   deriveSendQueueAvailability,
   filterSlashMenuItems,
-  isTurnActive,
   matchBuiltinInvocation,
   mergeSlashCommands,
+  NO_ACTIVE_TURN,
   parseSlashToken,
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
+  sessionPluginNames,
   spliceSlashCommand,
+  type ThreadModel,
 } from "@evener/appwire-client";
 import {
   type FormEvent,
@@ -52,6 +54,7 @@ import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
+import { controlsFor, liveThreadModel, pressRefusal } from "../../../stores/liveControls";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { type InputAttachment, threadsStore, useThreadsStore } from "../../../stores/threads";
@@ -88,7 +91,13 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
-import { QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
+import {
+  type PendingTurnEntry,
+  pendingTurnEntries,
+  QueueStrip,
+  submitWithPendingTracking,
+  usePendingTurnEntries,
+} from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
@@ -277,10 +286,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // resolved against THIS ref) merged with the plugin catalog
   // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
   // row's provenance is a built-in or a plugin.
-  const activePluginNames = useMemo<ReadonlySet<string> | null>(() => {
-    if (!model?.diagnostics?.plugins) return null;
-    return new Set(model.diagnostics.plugins.map((plugin) => plugin.name));
-  }, [model?.diagnostics]);
+  const activePluginNames = useMemo(() => sessionPluginNames(model?.diagnostics), [model?.diagnostics]);
   const visibleSlashCatalog = useMemo(
     () => visibleCatalogCommands(slashCatalog, activePluginNames),
     [activePluginNames, slashCatalog],
@@ -815,12 +821,20 @@ export function Composer({ ref, focused }: ComposerProps) {
   // case - Session.tsx never mounts this component before its own model is
   // hydrated), so every handler below reads these already-narrowed values
   // instead of `model.<field>` directly.
+  const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
   const ended = ENDED_STATUSES.has(model.status.type);
   // Read here rather than inside the handlers below, which close over `model`
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
-  const canSendWhenEnded = model.capabilities.send;
+  const queueDepth = model.queue?.depth ?? 0;
+  // What this session may be asked to do now: one derivation for every control
+  // surface (stores/liveControls.ts), with the rationale (status alone, never
+  // activeTurnId; capability is the harness's) in @evener/appwire-client's
+  // submitRouting module. The press handlers below re-derive it from the store
+  // at the press (pressRefusal), not from this render.
+  const controls = controlsFor(model);
+  const canSendWhenEnded = controls.send;
   // The target's skillInput capability, same narrowing rule: submission is
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
@@ -847,57 +861,44 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Reading routing off the presentation source therefore lost tier 6 for the
   // sender at exactly the moment the daemon confirmed it had the send - the
   // next message went to turn/start and bounced.
-  const hasPendingSend = pendingSendEntries.some((entry) => entry.fromThisClient);
-  const tableAvailability = deriveSendQueueAvailability({
-    statusType: model.status.type,
-    capabilities: model.capabilities,
-    hasPendingSend,
-  });
-  // A finished session can still be sent to when the source says so: the hub
-  // advertises Send for an exited evener thread and auto-resumes it on the first
-  // message (turn/start alone carries that resume loop - app_rpc.go). The
-  // CAPABILITY is the authority for THAT question, not the availability table,
-  // which reports both-false for a finished session with nothing pending,
-  // because no turn is in flight to send to or queue behind.
-  //
-  // It only substitutes when the table has nothing to offer, which is what
-  // keeps it clear of tier 6. Overriding unconditionally turned every finished
-  // status' SECOND message back into the turn/start that bounces - the table
-  // answers queue-mode there, for the whole time the resume takes to produce a
-  // status frame, which for a session that has to spawn a daemon is seconds.
-  const availability =
-    ended && canSendWhenEnded && !tableAvailability.canSend && !tableAvailability.canQueue
+  const ownPendingSend = (entries: readonly PendingTurnEntry[]) => entries.some((entry) => entry.fromThisClient);
+  const hasPendingSend = ownPendingSend(pendingSendEntries);
+  // The Send/Queue availability of a model and this client's pending send: read
+  // at render for the button and its tooltip, and again at submit from the
+  // stores' live model and live pending entries, so a status frame or a
+  // pending send that landed (or cleared) between the two routes the submit
+  // rather than the render.
+  function availabilityFor(target: ThreadModel, pendingSend: boolean): { canSend: boolean; canQueue: boolean } {
+    const tableAvailability = deriveSendQueueAvailability({
+      statusType: target.status.type,
+      capabilities: target.capabilities,
+      hasPendingSend: pendingSend,
+    });
+    // A finished session can still be sent to when the source says so: the hub
+    // advertises Send for an exited evener thread and auto-resumes it on the first
+    // message (turn/start alone carries that resume loop - app_rpc.go). The
+    // CAPABILITY is the authority for THAT question, not the availability table,
+    // which reports both-false for a finished session with nothing pending,
+    // because no turn is in flight to send to or queue behind.
+    //
+    // It only substitutes when the table has nothing to offer, which is what
+    // keeps it clear of tier 6. Overriding unconditionally turned every finished
+    // status' SECOND message back into the turn/start that bounces - the table
+    // answers queue-mode there, for the whole time the resume takes to produce a
+    // status frame, which for a session that has to spawn a daemon is seconds.
+    return ENDED_STATUSES.has(target.status.type) &&
+      controlsFor(target).send &&
+      !tableAvailability.canSend &&
+      !tableAvailability.canQueue
       ? { canSend: true, canQueue: false }
       : tableAvailability;
-  const busy = isTurnActive(model.status.type, activeTurnId);
-  const queueDepth = model.queue?.depth ?? 0;
+  }
+  const availability = availabilityFor(model, hasPendingSend);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
-
-  // Stop is SESSION-scoped and Steer is not, so they do not share a gate.
-  //
-  // Stop asks the session to stop working. turn/interrupt names no turn
-  // (appwire v3 dropped expectedTurnId from every control mutation) and the
-  // daemon answers on the session's own quiescence, so the only question the
-  // composer has to answer is "is this session working" -- which is the status
-  // alone. It deliberately does NOT use `busy`: isTurnActive additionally
-  // requires activeTurnId, and gating the BUTTON on an id the REQUEST does not
-  // carry can only ever withhold a Stop the daemon would have accepted.
-  //
-  // Active-with-no-id is a state the wire really reaches -- a session holding
-  // queued work reports active with no turn running, for one. (An earlier
-  // version of this comment attributed it to a turn reservation the daemon
-  // takes at turn/start; that reservation has no production callers and is not
-  // the cause. The gate is wrong for the reason above, which does not depend on
-  // how the state is reached.)
-  //
-  // Steer keeps `busy`. It redirects a turn in flight, and with none running
-  // Send already covers "say something now" -- a presentation choice rather
-  // than a precondition, since an idle session would accept a steer and land
-  // it in the next turn.
-  const showStop = model.status.type === "active" && model.capabilities.interrupt;
-  const showSteer = busy && model.capabilities.steer;
+  const showStop = controls.stop;
+  const showSteer = controls.steer;
   // The one state kata 5gdv is about, described by the only code that can see
   // it happen. Diagnostic only -- see stoplessComposer.ts for why a breadcrumb
   // rather than another attempt to provoke it.
@@ -1302,11 +1303,17 @@ export function Composer({ ref, focused }: ComposerProps) {
         return;
       }
     }
-    // `availability` already carries the resumable-session substitution (see
-    // where it is computed). Re-deriving it here is what let the tooltip and
-    // the router disagree: the tooltip read the table while this read an
-    // override, so the button could promise to queue and then fire a send.
-    const route = decideSubmitRoute({ hasContent, availability });
+    // The same derivation the button and its tooltip rendered from
+    // (availabilityFor, substitution included), over the store's live model:
+    // the two disagree only when a status frame landed after the render, and
+    // then the frame is what the submit has to follow.
+    const route = decideSubmitRoute({
+      hasContent,
+      availability: availabilityFor(
+        liveThreadModel(ref) ?? renderedModel,
+        ownPendingSend(pendingTurnEntries(ref, "send")),
+      ),
+    });
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");
       return;
@@ -1331,17 +1338,25 @@ export function Composer({ ref, focused }: ComposerProps) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    const route = decideSteerRoute({ hasText, hasAttachments, hasSkills: skillNames.length > 0, queueDepth });
+    const route = decideSteerRoute({
+      hasText,
+      hasAttachments,
+      hasSkills: skillNames.length > 0,
+      queueDepth: liveThreadModel(ref)?.queue?.depth ?? queueDepth,
+    });
     if (route === "none") {
       textareaRef.current?.focus();
       return;
     }
-    // Both routes steer the ACTIVE turn; without one the daemon rejects them
-    // ("no active turn to steer"). Drain needs this guard as much as steer:
-    // unguarded, a Steer-click routing to drain (non-empty queue or staged
-    // attachments) minted a durable intent the hub rejects forever (kata wr3s).
-    if ((route === "steer" || route === "drain") && !activeTurnId) {
-      toasts.push("error", `${route === "drain" ? "Drain" : "Steer"} failed: no active turn`);
+    // Readiness is sessionControls' (submitRouting.ts), read from the store at
+    // the press (stores/liveControls.ts): a status frame folded after the
+    // render that offered the button decides the press. It is checked here as
+    // well as on the button because Shift+Enter reaches this handler with no
+    // button on screen.
+    const reason = pressRefusal(ref, route === "drain" ? "drain" : "steer");
+    if (reason !== undefined) {
+      const verb = route === "drain" ? "Drain" : "Steer";
+      toasts.push("error", reason === NO_ACTIVE_TURN ? `${verb} failed: ${reason}` : reason);
       return;
     }
     void submitAction(route);
@@ -1349,6 +1364,13 @@ export function Composer({ ref, focused }: ComposerProps) {
 
   async function handleInterruptClick(): Promise<void> {
     if (actionPending) return;
+    // Same press-time rule as Steer: the turn this button was rendered for can
+    // have ended by the time the press lands.
+    const reason = pressRefusal(ref, "stop");
+    if (reason !== undefined) {
+      toasts.push("error", reason === NO_ACTIVE_TURN ? `Interrupt failed: ${reason}` : reason);
+      return;
+    }
     setBusyAction("interrupt");
     try {
       await threadsStore.getState().interrupt(ref);
@@ -1598,6 +1620,7 @@ export function Composer({ ref, focused }: ComposerProps) {
               <PromptCard
                 data-testid="composer-input-card"
                 hidden={askPending}
+                verbs={1 + (showStop ? 1 : 0) + (showSteer ? 1 : 0)}
                 field={
                   <Textarea
                     ref={textareaRef}

@@ -243,6 +243,82 @@ func TestClassifyFavoriteDecisions_ProjectUsesCanonicalIdentity(t *testing.T) {
 	assertFavoriteClassification(t, got, legacyKey, FavoriteDecisionDormant)
 }
 
+// Two hosts' projects may share an ID. A favorite decision is stored under
+// (source, project ID), so classification must match each host's own authority
+// instead of collapsing both onto the bare ID and marking the ID ambiguous.
+func TestClassifyFavoriteDecisions_ProjectDistinguishesSources(t *testing.T) {
+	const projectID = "shared-project"
+	decision := ArchiveKey{Kind: "project", ID: projectID, Source: "host-a"}
+	authority := FavoriteAuthority{Projects: []FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+		{ID: projectID, Source: "host-b", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/b\x00host-b"},
+	}}
+
+	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{decision: true}, authority)
+	assertFavoriteClassification(t, got, decision, FavoriteDecisionValid)
+	if !got.Presentation[decision] {
+		t.Fatalf("source-qualified favorite was not presented: %#v", got.Presentation)
+	}
+
+	// A source with no authority for that ID stays dormant rather than borrowing
+	// another host's authority.
+	unknown := ArchiveKey{Kind: "project", ID: projectID, Source: "host-c"}
+	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{unknown: true}, authority)
+	assertFavoriteClassification(t, got, unknown, FavoriteDecisionDormant)
+	if got.Presentation[unknown] {
+		t.Fatalf("unknown source favorite was presented: %#v", got.Presentation)
+	}
+}
+
+// The rail's project favorite carries no source, so its decision is stored under
+// the controller key even when the project is owned by a remote host. When
+// exactly one source claims that project ID, the bare decision must resolve to
+// it (and present under the host-qualified key) or a successful favorite would
+// never show a star. Two sources claiming the ID stay dormant: the bare decision
+// cannot choose a host.
+func TestClassifyFavoriteDecisions_EmptySourceResolvesSingleAuthority(t *testing.T) {
+	const projectID = "shared-project"
+	bare := ArchiveKey{Kind: "project", ID: projectID}
+
+	remoteOnly := FavoriteAuthority{Projects: []FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+	}}
+	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{bare: true}, remoteOnly)
+	assertFavoriteClassification(t, got, bare, FavoriteDecisionValid)
+	canonical := ArchiveKey{Kind: "project", ID: projectID, Source: "host-a"}
+	if !got.Presentation[canonical] {
+		t.Fatalf("bare decision did not present on the remote authority: %#v", got.Presentation)
+	}
+
+	both := FavoriteAuthority{Projects: []FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+		{ID: projectID, Source: "host-b", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/b\x00host-b"},
+	}}
+	got = ClassifyFavoriteDecisions(map[ArchiveKey]bool{bare: true}, both)
+	assertFavoriteClassification(t, got, bare, FavoriteDecisionDormant)
+	if len(got.Presentation) != 0 {
+		t.Fatalf("ambiguous bare decision presented something: %#v", got.Presentation)
+	}
+}
+
+// An empty-source decision still addresses the controller's own project when one
+// exists, even while a remote host claims the same ID: exact matches win before
+// the cross-source fallback.
+func TestClassifyFavoriteDecisions_EmptySourcePrefersControllerAuthority(t *testing.T) {
+	const projectID = "shared-project"
+	bare := ArchiveKey{Kind: "project", ID: projectID}
+	authority := FavoriteAuthority{Projects: []FavoriteProjectAuthority{
+		{ID: projectID, Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/local"},
+		{ID: projectID, Source: "host-a", Quality: FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+	}}
+
+	got := ClassifyFavoriteDecisions(map[ArchiveKey]bool{bare: true}, authority)
+	assertFavoriteClassification(t, got, bare, FavoriteDecisionValid)
+	if !got.Presentation[bare] {
+		t.Fatalf("controller project favorite not presented on the bare key: %#v", got.Presentation)
+	}
+}
+
 func TestLocalSessionDecisionAliasesUsesAuthorityAndExcludesRemoteRefs(t *testing.T) {
 	const sessionID = "canonical-session"
 	authority := FavoriteAuthority{Sessions: []FavoriteSessionAuthority{{
@@ -288,10 +364,10 @@ func TestClassifyFavoriteDecisions_FalseDecisionsAndPersistenceRemainUntouched(t
 	}
 
 	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := store.Set(trueKey.Kind, trueKey.ID, true, favoriteAuthorityTestTime); err != nil {
+	if err := store.Set("", trueKey.Kind, trueKey.ID, true, favoriteAuthorityTestTime); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Set(falseKey.Kind, falseKey.ID, false, favoriteAuthorityTestTime); err != nil {
+	if err := store.Set("", falseKey.Kind, falseKey.ID, false, favoriteAuthorityTestTime); err != nil {
 		t.Fatal(err)
 	}
 	storedBefore, err := store.Favorites()

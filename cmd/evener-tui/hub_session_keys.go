@@ -363,8 +363,11 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// First ctrl+c during an active turn interrupts the turn (matching
 		// muscle-memory from the legacy standalone TUI). Second ctrl+c
 		// within hubCtrlCQuitWindow always quits, regardless of state.
-		if m.client != nil && m.detail.Capabilities.Interrupt {
-			if turnID := strings.TrimSpace(m.detail.ActiveTurnID); turnID != "" {
+		// Stop is sessionControls' (the status, never the transcript's turn id,
+		// which is cleared between turn/completed and turn/started of an inline
+		// turn boundary while the session is still working).
+		if m.client != nil && m.sessionControls().stop {
+			{
 				if ref, ok := m.currentRef(); ok {
 					m.addSessionSystem("Interrupting active turn. Press ctrl+c again to quit.")
 					return m, sendHubAction(m.client, ref, "interrupt", m.detail.InstanceID)
@@ -528,13 +531,15 @@ func (m hubModel) restoreInstructionMessage() string {
 // the drain request so the daemon appends and drains atomically. With nothing
 // to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
-	if m.sessionComposerMode() != hubComposerModeQueue {
-		// Not in a queue-able state; nothing to do. Silently no-op so the
-		// keybind doesn't fight with idle-state composing.
-		return m, nil
-	}
-	if !m.detail.Capabilities.Steer {
-		m.addSessionSystem("Force-steer is not available: source does not advertise steer.")
+	if controls := m.sessionControls(); !controls.drain {
+		// A plain idle composer with nothing queued: silently no-op so the
+		// keybind doesn't fight with idle-state composing. Anything else --
+		// a queue, a running turn, a harness without steer, a syncing revision
+		// -- gets the twin's own reason for refusing.
+		if m.detail.State == appwire.ThreadStatusIdle && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
+			return m, nil
+		}
+		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")
 		return m, nil
 	}
 	ref, ok := m.currentRef()
@@ -545,13 +550,13 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	draft := m.session.input.Value()
 	pending := strings.TrimSpace(draft)
 	hasAttachments := len(m.pendingAttachments) > 0
-	if pending == "" && len(m.sessionQueue) == 0 && !hasAttachments {
+	if pending == "" && m.detail.Queue.Depth == 0 && !hasAttachments {
 		m.addSessionSystem("Nothing to steer: the queue is empty.")
 		return m, nil
 	}
 	if pending == "" && !hasAttachments {
 		// Pure drain of the existing queue. Clear nothing on the composer.
-		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, m.detail.Queue.Revision, len(m.sessionQueue), m.detail.InstanceID)
+		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, m.detail.Queue.Revision, m.detail.Queue.Depth, m.detail.InstanceID)
 	}
 	// Composer has text and/or attachments. sendHubDrainAsSteer sends the
 	// payload on turn/drainAsSteer so the daemon folds it into the same
@@ -562,7 +567,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	m.session.resetInput()
 	m.session.refreshViewport()
 	attachments := m.snapshotPendingAttachmentsForSubmit()
-	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.Queue.Revision, len(m.sessionQueue), m.detail.InstanceID)
+	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, m.detail.Queue.Revision, m.detail.Queue.Depth, m.detail.InstanceID)
 }
 
 func isQueuedDrainPartial(err error) bool {

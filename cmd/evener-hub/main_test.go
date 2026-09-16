@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/llm/registry"
@@ -602,5 +604,92 @@ func TestRunMainPreparesRuntimeDirectoryBeforeRequests(t *testing.T) {
 				t.Fatalf("fresh runtime directory: err=%v ready=%v", err, ready)
 			}
 		})
+	}
+}
+
+// TestRemoteHostFactsReportRestartedHubVersion pins that a channel whose
+// preflight facts predate a version-mismatch redeploy reports the build the
+// host hub was restarted from, not the stale pre-deploy version. sshconn keeps
+// the pre-deploy facts on the attached channel, so the old code reported the
+// host's old build while Features came from the new hub.
+func TestRemoteHostFactsReportRestartedHubVersion(t *testing.T) {
+	pf := sshconn.Preflight{
+		Protocol: "1",
+		Version:  "host-build-before-redeploy",
+		OS:       "linux",
+		Arch:     "amd64",
+	}
+	got := remoteHostFacts(pf, appwire.FeatureSet{ThreadList: true})
+	if got.HubVersion != buildinfo.Version() {
+		t.Fatalf("HubVersion = %q, want %q: the attached hub runs the controller's deployed build", got.HubVersion, buildinfo.Version())
+	}
+	if got.ProtocolVersion != "1" || got.OS != "linux" || got.Arch != "amd64" {
+		t.Fatalf("preflight fields = %+v, want protocol/OS/arch preserved", got)
+	}
+	if !got.Features.ThreadList {
+		t.Fatalf("Features = %+v, want the client's advertised set", got.Features)
+	}
+}
+
+// TestHubSSHStateInvalidation covers the fleet-view invalidation gate: only the
+// sshconn transitions that change Manager.Attached invalidate navigation, and a
+// nil invalidate is tolerated (the hook's slot is late-bound, so it is nil until
+// the WebServer exists).
+func TestHubSSHStateInvalidation(t *testing.T) {
+	for _, tc := range []struct {
+		kind        sshconn.EventKind
+		wantInvalid bool
+	}{
+		{sshconn.EventAttached, true},
+		{sshconn.EventDetached, true},
+		{sshconn.EventFailed, true},
+		{sshconn.EventState, false},
+	} {
+		calls := 0
+		hubSSHStateInvalidation(func() { calls++ })(sshconn.Event{Kind: tc.kind})
+		if got := calls > 0; got != tc.wantInvalid {
+			t.Fatalf("kind %q invalidated=%v, want %v", tc.kind, got, tc.wantInvalid)
+		}
+	}
+	// A connection event before the WebServer exists must not panic.
+	hubSSHStateInvalidation(nil)(sshconn.Event{Kind: sshconn.EventAttached})
+}
+
+// TestRunMainShutsDownAppRPCWithoutTracing pins round eight's fan-out lifecycle
+// finding at the top level. The remote-admin fan-out is bound to the AppWire
+// server's own lifetime handle, but the hub's ordinary run used to shut down
+// only the HTTP server: appRPC.Shutdown was called on the tracing path alone,
+// so a hub started without --appwire-trace never canceled that lifetime and
+// left one fan-out goroutine per remote host subscribed to the sources of a
+// server that was already gone (a leak, and duplicate host notifications for
+// every in-process server replacement).
+//
+// Shutdown is now unconditional, so the hub's own exit — the deferred drain
+// every return path runs, registered after the SSH manager's teardown so the
+// fan-outs stop before their transports close — ends the lifetime. The second
+// call covers idempotency: the tracing path and any embedder that already
+// drained the server call Shutdown again, and it must stay safe and cheap.
+func TestRunMainShutsDownAppRPCWithoutTracing(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var web *WebServer
+	deps.afterWeb = func(created *WebServer) { web = created }
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if web == nil {
+		t.Fatal("afterWeb never ran")
+	}
+	select {
+	case <-web.appRPC.Lifetime().Done():
+	default:
+		t.Fatal("the AppWire server outlived the hub: its lifetime was never canceled, so every fan-out bound to it stays subscribed")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := web.appRPC.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
 	}
 }

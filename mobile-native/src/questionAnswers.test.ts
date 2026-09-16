@@ -1,13 +1,14 @@
 import { expect, it } from "vitest";
-import type { MobileAskQuestion } from "../../mobile/src/conversation/model";
+import type { AskQuestionRef } from "@evener/appwire-client";
 import {
   composeQuestionAnswers,
   questionAdvanceTarget,
   seedQuestionAnswers,
 } from "./questionAnswers";
 
-const question: MobileAskQuestion = {
+const question: AskQuestionRef = {
   key: "call:0",
+  callId: "call",
   header: "Choice",
   question: "Choose",
   multiSelect: false,

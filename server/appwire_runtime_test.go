@@ -30,7 +30,11 @@ func TestTaskPatchPreservesFullyCancelledOutcome(t *testing.T) {
 	}
 }
 
-func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
+// Steer advertises harness support, not a turn in flight: the daemon accepts
+// turn/drainAsSteer and turn/promoteQueuedAsSteer with nothing running (they
+// release a queue a Stop parked), and clients apply the status themselves for
+// turn/steer. Only a closed thread withholds it (#1363).
+func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name       string
@@ -43,11 +47,12 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 	}{
 		{"processing with steerFunc", "active", true, false, false, true, true},
 		{"reserved idle with steerFunc", "idle", false, true, false, true, true},
-		{"stale projected active turn with steerFunc", "idle", false, false, true, true, false},
-		{"idle with steerFunc", "idle", false, false, false, true, false},
-		{"awaiting with steerFunc", "awaiting", false, false, false, true, false},
+		{"stale projected active turn with steerFunc", "idle", false, false, true, true, true},
+		{"idle with steerFunc", "idle", false, false, false, true, true},
+		{"awaiting with steerFunc", "awaiting", false, false, false, true, true},
 		{"closed with steerFunc", "closed", false, false, false, true, false},
 		{"processing without steerFunc", "active", true, false, false, false, false},
+		{"idle without steerFunc", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,8 +155,11 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			if caps.Interrupt != working {
 				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
 			}
-			if caps.Steer != working {
-				t.Fatalf("status=%q (working=%v) but steer=%v: one frame, two threads", status, working, caps.Steer)
+			// Steer is harness support, withheld only by closed: it does not
+			// follow `working` (see TestAppCapabilities_SteerAdvertisesHarnessSupport).
+			wantSteer := status != appwire.ThreadStatusClosed
+			if caps.Steer != wantSteer {
+				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed
@@ -166,19 +174,21 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // 5gdv: the set this daemon publishes must never say "a turn is running, and it
 // cannot be stopped".
 //
-// Steer and Interrupt were derived from different facts on different clocks.
-// Steer comes from `active` -- the reservation plus the processing flag, which
-// is also what the wire publishes as the thread's status. Interrupt came from
-// the ambient cancelFunc, which the session loop arms and clears once per turn,
-// and cmd/evener/serve.go's drain path (nextTurnCtx) published processing BEFORE
-// arming it, where the other two arming sites do it the other way round. In
-// between, this set said steer=true interrupt=false -- and a composer applying
-// it draws Steer and Send with no Stop, which is the shape Jesse reported.
+// Steer is harness support (steerAvailable && !closed; the client applies the
+// status, #1363), so on its own it says nothing about a running turn. The
+// forbidden shape is narrower: for an ACTIVE status, steer=true beside
+// interrupt=false. Interrupt used to come from the ambient cancelFunc, which the
+// session loop arms and clears once per turn, and cmd/evener/serve.go's drain
+// path (nextTurnCtx) published processing BEFORE arming it, where the other two
+// arming sites do it the other way round. In that window the set said steer=true
+// interrupt=false for an active thread -- and a composer applying it draws Steer
+// and Send with no Stop, which is the shape Jesse reported.
 //
-// Deriving both from `active` makes the disagreement unrepresentable rather
-// than merely unlikely, which matters because the set is PUSHED: a client keeps
-// it until the next status change, so a frame stamped inside that window takes
-// Stop away for the whole turn that follows.
+// Deriving Interrupt from `active` (the status) rather than the cancelFunc
+// makes the disagreement unrepresentable rather than merely unlikely, which
+// matters because the set is PUSHED: a client keeps it until the next status
+// change, so a frame stamped inside that window takes Stop away for the whole
+// turn that follows.
 //
 // The state below is the drain path's, in its own order.
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {

@@ -1,44 +1,46 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import {
+  type CommandCatalogClient,
+  createSessionCommandCatalog,
   filterSlashMenuItems,
   type SlashMenuItem,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { CommandCatalog } from "./commandCatalog";
-import { builtinComposerItems } from "./composerCommand";
+import {
+  builtinComposerItems,
+  type ComposerCommandSession,
+} from "./composerCommand";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CommandCompletion({
   client,
   maxHeight,
   sessionRef,
-  capabilities,
+  session,
   query,
   choose,
   close,
 }: {
-  client: ConversationClientLike;
+  client: CommandCatalogClient;
   maxHeight: number;
   sessionRef: string;
-  capabilities: MobileConversation["capabilities"];
+  session: ComposerCommandSession;
   query: string;
   choose: (item: SlashMenuItem) => void;
   close: () => void;
 }) {
   const colors = useColors();
   const catalog = useMemo(
-    () => new CommandCatalog(client, sessionRef),
+    () => createSessionCommandCatalog(client, sessionRef),
     [client, sessionRef],
   );
-  const state = useSyncExternalStore(catalog.subscribe, catalog.getSnapshot);
+  const state = useSyncExternalStore(catalog.subscribe, catalog.getState);
   useEffect(() => {
     catalog.start();
     return () => catalog.dispose();
   }, [catalog]);
   const items = filterSlashMenuItems(
-    [...builtinComposerItems(capabilities), ...state.items],
+    [...builtinComposerItems(session), ...state.items],
     query,
   );
   if (!state.loading && !state.error && items.length === 0) return null;
@@ -92,7 +94,7 @@ export function CommandCompletion({
             onPress={() => {
               if (
                 item.kind === "builtin" ||
-                (!catalog.getSnapshot().loading && !catalog.getSnapshot().error)
+                (!catalog.getState().loading && !catalog.getState().error)
               )
                 choose(item);
             }}

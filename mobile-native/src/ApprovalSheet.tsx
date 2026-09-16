@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { MobileApproval } from "../../mobile/src/conversation/model";
+import type { SandboxEscalationRequested } from "@evener/appwire-client";
 import type { ApprovalControls } from "./approvalControls";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -17,7 +17,7 @@ export function ApprovalSheet({
   hubName,
   close,
 }: {
-  approvals: MobileApproval[];
+  approvals: SandboxEscalationRequested[];
   controls: ApprovalControls;
   hubName: string;
   close: () => void;
@@ -75,7 +75,7 @@ export function ApprovalSheet({
           {!approvals.length ? <Copy>No approvals pending.</Copy> : null}
           {approvals.map((approval) => (
             <View
-              key={approval.id}
+              key={approval.escalationId}
               style={{
                 gap: 12,
                 borderBottomWidth: 1,
@@ -87,7 +87,7 @@ export function ApprovalSheet({
                 {approval.tool} · {approval.kind}
               </Copy>
               <Copy muted>Blocked path</Copy>
-              <Copy>{approval.path}</Copy>
+              <Copy>{approval.deniedPath}</Copy>
               <Copy muted>Sandbox · {approval.mode}</Copy>
               {approval.command ? (
                 <View style={{ gap: 6 }}>
@@ -101,11 +101,11 @@ export function ApprovalSheet({
                   blocked it.
                 </Copy>
               ) : null}
-              {approval.output ? (
+              {approval.outputSoFar ? (
                 <View style={{ gap: 6 }}>
                   <Copy muted>Output so far</Copy>
                   <ScrollView style={{ maxHeight: 180 }} nestedScrollEnabled>
-                    <Copy>{approval.output}</Copy>
+                    <Copy>{approval.outputSoFar}</Copy>
                   </ScrollView>
                 </View>
               ) : null}
@@ -129,7 +129,7 @@ export function ApprovalSheet({
                   Allow once
                 </Action>
               </View>
-              {state.pending === approval.id ? (
+              {state.pending === approval.escalationId ? (
                 <ActivityIndicator accessibilityLabel="Sending decision" />
               ) : null}
             </View>
