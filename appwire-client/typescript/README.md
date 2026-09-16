@@ -80,7 +80,7 @@ completion affordance and ships its MIT attribution at
 
 ## Published subpaths
 
-Besides the root, `package.json` `exports` publishes two subpaths:
+Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
@@ -90,6 +90,14 @@ Besides the root, `package.json` `exports` publishes two subpaths:
   merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
   subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
   the four modules whole.
+- `@evener/appwire-client/state/extensions` - the extensions state layer both
+  apps' plugin settings surfaces are built on: the marketplaces store
+  (`createMarketplacesStore(client)`, a framework-free store over a
+  `request`/`onNotification` client port holding a hub's marketplace list and
+  one cached browse result per marketplace, where fetches record their failure
+  in state and mutations reject), with the installed-plugin and directory
+  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
+  barrel over the layer's modules.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
