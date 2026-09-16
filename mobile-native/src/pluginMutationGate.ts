@@ -14,6 +14,10 @@
 // PluginDetailSheet.tsx's four), and the shared core stays the wire truth both
 // frontends agree on rather than one host's UI rule.
 
+/** What a screen shows when the gate refuses: the refusal is not a failure of
+ * the write the user asked for, so it must not read like one. */
+export const PLUGIN_MUTATION_BUSY = "Another plugin change is still running. Wait for it to finish.";
+
 export interface PluginMutationGate {
   /** True while a mutation is running: what both surfaces disable on. */
   isBusy(): boolean;

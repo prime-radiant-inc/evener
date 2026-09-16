@@ -956,6 +956,25 @@ describe("reconnect-triggered refetch", () => {
     expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(2);
   });
 
+  // pluginRevision is what the spawn form's HOST-scoped consumers key on:
+  // usePluginPreview and useSpawnSlashCatalog ask the selected host directly
+  // and never read this store's installed list. A disconnection can hide any
+  // number of plugin changes from them, so the revision has to move on the way
+  // back regardless of whether anything ever read the controller's own list -
+  // the established check belongs to the refetch decision, not to this.
+  test("a reconnect moves pluginRevision even though no section read the list", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
+  });
+
   test("a reconnect reads nothing for a section that was never opened", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));

@@ -22,7 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import type { PluginMutationGate } from "./pluginMutationGate";
+import { PLUGIN_MUTATION_BUSY, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -128,6 +128,9 @@ export function MarketplaceBrowser({
     setError(null);
     void gate
       .run(() => plugins.installPlugin(target.plugin, target.marketplace))
+      .then((ran) => {
+        if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
+      })
       .catch(() => {
         if (revision.current === version) setError(WRITE_FAILED);
       });

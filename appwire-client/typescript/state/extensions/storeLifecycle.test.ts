@@ -33,6 +33,9 @@ interface LifecycleCase<S> {
   /** Holds the next list request (or the mutation's); the returned function
    * answers it. */
   deferList(fake: FakeClient): () => void;
+  /** Holds EVERY list request, one answerer per call, so two reads can be in
+   * flight and be answered out of order. */
+  gateList(fake: FakeClient): (() => void)[];
   deferMutation(fake: FakeClient): () => void;
   fetch(state: S): Promise<void>;
   /** The mutation deferMutation holds. */
@@ -53,6 +56,11 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
   answerList: (fake) => fake.on("evener/marketplace/list", () => ({ marketplaces: [] })),
   listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/marketplace/list").length,
+  gateList: (fake) => {
+    const releases: (() => void)[] = [];
+    fake.on("evener/marketplace/list", () => new Promise((resolve) => releases.push(() => resolve({ marketplaces: [] }))) as never);
+    return releases;
+  },
   deferList: (fake) => {
     const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/list");
     return () => release({ marketplaces: [] });
@@ -77,6 +85,11 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
   answerList: (fake) => fake.on("evener/plugin/list", () => ({ plugins: [] })),
   listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/plugin/list").length,
+  gateList: (fake) => {
+    const releases: (() => void)[] = [];
+    fake.on("evener/plugin/list", () => new Promise((resolve) => releases.push(() => resolve({ plugins: [] }))) as never);
+    return releases;
+  },
   deferList: (fake) => {
     const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
     return () => release({ plugins: [] });
@@ -256,6 +269,29 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
       expect(notified).toBe(0);
       expect(store.getState()).toBe(before);
+    });
+
+    test("a read outrun before it lands writes nothing, not even the flag it raised", async () => {
+      const { fake, store } = lifecycle.create();
+      const releases = lifecycle.gateList(fake);
+      const older = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      const newer = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      const [answerOlder, answerNewer] = releases;
+      expect(releases).toHaveLength(2);
+      if (!answerOlder || !answerNewer) throw new Error("both reads must be in flight");
+
+      // The older read answers first. The newer request is still pending and
+      // it raised the flag: a response the store has already superseded may
+      // not clear it, nor post its own error over a load still running.
+      answerOlder();
+      await older;
+      expect(lifecycle.loading(store.getState())).toBe(true);
+
+      answerNewer();
+      await newer;
+      expect(lifecycle.loading(store.getState())).toBe(false);
     });
 
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {

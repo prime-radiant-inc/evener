@@ -70,6 +70,9 @@ export function createStoreLifecycle<S>(
   let refetchTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let connection: { client: object | null; state: ConnectionState } = { client: null, state: "idle" };
+  // Whether this store has ever had a ready connection: what tells a
+  // reconnection from a first connection.
+  let hasBeenReady = false;
 
   function fenceInFlight(): void {
     options.onFence?.();
@@ -104,6 +107,11 @@ export function createStoreLifecycle<S>(
     },
     reset() {
       if (disposed) return;
+      // Total: a store that has forgotten what it read holds no data derived
+      // from a connection either, so it has not "been away" from one - the
+      // next ready connection is a first connection for it.
+      connection = { client: null, state: "idle" };
+      hasBeenReady = false;
       fenceInFlight();
       const store = options.store();
       store.setState(store.getInitialState());
@@ -126,12 +134,21 @@ export function createStoreLifecycle<S>(
       clearTimeout(refetchTimer);
       refetchTimer = undefined;
       if (disposed || state !== "ready") return;
+      const away = hasBeenReady;
+      hasBeenReady = true;
+      // Becoming ready AGAIN says what a notification says, and less
+      // precisely: everything the hub answers may have moved while this client
+      // was away, with no notification left to say so. What a notification
+      // applies is therefore applied here too, and BEFORE the established
+      // check, because it is not about this store's own list - a revision a
+      // host re-keys host-scoped data on, or a cache of answers to other
+      // questions, is stale whether or not anything ever read the list. Only
+      // the re-read waits on something having read it.
+      //
+      // A first connection is not a reconnection: nothing was missed, because
+      // there was nothing to miss it with.
+      if (away) options.onNotified?.();
       if (!options.established(options.store().getState())) return;
-      // A ready connection says what a notification says, and less precisely:
-      // everything this store derives from the hub's answers may have moved
-      // while it was away, with no notification left to say so. So the
-      // recovery applies what a notification applies, then re-reads.
-      options.onNotified?.();
       void options.refetch(options.store().getState());
     },
     dispose() {

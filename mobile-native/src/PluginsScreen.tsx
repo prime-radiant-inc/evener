@@ -28,7 +28,7 @@ import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
 } from "./MarketplaceBrowser";
-import { createPluginMutationGate } from "./pluginMutationGate";
+import { createPluginMutationGate, PLUGIN_MUTATION_BUSY } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -118,7 +118,9 @@ function Plugins({
     setNotice(null);
     try {
       const ran = await gate.run(action);
-      if (ran && version === editorVersion.current && success) setNotice(success);
+      if (version !== editorVersion.current) return;
+      if (!ran) setActionError(PLUGIN_MUTATION_BUSY);
+      else if (success) setNotice(success);
     } catch {
       if (version === editorVersion.current)
         setActionError(

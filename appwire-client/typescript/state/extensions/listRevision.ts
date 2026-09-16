@@ -1,18 +1,27 @@
-// The "newest response wins" fence the extensions stores put on a list every
-// response replaces whole (a hub's marketplaces, its installed plugins). The
-// hub answers one connection's requests in the order they were sent, and a
-// dropped connection rejects everything it had in flight, so a later response
-// is always the newer list. The revision each request takes as it starts is
-// the fence should that ever stop holding: a response writes its list only if
-// no later revision has committed since. A failed list counts as a commit -
-// its error is list state too, so a success that started earlier must not
-// clear it.
+// The "latest request wins" fence the extensions stores put on a list every
+// response replaces whole (a hub's marketplaces, its installed plugins, its
+// global launch layer).
+//
+// The owner is the latest request ISSUED, not the latest response applied. A
+// request that has been superseded writes nothing when it lands, even if
+// nothing newer has answered yet: its list is older than the one already on
+// the way, and the loading flag and the error belong to it just as much, so a
+// superseded answer clearing the flag a pending request raised - or posting
+// its own error over a load still running - is the same mistake as rolling the
+// list back. A failed list is an answer like any other and takes the same
+// fence.
+//
+// The hub answers one connection's requests in the order they were sent, and a
+// dropped connection rejects everything it had in flight, so the latest
+// request's answer is also the newest list. The revision is the fence should
+// that ever stop holding.
 
 export interface ListRevision {
-  /** The revision for a request about to be sent. */
+  /** The revision for a request about to be sent, and from here on the only
+   * one that may commit. */
   next(): number;
   /** Whether the response that took `revision` is still the store's newest
-   * word on the list, and records it as such when it is. */
+   * word on the list. */
   commit(revision: number): boolean;
   /** Fences every response still on the wire: none of them commits. */
   fence(): void;
@@ -20,20 +29,16 @@ export interface ListRevision {
 
 export function createListRevision(): ListRevision {
   let issued = 0;
-  let applied = 0;
   return {
     next() {
       issued += 1;
       return issued;
     },
     commit(revision) {
-      if (revision < applied) return false;
-      applied = revision;
-      return true;
+      return revision === issued;
     },
     fence() {
       issued += 1;
-      applied = issued;
     },
   };
 }
