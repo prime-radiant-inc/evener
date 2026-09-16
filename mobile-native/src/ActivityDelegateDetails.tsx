@@ -10,14 +10,12 @@ import { absoluteTime } from "@evener/appwire-client";
 import {
   type ActivityDelegate,
   activityDelegateDiagnostics,
-  formatElapsed,
-  splitMandate,
-} from "@evener/appwire-client";
-import {
   delegateModel,
   delegatePacket,
   delegateTiming,
-} from "./delegateDetails";
+  formatElapsed,
+  splitMandate,
+} from "@evener/appwire-client";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { Action, Copy, useColors } from "./ui";
 

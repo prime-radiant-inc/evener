@@ -45,6 +45,7 @@
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
     "stableDelegate.ts",
+    "delegateDetails.ts",
     "docContent.ts",
     "submitRouting.ts",
     "displayFormat.ts",
