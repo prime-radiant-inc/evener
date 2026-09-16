@@ -97,7 +97,13 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     async function mutate(request: () => Promise<PluginListResponse>): Promise<void> {
       const revision = listRevision.next();
       const resp = await request();
-      if (listRevision.commit(revision)) set({ plugins: resp.plugins });
+      // The same three fields a read's success writes. A response that
+      // commits is the store's newest word on the list, so it owns the error
+      // and the loading flag too - a read this one outran writes none of the
+      // three when it lands, including the flag it raised on its way out.
+      if (listRevision.commit(revision)) {
+        set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+      }
     }
 
     const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>

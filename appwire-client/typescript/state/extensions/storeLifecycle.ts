@@ -103,12 +103,20 @@ export function createStoreLifecycle<S>(
       stopNotifications = client.onNotification(handleNotification);
     },
     reset() {
+      if (disposed) return;
       fenceInFlight();
       const store = options.store();
       store.setState(store.getInitialState());
     },
     connectionChanged(client, state) {
       const previous = connection;
+      // Not a transition. A host publishes its connection on every change it
+      // makes to it, and most of those are metadata - the handshake's
+      // serverInfo and features land as one, on the client and state the
+      // store already has. There is nothing to recover, and nothing may be
+      // cancelled: the read a notification scheduled is about a change no
+      // recovery read would replace.
+      if (client === previous.client && state === previous.state) return;
       connection = { client, state };
       // A read scheduled on the connection that is changing has nothing left
       // to say: on the way down it would fire against a socket that is gone
@@ -118,11 +126,12 @@ export function createStoreLifecycle<S>(
       clearTimeout(refetchTimer);
       refetchTimer = undefined;
       if (disposed || state !== "ready") return;
-      // Keyed on the client as well as the state: a replacement that arrives
-      // already ready is a different hub's answer to the same question, and
-      // the list this store holds was read through the one it replaced.
-      if (client === previous.client && previous.state === "ready") return;
       if (!options.established(options.store().getState())) return;
+      // A ready connection says what a notification says, and less precisely:
+      // everything this store derives from the hub's answers may have moved
+      // while it was away, with no notification left to say so. So the
+      // recovery applies what a notification applies, then re-reads.
+      options.onNotified?.();
       void options.refetch(options.store().getState());
     },
     dispose() {

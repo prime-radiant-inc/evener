@@ -267,6 +267,42 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.listCalls(fake)).toBe(2);
     });
 
+    test("reset() after dispose() publishes nothing", async () => {
+      const { fake, store } = lifecycle.create();
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      const before = store.getState();
+      let notified = 0;
+      store.subscribe(() => {
+        notified += 1;
+      });
+
+      store.dispose();
+      store.reset();
+
+      expect(notified).toBe(0);
+      expect(store.getState()).toBe(before);
+    });
+
+    test("a connection update that changes nothing leaves a scheduled read alone", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      store.start();
+
+      // The host reports its connection on every change it publishes, and most
+      // of those are metadata: the handshake's serverInfo and features land as
+      // one, on the client and state the store already has. Cancelling the
+      // read the notification scheduled would drop the change it was about,
+      // with no recovery read to replace it - the recovery only runs on a
+      // transition.
+      lifecycle.notifyUpdated(fake);
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(lifecycle.listCalls(fake)).toBe(2);
+    });
+
     test("a reconnect after dispose() reads nothing", async () => {
       const { fake, store } = lifecycle.create();
       lifecycle.answerList(fake);

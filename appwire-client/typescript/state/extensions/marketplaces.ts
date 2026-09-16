@@ -175,7 +175,11 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       const revision = listRevision.next();
       const resp = await request();
       set((s) => ({
-        ...(listRevision.commit(revision) ? { marketplaces: resp.marketplaces } : {}),
+        // The same three fields a read's success writes; see plugins.ts's
+        // mutate for why a committing response owns all three.
+        ...(listRevision.commit(revision)
+          ? { marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }
+          : {}),
         ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
       }));
     }
