@@ -10,6 +10,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import type { NavigationPages } from "./navigationPages";
+import { singleFlight } from "./singleFlight";
 
 export async function readPinLocation(
 	client: ConversationClientLike,
@@ -171,10 +172,9 @@ export async function refreshPinNavigation(
 }
 
 /** Re-read the pin navigation whenever the hub says the pin catalog changed,
- * one read at a time. Invalidations landing during a read are absorbed by
- * that read's own catalog refresh; a read that still ends stale is retried
- * once so a change that landed between its steps is not lost, and no more,
- * so a hub that notifies on every read cannot keep this reading. */
+ * one read at a time. A read that ends stale is retried once, so a change
+ * that landed between its location and catalog steps is not lost, and no
+ * more, so a hub that notifies on every read cannot keep this reading. */
 export function followPinCatalog(
 	pages: Pick<
 		NavigationPages<NavigationPinSectionDescriptor>,
@@ -183,31 +183,21 @@ export function followPinCatalog(
 	read: () => Promise<unknown>,
 	canRead: () => boolean,
 ) {
-	let dirty = false,
-		reading = false;
-	const drain = () => {
-		if (!dirty || reading || !canRead()) return;
-		dirty = false;
-		reading = true;
-		void (async () => {
-			for (let attempt = 0; attempt < 2; attempt++) {
-				try {
-					await read();
-					return;
-				} catch {
-					if (!pages.getSnapshot().stale || !canRead()) return;
-				}
-			}
-		})().finally(() => {
-			reading = false;
-		});
-	};
+	const reads = singleFlight(
+		() =>
+			read()
+				.catch(() =>
+					pages.getSnapshot().stale && canRead() ? read() : undefined,
+				)
+				.catch(() => undefined),
+		canRead,
+	);
 	return {
-		drain,
+		drain: reads.drain,
+		// A change announced during a read is absorbed by that read's own
+		// catalog refresh.
 		stop: pages.watch(() => {
-			if (reading) return;
-			dirty = true;
-			drain();
+			if (!reads.running) reads.request();
 		}),
 	};
 }

@@ -389,6 +389,17 @@ describe("project browser", () => {
 		controller.dispose();
 	});
 
+	it("holds re-reads while paused and catches up on resume", async () => {
+		const { controller, requests, invalidate } = await loadedProject();
+		controller.pause();
+		invalidate({ kind: "project", projectKey: "a", revision: 2 });
+		expect(requests).toHaveLength(3);
+		expect(controller.getSnapshot().groups[0]?.current.stale).toBe(true);
+		controller.resume();
+		expect(requests).toHaveLength(5);
+		controller.dispose();
+	});
+
 	it("does not refetch on repeated initialLoad after the catalog is loaded", async () => {
 		const { client, requests } = boundary();
 		const controller = createProjectBrowserController(client);

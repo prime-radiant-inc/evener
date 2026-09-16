@@ -92,7 +92,11 @@ export function ProjectSessionsList({
 			connection.current.needsRefresh = connection.current.initialized;
 			return;
 		}
-		if (!focused) return;
+		if (!focused) {
+			browser.pause();
+			return;
+		}
+		browser.resume();
 		if (!connection.current.initialized) {
 			connection.current.initialized = true;
 			void browser.initialLoad();

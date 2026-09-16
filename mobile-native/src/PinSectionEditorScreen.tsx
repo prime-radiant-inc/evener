@@ -42,6 +42,7 @@ export function PinSectionEditorScreen({
 		}
 	});
 	const selected = proposal.owner === repository ? proposal : null;
+	const [changedUnderAlert, setChangedUnderAlert] = useState(false);
 	useEffect(() => {
 		if (proposal.owner === repository) return;
 		try {
@@ -115,6 +116,7 @@ export function PinSectionEditorScreen({
 	}
 	function confirmDelete() {
 		if (blocked || !section) return;
+		setChangedUnderAlert(false);
 		Alert.alert(
 			`Delete ${section.name}?`,
 			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
@@ -124,7 +126,17 @@ export function PinSectionEditorScreen({
 					text: "Delete section",
 					style: "destructive",
 					onPress: () => {
-						if (pin.isCurrent()) void execute(true);
+						// The catalog re-reads itself while the alert is up; delete only
+						// the section as it was shown.
+						const now = pin.pages
+							?.getSnapshot()
+							.rows.find((row) => row.id === sectionId);
+						if (
+							now &&
+							(now.name !== section.name || now.count !== section.count)
+						)
+							setChangedUnderAlert(true);
+						else void execute(true);
 					},
 				},
 			],
@@ -154,7 +166,12 @@ export function PinSectionEditorScreen({
 						<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
 						<ErrorMessage
 							message={
-								selected?.error ?? pin.action?.error ?? pin.page?.error ?? null
+								changedUnderAlert
+									? "This section changed while you were deciding. Check it and delete again."
+									: (selected?.error ??
+										pin.action?.error ??
+										pin.page?.error ??
+										null)
 							}
 						/>
 						{!pin.ready ||

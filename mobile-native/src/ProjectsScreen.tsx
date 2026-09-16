@@ -238,7 +238,6 @@ export function PageList<T>({
 				!focused ||
 				!current.loaded ||
 				current.loading ||
-				current.stale ||
 				(!allowError && current.error) ||
 				current.remaining <= 0
 			)
@@ -287,9 +286,8 @@ export function PageList<T>({
 							);
 					});
 			} else if (ready) {
-				// A re-read cancelled when this list lost focus leaves it stale.
-				const snapshot = pages.getSnapshot();
-				if (!snapshot.loaded || snapshot.stale) void pages.refresh();
+				pages.resume();
+				if (!pages.getSnapshot().loaded) void pages.refresh();
 			}
 			return () => {
 				active = false;
@@ -452,8 +450,6 @@ export function PageList<T>({
 											actionState.storageUnavailable
 										)
 											return;
-										// The list may re-read itself while the sheet is open; the
-										// row's state the user chose against is what they asked for.
 										const invoke = (operation: () => void) => {
 											if (current.current === binding) operation();
 										};

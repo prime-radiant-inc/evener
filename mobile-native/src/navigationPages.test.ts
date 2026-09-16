@@ -118,6 +118,7 @@ function until<T>(
 }
 const settled = <T>(pages: NavigationPages<T>) =>
 	until(pages, (state) => !state.loading && !state.stale);
+const tick = () => new Promise((resolve) => setTimeout(resolve));
 function response(
 	keys: string[],
 	remaining = 0,
@@ -379,15 +380,83 @@ it("establishes a restarted hub generation from the re-read", async () => {
 	requests[0].resolve(response(["a"], 0, 10));
 	await first;
 	invalidate({
-		generationId: "hub-generation",
+		generationId: "restarted",
 		sequence: 1,
-		targets: [{ kind: "catalog", catalog: "projects", revision: 10 }],
+		targets: [{ kind: "catalog", catalog: "projects", revision: 1 }],
 	});
-	requests[1].resolve({
-		...response(["new"], 0, 1, 0, "restarted"),
-	});
+	requests[1].resolve(response(["new"], 0, 1, 0, "restarted"));
 	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "new" }]);
+});
+it("does not re-read an update whose revision it already holds", async () => {
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 3));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [
+			{ kind: "catalog", catalog: "projects", revision: 3 },
+			{ kind: "catalog", catalog: "projects", revision: 2 },
+		],
+	});
+	expect(pages.getSnapshot().stale).toBe(false);
+	expect(requests).toHaveLength(1);
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 4 }],
+	});
+	expect(requests).toHaveLength(2);
+});
+it("holds an owed re-read while cancelled and runs it on resume", async () => {
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	pages.cancel();
+	requests[1].resolve(response(["b"], 0, 2));
+	await tick();
+	expect(pages.getSnapshot()).toMatchObject({ stale: true, rows: [{ key: "a" }] });
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+	});
+	expect(requests).toHaveLength(2);
+	pages.resume();
+	expect(requests).toHaveLength(3);
+	requests[2].resolve(response(["c"], 0, 3));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
+});
+it("loads more on a stale idle page by reading from the first page", async () => {
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 1, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve(response(["a"], 1, 1));
+	await until(pages, (state) => !state.loading);
+	expect(pages.getSnapshot().stale).toBe(true);
+	const more = pages.more();
+	expect(requests[2].params.offset).toBe(0);
+	requests[2].resolve(response(["b"], 0, 2));
+	await more;
+	expect(pages.getSnapshot()).toMatchObject({ stale: false, rows: [{ key: "b" }] });
 });
 it("retries a read that predates a generation change during the request", async () => {
 	const { requests, pages, invalidate, requested } = boundary();
@@ -533,8 +602,8 @@ it("uses exact page bases for conditional refresh and preserves not-modified row
 		etag: "etag-0-1",
 	});
 	await refresh;
-	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a"]);
-	expect(pages.getSnapshot().remaining).toBe(1);
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a", "b"]);
+	expect(pages.getSnapshot().remaining).toBe(0);
 	expect(pages.getSnapshot().error).toBeNull();
 });
 
@@ -697,7 +766,7 @@ it("does not let a conditional response clear a newer notification", async () =>
 	expect(requests).toHaveLength(3);
 });
 
-it("resets paging offset when a conditional refresh retains the first page", async () => {
+it("keeps every loaded page when a conditional refresh finds the list unchanged", async () => {
 	const { pages, requests } = boundary();
 	const first = pages.refresh();
 	requests[0].resolve(response(["a"], 2, 1));
@@ -713,10 +782,12 @@ it("resets paging offset when a conditional refresh retains the first page", asy
 		etag: "etag-0-1",
 	});
 	await refresh;
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a", "b"]);
 	const again = pages.more();
-	expect(requests[3].params.offset).toBe(1);
-	requests[3].resolve(response(["b"], 1, 1, 1));
+	expect(requests[3].params.offset).toBe(2);
+	requests[3].resolve(response(["c"], 0, 1, 2));
 	await again;
+	expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a", "b", "c"]);
 });
 
 it("re-reads the pin catalog when a section changes and does not spin on an older hub revision", async () => {
@@ -770,9 +841,11 @@ it("re-reads the pin catalog when a section changes and does not spin on an olde
 	expect(pages.getSnapshot().stale).toBe(true);
 	expect(requests.map((p) => p.offset)).toEqual([0, 1, 0]);
 	// The hub keeps serving revision 1 below the notified 2: stay stale
-	// without spinning on further reads.
+	// without spinning on further reads. Loading more then catches up from
+	// the first page instead of paging past stale rows.
 	await until(pages, (state) => !state.loading);
 	expect(pages.getSnapshot().stale).toBe(true);
 	await pages.more();
-	expect(requests).toHaveLength(3);
+	expect(requests.map((p) => p.offset)).toEqual([0, 1, 0, 0]);
+	expect(pages.getSnapshot().stale).toBe(true);
 });

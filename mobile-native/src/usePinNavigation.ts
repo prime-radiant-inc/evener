@@ -97,7 +97,7 @@ export function usePinNavigation(
 		if (!pages || !read || !actions) return;
 		const follower = followPinCatalog(
 			pages,
-			() => read(),
+			read,
 			() => isCurrent() && !actions.getSnapshot().pending,
 		);
 		const unsubscribe = actions.subscribe(follower.drain);

@@ -49,8 +49,6 @@ export function PinAssignmentEditor({
 	close,
 }: PinAssignmentEditorProps) {
 	const colors = useColors();
-	// Loading and stale sections do not block: the list re-reads itself and
-	// a send's own confirmation read supersedes any read in flight.
 	const blocked = pending || uncertain || !canEdit || !connected;
 	const valid =
 		(selection?.kind === "existing" &&
