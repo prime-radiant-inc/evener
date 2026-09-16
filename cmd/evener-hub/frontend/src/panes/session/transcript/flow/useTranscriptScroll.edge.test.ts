@@ -2,11 +2,10 @@
 // - isAttentionWorthy with null model (line 182) — pillNeedsYou false when model is undefined
 // - isAttentionWorthy with warning status (line 183) — pillNeedsYou true with warning status
 
+import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
-import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";

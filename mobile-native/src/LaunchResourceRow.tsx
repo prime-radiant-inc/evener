@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Pressable, View } from "react-native";
-import type { MCPServerSpec } from "../../appwire-client/typescript/types.gen";
+import type { MCPServerSpec } from "@evener/appwire-client";
 import {
   basename,
   parentOf,

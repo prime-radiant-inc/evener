@@ -44,9 +44,9 @@
 
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import { formatTokenCount } from "@evener/appwire-client";
 import { memo } from "react";
-import { formatTokenCount } from "../../../../protocol/displayFormat";
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,

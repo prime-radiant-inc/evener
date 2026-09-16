@@ -23,8 +23,8 @@
 // all, so no disclosure can hold it behind a summary describing a different
 // item.
 
-import { firstLine, formatCharCount, formatDurationMs } from "../../../../protocol/displayFormat";
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import { firstLine, formatCharCount, formatDurationMs } from "@evener/appwire-client";
 import type { TranscriptMetadataVisibility } from "../../../../transcriptDisplay/projector";
 import {
   disclosureScopeForSession,

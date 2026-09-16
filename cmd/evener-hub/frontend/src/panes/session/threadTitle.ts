@@ -1,4 +1,4 @@
-import type { ThreadModel } from "../../protocol/model";
+import type { ThreadModel } from "@evener/appwire-client";
 import { selectSessionSummary } from "../../stores/navigation/selectors";
 import { type NavigationStoreState, navigationStore } from "../../stores/navigation/store";
 

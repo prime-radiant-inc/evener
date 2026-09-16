@@ -13,7 +13,7 @@
 // prompt" title because it had no structured item type to dispatch on; this
 // codebase does, so a change to the announcement wording cannot silently
 // break these toggles.
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../protocol/model";
+import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "@evener/appwire-client";
 
 // The session's system prompt (apptranscript.go's PreludeTurn) arrives as a
 // systemMessage item with this exact, static id - the narrow fallback signal

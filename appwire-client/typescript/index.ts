@@ -66,7 +66,7 @@ export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalRe
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
 export type { InputAttachment } from "./composerInput";
-export { buildComposerInput, buildInput } from "./composerInput";
+export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export {
@@ -120,6 +120,7 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export { humanizeState } from "./railSessionState";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type { NotificationRoutingKey } from "./reducer";

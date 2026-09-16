@@ -1,4 +1,4 @@
-import type { ModelDescriptor, ModelListDiagnostic } from "../../protocol/types.gen";
+import type { ModelDescriptor, ModelListDiagnostic } from "@evener/appwire-client";
 
 // The widget requires a display label, while the generated AppWire descriptor
 // makes it optional because daemon/source callers may know only an identity.

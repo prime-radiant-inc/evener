@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { TurnModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { TurnModel } from "../../../../protocol/model";
 import { turnMetaParts } from "./turnMeta";
 
 function turn(overrides: Partial<TurnModel> = {}): TurnModel {

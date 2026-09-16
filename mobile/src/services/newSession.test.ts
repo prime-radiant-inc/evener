@@ -18,7 +18,7 @@ import type {
   Thread,
   ThreadStartResponse,
   Turn,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import { createNewSessionService } from "./newSession";
 
 // --- minimal fake client ----------------------------------------------------

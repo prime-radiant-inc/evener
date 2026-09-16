@@ -1,7 +1,6 @@
-import type { EntityView } from "@evener/appwire-client";
+import type { EntityView, ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ThreadModel } from "../protocol/model";
 import {
   disclosureDefault,
   isDisclosureOpen,

@@ -2282,7 +2282,9 @@ func (jm *jobManager) appendWatchRegistryEvents(events []jobstore.Event) error {
 // liveWatchSummaries snapshots the session's active watch configs (jm.watches
 // only; terminalFlush is drain-only residue and excluded) into model-facing
 // rows for job_list. One row per live config, ordered by source for stable
-// output.
+// output. The visibility walk runs under jm.mu; the formatting and ordering it
+// feeds run outside it, so job_list's read no longer holds the lock the delivery
+// path needs for work that reads no shared state.
 // watchHistoryCap bounds the recent-watch ring surfaced by job_list. Old entries
 // are trimmed; the ring is a debugging aid, not a durable audit log.
 const watchHistoryCap = 16
@@ -2331,16 +2333,47 @@ func (jm *jobManager) recordWatchEndedLocked(key watchKey, cfg *watchConfig, rea
 	}
 }
 
-// recentWatchSummaries projects the watch history ring for job_list, latest first.
+// recentWatchSummaries projects the watch history ring for job_list, latest
+// first. The ring walk runs under jm.mu; the formatting it feeds runs outside
+// it, so job_list's read does not hold the lock the delivery path needs for
+// work that reads no shared state.
 func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
+	return formatRecentWatchSummaries(jm.visibleWatchHistorySnapshots(jm.sessionID))
+}
+
+// visibleWatchHistorySnapshots is the history ring's locked collector for the
+// session-facing projection: it gathers the entries visible to sessionID, latest
+// first, and returns with jm.mu released.
+func (jm *jobManager) visibleWatchHistorySnapshots(sessionID string) []watchHistoryEntry {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	out := make([]recentWatchEntry, 0, len(jm.watchHistory))
-	for i := range slices.Backward(jm.watchHistory) {
-		h := jm.watchHistory[i]
-		if !watchHistoryVisibleToSession(h, jm.sessionID) {
+	return watchHistorySnapshotsLocked(jm.watchHistory, func(h watchHistoryEntry) bool {
+		return watchHistoryVisibleToSession(h, sessionID)
+	})
+}
+
+// watchHistorySnapshotsLocked copies the ring entries satisfying visibleHistory,
+// latest first. The caller holds jm.mu. A watchHistoryEntry holds only value
+// fields (strings, ints, and a time.Time), so the value copy is already private
+// and needs no ring copy of its own.
+func watchHistorySnapshotsLocked(history []watchHistoryEntry, visibleHistory func(watchHistoryEntry) bool) []watchHistoryEntry {
+	out := make([]watchHistoryEntry, 0, len(history))
+	for i := range slices.Backward(history) {
+		h := history[i]
+		if !visibleHistory(h) {
 			continue
 		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// formatRecentWatchSummaries projects the supplied history entries into
+// job_list's recent-watch rows, in the order they were collected (latest
+// first). It reads only entry fields, so it takes no lock.
+func formatRecentWatchSummaries(history []watchHistoryEntry) []recentWatchEntry {
+	out := make([]recentWatchEntry, 0, len(history))
+	for _, h := range history {
 		out = append(out, recentWatchEntry{
 			ID:         h.id,
 			Source:     watchPublicSource(h.source, h.target),
@@ -2353,17 +2386,32 @@ func (jm *jobManager) recentWatchSummaries() []recentWatchEntry {
 	return out
 }
 
-func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
+// pendingInspectWatch is one config snapshotted for the watch-list projection,
+// plus whether it came from the detached (terminalFlush) set, so the formatter
+// can pick the live or detached inspect row after the lock is released.
+type pendingInspectWatch struct {
+	cfg      watchConfig
+	detached bool
+}
+
+// watchInspectSnapshots gathers, under jm.mu, value copies of every config the
+// visibility predicate accepts -- the live jm.watches entries, then the
+// terminalFlush (detached) entries whose id an active watch does not already
+// carry -- plus the visible history-ring entries, latest first. Both the map and
+// ring walks and their predicates run inside the lock; the formatting and
+// ordering that consume the copies run outside it. The walk order is preserved,
+// so the list projections append the same rows in the same order as before.
+func (jm *jobManager) watchInspectSnapshots(visible func(*watchConfig) bool, visibleHistory func(watchHistoryEntry) bool) ([]pendingInspectWatch, []watchHistoryEntry) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	watches := make([]jobWatchInspectToolResult, 0, len(jm.watches))
+	pending := make([]pendingInspectWatch, 0, len(jm.watches))
 	activeWatchIDs := make(map[string]bool, len(jm.watches))
-	for key, cfg := range jm.watches {
-		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+	for _, cfg := range jm.watches {
+		if !visible(cfg) {
 			continue
 		}
-		watches = append(watches, inspectResultFromWatchConfig(key, cfg))
-		if cfg != nil && cfg.watchID != "" {
+		pending = append(pending, pendingInspectWatch{cfg: snapshotWatchConfigForProjection(cfg)})
+		if cfg.watchID != "" {
 			activeWatchIDs[cfg.watchID] = true
 		}
 	}
@@ -2371,10 +2419,27 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 		if cfg == nil || cfg.watchID == "" || activeWatchIDs[cfg.watchID] {
 			continue
 		}
-		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
+		if !visible(cfg) {
 			continue
 		}
-		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
+		pending = append(pending, pendingInspectWatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true})
+	}
+	history := watchHistorySnapshotsLocked(jm.watchHistory, visibleHistory)
+	return pending, history
+}
+
+// formatWatchListInspectResult projects the snapshotted configs and history
+// entries into job_list's inspect rows: the watch set ordered by (source, id),
+// then the recent ring in the collected (latest-first) order. It reads only the
+// copies the collector handed it, so it takes no lock.
+func formatWatchListInspectResult(pending []pendingInspectWatch, history []watchHistoryEntry) jobWatchListToolResult {
+	watches := make([]jobWatchInspectToolResult, 0, len(pending))
+	for i := range pending {
+		if pending[i].detached {
+			watches = append(watches, inspectResultFromDetachedWatchConfig(&pending[i].cfg))
+			continue
+		}
+		watches = append(watches, inspectResultFromWatchConfig(&pending[i].cfg))
 	}
 	sort.SliceStable(watches, func(i, j int) bool {
 		if watches[i].Source != watches[j].Source {
@@ -2382,14 +2447,19 @@ func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
 		}
 		return watches[i].WatchID < watches[j].WatchID
 	})
-	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
-	for i := range slices.Backward(jm.watchHistory) {
-		if !watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
-			continue
-		}
-		recent = append(recent, inspectResultFromWatchHistory(jm.watchHistory[i]))
+	recent := make([]jobWatchInspectToolResult, 0, len(history))
+	for _, h := range history {
+		recent = append(recent, inspectResultFromWatchHistory(h))
 	}
 	return jobWatchListToolResult{Watches: watches, RecentWatches: recent, Count: len(watches)}
+}
+
+func (jm *jobManager) watchListToolResult() jobWatchListToolResult {
+	pending, history := jm.watchInspectSnapshots(
+		func(cfg *watchConfig) bool { return watchConfigVisibleToSession(cfg, jm.sessionID) },
+		func(h watchHistoryEntry) bool { return watchHistoryVisibleToSession(h, jm.sessionID) },
+	)
+	return formatWatchListInspectResult(pending, history)
 }
 
 func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiverDelegateID string) jobWatchListToolResult {
@@ -2398,61 +2468,72 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 	if receiverSessionID == "" {
 		return jobWatchListToolResult{}
 	}
+	pending, history := jm.watchInspectSnapshots(
+		func(cfg *watchConfig) bool {
+			return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
+		},
+		func(h watchHistoryEntry) bool {
+			return watchHistoryMatchesReceiver(h, receiverSessionID, receiverDelegateID)
+		},
+	)
+	return formatWatchListInspectResult(pending, history)
+}
+
+// watchInspectMatch is one inspected watch, copied under jm.mu, plus which of
+// the three sources it came from so the caller can format it after the lock is
+// released.
+type watchInspectMatch struct {
+	cfg         watchConfig
+	history     watchHistoryEntry
+	detached    bool
+	fromHistory bool
+}
+
+// result formats the matched watch into its inspect row. It reads only the copy
+// the finder handed it, so it takes no lock.
+func (m watchInspectMatch) result() jobWatchInspectToolResult {
+	switch {
+	case m.fromHistory:
+		return inspectResultFromWatchHistory(m.history)
+	case m.detached:
+		return inspectResultFromDetachedWatchConfig(&m.cfg)
+	default:
+		return inspectResultFromWatchConfig(&m.cfg)
+	}
+}
+
+// findWatchInspectSnapshot locates the first watch matching watchID and the
+// supplied predicates, copies it under jm.mu, and reports which kind it was so
+// the caller can format it after the lock is released. Precedence is the inspect
+// path's long-standing order -- live watches, then the detached terminalFlush
+// set, then the history ring (latest first).
+func (jm *jobManager) findWatchInspectSnapshot(watchID string, visible func(*watchConfig) bool, visibleHistory func(watchHistoryEntry) bool) (watchInspectMatch, bool) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	watches := make([]jobWatchInspectToolResult, 0, len(jm.watches))
-	activeWatchIDs := make(map[string]bool, len(jm.watches))
-	for key, cfg := range jm.watches {
-		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
-			continue
-		}
-		watches = append(watches, inspectResultFromWatchConfig(key, cfg))
-		if cfg != nil && cfg.watchID != "" {
-			activeWatchIDs[cfg.watchID] = true
+	for _, cfg := range jm.watches {
+		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
+			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg)}, true
 		}
 	}
 	for cfg := range jm.terminalFlush {
-		if cfg == nil || cfg.watchID == "" || activeWatchIDs[cfg.watchID] {
-			continue
+		if cfg != nil && cfg.watchID == watchID && visible(cfg) {
+			return watchInspectMatch{cfg: snapshotWatchConfigForProjection(cfg), detached: true}, true
 		}
-		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
-			continue
-		}
-		watches = append(watches, inspectResultFromDetachedWatchConfig(cfg))
 	}
-	sort.SliceStable(watches, func(i, j int) bool {
-		if watches[i].Source != watches[j].Source {
-			return watches[i].Source < watches[j].Source
-		}
-		return watches[i].WatchID < watches[j].WatchID
-	})
-	recent := make([]jobWatchInspectToolResult, 0, len(jm.watchHistory))
 	for i := range slices.Backward(jm.watchHistory) {
-		if !watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
-			continue
+		if jm.watchHistory[i].id == watchID && visibleHistory(jm.watchHistory[i]) {
+			return watchInspectMatch{history: jm.watchHistory[i], fromHistory: true}, true
 		}
-		recent = append(recent, inspectResultFromWatchHistory(jm.watchHistory[i]))
 	}
-	return jobWatchListToolResult{Watches: watches, RecentWatches: recent, Count: len(watches)}
+	return watchInspectMatch{}, false
 }
 
 func (jm *jobManager) inspectWatchByID(watchID string) jobWatchInspectToolResult {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for key, cfg := range jm.watches {
-		if cfg != nil && cfg.watchID == watchID && watchConfigVisibleToSession(cfg, jm.sessionID) {
-			return inspectResultFromWatchConfig(key, cfg)
-		}
-	}
-	for cfg := range jm.terminalFlush {
-		if cfg != nil && cfg.watchID == watchID && watchConfigVisibleToSession(cfg, jm.sessionID) {
-			return inspectResultFromDetachedWatchConfig(cfg)
-		}
-	}
-	for i := range slices.Backward(jm.watchHistory) {
-		if jm.watchHistory[i].id == watchID && watchHistoryVisibleToSession(jm.watchHistory[i], jm.sessionID) {
-			return inspectResultFromWatchHistory(jm.watchHistory[i])
-		}
+	if match, ok := jm.findWatchInspectSnapshot(watchID,
+		func(cfg *watchConfig) bool { return watchConfigVisibleToSession(cfg, jm.sessionID) },
+		func(h watchHistoryEntry) bool { return watchHistoryVisibleToSession(h, jm.sessionID) },
+	); ok {
+		return match.result()
 	}
 	return jobWatchInspectToolResult{WatchID: watchID, Watching: false}
 }
@@ -2463,31 +2544,23 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 	if receiverSessionID == "" {
 		return jobWatchInspectToolResult{}, false
 	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	for key, cfg := range jm.watches {
-		if cfg != nil && cfg.watchID == watchID && watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
-			return inspectResultFromWatchConfig(key, cfg), true
-		}
-	}
-	for cfg := range jm.terminalFlush {
-		if cfg != nil && cfg.watchID == watchID && watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
-			return inspectResultFromDetachedWatchConfig(cfg), true
-		}
-	}
-	for i := range slices.Backward(jm.watchHistory) {
-		if jm.watchHistory[i].id == watchID && watchHistoryMatchesReceiver(jm.watchHistory[i], receiverSessionID, receiverDelegateID) {
-			return inspectResultFromWatchHistory(jm.watchHistory[i]), true
-		}
+	if match, ok := jm.findWatchInspectSnapshot(watchID,
+		func(cfg *watchConfig) bool {
+			return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
+		},
+		func(h watchHistoryEntry) bool {
+			return watchHistoryMatchesReceiver(h, receiverSessionID, receiverDelegateID)
+		},
+	); ok {
+		return match.result(), true
 	}
 	return jobWatchInspectToolResult{}, false
 }
 
-func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspectToolResult {
+func inspectResultFromWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
 	if cfg == nil {
 		return jobWatchInspectToolResult{Watching: false}
 	}
-	_ = key
 	return jobWatchInspectToolResult{
 		WatchID:    cfg.watchID,
 		Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
@@ -2500,7 +2573,7 @@ func inspectResultFromWatchConfig(key watchKey, cfg *watchConfig) jobWatchInspec
 }
 
 func inspectResultFromDetachedWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
-	result := inspectResultFromWatchConfig(watchKey{SendTo: watchSendTo(cfg)}, cfg)
+	result := inspectResultFromWatchConfig(cfg)
 	result.Watching = false
 	return result
 }
@@ -2519,14 +2592,15 @@ func inspectResultFromWatchHistory(h watchHistoryEntry) jobWatchInspectToolResul
 }
 
 func (jm *jobManager) liveWatchSummaries() []watchListEntry {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	entries := make([]watchListEntry, 0, len(jm.watches))
-	for key, cfg := range jm.watches {
-		if !watchConfigVisibleToSession(cfg, jm.sessionID) {
-			continue
-		}
-		_ = key
+	return formatWatchSummaries(jm.visibleWatchConfigSnapshots(jm.sessionID))
+}
+
+// formatWatchSummaries projects the supplied configs into job_list's
+// model-facing rows and orders them by (source, id). It reads only config
+// fields, so it takes no lock; its callers pass configs snapshotted under jm.mu.
+func formatWatchSummaries(cfgs []*watchConfig) []watchListEntry {
+	entries := make([]watchListEntry, 0, len(cfgs))
+	for _, cfg := range cfgs {
 		entries = append(entries, watchListEntry{
 			ID:         cfg.id,
 			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
@@ -2554,28 +2628,79 @@ func (jm *jobManager) liveWatchStatuses() []WatchStatusInfo {
 // visible only when that manager is sessionID's own; otherwise a descendant's
 // keyless watch would leak onto an ancestor's projection.
 //
-// The rows are ordered by (source, id) before returning. The walk below reads a
-// map, so without this the order varies between two snapshots of unchanged
-// state -- unstable wire output, and row churn for a consumer that rebuilds its
-// rows from it. The order lives here, next to the walk, rather than at each call
-// site: four of this function's callers sorted the result afterward, and the
-// fifth published an unordered projection that no test could distinguish from a
-// changed one.
+// The map walk and its visibility predicates run under jm.mu; the formatting and
+// ordering they feed run outside it, so the hub's status-polling read no longer
+// holds the lock the delivery path needs for work that reads no shared state.
 func (jm *jobManager) liveWatchStatusesForSession(sessionID string) []WatchStatusInfo {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	statuses := make([]WatchStatusInfo, 0, len(jm.watches))
-	for _, cfg := range jm.watches {
-		if !watchConfigVisibleToSession(cfg, sessionID) {
-			continue
-		}
-		if cfg.receiverSessionID == "" && jm.sessionID != sessionID {
-			continue
-		}
+	return formatWatchStatuses(jm.visibleWatchConfigSnapshots(sessionID))
+}
+
+// formatWatchStatuses projects the supplied configs into structured status rows,
+// ordered by (source, id).
+//
+// The rows are ordered before returning. The walk above reads a map, so without
+// this the order varies between two snapshots of unchanged state -- unstable
+// wire output, and row churn for a consumer that rebuilds its rows from it. The
+// order lives here, next to the projection, rather than at each call site: four
+// callers sorted the result afterward, and the fifth published an unordered
+// projection that no test could distinguish from a changed one.
+//
+// It reads only config fields, so it takes no lock: the per-instant RFC3339Nano
+// formatting and the sort run entirely outside the walk's lock.
+func formatWatchStatuses(cfgs []*watchConfig) []WatchStatusInfo {
+	statuses := make([]WatchStatusInfo, 0, len(cfgs))
+	for _, cfg := range cfgs {
 		statuses = append(statuses, watchStatusInfoFromConfig(cfg))
 	}
 	sortWatchStatuses(statuses)
 	return statuses
+}
+
+// watchConfigSnapshotsWhere gathers value copies of this manager's live configs
+// that satisfy keep. Both the map walk and the predicate run inside jm.mu;
+// everything a projection derives from the copies runs outside it. The walk
+// order is preserved, so a projection that sorts stably sees the same input.
+func (jm *jobManager) watchConfigSnapshotsWhere(keep func(*watchConfig) bool) []*watchConfig {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfgs := make([]*watchConfig, 0, len(jm.watches))
+	for _, cfg := range jm.watches {
+		if !keep(cfg) {
+			continue
+		}
+		snapshot := snapshotWatchConfigForProjection(cfg)
+		cfgs = append(cfgs, &snapshot)
+	}
+	return cfgs
+}
+
+// visibleWatchConfigSnapshots gathers value copies of this manager's live
+// configs that are visible to sessionID. A config with no receiver key belongs
+// to the manager that owns it, so it is visible only when that manager is
+// sessionID's own; otherwise a descendant's keyless watch would leak onto an
+// ancestor's projection. liveWatchSummaries always passes the manager's own
+// session, for which the keyless predicate is a no-op, so one collector keeps
+// the two projections' visibility sets identical.
+func (jm *jobManager) visibleWatchConfigSnapshots(sessionID string) []*watchConfig {
+	return jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
+		if !watchConfigVisibleToSession(cfg, sessionID) {
+			return false
+		}
+		return cfg.receiverSessionID != "" || jm.sessionID == sessionID
+	})
+}
+
+// snapshotWatchConfigForProjection copies a live config so a projection can
+// format it after jm.mu is released. The delivery path mutates deliveries and
+// the deliveryTimes ring in place under jm.mu (countWatchDeliveryLocked), so a
+// projection that formatted the live pointer after unlocking would race the
+// delivery path. The ring is copied because an at-cap delivery rewrites its
+// backing array in place; every other field a projection reads is set once at
+// install and never mutated.
+func snapshotWatchConfigForProjection(cfg *watchConfig) watchConfig {
+	snapshot := *cfg
+	snapshot.deliveryTimes = append([]time.Time(nil), cfg.deliveryTimes...)
+	return snapshot
 }
 
 func sortWatchStatuses(statuses []WatchStatusInfo) {
@@ -2717,9 +2842,18 @@ func (s *Session) LiveWatchRowsForSessions(sessionIDs []string) map[string][]Wat
 // and this manager's own session's row when it does not. A keyless watch belongs
 // to the session that owns the manager, which is what keeps a child's watch off
 // its ancestors' rows.
+//
+// The map walk and its row keying run under jm.mu; the projection that formats
+// each row runs outside it, so the hub's thread-list read does not hold the lock
+// the delivery path needs for work that reads no shared state. The walk order is
+// preserved, so each row is appended in the same order as before.
 func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo) {
+	type watchRow struct {
+		row string
+		cfg watchConfig
+	}
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	pending := make([]watchRow, 0, len(jm.watches))
 	for _, cfg := range jm.watches {
 		if cfg == nil {
 			continue
@@ -2728,7 +2862,11 @@ func (jm *jobManager) appendWatchStatusesByRow(rows map[string][]WatchStatusInfo
 		if row == "" {
 			row = jm.sessionID
 		}
-		rows[row] = append(rows[row], watchStatusInfoFromConfig(cfg))
+		pending = append(pending, watchRow{row: row, cfg: snapshotWatchConfigForProjection(cfg)})
+	}
+	jm.mu.Unlock()
+	for i := range pending {
+		rows[pending[i].row] = append(rows[pending[i].row], watchStatusInfoFromConfig(&pending[i].cfg))
 	}
 }
 
@@ -2930,24 +3068,9 @@ func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverD
 	if receiverSessionID == "" || receiverDelegateID == "" {
 		return nil
 	}
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	entries := make([]watchListEntry, 0, len(jm.watches))
-	for key, cfg := range jm.watches {
-		if !watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID) {
-			continue
-		}
-		_ = key
-		entries = append(entries, watchListEntry{
-			ID:         cfg.id,
-			Source:     watchPublicSource(cfg.sourcePublic, cfg.target),
-			Condition:  watchConditionSummary(cfg),
-			Deliveries: cfg.deliveries,
-			CreatedAt:  cfg.createdAt.Format(time.RFC3339Nano),
-		})
-	}
-	sort.SliceStable(entries, watchListEntryLess(entries))
-	return entries
+	return formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
+		return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
+	}))
 }
 
 func watchConfigMatchesReceiver(cfg *watchConfig, receiverSessionID, receiverDelegateID string) bool {

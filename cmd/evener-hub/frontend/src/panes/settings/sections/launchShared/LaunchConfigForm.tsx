@@ -11,14 +11,15 @@
 // launchServer.tsx/project.tsx), or the diagnostics panel (launchServer-only,
 // rendered from resolve()/setLayer()'s own returned diagnostics, which this
 // component exposes via onSaved rather than rendering itself).
-import { useMemo, useRef, useState } from "react";
+
 import type {
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
   MCPServerSpec,
   PathValidateResponse,
-} from "../../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { useMemo, useRef, useState } from "react";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

@@ -1,10 +1,9 @@
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../protocol/model";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";

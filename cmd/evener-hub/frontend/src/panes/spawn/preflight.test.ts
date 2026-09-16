@@ -1,8 +1,8 @@
 // @vitest-environment node
 
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, test } from "vitest";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { createDir, preflightDir } from "./preflight";
 
 describe("preflightDir", () => {

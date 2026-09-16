@@ -1,5 +1,5 @@
+import type { ItemModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel } from "../../../protocol/model";
 import type { ProjectedEntry } from "../../../transcriptDisplay/projector";
 import { foldToolRuns, runLabel, type ToolRun } from "./toolRuns";
 

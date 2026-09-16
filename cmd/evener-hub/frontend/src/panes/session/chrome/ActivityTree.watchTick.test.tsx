@@ -5,14 +5,13 @@
 // pins the subscription boundary by counting calls into the row-only and
 // detail-only formatters on a tick.
 
+import type { ActivityTree as ActivityTreeData, NavigationWatchSummary } from "@evener/appwire-client";
 // The row and detail components import their formatters from the package root,
 // so the spies have to name the same module: a spy hung on the protocol/ shim
 // would sit on a different module object and never see a call.
 import * as activityRows from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { ActivityTree } from "./ActivityTree";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -98,12 +97,11 @@ describe("ActivityTree watch row ticks", () => {
     }
   });
 
-  // The pane chrome passes its own ticking clock down as `now`, which changes
-  // every second. The tree re-renders with it, but a collapsed watch row must
-  // stay asleep: it carries no clock-derived parts. An open row does carry them
-  // (the countdown in its meta, the detail's ages), so it must keep following
-  // the clock.
-  test("a ticking panel clock re-renders the open watch row and leaves the collapsed one alone", () => {
+  // The tree owns TreeNowContext and advances it once a second. Every
+  // clock-derived part of an open watch row - the countdown in its meta and the
+  // ages in its detail - reads that tick, while a collapsed row carries no
+  // clock-derived part at all and so stays asleep through it.
+  test("the tree's own tick re-renders the open watch row and leaves the collapsed one alone", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(NOW);
     try {
@@ -111,31 +109,21 @@ describe("ActivityTree watch row ticks", () => {
       const detailRender = vi.spyOn(activityRows, "watchFacts");
       // Four minutes after NOW, so each tick visibly shortens the countdown.
       const nextFire = "2026-08-05T15:04:12Z";
-      const openWatch = watch({
-        id: "watch_open",
-        note: "Hourly sweep",
-        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
-      });
-      const closedWatch = watch({
-        id: "watch_closed",
-        note: "Deploy rollback check",
-        cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
-      });
-      // One array, the way the panel holds the session's wire list: a clock
-      // tick re-renders the tree, it does not mint new watch rows.
-      const watches = [openWatch, closedWatch];
-      const expandedFoldIDs: string[] = [];
-      const onToggleFold = vi.fn();
-      const tree = (now: number) => (
-        <ActivityTree
-          tree={EMPTY_TREE}
-          watches={watches}
-          now={now}
-          expandedFoldIDs={expandedFoldIDs}
-          onToggleFold={onToggleFold}
-        />
-      );
-      const { rerender } = render(tree(NOW));
+      // One stable array, the way the panel holds the session's wire list: a
+      // clock tick re-renders the tree, it does not mint new watch rows.
+      const watches = [
+        watch({
+          id: "watch_open",
+          note: "Hourly sweep",
+          cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
+        }),
+        watch({
+          id: "watch_closed",
+          note: "Deploy rollback check",
+          cadence: [{ kind: "every", seconds: 600, derived_next_fire_at: nextFire }],
+        }),
+      ];
+      render(<ActivityTree tree={EMPTY_TREE} watches={watches} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
       // Both rows default open. Collapse the second one.
       const closedRow = screen.getByRole("treeitem", { name: "Watch: Deploy rollback check" });
@@ -152,9 +140,8 @@ describe("ActivityTree watch row ticks", () => {
       const detailsAtRest = detailRender.mock.calls.length;
 
       act(() => {
-        // The panel re-rendered with its next second, exactly as the chrome's
-        // useNowTick does.
-        rerender(tree(NOW + 1000));
+        // One second of the tree's own TreeNowContext clock.
+        vi.advanceTimersByTime(1000);
       });
 
       // The open row followed the clock...

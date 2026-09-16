@@ -3,11 +3,9 @@
 // and holds the client reference other stores (threads.ts) ride, since only
 // this store's connect() ever receives one.
 
+import type { AppwireClientLike, ConnectionState, FeatureSet, ServerInfo } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { ConnectionState } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import type { FeatureSet, ServerInfo } from "../protocol/types.gen";
 
 export interface ConnectionStoreState {
   state: ConnectionState;

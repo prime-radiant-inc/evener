@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 // requireJudgedKeyModes skips where the platform does not report POSIX
@@ -131,5 +132,5 @@ func TestInstances_KeyModeRotatesAKeyOthersCanRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%s): %v", endpointFingerprintKeyFile, err)
 	}
-	assertKeyFileMode0600(t, info, "the repaired key file")
+	hubtest.AssertFileMode0600(t, info, "the repaired key file")
 }
