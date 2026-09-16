@@ -21,7 +21,12 @@
     color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-.button:disabled {
+/* aria-disabled is a refusal that KEEPS focus where the keyboard put it (a
+   native disabled control that holds focus drops it to <body>), so it carries
+   the same look and the same non-response as :disabled - Button never styles
+   one without the other. */
+.button:disabled,
+.button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -72,7 +77,7 @@
   color: var(--surface-0);
 }
 
-.primary:hover:not(:disabled) {
+.primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in oklab, var(--accent) 78%, var(--ink-hi));
 }
 
@@ -87,11 +92,11 @@
   color: var(--ink-hi);
 }
 
-.secondary:hover:not(:disabled) {
+.secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--hover-1);
 }
 
-.secondary:active:not(:disabled) {
+.secondary:active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--hover-2);
 }
 
@@ -100,11 +105,11 @@
   color: var(--ink-hi);
 }
 
-.quiet:hover:not(:disabled) {
+.quiet:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--hover-1);
 }
 
-.quiet:active:not(:disabled) {
+.quiet:active:not(:disabled):not([aria-disabled="true"]) {
   background: var(--hover-2);
 }
 
@@ -113,7 +118,7 @@
   color: var(--surface-0);
 }
 
-.danger:hover:not(:disabled) {
+.danger:hover:not(:disabled):not([aria-disabled="true"]) {
   background: color-mix(in oklab, var(--danger) 78%, var(--ink-hi));
 }
 
@@ -126,7 +131,7 @@
   color: var(--danger);
 }
 
-.dangerQuiet:hover:not(:disabled) {
+.dangerQuiet:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--danger-bg);
   border-color: var(--danger-edge);
 }
