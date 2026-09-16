@@ -19,7 +19,9 @@
 
 import { create } from "zustand";
 import {
+  applyNotification,
   isStaleCursorError,
+  notificationTargetsThread,
   sessionControls,
   WireError,
 } from "@evener/appwire-client";
@@ -27,10 +29,8 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
-  QueueState,
   ThreadCapabilities,
   ThreadItem,
-  ThreadStatus,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -855,7 +855,28 @@ const ITEM_NOTIFICATION_METHODS = new Set([
   "item/toolOutput/delta",
 ]);
 
-export function createConversationStore() {
+// The item-level notifications the store still applies onto its display rows
+// itself (D23c routes them through the package reducer); everything else the
+// wire can send about a thread goes through reducer.applyNotification.
+const NATIVE_ITEM_APPLIERS = new Set([
+  "item/started",
+  "item/completed",
+  "item/agentMessage/delta",
+  "item/agentMessage/reset",
+  "item/reasoning/summaryTextDelta",
+  "item/toolOutput/delta",
+  "warning",
+  "evener/steering/injected",
+]);
+
+export interface ConversationStoreOptions {
+  // The clock the package reducer stamps the model with (lastFrameAt,
+  // observed timings); tests inject a fixed one.
+  readonly now?: () => number;
+}
+
+export function createConversationStore(options: ConversationStoreOptions = {}) {
+  const now = options.now ?? Date.now;
   let conversationGen = 0;
   let mutationIdCounter = 0;
   // Draft revision: a monotonically increasing counter incremented on every
@@ -879,18 +900,29 @@ export function createConversationStore() {
   // entry; if it changed during the await, the rehydrate is stale with
   // respect to the error owner and must not clear or overwrite error.
   let errorOwnerRev = 0;
-  // I2: Monotonic capability-owner revision — increments on every capability
-  // publication/transition (thread/status/changed, cap refresh, rehydrate
-  // commit). Rehydrate captures this at entry; if it changed during the
-  // await, a newer capability owner published caps and the rehydrate must
-  // preserve the current caps instead of overwriting with its stale
-  // projection. If unchanged, the rehydrate commits authoritative projected
-  // capabilities.
-  let capabilityOwnerRev = 0;
-  let approvalOwnerRev = 0;
-  let goalOwnerRev = 0;
-  let turnOwnerRev = 0;
-  let tasksOwnerRev = 0;
+  // Live writes accepted while a rehydrate's read is in flight, replayed onto
+  // the snapshot that read returns so live state is newer than the snapshot
+  // by construction (the web's replayHydrationNotifications). Null while no
+  // rehydrate is in flight. A thread-level notification replays through
+  // reducer.applyNotification; a capability refresh replays as the write it
+  // made. Item-level notifications still merge through liveOwnedRevs below
+  // until D23c routes them here too.
+  type LiveWrite = (conversation: MobileConversation) => MobileConversation;
+  let rehydrateReplay: LiveWrite[] | null = null;
+  function recordLiveWrite(write: LiveWrite): void {
+    rehydrateReplay?.push(write);
+  }
+  // The package reducer over the conversation: it reads the ThreadModel half
+  // and leaves the display rows exactly as they were.
+  function applyThreadNotification(
+    conversation: MobileConversation,
+    n: AnyNotification,
+  ): MobileConversation {
+    const applied = applyNotification(conversation, n, now());
+    return applied === conversation
+      ? conversation
+      : { ...applied, items: conversation.items };
+  }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -1188,14 +1220,12 @@ export function createConversationStore() {
               ? boundSink.setLiveCapabilities(refreshed, identity)
               : true;
           if (!sinkAccepted) return;
-          // I2: increment capability-owner revision for this publication.
-          capabilityOwnerRev += 1;
-          storeSet?.({
-            conversation: {
-              ...currentConv,
-              capabilities: { ...refreshed },
-            },
+          const publish: LiveWrite = (conversation) => ({
+            ...conversation,
+            capabilities: { ...refreshed },
           });
+          recordLiveWrite(publish);
+          storeSet?.({ conversation: publish(currentConv) });
         }
       }
     });
@@ -1790,14 +1820,11 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
-        // I2: Capture capability-owner revision at entry. If it changed during
-        // the await, a newer capability owner published caps and the rehydrate
-        // must preserve the current caps.
-        const entryCapRev = capabilityOwnerRev;
-        const entryApprovalRev = approvalOwnerRev;
-        const entryGoalRev = goalOwnerRev;
-        const entryTurnRev = turnOwnerRev;
-        const entryTasksRev = tasksOwnerRev;
+        // Every thread-level live write from here to commit replays onto the
+        // snapshot; a newer rehydrate takes over the buffer, and this one
+        // returns on its stale token before it could commit.
+        const replay: LiveWrite[] = [];
+        rehydrateReplay = replay;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1995,15 +2022,6 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // I2: If the capability-owner revision hasn't changed during the
-          // await, commit the authoritative projected capabilities from the
-          // rehydrate. If it advanced (a newer cap refresh or notification
-          // published caps), preserve the current caps.
-          const capOwnerChanged = entryCapRev !== capabilityOwnerRev;
-          const currentConv = currentState.conversation;
-          const preservedCaps = capOwnerChanged
-            ? currentConv?.capabilities
-            : undefined;
           // Task 2A-Truncation: cap the merged items, reconcile truncation
           // ownership exactly from the FINAL retained (capped) pre-truncation
           // items. mergedItems already contains superseded live/page
@@ -2035,26 +2053,12 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
-          const committedConversation = {
-            ...conversation,
+          // The snapshot, with every thread-level live write accepted while
+          // it was in flight replayed on top; the rows are the live/page
+          // merge above.
+          const committedConversation: MobileConversation = {
+            ...replay.reduce((model, write) => write(model), conversation),
             items: committedItems,
-            activeTurnId:
-              entryTurnRev === turnOwnerRev
-                ? conversation.activeTurnId
-                : currentConv?.activeTurnId,
-            goal:
-              entryGoalRev === goalOwnerRev
-                ? conversation.goal
-                : (currentConv?.goal ?? null),
-            tasks:
-              entryTasksRev === tasksOwnerRev
-                ? conversation.tasks
-                : (currentConv?.tasks ?? null),
-            pendingEscalations:
-              entryApprovalRev === approvalOwnerRev
-                ? conversation.pendingEscalations
-                : (currentConv?.pendingEscalations ?? []),
-            ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -2070,11 +2074,6 @@ export function createConversationStore() {
             }
           }
           pruneEvictedIds(committedItems);
-          // I2: If we're committing the projected capabilities (cap owner
-          // unchanged), increment the capability-owner revision.
-          if (!capOwnerChanged) {
-            capabilityOwnerRev += 1;
-          }
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
@@ -2114,6 +2113,8 @@ export function createConversationStore() {
               error: err instanceof Error ? err.message : String(err),
             });
           }
+        } finally {
+          if (rehydrateReplay === replay) rehydrateReplay = null;
         }
       },
 
@@ -2662,202 +2663,30 @@ export function createConversationStore() {
       applyNotification(n) {
         const state = get();
         if (state.conversation === null) return;
+        const conv = state.conversation;
 
-        // Check threadId/ref against the current conversation and silently drop
-        // mismatches.
-        const nref = notificationRef(n);
-        if (nref !== null) {
-          const currentId = state.conversation.threadId;
-          const currentRef = state.ref;
-          const idMatch =
-            nref.threadId === undefined || nref.threadId === currentId;
-          const refMatch = nref.ref === undefined || nref.ref === currentRef;
-          if (!idMatch || !refMatch) return;
+        // The package reducer's routing: a frame names its thread by ref
+        // when it carries one, else by threadId; a frame naming neither is
+        // not about this thread. Silently drop everything else.
+        if (!notificationTargetsThread(n, conv)) return;
+
+        // Every thread-level notification is the package reducer's. It reads
+        // the ThreadModel half of the conversation and leaves the display
+        // rows to the item appliers below; a write accepted during a
+        // rehydrate is also queued to replay onto that rehydrate's snapshot.
+        if (
+          !NATIVE_ITEM_APPLIERS.has(n.method) &&
+          !n.method.startsWith("item/") &&
+          n.method !== "evener/thread/resync"
+        ) {
+          const applied = applyThreadNotification(conv, n);
+          if (applied === conv) return;
+          recordLiveWrite((conversation) => applyThreadNotification(conversation, n));
+          set({ conversation: applied });
+          return;
         }
 
-        const conv = state.conversation;
         switch (n.method) {
-          case "evener/sandbox/escalation/requested": {
-            approvalOwnerRev++;
-            const escalation = n.params;
-            set({
-              conversation: {
-                ...conv,
-                pendingEscalations: [
-                  ...conv.pendingEscalations.filter(
-                    (value) => value.escalationId !== escalation.escalationId,
-                  ),
-                  escalation,
-                ],
-              },
-            });
-            break;
-          }
-          case "evener/sandbox/escalation/resolved": {
-            approvalOwnerRev++;
-            set({
-              conversation: {
-                ...conv,
-                pendingEscalations: conv.pendingEscalations.filter(
-                  (value) => value.escalationId !== n.params.escalationId,
-                ),
-              },
-            });
-            break;
-          }
-          case "thread/status/changed": {
-            const params = n.params as {
-              status: ThreadStatus;
-              capabilities?: ThreadCapabilities;
-            };
-            // I2: increment capability-owner revision if capabilities are
-            // being published.
-            if (params.capabilities !== undefined) {
-              capabilityOwnerRev += 1;
-            }
-            set({
-              conversation: {
-                ...conv,
-                status: params.status,
-                capabilities: params.capabilities
-                  ? { ...params.capabilities }
-                  : conv.capabilities,
-              },
-            });
-            break;
-          }
-
-          case "thread/queueChanged": {
-            const params = n.params as {
-              queue: QueueState;
-            };
-            set({
-              conversation: {
-                ...conv,
-                queue: params.queue,
-              },
-            });
-            break;
-          }
-
-          case "evener/task/updated": {
-            tasksOwnerRev++;
-            const { total, done, cancelled, remaining, current } = n.params;
-            set({
-              conversation: {
-                ...conv,
-                tasks: { total, done, cancelled, remaining, current },
-              },
-            });
-            break;
-          }
-
-          case "evener/goal/updated": {
-            goalOwnerRev++;
-            set({ conversation: { ...conv, goal: n.params.goal } });
-            break;
-          }
-
-          case "evener/thread/name/changed": {
-            const params = n.params as { name: string };
-            set({
-              conversation: { ...conv, name: params.name },
-            });
-            break;
-          }
-
-          case "thread/model/changed": {
-            const params = n.params as {
-              modelProvider: string;
-              reasoningEffortLevels?: string[];
-              supportsReasoning?: boolean;
-            };
-            // The payload describes the new model's full reasoning profile,
-            // not a patch: an omitted ladder replaces the old one, as the
-            // package reducer's own case does.
-            set({
-              conversation: {
-                ...conv,
-                modelProvider: params.modelProvider,
-                reasoningEffortLevels: params.reasoningEffortLevels ?? [],
-                supportsReasoning: params.supportsReasoning ?? false,
-              },
-            });
-            break;
-          }
-
-          case "thread/reasoning-effort/changed": {
-            const params = n.params as { reasoningEffort?: string };
-            set({
-              conversation: {
-                ...conv,
-                reasoningEffort: params.reasoningEffort,
-              },
-            });
-            break;
-          }
-
-          case "thread/vision-model/changed": {
-            const params = n.params as { visionModel: string };
-            set({
-              conversation: { ...conv, visionModel: params.visionModel },
-            });
-            break;
-          }
-
-          case "turn/started": {
-            turnOwnerRev++;
-            // The status is thread/status/changed's, never this frame's: a
-            // turn that opens inline behind the one that ended is announced
-            // as turn/completed, turn/started, then status(active), one
-            // message each, and a status written here would blink between
-            // them (the web's and TUI's #1330).
-            set({
-              conversation: {
-                ...conv,
-                activeTurnId: n.params.turn.id,
-              },
-            });
-            break;
-          }
-
-          case "turn/completed": {
-            const params = n.params as {
-              turn: { id: string; status: string };
-            };
-            const completedActive = conv.activeTurnId === params.turn.id;
-            // Completion is newer than an in-flight read even when this
-            // client missed the corresponding start notification.
-            turnOwnerRev++;
-            // params.turn.usage is this one turn's totals, not the session's
-            // cumulative usage — publish completion state only and leave
-            // usage as whatever the last authoritative projection set.
-            // The status stays thread/status/changed's. A genuine failure
-            // ends as turn/completed{status: "failed"} and its own status
-            // frame follows: the agent's failure exit
-            // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0)
-            // emits EventSessionEnd with Reason "turn_failed", announced as
-            // thread/status/changed(idle). Settling the failed active turn
-            // idle here, as the web reducer does, is a redundant safety net
-            // kept pending #1432.
-            // The transcript's id is not required: it can be absent while the
-            // session is active (a read cut between turns), and the failure is
-            // still this session's; a failed completion naming a turn another
-            // turn has superseded leaves the status alone.
-            const failedActive =
-              params.turn.status === "failed" &&
-              conv.status.type === "active" &&
-              (completedActive || conv.activeTurnId === undefined);
-            set({
-              conversation: {
-                ...conv,
-                activeTurnId: completedActive ? undefined : conv.activeTurnId,
-                status: failedActive ? { type: "idle" } : conv.status,
-              },
-            });
-            break;
-          }
-
           case "item/started":
           case "item/completed": {
             const params = n.params as { item: ThreadItem };

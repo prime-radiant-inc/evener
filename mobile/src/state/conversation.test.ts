@@ -211,16 +211,23 @@ class FakeConversationService implements LiveConversationService {
   refreshCapsResult: ThreadCapabilities | null = null;
   refreshCapsCallCount = 0;
 
+  // Like the real service, the conversation returned is hydrated under the
+  // ref that was opened: the store routes notifications by the model's ref.
   async open(ref: string, _cursor?: string): Promise<MobileConversation> {
     this.ref = ref;
-    return this.openConv;
+    return { ...this.openConv, ref };
   }
   async readProjection(ref: string): Promise<ConversationReadProjection> {
     this.readProjectionCalls.push({ ref });
     if (this.readProjectionBlock) return this.readProjectionBlock;
-    if (this.readProjectionResult) return this.readProjectionResult;
+    if (this.readProjectionResult) {
+      return {
+        ...this.readProjectionResult,
+        conversation: { ...this.readProjectionResult.conversation, ref },
+      };
+    }
     return {
-      conversation: this.openConv,
+      conversation: { ...this.openConv, ref },
       activity: {
         tasks: [],
         work: [],
@@ -755,14 +762,18 @@ describe("ConversationStore", () => {
       },
     );
 
-    it("drops vision changes from another session or thread", async () => {
+    // The package reducer's routing: a frame names its thread by ref when it
+    // carries one, else by threadId; a frame naming neither is not about this
+    // thread.
+    it("drops vision changes that name another session or thread", async () => {
       const store = createConversationStore();
       const service = new FakeConversationService();
       await store.getState().open(service, "ref-1");
       const original = store.getState().conversation;
       for (const params of [
-        { threadId: "other", ref: "ref-1" },
         { threadId: "thread-1", ref: "other" },
+        { threadId: "other" },
+        {},
       ]) {
         store.getState().applyNotification({
           method: "thread/vision-model/changed",
@@ -770,6 +781,17 @@ describe("ConversationStore", () => {
         } as AnyNotification);
       }
       expect(store.getState().conversation).toBe(original);
+    });
+
+    it("routes a vision change by its ref when it carries one", async () => {
+      const store = createConversationStore();
+      const service = new FakeConversationService();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "thread/vision-model/changed",
+        params: { threadId: "other", ref: "ref-1", visionModel: "off" },
+      } as AnyNotification);
+      expect(store.getState().conversation?.visionModel).toBe("off");
     });
     it("drops notifications that don't match current ref", async () => {
       const service = new FakeConversationService();
@@ -3307,7 +3329,7 @@ describe("ConversationStore", () => {
       // Emit a warning — it should be inserted but the cap maintained.
       store.getState().applyNotification({
         method: "warning",
-        params: { message: "test warning" },
+        params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
       } as AnyNotification);
       const conv = store.getState().conversation;
       expect(conv?.items.length).toBeLessThanOrEqual(500);
@@ -3323,7 +3345,7 @@ describe("ConversationStore", () => {
 
       const warning = {
         method: "warning",
-        params: { title: "Provider warning", message: "Retrying" },
+        params: { threadId: "thread-1", ref: "ref-1", title: "Provider warning", message: "Retrying" },
       } as AnyNotification;
       store.getState().applyNotification(warning);
       store.getState().applyNotification(warning);
@@ -7486,7 +7508,7 @@ describe("ConversationStore", () => {
   // publication/transition. Capture at rehydrate start. If unchanged after
   // await, commit authoritative projected capabilities. If advanced during
   // await, preserve current caps.
-  describe("I2: monotonic capability-owner revision", () => {
+  describe("a capability publication during a reread wins over the snapshot", () => {
     it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
@@ -7564,6 +7586,8 @@ describe("ConversationStore", () => {
       store.getState().applyNotification({
         method: "thread/status/changed",
         params: {
+          threadId: "thread-1",
+          ref: "ref-1",
           status: { type: "ready" },
           capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
         },
@@ -7580,6 +7604,151 @@ describe("ConversationStore", () => {
       // Current caps preserved — queue=false from the notification wins.
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       expect(store.getState().conversation?.capabilities.queue).toBe(false);
+    });
+  });
+
+  // A live write accepted while a reread is in flight is newer than the
+  // snapshot that reread returns, whichever thread-level field it touched.
+  // The snapshot is replayed onto (the web's replayHydrationNotifications),
+  // so no field can be rolled back by a reread that raced it.
+  describe("live writes during a reread replay onto the snapshot", () => {
+    async function rereadRacing(
+      liveWrite: (store: ReturnType<typeof createConversationStore>) => void,
+      snapshot: Thread,
+    ) {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(snapshot);
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      liveWrite(store);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      return store.getState().conversation;
+    }
+    const target = { threadId: "thread-1", ref: "ref-1" };
+
+    it("keeps a status change over the snapshot's status", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "thread/status/changed",
+            params: { ...target, status: { type: "active" } },
+          } as AnyNotification),
+        makeThread({ status: { type: "idle" } }),
+      );
+      expect(conv?.status).toEqual({ type: "active" });
+    });
+
+    it("keeps a queue change over the snapshot's queue", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "thread/queueChanged",
+            params: { ...target, queue: { revision: 4, depth: 1, texts: ["later"] } },
+          } as AnyNotification),
+        makeThread(),
+      );
+      expect(conv?.queue).toEqual({ revision: 4, depth: 1, texts: ["later"] });
+    });
+
+    it("keeps a rename over the snapshot's name", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/thread/name/changed",
+            params: { ...target, name: "renamed live" },
+          } as AnyNotification),
+        makeThread({ name: "snapshot name" }),
+      );
+      expect(conv?.name).toBe("renamed live");
+    });
+
+    it("keeps a model change over the snapshot's model", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "thread/model/changed",
+            params: {
+              ...target,
+              modelProvider: "openai/gpt-x",
+              model: "gpt-x",
+              reasoningEffortLevels: ["low", "high"],
+              supportsReasoning: true,
+            },
+          } as AnyNotification),
+        makeThread({ modelProvider: "anthropic" }),
+      );
+      expect(conv?.modelProvider).toBe("openai/gpt-x");
+      expect(conv?.reasoningEffortLevels).toEqual(["low", "high"]);
+    });
+
+    it("keeps a goal update over the snapshot's goal", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/goal/updated",
+            params: { ...target, goal: { objective: "live", status: "active", iterations: 2 } },
+          } as AnyNotification),
+        makeThread({
+          evener: { ref: "ref-1", capabilities: ALL_TRUE_CAPS, queue: { revision: 0 }, goal: { objective: "stale", status: "active", iterations: 1 } },
+        }),
+      );
+      expect(conv?.goal).toEqual({ objective: "live", status: "active", iterations: 2 });
+    });
+
+    it("keeps a task update over the snapshot's tasks", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/task/updated",
+            params: { ...target, total: 3, done: 2 },
+          } as AnyNotification),
+        makeThread({
+          evener: { ref: "ref-1", capabilities: ALL_TRUE_CAPS, queue: { revision: 0 }, tasks: { total: 3, done: 1 } },
+        }),
+      );
+      expect(conv?.tasks).toEqual({ total: 3, done: 2 });
+    });
+
+    it("keeps a started turn over the snapshot's idle turn state", async () => {
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "turn/started",
+            params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+          } as AnyNotification),
+        makeThread(),
+      );
+      expect(conv?.activeTurnId).toBe("t-live");
+    });
+
+    it("keeps an approval requested live over a snapshot without it", async () => {
+      const escalation = {
+        ...target,
+        escalationId: "esc-live",
+        mode: "workspace",
+        tool: "exec",
+        kind: "read",
+        deniedPath: "/outside",
+      };
+      const conv = await rereadRacing(
+        (store) =>
+          store.getState().applyNotification({
+            method: "evener/sandbox/escalation/requested",
+            params: escalation,
+          } as AnyNotification),
+        makeThread(),
+      );
+      expect(conv?.pendingEscalations).toEqual([escalation]);
     });
   });
 
@@ -12170,7 +12339,7 @@ describe("ConversationStore", () => {
       // Warning pushes to 501, cap trims X (oldest).
       store.getState().applyNotification({
         method: "warning",
-        params: { message: "test warning" },
+        params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
       } as AnyNotification);
 
       // Assert actual cap/IDs/order.
