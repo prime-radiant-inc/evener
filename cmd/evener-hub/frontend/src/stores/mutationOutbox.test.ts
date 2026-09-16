@@ -517,6 +517,47 @@ describe("MutationOutboxIndexedDB", () => {
     }
   });
 
+  test.each([
+    ["thread/clear", false],
+    ["turn/interrupt", false],
+    ["thread/clear", true],
+    ["turn/interrupt", true],
+  ] as const)("fresh Send cannot bypass blocked %s with preceding uncertain Send=%s", async (method, oldSend) => {
+    const store = new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence() });
+    try {
+      if (oldSend) {
+        const old = await store.enqueueIntent({
+          ...intent("old uncertain Send"),
+          method: "turn/start",
+          payload: { ref: TARGET, expectedInstanceId: "old-instance", input: [{ type: "text", text: "old input" }] },
+        });
+        await store.markAttempted(old.clientMutationId);
+        await store.markUnknown(old.clientMutationId, "blockedUnknown");
+      }
+      const control = await store.enqueueIntent({
+        ...intent("control"),
+        method,
+        payload: {
+          ref: TARGET,
+          expectedInstanceId: "control-instance",
+          ...(method === "turn/interrupt" ? { turnId: "old-turn" } : {}),
+        },
+      });
+      await store.markAttempted(control.clientMutationId);
+      await store.markUnknown(control.clientMutationId, "blockedUnknown");
+      await store.enqueueIntent({
+        ...intent("fresh Send"),
+        method: "turn/start",
+        payload: { ref: TARGET, expectedInstanceId: "new-instance", input: [{ type: "text", text: "fresh input" }] },
+      });
+      const before = await store.listOutbox(TARGET);
+      expect(await store.nextDispatchable(TARGET)).toBeUndefined();
+      expect(await store.listOutbox(TARGET)).toEqual(before);
+    } finally {
+      store.close();
+    }
+  });
+
   test("a blocked lower sequence prevents later dispatch without blocking another target", async () => {
     const store = new MutationOutboxIndexedDB({
       indexedDB,

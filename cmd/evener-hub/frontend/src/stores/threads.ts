@@ -150,7 +150,13 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
-  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
+  send(
+    ref: string,
+    text: string,
+    attachments?: InputAttachment[],
+    skillNames?: readonly string[],
+    onDestination?: (ref: string) => void,
+  ): Promise<void>;
   steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   interrupt(ref: string): Promise<void>;
@@ -947,20 +953,51 @@ export function resumeSessionForUserIntent(ref: string, explicitRecovery = false
   return resume;
 }
 
-export async function retryBlockedMutation(clientMutationId: string): Promise<boolean> {
+// A fresh intent may follow a replacement ref; an uncertain Retry never does.
+// Hold that destination's model until the durable handoff pins it, or release
+// it on failure. ensureThread undoes its own claim if hydration rejects.
+async function withResumedSendDestination<T>(ref: string, submit: (destination: string) => Promise<T>): Promise<T> {
+  const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
+  const checkStopped = () => {
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
+      throw new Error("Stop canceled this pending action; send again when ready.");
+  };
+  const destination = await resumeSessionForUserIntent(ref);
+  checkStopped();
+  const distinct = destination !== ref;
+  if (distinct) await threadsStore.getState().ensureThread(destination);
+  try {
+    checkStopped();
+    return await submit(destination);
+  } finally {
+    if (distinct) threadsStore.getState().releaseThread(destination);
+  }
+}
+
+export async function retryBlockedMutation(
+  clientMutationId: string,
+  mode: "user" | "backgroundNote" = "user",
+): Promise<boolean> {
   const stopGenerations = new Map(userIntentStopGenerations);
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
+  const savedTargetGeneration = stopGenerations.get(record.targetRef) ?? 0;
   const checkStopped = () => {
-    if ((userIntentStopGenerations.get(record.targetRef) ?? 0) !== (stopGenerations.get(record.targetRef) ?? 0))
+    if ((userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration) {
+      if (mode === "backgroundNote") return true;
       throw new Error("Stop canceled this pending action; retry again when ready.");
+    }
+    return false;
   };
-  checkStopped();
+  if (checkStopped()) return false;
+  // A background note save keeps its blocked draft when Stop wins; it must
+  // neither resume a session nor retry another kind of mutation.
+  if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
-  await resumeSessionForUserIntent(record.targetRef);
-  checkStopped();
+  if (mode === "user") await resumeSessionForUserIntent(record.targetRef);
+  if (checkStopped()) return false;
   // Recovery may reveal a replacement instance. Never retarget an uncertain
   // request: reconciliation and journal replay retain its original ID/payload,
   // including the old instance fence, which the daemon may explicitly reject.
@@ -980,11 +1017,11 @@ export async function retryBlockedMutation(clientMutationId: string): Promise<bo
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
   await handleReady(client, epoch, record.targetRef);
-  checkStopped();
+  if (checkStopped()) return false;
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
-  checkStopped();
+  if (checkStopped()) return false;
   return current?.state !== "blockedUnknown";
 }
 
@@ -1030,14 +1067,16 @@ export async function resendRecoveryMutation(
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  if (route === "send") targetRef = await resumeSessionForUserIntent(targetRef);
-  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
-  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
-  if (!record) return undefined;
-  pinnedMutationRefs.add(targetRef);
-  notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
-  handleDiscoveredMutations(runtime, [targetRef]);
-  return record;
+  const submit = async (destination: string) => {
+    const intent = composerMutationIntent(destination, route, text, attachments, skillNames);
+    const record = await runtime.storage.resendRecovery(clientMutationId, intent);
+    if (!record) return undefined;
+    pinnedMutationRefs.add(destination);
+    notifyMutationPersistence([destination], { record, recoveryId: clientMutationId });
+    handleDiscoveredMutations(runtime, [destination]);
+    return record;
+  };
+  return route === "send" ? withResumedSendDestination(targetRef, submit) : submit(targetRef);
 }
 
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
@@ -2775,12 +2814,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments, skillNames) {
-    const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
-    const resumedRef = await resumeSessionForUserIntent(ref);
-    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
-      throw new Error("Stop canceled this pending action; send again when ready.");
-    await enqueueMutationIntent(composerMutationIntent(resumedRef, "send", text, attachments, skillNames));
+  async send(ref, text, attachments, skillNames, onDestination) {
+    const record = await withResumedSendDestination(ref, (destination) =>
+      enqueueMutationIntent(composerMutationIntent(destination, "send", text, attachments, skillNames)),
+    );
+    onDestination?.(record.targetRef);
   },
 
   async steer(ref, text, attachments, skillNames) {

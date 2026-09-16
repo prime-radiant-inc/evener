@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { useEffect } from "react";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { NotesHumanSetParams, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
@@ -14,6 +15,7 @@ import {
   useHumanNoteDraft,
 } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
 
 let storage: MutationOutboxIndexedDB;
@@ -210,6 +212,97 @@ test("opening a second session discovers its durable note after the initial pers
   const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
   await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
 });
+
+test.each(["Stop", "storage abort"] as const)(
+  "background blocked-note retry distinguishes %s during its real outbox lookup",
+  async (outcome) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const ref = "ref-a";
+    const fake = new FakeClient("ready");
+    fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+    fake.on("evener/thread/forceStop", () => ({}));
+    connectionStore.getState().connect(fake);
+    await threadsStore.getState().ensureThread(ref);
+    await threadsStore.getState().refreshThread(ref);
+    const original = await persisted("retained blocked note");
+    await storage.markAttempted(original.clientMutationId);
+    await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+    expect(await storage.getOutbox(original.clientMutationId)).toEqual({
+      ...original,
+      attempted: true,
+      state: "blockedUnknown",
+    });
+    syncHumanNote(ref, "");
+    let announceReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      announceReady = resolve;
+    });
+    const { result } = renderHook(() => {
+      const draft = useHumanNoteDraft(ref);
+      useEffect(() => {
+        if (draft?.submitted?.id === original.clientMutationId && draft.submitted.state === "blockedUnknown")
+          announceReady();
+      }, [draft]);
+      return draft;
+    });
+    await waitFor(() => ready);
+    expect(result.current?.submitted?.state).toBe("blockedUnknown");
+    const before = result.current;
+    let announceLookup!: (hold: ReturnType<typeof holdIndexedDBEvent>) => void;
+    const lookup = new Promise<ReturnType<typeof holdIndexedDBEvent>>((resolve) => {
+      announceLookup = resolve;
+    });
+    let held: ReturnType<typeof holdIndexedDBEvent> | undefined;
+    let intercepted = false;
+    const get = IDBObjectStore.prototype.get;
+    const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, key) {
+      const request = get.call(this, key);
+      if (!intercepted && this.name === "outbox" && key === original.clientMutationId) {
+        intercepted = true;
+        if (outcome === "storage abort") this.transaction.abort();
+        else {
+          held = holdIndexedDBEvent(request, "success");
+          announceLookup(held);
+        }
+      }
+      return request;
+    });
+    onTestFinished(() => {
+      held?.release();
+      spy.mockRestore();
+    });
+    let saving: Promise<void> | undefined;
+    act(() => blurHumanNote(ref, Symbol("blur owner")));
+    expect(result.current?.flush).toBeTypeOf("function");
+    act(() => {
+      // The stored flush starts the real async save immediately; its returned
+      // promise settles only after the draft's catch/finally has completed.
+      saving = Promise.resolve(result.current?.flush?.());
+    });
+    if (outcome === "Stop") {
+      const boundary = await lookup;
+      await boundary.reached;
+      await act(async () => {
+        await threadsStore.getState().forceStop(ref);
+        boundary.release();
+        await saving;
+      });
+    } else
+      await act(async () => {
+        await saving;
+      });
+    expect(intercepted).toBe(true);
+    expect(result.current).toMatchObject({ text: before?.text, dirty: true, submitted: before?.submitted });
+    if (outcome === "Stop") expect(result.current?.error).toBe(before?.error);
+    else expect(result.current?.error).toContain("Couldn't save note");
+    expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+    expect(await storage.getOutbox(original.clientMutationId)).toEqual({
+      ...original,
+      attempted: true,
+      state: "blockedUnknown",
+    });
+  },
+);
 
 // A resumeRequired session presents as a live, idle thread with the
 // SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes

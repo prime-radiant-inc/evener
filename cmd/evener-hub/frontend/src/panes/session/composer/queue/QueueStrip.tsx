@@ -14,12 +14,13 @@ import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { readMutationPersistence, threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
   type PendingTurnEntry,
+  refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
@@ -328,12 +329,18 @@ export function QueueStrip({
       return next;
     });
     try {
-      if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef)))
-        throw new Error("Delivery still cannot be checked. The original message is kept; you can send a new message.");
+      if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
+        const { outbox } = await readMutationPersistence(sessionRef);
+        const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
+        await refreshPendingTurnsProjection(sessionRef);
+        if (current?.state === "blockedUnknown")
+          throw new Error(
+            "Delivery still cannot be checked. The original message is kept; you can send a new message.",
+          );
+      }
     } catch (error) {
       const message = `Retry failed: ${errorText(error)}`;
       setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, message));
-      toasts.push("error", message);
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -478,8 +485,7 @@ export function QueueStrip({
                       rowBusy ||
                       !model ||
                       model.status.type === "restartRequired" ||
-                      (model.status.type === "notLoaded" && !sessionRef.startsWith("local:")) ||
-                      (!mutationAuthority && !(model.status.type === "notLoaded" && sessionRef.startsWith("local:")))
+                      (model.status.type === "notLoaded" ? !sessionRef.startsWith("local:") : !mutationAuthority)
                     }
                     onClick={() => void handleRetry(record)}
                   >

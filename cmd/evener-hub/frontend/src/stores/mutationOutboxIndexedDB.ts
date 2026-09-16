@@ -406,11 +406,16 @@ export class MutationOutboxIndexedDB {
     const first = records[0];
     if (first?.state === "submitting") return first;
     // Uncertain delivery belongs to the old message, not to every later user
-    // intent. A never-attempted Send may pass blocked rows without reopening
+    // intent. A never-attempted Send may pass blocked Sends without reopening
     // them or changing their original mutation/instance identity. Other
     // controls keep their ordering, and no Send passes an eligible older row.
-    const next = records.find((record) => record.state === "submitting");
-    return next?.method === "turn/start" && next.attempted === false ? next : undefined;
+    const nextIndex = records.findIndex((record) => record.state === "submitting");
+    const next = records[nextIndex];
+    return next?.method === "turn/start" &&
+      next.attempted === false &&
+      records.slice(0, nextIndex).every((record) => record.method === "turn/start")
+      ? next
+      : undefined;
   }
 
   async #open(): Promise<IDBDatabase> {

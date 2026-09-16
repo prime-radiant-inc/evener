@@ -146,7 +146,7 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       const active = get(ref);
       if (!active?.dirty || active.focusOwners.size || active.generation !== current.generation) return;
       if (current.submitted?.generation === current.generation && current.submitted.state === "blockedUnknown") {
-        await retryBlockedMutation(current.submitted.id);
+        await retryBlockedMutation(current.submitted.id, "backgroundNote");
         return;
       }
       // The daemon's ExpectedInstanceID check is the authority on session

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
@@ -12,6 +12,7 @@ import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexe
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { PendingChips } from "../../pending/PendingChips";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
@@ -336,6 +337,77 @@ describe("durable recovery rows", () => {
       expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
     });
     storage.close();
+  });
+
+  test.each(["settled", "reopened"] as const)(
+    "visible Retry treats an other-tab %s row as a benign no-op",
+    async (outcome) => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+      const fake = connectFakeClient();
+      await hydrate(fake, "ref_a");
+      await seedBlockedUnknown("other-tab uncertain input");
+      render(
+        <>
+          <QueueStrip {...defaultProps()} />
+          <PendingChips sessionRef="ref_a" />
+          <Toast />
+        </>,
+      );
+      await flushPendingTurnsProjectionForTests();
+      const retry = screen.getByRole("button", { name: "Retry" });
+      const otherTab = new MutationOutboxIndexedDB();
+      onTestFinished(() => otherTab.close());
+      const original = (await otherTab.listOutbox("ref_a"))[0];
+      if (!original) throw new Error("missing seeded blocked mutation");
+      // Commit from another handle without notifying this tab's projection:
+      // the visible Retry is stale, but its real lookup must see the new state.
+      if (outcome === "settled") await otherTab.settleApplied(original.clientMutationId);
+      else await otherTab.restoreProvenAbsent("ref_a", new Set());
+      const afterOtherTab = await otherTab.getOutbox(original.clientMutationId);
+      expect(screen.getByRole("button", { name: "Retry" })).toBe(retry);
+      await userEvent.setup().click(retry);
+      await flushPendingTurnsProjectionForTests();
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(screen.queryByText(/Retry failed|Delivery still cannot be checked/)).toBeNull();
+      expect(getToasts()).toEqual([]);
+      expect(await otherTab.getOutbox(original.clientMutationId)).toEqual(afterOtherTab);
+      if (outcome === "reopened") {
+        expect(afterOtherTab).toMatchObject({
+          clientMutationId: original.clientMutationId,
+          payload: original.payload,
+          state: "submitting",
+        });
+        expect(screen.getByText("other-tab uncertain input")).toBeTruthy();
+      }
+      expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+    },
+  );
+
+  test("a genuinely blocked Retry reports one inline error without a duplicate toast", async ({ onTestFinished }) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    await seedBlockedUnknown("still uncertain input");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    const storage = new MutationOutboxIndexedDB();
+    onTestFinished(() => storage.close());
+    const before = await storage.listOutbox("ref_a");
+    fake.on("thread/read", () =>
+      readResponse("ref_a", {
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
+      }),
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await flushPendingTurnsProjectionForTests();
+    const row = screen.getByText("still uncertain input").closest("li");
+    if (!row) throw new Error("missing blocked row after Retry");
+    await within(row).findByRole("button", { name: "Retry" });
+    expect(within(row).getAllByRole("alert")).toHaveLength(1);
+    expect(within(row).getByRole("alert").textContent).toContain("Retry failed");
+    expect(getToasts()).toEqual([]);
+    expect(await storage.listOutbox("ref_a")).toEqual(before);
+    expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
   });
 
   test("active recovery is omitted while later and orphaned records retain order", async () => {

@@ -1,5 +1,5 @@
 // The fake boundary is the hub's WebSocket, not the client, stores, or UI.
-import { AppwireClient, type ThreadReadResponse, WireError } from "@evener/appwire-client";
+import { AppwireClient, errorText, type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 
 export interface RecoveryWireRequest {
@@ -81,7 +81,7 @@ export function recoveryClientFixture(options: {
               id: request.id,
               error: {
                 code: error instanceof WireError ? error.code : -32000,
-                message: error instanceof Error ? error.message : String(error),
+                message: errorText(error),
                 data: error instanceof WireError ? error.data : undefined,
               },
             }),

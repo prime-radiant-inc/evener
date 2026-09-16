@@ -48,6 +48,7 @@ import ReadOnlyTranscript from "../transcript/Transcript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
 import * as ComposerModule from "./composer/Composer";
+import { writeComposerDraft } from "./composer/draft";
 import {
   flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
@@ -3310,6 +3311,166 @@ function stoppedRecoverySnapshot(ref: string, stopped: boolean, instanceId = "sa
   });
 }
 
+test.each(["fresh", "recovered"] as const)(
+  "stopped-session %s Send hydrates an untracked replacement before intent and follows its pane destination",
+  async (kind) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+    const ref = `local:replacement-origin-${kind}`;
+    const replacement = `local:replacement-destination-${kind}`;
+    const input = [
+      { type: "text" as const, text: "replacement intent" },
+      { type: "skill" as const, name: "pkg:probe" },
+    ];
+    const old = await mutationStorage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: {
+        ref,
+        expectedInstanceId: "uncertain-original-instance",
+        input: [{ type: "text", text: "uncertain original" }],
+      },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain original" }] },
+    });
+    await mutationStorage.markAttempted(old.clientMutationId);
+    await mutationStorage.markUnknown(old.clientMutationId, "blockedUnknown");
+    let recoveryId: string | undefined;
+    if (kind === "recovered") {
+      const rejected = await mutationStorage.enqueueIntent({
+        targetRef: ref,
+        method: "turn/start",
+        payload: { ref, expectedInstanceId: "rejected-instance", input },
+        composerText: "replacement intent",
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input },
+      });
+      await mutationStorage.transferToRecovery(rejected.clientMutationId, "rejected", "fixture rejection");
+      recoveryId = rejected.clientMutationId;
+    } else writeComposerDraft(ref, { text: "replacement intent", skillNames: ["pkg:probe"] });
+    const saved = stoppedRecoverySnapshot(ref, true, "saved-instance");
+    saved.thread.evener.capabilities = { ...saved.thread.evener.capabilities, skillInput: true };
+    const resumed = stoppedRecoverySnapshot(replacement, false, "replacement-instance");
+    resumed.thread.evener.capabilities = { ...resumed.thread.evener.capabilities, skillInput: true };
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client = new AppwireClient({
+      url: "ws://hub/rpc",
+      socketFactory: () => {
+        const socket = new FakeSocket({ autoInitialize: true });
+        const send = socket.send.bind(socket);
+        socket.send = (raw) => {
+          send(raw);
+          const request = JSON.parse(raw);
+          if (!request.id || request.method === "initialize" || request.method === "ping") return;
+          requests.push(request);
+          const respond = async (): Promise<unknown> => {
+            switch (request.method) {
+              case "thread/read":
+                if (request.params.ref === ref) return saved;
+                if (request.params.ref !== replacement) throw new Error("unexpected fixture destination");
+                await readGate;
+                return resumed;
+              case "thread/resume":
+                if (request.params.ref !== ref) throw new Error("unexpected fixture resume origin");
+                return resumed;
+              case "turn/start":
+                return {
+                  turn: { id: "replacement-turn", status: "inProgress", itemsView: "full" },
+                  receipt: {
+                    clientMutationId: request.params.clientMutationId,
+                    threadId: resumed.thread.id,
+                    disposition: "applied",
+                    projectionState: "reflected",
+                  },
+                };
+              case "thread/turns/list":
+                return { data: [], nextCursor: null };
+              case "evener/jobs/list":
+                return { data: emptyActivityTree(request.params.ref) };
+              default:
+                return {};
+            }
+          };
+          void respond().then(
+            (result) => socket.receive({ id: request.id, result }),
+            (error: unknown) => socket.receive({ id: request.id, error: { code: -32000, message: String(error) } }),
+          );
+        };
+        queueMicrotask(() => socket.open());
+        return socket;
+      },
+    });
+    const originalURL = window.location.href;
+    onTestFinished(() => {
+      releaseRead();
+      client.close();
+      window.history.replaceState({}, "", originalURL);
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    window.history.replaceState({}, "", `/s/${encodeURIComponent(ref)}`);
+    const subscribe = (notify: () => void) => {
+      window.addEventListener("popstate", notify);
+      return () => window.removeEventListener("popstate", notify);
+    };
+    function RoutedReplacementSession() {
+      const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+      const route = urlToPane(pathname);
+      if (route?.type !== "session") throw new Error("expected session route");
+      return (
+        <Session
+          key={(route.params as { ref: string }).ref}
+          params={route.params as { ref: string }}
+          paneId="p1"
+          focused={true}
+        />
+      );
+    }
+    render(
+      <ClientProvider client={client}>
+        <RoutedReplacementSession />
+      </ClientProvider>,
+    );
+    await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded"));
+    await flushPendingTurnsProjectionForTests();
+    expect(threadsStore.getState().threads.has(replacement)).toBe(false);
+    const user = userEvent.setup();
+    expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("replacement intent");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(requests.filter(({ method }) => method === "thread/read").map(({ params }) => params)).toContainEqual(
+        expect.objectContaining({ ref: replacement }),
+      ),
+    );
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+    expect(await mutationStorage.listOutbox(replacement)).toEqual([]);
+    expect(window.location.pathname).toBe(`/s/${encodeURIComponent(ref)}`);
+    if (recoveryId) expect(await mutationStorage.getRecovery(recoveryId)).toBeDefined();
+    await act(async () => {
+      releaseRead();
+    });
+    await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+    const started = requests.find(({ method }) => method === "turn/start");
+    expect(started?.params).toMatchObject({ ref: replacement, expectedInstanceId: "replacement-instance", input });
+    expect(started?.params).not.toMatchObject({ clientMutationId: old.clientMutationId });
+    if (recoveryId) expect(started?.params).not.toMatchObject({ clientMutationId: recoveryId });
+    await waitFor(() => expect(window.location.pathname).toBe(`/s/${encodeURIComponent(replacement)}`));
+    expect(threadsStore.getState().threads.get(replacement)?.instanceId).toBe("replacement-instance");
+    expect(threadsStore.getState().threads.get(replacement)?.capabilities.skillInput).toBe(true);
+    expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(1);
+    expect(await mutationStorage.getOutbox(old.clientMutationId)).toEqual({
+      ...old,
+      attempted: true,
+      state: "blockedUnknown",
+    });
+  },
+);
+
 test("stopped-session resume failure keeps the editable draft and inline error", async ({ onTestFinished }) => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   vi.mocked(ComposerModule.Composer).mockRestore();
@@ -3418,6 +3579,7 @@ test.each(["replayed", "blocked", "stale"])(
       </ClientProvider>,
     );
     const user = userEvent.setup();
+    await flushPendingTurnsProjectionForTests();
     await user.click(await screen.findByRole("button", { name: "Retry" }));
     await resumeReceived;
     const editor = screen.getByRole("textbox", { name: "Message" });

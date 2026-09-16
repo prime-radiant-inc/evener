@@ -43,6 +43,7 @@ import {
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
+import { navigate, paneToURL } from "../../../shell/routing";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
@@ -1172,6 +1173,10 @@ export function Composer({ ref, focused }: ComposerProps) {
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
+    let destination = ref;
+    const onDestination = (resumedRef: string) => {
+      destination = resumedRef;
+    };
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
@@ -1208,10 +1213,12 @@ export function Composer({ ref, focused }: ComposerProps) {
               submittedText,
               payload,
               submittedSkillNames,
+              onDestination,
             );
             return;
           }
-          if (kind === "send") return threadsStore.getState().send(ref, submittedText, payload, submittedSkillNames);
+          if (kind === "send")
+            return threadsStore.getState().send(ref, submittedText, payload, submittedSkillNames, onDestination);
           if (kind === "queue") return threadsStore.getState().queue(ref, submittedText, payload, submittedSkillNames);
           if (kind === "steer") return threadsStore.getState().steer(ref, submittedText, payload, submittedSkillNames);
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload, submittedSkillNames);
@@ -1221,6 +1228,10 @@ export function Composer({ ref, focused }: ComposerProps) {
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
       clearSubmittedAttachments(submittedAttachments);
+      if (wonRecoveryResend && destination !== ref) {
+        const url = paneToURL("session", { ref: destination });
+        if (url !== null) navigate(url, { replace: true });
+      }
     } catch {
       // Resume or the local durable write failed. Keep the submitted draft;
       // only successful durable handoff above can clear it.

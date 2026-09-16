@@ -483,6 +483,7 @@ export function resendRecoveryPendingTurn(
   text: string,
   attachments: InputAttachment[],
   skillNames?: readonly string[],
+  onDestination?: (ref: string) => void,
 ): Promise<boolean> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -490,6 +491,7 @@ export function resendRecoveryPendingTurn(
     (async () => {
       const record = await resendRecoveryMutation(clientMutationId, ref, route, text, attachments, skillNames);
       void refreshPendingTurnsProjection(ref);
+      if (record) onDestination?.(record.targetRef);
       return record !== undefined;
     })(),
   );
