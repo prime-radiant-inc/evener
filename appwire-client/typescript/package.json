@@ -19,6 +19,11 @@
       "types": "./dist/docContent.d.ts",
       "import": "./dist/docContent.js",
       "require": "./dist/docContent.js"
+    },
+    "./state/navigation": {
+      "types": "./dist/state/navigation/index.d.ts",
+      "import": "./dist/state/navigation/index.js",
+      "require": "./dist/state/navigation/index.js"
     }
   },
   "scripts": {

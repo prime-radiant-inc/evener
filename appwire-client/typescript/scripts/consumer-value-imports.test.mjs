@@ -9,16 +9,16 @@ import { expect, test } from "vitest";
 import { CONSUMER_TREES } from "../../../scripts/sdk/source-files.mjs";
 import {
   consumerPackageUsage,
+  entrySurface,
   packageSpecifiers,
   packageValuesIn,
   parse,
-  rootSurface,
 } from "./consumer-value-imports.mjs";
 
 const ROOT = "@evener/appwire-client";
 const DOC_CONTENT = "@evener/appwire-client/docContent";
 
-test("rootSurface follows value and type star re-exports so the surface cannot drift", () => {
+test("entrySurface follows value and type star re-exports so the surface cannot drift", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "evener-root-surface-"));
   try {
     writeFileSync(
@@ -38,7 +38,7 @@ test("rootSurface follows value and type star re-exports so the surface cannot d
       "export interface Thread {\n  id: string;\n}\nexport const METHOD_NAMES = [];\n",
     );
     writeFileSync(path.join(root, "widgets.ts"), "export const Widget = 1;\nexport type WidgetProps = object;\n");
-    const { values, types } = rootSurface(path.join(root, "index.ts"));
+    const { values, types } = entrySurface(path.join(root, "index.ts"));
     // Thread is reachable only through `export type *`, Widget only through the
     // value star, and an inline `type OnlyType` is a type. METHOD_NAMES is a
     // value under a TYPE star, so it is neither a type nor a re-exported value.

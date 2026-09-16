@@ -85,12 +85,13 @@ function moduleSurface(file, readFile, cache) {
   return surface;
 }
 
-// The package root's runtime values and exported types, read off index.ts (and
-// the modules it re-exports) so the qualification surface cannot drift from
-// what the entry point exposes: an export added anywhere the root re-exports is
-// qualified without editing anything here.
-export function rootSurface(indexFile, readFile = (file) => readFileSync(file, "utf8")) {
-  const { values, types } = moduleSurface(indexFile, readFile, new Map());
+// A published entry's runtime values and exported types, read off its barrel
+// (and the modules it re-exports) so the qualification surface cannot drift
+// from what the entry point exposes: an export added anywhere the barrel
+// re-exports is qualified without editing anything here. The root's index.ts
+// and a subpath's own index.ts are read the same way.
+export function entrySurface(entryFile, readFile = (file) => readFileSync(file, "utf8")) {
+  const { values, types } = moduleSurface(entryFile, readFile, new Map());
   return { values: [...values].sort(), types: [...types].sort() };
 }
 

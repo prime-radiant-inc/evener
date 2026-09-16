@@ -2,10 +2,10 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import Welcome from "./Welcome";
 
 // A stylesheet-grep assertion must not be satisfiable by a comment - this repo

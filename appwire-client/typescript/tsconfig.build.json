@@ -63,6 +63,11 @@
     "launchInherited.ts",
     "launchPathListAdd.ts",
     "builtinInvocation.ts",
-    "transcriptDisplayConfig.ts"
+    "transcriptDisplayConfig.ts",
+    "state/navigation/index.ts",
+    "state/navigation/codec.ts",
+    "state/navigation/immutable.ts",
+    "state/navigation/merge.ts",
+    "state/navigation/types.ts"
   ]
 }

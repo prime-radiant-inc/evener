@@ -1,8 +1,13 @@
+import {
+  keyID,
+  NavigationBaseInvalidError,
+  type NavigationResponse,
+  type NormalizedResource,
+  type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { expect, test, vi } from "vitest";
-import type { NormalizedResource } from "./codec";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
-import { keyID, NavigationBaseInvalidError, type NavigationResponse, type ResourceKey } from "./types";
 
 const key: ResourceKey = { kind: "project", projectKey: "p" };
 const d = <T>() => {

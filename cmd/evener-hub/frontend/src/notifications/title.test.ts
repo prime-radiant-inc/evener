@@ -1,11 +1,11 @@
 import type { AttentionSummary, NavigationSessionLocation, ThreadModel } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import type { ComponentType } from "react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
-import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { applyTitle, baseTitle, formatTitle } from "./title";
 

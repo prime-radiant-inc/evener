@@ -1,5 +1,9 @@
-import type { NavigationInvalidationTarget, NavigationReadBase } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+// The navigation resource vocabulary both apps share: resource keys and their
+// view scopes, container key builders, page offsets, the per-resource state
+// and response shapes, and the classifiers for a hub that has no navigation
+// to offer or a base the hub no longer recognizes.
+import { WireError } from "../../errors";
+import type { NavigationInvalidationTarget, NavigationReadBase } from "../../types.gen";
 import type { DecodedNavigationResponse, NormalizedResource } from "./codec";
 
 const NAVIGATION_UNAVAILABLE_CODE = -32014;
