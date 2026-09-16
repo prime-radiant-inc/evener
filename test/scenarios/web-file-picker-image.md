@@ -268,7 +268,7 @@ REST surface, and what is no longer on it" in the runbook.
   should type rather than assign.
 - **Limits are 8 images and 8 MiB per file, enforced on both sides.**
   Client: `rejectionReason`
-  (`panes/session/composer/attachments/limits.ts`, `MAX_ATTACHMENTS = 8`,
+  (`appwire-client/typescript/attachmentLimits.ts`, `MAX_ATTACHMENTS = 8`,
   `MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024`), which also rejects any
   non-image outright and surfaces `Couldn't attach <name> …`. Server:
   `validateAppWireInputItems`

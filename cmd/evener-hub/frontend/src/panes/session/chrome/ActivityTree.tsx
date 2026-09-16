@@ -1,13 +1,18 @@
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
+  type ActivityDelegate,
   type ActivityDelegateRow,
   type ActivityFoldRow,
   type ActivityJobRow,
   type ActivityRow,
+  type ActivitySessionNode,
+  type ActivityTree as ActivityTreeData,
   type ActivityWatchRow,
+  activityDelegateBranch,
   activityDelegateState,
+  activityNodeID,
   buildActivityRows,
   buildWatchRows,
-  type EntityView,
   jobIsFailed,
   watchMeta,
   watchName,
@@ -27,14 +32,6 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  type ActivityDelegate,
-  type ActivitySessionNode,
-  type ActivityTree as ActivityTreeData,
-  activityDelegateBranch,
-  activityNodeID,
-} from "../../../protocol/activityData";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { WatchGlyph } from "../../../shell/rail/RailRow";
 import { armedWatchCount } from "../../../shell/rail/railNodes";
 import { openSessionByRef } from "../../../shell/sessionPlacement";
@@ -69,11 +66,6 @@ export interface ActivityTreeProps {
   // already loading blocks the others the same way: the panel carries one
   // request at a time, so only the branch that asked first can be answered.
   rootRefreshing?: boolean;
-  /** The session's entity map (ActivityPanelBody's `useEntityView`): the
-   * detail strips open outside the transcript subtree, so the panel hands the
-   * map down the tree for the ids those strips name. Optional - rows render
-   * their ids as plain text without it. */
-  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface ActivityTreeHandle {
@@ -114,6 +106,13 @@ function delegateStatusText(delegate: ActivityDelegate): string {
 
 function delegateName(delegate: ActivityDelegate): string {
   return delegate.mandate ?? delegate.task ?? delegate.description ?? delegate.child?.label ?? delegate.childSessionId;
+}
+
+// rowStatusText is the one place a dense row's displayed status text is chosen:
+// a job states its raw status, a delegate its resolved state. The row view and
+// both meta grammars read it through here, so the two row kinds cannot drift.
+function rowStatusText(row: ActivityJobRow | ActivityDelegateRow): string {
+  return row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
 }
 
 // The kind glyph ($/⌘) carries the status hue the StatusDot used to: working
@@ -180,24 +179,33 @@ function terminalSegment(
   return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
+// liveMetaSegments is the one place the live meta grammar is built (#1388): the
+// usage pair when the daemon sent one, else the row's status text, then the
+// quiet age when its anchor is known. Sharing it keeps the two row kinds
+// reading the same - a shell job's ActivityJob carries no usage field at all,
+// so it always takes the status branch, while a delegate takes it only until
+// usage arrives. Neither renders a placeholder dash: the empty token slot
+// carried no information and read as a value that failed to load.
+function liveMetaSegments(tokens: string | undefined, statusText: string, quietMs: number | undefined): MetaSegment[] {
+  const first: MetaSegment = tokens ? { key: "tokens", text: tokens } : { key: "status", text: statusText };
+  const segments: MetaSegment[] = [first];
+  if (quietMs !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quietMs), tone: "quiet" });
+  return segments;
+}
+
 function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
   const { job } = row;
   if (row.live) {
-    return [
-      { key: "tokens", text: "—" },
-      { key: "quiet", text: formatQuietAge(now - quietAnchorMillis(job)), tone: "quiet" },
-    ];
+    return liveMetaSegments(undefined, rowStatusText(row), now - quietAnchorMillis(job));
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, job.status, jobIsFailed(job))];
+  return [terminalSegment(job, rowStatusText(row), jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
   if (row.live) {
-    const segments: MetaSegment[] = [{ key: "tokens", text: tokens ?? "—" }];
-    if (!tokens) segments.push({ key: "status", text: delegateStatusText(delegate) });
     // quietForMs arrives frozen at snapshot time, and a quiet delegate emits
     // no frames to refresh the snapshot: derive the displayed age from the
     // server's own quiet anchor (latestActivityAt, else runStartedAt — the
@@ -208,10 +216,8 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
       delegate.latestActivityAt ?? (delegate.quietForMs != null ? delegate.runStartedAt : undefined),
     );
     const quiet = quietAnchorAt !== undefined ? Math.max(0, now - quietAnchorAt) : (delegate.quietForMs ?? undefined);
-    if (quiet !== undefined) segments.push({ key: "quiet", text: formatQuietAge(quiet), tone: "quiet" });
-    return segments;
+    return liveMetaSegments(tokens ?? undefined, rowStatusText(row), quiet);
   }
-  const statusText = delegateStatusText(delegate);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
   if (delegate.durationMs !== undefined && delegate.durationMs !== null) {
@@ -220,7 +226,7 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
     segments.push(
       terminalSegment(
         { startedAt: delegate.runStartedAt ?? "", endedAt: delegate.runEndedAt },
-        statusText,
+        rowStatusText(row),
         activityDelegateState(delegate).failed,
       ),
     );
@@ -353,28 +359,16 @@ const StaticMetaSegments = memo(function StaticMetaSegments({
   return <RowSegments segments={segments} />;
 });
 
-function LiveRowDetail({
-  row,
-  entities,
-}: {
-  row: ActivityJobRow | ActivityDelegateRow;
-  entities?: ReadonlyMap<string, EntityView>;
-}): ReactNode {
+function LiveRowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
   const now = useContext(TreeNowContext);
-  return <ActivityRowDetail row={row} now={now} entities={entities} />;
+  return <ActivityRowDetail row={row} now={now} />;
 }
 
 // Static detail strips carry no running age (metaText's terminal line has no
 // clock term), so they render once with a dummy instant and never subscribe.
-const RowDetail = memo(function RowDetail({
-  row,
-  entities,
-}: {
-  row: ActivityJobRow | ActivityDelegateRow;
-  entities?: ReadonlyMap<string, EntityView>;
-}): ReactNode {
-  if (!row.live) return <ActivityRowDetail row={row} now={0} entities={entities} />;
-  return <LiveRowDetail row={row} entities={entities} />;
+const RowDetail = memo(function RowDetail({ row }: { row: ActivityJobRow | ActivityDelegateRow }): ReactNode {
+  if (!row.live) return <ActivityRowDetail row={row} now={0} />;
+  return <LiveRowDetail row={row} />;
 });
 
 interface FoldRowViewProps {
@@ -499,7 +493,6 @@ function RowShell({
 
 interface DenseRowViewProps {
   row: ActivityJobRow | ActivityDelegateRow;
-  entities?: ReadonlyMap<string, EntityView>;
   detailOpen: boolean;
   tabIndex: number;
   onSetDetailOpen: (row: DetailRow, open: boolean) => void;
@@ -514,7 +507,6 @@ interface DenseRowViewProps {
 // quiet-age cluster) and RowDetail (the open strip), which subscribe alone.
 const DenseRowView = memo(function DenseRowView({
   row,
-  entities,
   detailOpen,
   tabIndex,
   onSetDetailOpen,
@@ -523,7 +515,7 @@ const DenseRowView = memo(function DenseRowView({
   registerRowRef,
 }: DenseRowViewProps): ReactNode {
   const name = row.kind === "job" ? row.job.description : delegateName(row.delegate);
-  const statusText = row.kind === "job" ? row.job.status : delegateStatusText(row.delegate);
+  const statusText = rowStatusText(row);
   const target = transcriptTarget(row);
   const statusState = jobStatusDotState(statusText, true);
   const failed = row.kind === "job" ? jobIsFailed(row.job) : activityDelegateState(row.delegate).failed;
@@ -555,7 +547,7 @@ const DenseRowView = memo(function DenseRowView({
         {target && <OpenTranscriptButton transcriptRef={target} parentRef={row.parentRef} tabIndex={-1} />}
         {row.live ? <LiveMetaSegments row={row} /> : <StaticMetaSegments row={row} />}
       </RowShell>
-      {detailOpen && <RowDetail row={row} entities={entities} />}
+      {detailOpen && <RowDetail row={row} />}
     </Fragment>
   );
 });
@@ -699,7 +691,6 @@ const ContinuationStripView = memo(function ContinuationStripView({
 
 interface RowBlockProps {
   slice: ActivityRow[];
-  entities?: ReadonlyMap<string, EntityView>;
   stripsByAfterRowID: Map<string, ContinuationStrip[]>;
   expandedFolds: Set<string>;
   effectiveFocusedID: string | null;
@@ -721,7 +712,6 @@ interface RowBlockProps {
 // re-renders it on real data/focus/detail changes - never on a tick.
 function RowBlock({
   slice,
-  entities,
   stripsByAfterRowID,
   expandedFolds,
   effectiveFocusedID,
@@ -773,7 +763,6 @@ function RowBlock({
         <DenseRowView
           key={row.id}
           row={row}
-          entities={entities}
           detailOpen={isDetailOpen(row)}
           tabIndex={tabIndex}
           onSetDetailOpen={onSetDetailOpen}
@@ -810,7 +799,6 @@ function RowBlock({
         <div role="group" className={CLASS.indentGuide} key={`${row.id}-group`}>
           <RowBlock
             slice={slice.slice(cursor + 1, end)}
-            entities={entities}
             stripsByAfterRowID={stripsByAfterRowID}
             expandedFolds={expandedFolds}
             effectiveFocusedID={effectiveFocusedID}
@@ -836,7 +824,6 @@ function RowBlock({
 export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(function ActivityTree(
   {
     tree,
-    entities,
     expandedFoldIDs,
     onToggleFold,
     watches,
@@ -1028,7 +1015,6 @@ export const ActivityTree = forwardRef<ActivityTreeHandle, ActivityTreeProps>(fu
       <div ref={treeRef} role="tree" className={CLASS.tree}>
         <RowBlock
           slice={rows}
-          entities={entities}
           stripsByAfterRowID={stripsByAfterRowID}
           expandedFolds={expandedFolds}
           effectiveFocusedID={effectiveFocusedID}

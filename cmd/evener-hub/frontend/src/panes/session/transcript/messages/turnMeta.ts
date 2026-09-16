@@ -10,8 +10,8 @@
 // narrowing, shared with the session-details panel's own token derivation so
 // the two surfaces read one turn's tokens by exactly one rule.
 
-import { formatDurationMs, formatTokenCount } from "../../../../protocol/displayFormat";
-import type { TurnModel } from "../../../../protocol/model";
+import type { TurnModel } from "@evener/appwire-client";
+import { formatDurationMs, formatTokenCount } from "@evener/appwire-client";
 import { turnUsageTokens } from "../../chrome/detailsAccounting";
 
 export interface TurnMetaParts {

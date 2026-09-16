@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Modal, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { RepoLaunchConfigStatus } from "../../appwire-client/typescript/types.gen";
+import type { RepoLaunchConfigStatus } from "@evener/appwire-client";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const descriptions: Record<string, string> = {

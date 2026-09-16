@@ -1,8 +1,8 @@
+import type { LaunchConfigResolved } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { LaunchConfigResolved } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { InRepoSection } from "./inrepo";
 

@@ -1,8 +1,8 @@
+import type { MutationReceipt, ThreadClearResponse, TurnQueueResponse } from "@evener/appwire-client";
+import { RequestTimeoutError, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
-import { RequestTimeoutError, WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { MutationReceipt, ThreadClearResponse, TurnQueueResponse } from "../protocol/types.gen";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

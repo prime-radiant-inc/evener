@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
 import { lastUserMessageText } from "./sessionActions";
 
 // lastUserMessageText backs the chrome-level "Fork" action: unlike the

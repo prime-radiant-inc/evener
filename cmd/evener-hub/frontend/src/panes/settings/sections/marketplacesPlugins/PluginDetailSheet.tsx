@@ -5,14 +5,14 @@
 // mobile (same content, geometry follows useIsMobile). The catalog
 // description is lazily pulled from the browse cache (browseMarketplace
 // no-ops when the marketplace is already cached, so re-opens are free).
+
+import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chip, ConfirmDialog, Sheet, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
-import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   sheetDesc: requireClass(styles.sheetDesc, "marketplacesPlugins.module.css", "sheetDesc"),
@@ -172,7 +172,9 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               {marketplaceEntry !== undefined && (
                 <div className={CLASS.metaRow}>
                   <span className={CLASS.metaLabel}>Source</span>
-                  <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>{sourceLabel(marketplaceEntry.source)}</span>
+                  <span className={`${CLASS.metaValue} ${CLASS.rowMeta}`}>
+                    {marketplaceSourceLabel(marketplaceEntry.source)}
+                  </span>
                 </div>
               )}
             </div>

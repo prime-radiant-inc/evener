@@ -1,7 +1,5 @@
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../../protocol/clientLike";
 import type {
+  AppwireClientLike,
   NavigationReadResponse as AppwireNavigationReadResponse,
   AttentionChanged,
   AttentionSummary,
@@ -19,7 +17,9 @@ import type {
   NavigationReadParams,
   NavigationSectionResource,
   NavigationSessionLocation,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
 import {
   type DecodedNavigationResponse,

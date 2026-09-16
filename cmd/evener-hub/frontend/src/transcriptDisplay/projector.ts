@@ -1,5 +1,5 @@
-import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "../protocol/itemFailure";
-import type { ItemModel, ThreadModel, TurnModel } from "../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "@evener/appwire-client";
 import {
   type ContentVector,
   type HookExitDetail,

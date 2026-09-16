@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { navigate, paneToURL } from "../routing";
 
 /** Refs in the bounded needs-you resource, retaining server order. */

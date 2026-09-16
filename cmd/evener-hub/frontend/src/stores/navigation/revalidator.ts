@@ -1,4 +1,4 @@
-import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "../../protocol/types.gen";
+import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "@evener/appwire-client";
 import {
   isProjectResource,
   keyID,

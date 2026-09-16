@@ -1,9 +1,9 @@
+import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { AgentsDocResponse, AnyNotification } from "../../../protocol/types.gen";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "../../../stores/agentsDoc";
 import { connectionStore } from "../../../stores/connection";
 import { Toast } from "../../../widgets";

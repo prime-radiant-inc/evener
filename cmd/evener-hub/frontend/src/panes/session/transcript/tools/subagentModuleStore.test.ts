@@ -1,8 +1,7 @@
+import type { EvenerDelegateInfo, ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { createElement, Fragment } from "react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";

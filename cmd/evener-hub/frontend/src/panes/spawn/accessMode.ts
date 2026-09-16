@@ -2,7 +2,7 @@
 // rows are fixed and static (never fetched); each maps 1:1 to a launch-config
 // `sandbox` value, mirroring the hub launch mapping exactly - including the
 // "the advanced schema's explicit sandbox wins" precedence.
-import type { LaunchConfigLayer } from "../../protocol/types.gen";
+import type { LaunchConfigLayer } from "@evener/appwire-client";
 
 export interface AccessModeOption {
   value: string;

@@ -2,7 +2,7 @@ import type {
   PluginEntry,
   PluginListResponse,
   PluginRefParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface InstalledState {

@@ -1,4 +1,4 @@
-import type { DocPort } from "../../protocol/docContent";
+import type { DocPort } from "@evener/appwire-client/docContent";
 
 // The browser's doc seam. The empty origin is the point of it: the page is
 // served by the hub, so every /doc URL stays the same-origin path this app has

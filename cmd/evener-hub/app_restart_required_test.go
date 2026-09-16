@@ -53,7 +53,7 @@ func testHubProtocolUpgrade(t *testing.T, protocol string, cleared, cached bool)
 		daemonSessionID = "02wMz5Txv1C3Hut0M8GCeC"
 	}
 	entry := rendezvous.Entry{PID: 1001, Protocol: protocol, ThreadID: daemonSessionID, SessionID: daemonSessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)}
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	if cached {
 		writeRendezvous(t, runDir, entry)
 		roster.Refresh()
@@ -195,7 +195,7 @@ func TestHubResumeRefreshesProtocolStateBeforeDeciding(t *testing.T) {
 		t.Run(fmt.Sprint("stopped=", stopped), func(t *testing.T) {
 			dir := t.TempDir()
 			entry := rendezvous.Entry{PID: 1001, SessionID: "upgrade", ThreadID: "upgrade", Protocol: "evener-appwire-v3", Endpoint: endpoint}
-			roster := hubcore.NewRoster(dir, &hubcore.StatusProber{})
+			roster := liveClaimRoster(dir, &hubcore.StatusProber{})
 			writeRendezvous(t, dir, entry)
 			if stopped {
 				roster.Refresh()
@@ -231,7 +231,7 @@ func TestHubTurnStartDiscoversRestartRequiredDuringRecovery(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, Endpoint: protocolMismatchPeer(t)})
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: past, Roster: roster, ResumeLocks: hubcore.NewResumeLocks()})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -301,7 +301,7 @@ func TestHubUpgradeKeepsLostAcceptedReceiptUnknown(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: "upgrade", SessionID: "upgrade", Endpoint: endpoint})
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
 	defer hub.Close()
@@ -399,7 +399,7 @@ func TestHubUpgradeClassifiesUncachedDaemonOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			runDir := t.TempDir()
-			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 			roster.Refresh()
 			writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: "local:" + sessionID, Endpoint: protocolMismatchPeer(t)})
 			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster, RunDir: runDir})
@@ -488,7 +488,7 @@ func TestHubUpgradeRestrictsPersistedDelegate(t *testing.T) {
 			}
 			runDir := t.TempDir()
 			writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: parentID, SessionID: parentID, Endpoint: protocolMismatchPeer(t)})
-			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 			roster.Refresh()
 			hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: roster})
 			defer hub.Close()
@@ -914,7 +914,7 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 				}
 				runDir := t.TempDir()
 				writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID, Endpoint: protocolMismatchPeer(t)})
-				roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+				roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 				if scenario.cached {
 					roster.Refresh()
 				}
@@ -1027,12 +1027,12 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 					entry.SessionID = ""
 				}
 				writeRendezvous(t, runDir, entry)
-				roster := hubcore.NewRoster(runDir, failedRPCProber{})
+				roster := liveClaimRoster(runDir, failedRPCProber{})
 				if fault == "changed-identity" {
 					entry.Protocol = appwire.ProtocolVersion
 					writeRendezvous(t, runDir, entry)
 					prober := &changedOwnershipProber{sessionID: rootID}
-					roster = hubcore.NewRoster(runDir, prober)
+					roster = liveClaimRoster(runDir, prober)
 					roster.Refresh()
 					entry.InstanceID = "replacement"
 					entry.Protocol = "evener-appwire-v3"
@@ -1040,7 +1040,7 @@ func TestHubUpgradeDoesNotTreatFailedProbeAsAbsentOwner(t *testing.T) {
 					prober.fail = true
 				}
 				if fault != "probe" && fault != "unidentified" && fault != "changed-identity" {
-					roster = hubcore.NewRoster(runDir, fakeProber{sessionID: rootID, status: appwire.ThreadStatusRestartRequired})
+					roster = liveClaimRoster(runDir, fakeProber{sessionID: rootID, status: appwire.ThreadStatusRestartRequired})
 					roster.Refresh()
 					path := filepath.Join(runDir, fmt.Sprintf("%d.json", os.Getpid()))
 					switch fault {
@@ -1143,7 +1143,7 @@ func TestHubRPCListShowsIncompatibleDaemonWithoutPastIndex(t *testing.T) {
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v4", Endpoint: protocolMismatchPeer(t), SourceID: "local", ThreadID: sessionID, SessionID: sessionID, WorkspaceRef: "local:unindexed-saved"}
 	writeRendezvous(t, runDir, entry)
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
 	defer hub.Close()
@@ -1191,7 +1191,7 @@ func TestHubRPCListDeduplicatesIncompatibleWorkspaceAlias(t *testing.T) {
 	const instanceID = "02wMz5Txv1C3Hut0M8GCeC"
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), Protocol: "evener-appwire-v4", Endpoint: protocolMismatchPeer(t), SourceID: "local", ThreadID: instanceID, SessionID: instanceID, WorkspaceRef: "local:" + sessionID})
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: past})
 	defer hub.Close()
@@ -1227,7 +1227,7 @@ func TestDaemonRejectionSurvivesDiscoveryFailure(t *testing.T) {
 			if err := os.Mkdir(runDir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			cfg := hubcore.WebConfig{Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{})}
+			cfg := hubcore.WebConfig{Roster: liveClaimRoster(runDir, &hubcore.StatusProber{})}
 			cfg.Roster.Refresh()
 			rejection := appwire.WireError{Code: appwire.CodeInvalidRequest, Message: "mutation ID already used for another payload", Data: appwire.ErrorData{ClientMutationID: mutationID, MutationOutcome: appwire.MutationOutcomeNotAccepted, RetryDisposition: appwire.RetryDispositionNone}}
 			action := func() (struct{}, error) {
@@ -1375,7 +1375,7 @@ func TestHubOwnershipUsesProjectStateLayout(t *testing.T) {
 				runDir := t.TempDir()
 				writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID, Endpoint: protocolMismatchPeer(t)})
 				spawned := 0
-				cfg := hubcore.WebConfig{StateDir: root, Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				cfg := hubcore.WebConfig{StateDir: root, Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 					spawned++
 					return rendezvous.Entry{}, errors.New("spawn sentinel")
 				}}}
@@ -1454,7 +1454,7 @@ func TestHubOwnershipProjectDiscoveryPreservesUncertainty(t *testing.T) {
 			}
 			runDir := t.TempDir()
 			writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: rootID, SessionID: rootID, Endpoint: protocolMismatchPeer(t)})
-			roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+			roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 			roster.Refresh()
 			cfg := hubcore.WebConfig{StateDir: root, Roster: roster}
 			_, _, err := restartRequiredDaemon(t.Context(), cfg, localAppRef(childID), "")
@@ -1489,7 +1489,7 @@ func TestIndependentForkSurvivesDeletedParentWithUnrelatedDaemon(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: unrelatedID, SessionID: unrelatedID, Endpoint: protocolMismatchPeer(t)})
 	spawned := 0
-	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 		spawned++
 		return rendezvous.Entry{}, errors.New("spawn sentinel")
 	}}}
@@ -1516,7 +1516,7 @@ func TestResumeChecksExplicitSessionTargetForIncompatibleOwner(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v3", ThreadID: ownerID, SessionID: ownerID, Endpoint: protocolMismatchPeer(t)})
 	spawned := 0
-	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+	cfg := hubcore.WebConfig{StateDir: stateDir, Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(), Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 		spawned++
 		return rendezvous.Entry{}, errors.New("spawn sentinel")
 	}}}
@@ -1549,7 +1549,7 @@ func TestHubClearedOwnerReleasesHistoricalDelegate(t *testing.T) {
 			if !compatible {
 				entry.Protocol = "evener-appwire-v4"
 				entry.Endpoint = protocolMismatchPeer(t)
-				roster = hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+				roster = liveClaimRoster(runDir, &hubcore.StatusProber{})
 			}
 			writeRendezvous(t, runDir, entry)
 			roster.Refresh()
@@ -1614,7 +1614,7 @@ func TestHubClearedOwnerReleasesHistoricalDelegate(t *testing.T) {
 
 func TestHubColdReadFindsIncompatibleDaemonByStableThreadID(t *testing.T) {
 	runDir := t.TempDir()
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -1656,7 +1656,7 @@ func testSavedReadsSurviveUnrelatedDiscoveryFailure(t *testing.T, incompatible b
 	if incompatible {
 		writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Protocol: "evener-appwire-v4", SessionID: sessionID, ThreadID: sessionID, Endpoint: protocolMismatchPeer(t)})
 	}
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if incompatible {
 		if _, required, err := restartRequiredDaemon(t.Context(), hubcore.WebConfig{Roster: roster}, localAppRef(sessionID), ""); err != nil || !required {
@@ -1712,4 +1712,14 @@ func testSavedReadsSurviveUnrelatedDiscoveryFailure(t *testing.T, incompatible b
 			t.Fatal("rename bypassed discovery uncertainty")
 		}
 	})
+}
+
+// liveClaimRoster is a roster over runDir whose rendezvous claims name
+// synthetic PIDs standing for live daemons - usually this test process's own
+// PID, the one PID a test can count on being alive. Liveness is asserted
+// rather than asked of the host, as SetProcessAlive's rule for synthetic PIDs
+// says (the hub's own PID is otherwise positive evidence of a stale file);
+// the probe still decides everything else.
+func liveClaimRoster(runDir string, prober hubcore.Prober) *hubcore.Roster {
+	return hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 }

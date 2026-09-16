@@ -1,4 +1,4 @@
-import { friendlyErrorMessage } from "../../protocol/errors";
+import { effortLabel, effortOptionLevels, friendlyErrorMessage } from "@evener/appwire-client";
 import { blocked, isBlocked } from "../../shell/palette/blocked";
 import {
   buildCommands,
@@ -6,7 +6,6 @@ import {
   type PaletteRunContext,
   type ScopedCommand,
 } from "../../shell/palette/commands";
-import { effortLabel, effortOptionLevels } from "../../shell/reasoningEffort";
 import type { ToastKind } from "../../widgets";
 import type { ModelCatalog } from "../../widgets/modelCatalog";
 import { findBuiltinArgument } from "../session/composer/builtinInvocation";

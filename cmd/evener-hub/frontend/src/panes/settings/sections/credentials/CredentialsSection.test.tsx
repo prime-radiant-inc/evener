@@ -1,14 +1,9 @@
+import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListResponse } from "@evener/appwire-client";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../../../protocol/errors";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type {
-  AuthLogoutResponse,
-  AuthTestResponse,
-  InstanceEntry,
-  InstanceListResponse,
-} from "../../../../protocol/types.gen";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
@@ -16,7 +11,6 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");

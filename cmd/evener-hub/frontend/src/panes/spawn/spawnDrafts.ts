@@ -1,10 +1,11 @@
 // New-session drafts live only for this page's lifetime, keyed by the exact
 // working directory used by launch/default resolution. No image bytes or
 // unsent prompts are persisted. Each draft owns its async attachment pipeline.
+
+import type { LaunchConfigLayer, PluginSelectionError } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { LaunchConfigLayer, PluginSelectionError } from "../../protocol/types.gen";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
 import type { PluginSelectionState } from "./pluginSelectionState";
 import type { AdvancedValues } from "./schema";

@@ -20,9 +20,10 @@
 // up untouched, and pressing it writes this form back over that edit. The
 // alternative - reseeding on every store update - silently discards whatever
 // the user is halfway through typing, which is worse.
+
+import type { MarketplaceEntry } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { MarketplaceEntry } from "../../../../protocol/types.gen";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, Sheet, useToasts } from "../../../../widgets";

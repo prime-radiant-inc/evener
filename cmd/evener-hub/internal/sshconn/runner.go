@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // Runner is the process seam. Production is execRunner; tests inject a fake so
@@ -292,9 +293,9 @@ func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
 	argv = append(argv, sshDest(h)...)
-	argv = append(argv, shellQuote(evenerCommand(h.EvenerPath)))
+	argv = append(argv, shellquote.RemoteWord(evenerCommand(h.EvenerPath)))
 	for _, a := range args {
-		argv = append(argv, shellQuote(a))
+		argv = append(argv, shellquote.RemoteWord(a))
 	}
 	return argv
 }

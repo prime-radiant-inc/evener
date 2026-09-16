@@ -19,7 +19,7 @@
 //     flushes the run rather than spanning it, so a folded row can never
 //     gather calls the reader saw separated by an answer;
 //   - a run has to be worth folding. Two rows are not clutter; three are.
-import { hasItemFailure } from "../../../protocol/itemFailure";
+import { hasItemFailure } from "@evener/appwire-client";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import { type ToolRendererDescriptor, type ToolSummaryContext, toolRendererFor } from "./toolRenderers";
 

@@ -8,7 +8,7 @@
 // truth for launch config - the daemon's own launch.toml layering is. A blob
 // that the daemon later stops honoring is harmless; the stale-model sweep only
 // prunes model values the hub can PROVE are gone (see modelValidityAgainstList).
-import type { ModelDescriptor } from "../../protocol/types.gen";
+import type { ModelDescriptor } from "@evener/appwire-client";
 
 export const SPAWN_DEFAULTS_PREFIX = "evener-hub.spawn-defaults.";
 // Global scalar keys (distinct from the `.global` blob defaultsKeyFor("")

@@ -1,9 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
-import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
-import { useConnectedEffect } from "../useConnectedEffect";
+import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import {
   activeSourceLabel,
   FINGERPRINT_UNAVAILABLE_ERROR,
@@ -11,7 +6,12 @@ import {
   fingerprintUnavailable,
   isEndpointConflict,
   safeCredentialTestResult,
-} from "./credentialLabels";
+} from "@evener/appwire-client";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { connectionStore, useConnectionStore } from "../../../../stores/connection";
+import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
+import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
+import { useConnectedEffect } from "../useConnectedEffect";
 import { AddInstanceDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";

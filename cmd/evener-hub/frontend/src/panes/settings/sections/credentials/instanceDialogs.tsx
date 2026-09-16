@@ -16,13 +16,13 @@
 // (roborev round 1, F3): the input is labeled by the env name (what the
 // docs tell users to set) but keyed by the template name, since that is
 // what the registry actually substitutes.
+
+import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import { errorText, FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { AuthStatusResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Select, type SelectOption, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { FINGERPRINT_UNAVAILABLE_ERROR, isEndpointConflict } from "./credentialLabels";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";

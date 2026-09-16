@@ -20,6 +20,20 @@
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
+
+import {
+  decideSteerRoute,
+  decideSubmitRoute,
+  deriveSendQueueAvailability,
+  filterSlashMenuItems,
+  isTurnActive,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  type SlashToken,
+  sessionActionError,
+  spliceSlashCommand,
+} from "@evener/appwire-client";
 import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -30,17 +44,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
-import {
-  filterSlashMenuItems,
-  mergeSlashCommands,
-  parseSlashToken,
-  type SlashMenuItem,
-  type SlashToken,
-  spliceSlashCommand,
-} from "../../../protocol/slashCompletion";
-import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "../../../protocol/submitRouting";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useIsMobile } from "../../../shell/useIsMobile";

@@ -20,8 +20,9 @@
 // Chrome, not a pane: the "panes never ask am I mobile?" rule doesn't reach
 // this component (SessionChrome's own openDetails already branches the same
 // way).
+
+import { friendlyLaunchErrorMessage, sessionActionHeadline } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { friendlyLaunchErrorMessage, sessionActionHeadline } from "../../../protocol/errors";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   Button,

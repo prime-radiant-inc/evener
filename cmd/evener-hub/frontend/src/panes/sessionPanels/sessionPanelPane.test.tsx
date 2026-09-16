@@ -1,16 +1,16 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ActivityTree } from "../../protocol/activityData";
-import { WireError } from "../../protocol/errors";
-import type { ThreadModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
+  ActivityTree,
   NavigationSessionSummary,
   NavigationWatchSummary,
   ThreadCapabilities,
+  ThreadModel,
   ThreadReadResponse,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type ActivityPanelEntry, activityPanelStore } from "../../stores/activityPanel";
 import { activitySummaryStore } from "../../stores/activitySummary";
 import { connectionStore } from "../../stores/connection";

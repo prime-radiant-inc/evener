@@ -1,16 +1,16 @@
-import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../../../protocol/errors";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   AuthDeviceStartResponse,
   AuthStatusResponse,
   AuthTestResponse,
   InstanceEntry,
   InstanceListResponse,
-} from "../../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
@@ -18,7 +18,6 @@ import { setMutationClientIdentityForTests } from "../../../../stores/mutationCl
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
-import { ENDPOINT_CHANGED_TEST_MESSAGE, FINGERPRINT_UNAVAILABLE_TEST_MESSAGE } from "./credentialLabels";
 
 // Existing cases exercise management, now reached explicitly from discovery.
 function render(element: ReactElement) {
@@ -225,12 +224,12 @@ function guidedRepair() {
       await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
       expect(screen.queryByLabelText("API key")).toBeNull();
-      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+      await focusSettlesInDialog();
     },
     async back() {
       await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
       expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-      await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+      await focusSettlesInDialog();
     },
   };
 }
@@ -255,16 +254,27 @@ test.each(["save", "refresh", "check", "result"])(
         }),
       ).toBeTruthy();
     await h.leave();
-    const calls = h.fake.calls.length;
+    const checksBefore = countCalls(h.fake, "evener/auth/test");
+    const writesBefore = countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS);
     await act(async () => {
       save.resolve(h.status);
       refresh.resolve(h.listing());
       check.resolve({ provider: "openai", status: "success", message: "" });
       await Promise.all([save.promise, refresh.promise, check.promise]);
     });
-    expect(h.fake.calls).toHaveLength(calls);
+    // The resolution must not open a hidden dialog or steal focus: checked at
+    // the moment it lands, before the quiesce below lets the store's own
+    // debounced read re-render the section.
     expect(h.connected).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true));
+    await focusSettlesInDialog();
+    // The excursion must not let an in-flight response continue into a check or
+    // a credential write, even once everything the store schedules for itself
+    // has settled. Asserting the named calls rather than the total is what
+    // removes the load-sensitive flake: the store's debounced listing read is
+    // bookkeeping, not the background check this test is named for.
+    await quiesceCalls(h.fake);
+    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
     await h.back();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -275,8 +285,14 @@ test.each(["save", "refresh", "check", "result"])(
       "disabled",
       false,
     );
-    expect(h.fake.calls).toHaveLength(calls);
+    // The client is already settled above and Back issues no RPC, so this is a
+    // plain re-read rather than a second settle.
+    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
+    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
   },
+  // The settle window runs on real timers and covers the store's ~250ms
+  // debounce, so these cases need more than the 5s default.
+  20000,
 );
 
 test("a refresh superseded by the credential notification's own refetch is not reported as a failure", async () => {
@@ -607,6 +623,48 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+/** Focus settling is asynchronous: React commits the panel, then the browser
+ * moves focus into it. A loaded host can take longer than waitFor's one-second
+ * default, which is what flaked this family. The assertion is unchanged - focus
+ * must be inside the one open dialog - only the wait is load-tolerant. */
+async function focusSettlesInDialog(): Promise<void> {
+  await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true), {
+    timeout: 5000,
+  });
+}
+
+/** The RPCs this file's flows issue when a response wrongly continues past an
+ * invalidation: a background check and a credential write. */
+const CREDENTIAL_WRITE_METHODS = ["evener/auth/apiKey/set", "evener/auth/credentialJson/set"];
+
+/** How many calls the fake client recorded for any of methods. */
+function countCalls(fake: FakeClient, ...methods: string[]): number {
+  return fake.calls.filter((call) => methods.includes(call.method)).length;
+}
+
+/** Waits until the fake client has recorded no new call for a settle window, so
+ * an assertion taken afterwards describes a quiescent client rather than one
+ * with a call still in flight. The window must exceed the store's debounced
+ * refetch (~250ms after a save's evener/auth/updated), or the helper would
+ * return before that read is recorded and claim a quiescence it never saw; a
+ * response that wrongly continued past an invalidation issues its check in the
+ * microtasks right after its deferred resolves, so it too has landed by then.
+ * A client that never goes quiet is a failure, not a pass: settling is the
+ * precondition every caller's assertion depends on. */
+async function quiesceCalls(fake: FakeClient): Promise<void> {
+  const settleMs = 400;
+  const deadline = Date.now() + 3000;
+  let seen = fake.calls.length;
+  while (Date.now() < deadline) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, settleMs));
+    });
+    if (fake.calls.length === seen) return;
+    seen = fake.calls.length;
+  }
+  throw new Error("the fake client never went quiet; a call kept arriving past the settle deadline");
 }
 
 beforeEach(() => {

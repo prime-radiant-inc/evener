@@ -13,7 +13,7 @@
 // entry) - and anything that doesn't match (an unknown "/foo", or a plugin
 // catalog command, which this module never even looks at) falls through to
 // the composer's ordinary send/queue/steer routing untouched.
-import { friendlyErrorMessage } from "../../../protocol/errors";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { blocked, isBlocked } from "../../../shell/palette/blocked";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { type BuiltinMatch, findBuiltinArgument } from "./builtinInvocation";

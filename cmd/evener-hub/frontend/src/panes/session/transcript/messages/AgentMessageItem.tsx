@@ -26,8 +26,8 @@
 // and settled branches, exactly where the eyebrow appeared, so a stream
 // that starts and settles within a frame keeps the same DOM shape.
 
+import { pendingTextJoined } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
-import { pendingTextJoined } from "../../../../protocol/reducer";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 // Direct widget path, NOT the controller-owned widgets barrel: this pane
 // must not take a dependency on the barrel's ownership boundary.

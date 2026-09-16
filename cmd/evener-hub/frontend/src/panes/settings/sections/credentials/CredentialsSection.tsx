@@ -22,23 +22,24 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
+
+import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
+import {
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  friendlyErrorMessage,
+  groupByProvider,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
-import type { AuthTestResponse, InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, Dialog, EmptyState, Loader, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import {
-  ENDPOINT_CHANGED_TEST_MESSAGE,
-  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
-  fingerprintUnavailable,
-  groupByProvider,
-  isEndpointConflict,
-  safeCredentialTestResult,
-} from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";

@@ -812,21 +812,21 @@ func TestDetectImageFormatRecognizesTIFFExtensions(t *testing.T) {
 }
 
 func TestShellEscape(t *testing.T) {
-	if got := shellEscape(""); got != "''" {
+	if got := ShellEscapeArgs(""); got != "''" {
 		t.Fatalf("empty = %q, want ''", got)
 	}
-	if got := shellEscape("plainword"); got != "plainword" {
+	if got := ShellEscapeArgs("plainword"); got != "plainword" {
 		t.Fatalf("plain word = %q, want plainword", got)
 	}
-	if got := shellEscape("a b"); got != "'a b'" {
+	if got := ShellEscapeArgs("a b"); got != "'a b'" {
 		t.Fatalf("spaced = %q, want 'a b'", got)
 	}
-	// A word containing a single quote uses the '"'"' splice.
-	if got := shellEscape("it's"); got != `'it'"'"'s'` {
-		t.Fatalf("single-quote = %q, want %q", got, `'it'"'"'s'`)
+	// A word containing a single quote uses the POSIX '\'' splice.
+	if got := ShellEscapeArgs("it's"); got != `'it'\''s'` {
+		t.Fatalf("single-quote = %q, want %q", got, `'it'\''s'`)
 	}
 	for _, pattern := range []string{"file?name", "file[name]", "file{one,two}", "~user", "#comment"} {
-		if got := shellEscape(pattern); got == pattern {
+		if got := ShellEscapeArgs(pattern); got == pattern {
 			t.Fatalf("shell glob/comment syntax was left unquoted: %q", pattern)
 		}
 	}

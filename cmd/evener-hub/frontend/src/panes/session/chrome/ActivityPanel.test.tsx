@@ -1,11 +1,10 @@
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { activityPanelStore } from "../../../stores/activityPanel";
 import { activitySummaryStore } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
@@ -1348,9 +1347,10 @@ describe("ActivityPanel", () => {
   });
 
   // The panel body owns the session's entity map (the same useEntityView the
-  // transcript uses) and hands it down the tree, so a delegate row's detail
-  // strip renders its id as a card trigger. The strip lives in the session
-  // chrome, outside the transcript subtree, so nothing else supplies the map.
+  // transcript uses) and republishes it to the tree through the entity-views
+  // context, so a delegate row's detail strip renders its id as a card
+  // trigger. The strip lives in the session chrome, outside the transcript
+  // subtree, so nothing else supplies the map.
   test("a delegate row's detail strip resolves its id through the session's entity map", async () => {
     const fake = connectFakeClient();
     fake.on("evener/jobs/list", () => ({ data: activityTree() }));
