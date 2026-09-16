@@ -33,7 +33,9 @@ func TestRemoteHubSourceOnlineDefaultsTrueAndSignal(t *testing.T) {
 // rule: Source names this host in the controller's registry, and a non-"evener"
 // Harness is read as a source id by the remote hub's launchSourceID, so neither
 // routing hint may reach the remote hub, which would resolve it against its own
-// registry and could spawn on the wrong host.
+// registry and could spawn on the wrong host. Source is cleared outright; the
+// harness is neutralized to the remote hub's own default, which launchSourceID
+// does not read as a source id.
 func TestRemoteHubSourceStartThreadClearsRoutingHints(t *testing.T) {
 	source, calls := newScriptedRemote(t, "remote-host", func(method string, _ json.RawMessage) scriptedReply {
 		if method == appwire.MethodThreadStart {
@@ -52,8 +54,8 @@ func TestRemoteHubSourceStartThreadClearsRoutingHints(t *testing.T) {
 	if v, ok := forwarded["source"]; ok {
 		t.Fatalf("forwarded params carry source=%v, want none", v)
 	}
-	if v, ok := forwarded["harness"]; ok {
-		t.Fatalf("forwarded params carry harness=%v, want none", v)
+	if v, ok := forwarded["harness"]; !ok || v != "evener" {
+		t.Fatalf("forwarded harness = %v, want the remote hub's own default (\"evener\"), never a source id", v)
 	}
 	if forwarded["cwd"] != "/tmp" {
 		t.Fatalf("forwarded cwd = %v, want /tmp (other fields preserved)", forwarded["cwd"])
