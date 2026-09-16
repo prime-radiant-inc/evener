@@ -432,6 +432,7 @@ before acting on it.
 | C5 | #1229 | **merged** as `31a5a4370` — `stores/composerInput.ts` → `protocol/composerInput.ts` |
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
+| C8 | #1407 | **open** — `composer/attachments/limits.ts` → `appwire-client/typescript/attachmentLimits.ts` (renamed: `limits` was directory-bound); the web composer and five native importers take the package name, no stub at the old path |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
