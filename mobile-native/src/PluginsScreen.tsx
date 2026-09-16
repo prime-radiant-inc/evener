@@ -92,8 +92,6 @@ function Plugins({
       model.dispose();
     };
   }, [model]);
-  // The store keeps each failed request's own text; this screen shows the
-  // same copy for every failure, as the web's section translates its at render.
   const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
   const close = useCallback(() => {
     editorVersion.current += 1;

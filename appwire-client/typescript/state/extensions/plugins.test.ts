@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../testing/fakeClient";
+import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { PluginEntry } from "../../types.gen";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsStore } from "./plugins";
 
@@ -22,28 +22,6 @@ type ListResult = { plugins: PluginEntry[] };
 function storeWithFake() {
   const fake = new FakeClient("ready");
   return { fake, store: createPluginsStore(fake) };
-}
-
-function failing(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
-
-// Scripts `method` to hang and hands back the resolver of the request in
-// flight. FakeClient.request() defers the handler by one microtask, so the
-// resolver exists only after that has flushed; the callers below await a
-// microtask before releasing.
-function defer<T>(fake: FakeClient, method: Parameters<FakeClient["on"]>[0]) {
-  let release!: (value: T) => void;
-  fake.on(
-    method,
-    () =>
-      new Promise<T>((resolve) => {
-        release = resolve;
-      }) as never,
-  );
-  return (value: T) => release(value);
 }
 
 describe("store shape", () => {
@@ -162,7 +140,7 @@ describe("fetches never throw, mutations reject", () => {
 describe("list ordering", () => {
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<ListResult>(fake, LIST);
+    const release = deferRequest<ListResult>(fake, LIST);
     const fetching = store.getState().fetchPlugins();
     await Promise.resolve();
     fake.on("evener/plugin/remove", () => ({ plugins: [] }));
@@ -178,7 +156,7 @@ describe("list ordering", () => {
 
   test("an older list that resolves after a newer one does not overwrite it, and a later failure keeps the newer list", async () => {
     const { fake, store } = storeWithFake();
-    const releaseOld = defer<ListResult>(fake, LIST);
+    const releaseOld = deferRequest<ListResult>(fake, LIST);
     const older = store.getState().fetchPlugins();
     await Promise.resolve();
     fake.on(LIST, () => ({ plugins: [FORMATTER] }));
@@ -246,7 +224,7 @@ describe("notifications", () => {
     store.start();
     fake.on(LIST, () => ({ plugins: [LINTER] }));
     fake.emitNotification({ method: "evener/plugin/updated", params: {} });
-    const release = defer<ListResult>(fake, LIST);
+    const release = deferRequest<ListResult>(fake, LIST);
     const fetching = store.getState().fetchPlugins();
     await Promise.resolve();
     const before = store.getState();
@@ -271,7 +249,7 @@ describe("dispose fences mutations", () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ plugins: [LINTER] }));
     await store.getState().fetchPlugins();
-    const release = defer<ListResult>(fake, "evener/plugin/remove");
+    const release = deferRequest<ListResult>(fake, "evener/plugin/remove");
     const removing = store.getState().removePlugin("linter", "acme");
     await Promise.resolve();
     const before = store.getState();
@@ -293,7 +271,7 @@ describe("dispose fences mutations", () => {
 describe("reset", () => {
   test("reset() returns to the initial state and fences the list still in flight", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<ListResult>(fake, LIST);
+    const release = deferRequest<ListResult>(fake, LIST);
     const fetching = store.getState().fetchPlugins();
     await Promise.resolve();
 

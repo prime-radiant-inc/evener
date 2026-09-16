@@ -23,7 +23,9 @@ import { errorText } from "@evener/appwire-client";
 import {
   createMarketplacesStore,
   createPluginsStore,
+  type MarketplacesClient,
   type MarketplacesState,
+  type PluginsClient,
   type PluginsState,
 } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
@@ -75,7 +77,7 @@ const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
 const hubClient = {
   request: (method, params, opts) => requireClient().request(method, params, opts),
   onNotification: onConnectionNotification,
-} satisfies Pick<AppwireClientLike, "request" | "onNotification">;
+} satisfies MarketplacesClient & PluginsClient;
 const marketplaces = createMarketplacesStore(hubClient);
 marketplaces.start();
 const plugins = createPluginsStore(hubClient);
@@ -162,23 +164,15 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 
 // --- notification-triggered refetch --------------------------------------
 //
-// The hub BroadcastAlls this notification to every connected client after a
-// successful mutation from ANY of them - the cross-client staleness gap this
-// store had until now (a change made in one browser tab never reached any
-// other tab's already-loaded launchLayer until a manual re-open of the
-// section). Mirrors the navigation store's identical wiring for the
-// sidebar's REST-backed refetch, applied here to this store's RPC-backed
-// fetch - its own debounced channel (not one shared one like tree.ts's),
-// since the marketplaces and plugins stores each run theirs inside the
-// package and the three lists are unrelated fetches that should each coalesce
-// their own bursts without waiting on each other. The notification's
-// generated payload type is empty ({}) in protocol/types.gen.ts, so there is
-// nothing to apply directly and a debounced re-fetch of the layer is the
-// only option, exactly like evener/navigation/invalidated's own "just
-// refetch" contract. On the wire evener/launch/updated carries {cwd, layer}
-// (notifyLaunchUpdated, app_rpc.go:772-775) whose fields the generated type
-// drops because codegen can't see into Go's untyped map[string]string; this
-// refetch is payload-agnostic either way.
+// The hub BroadcastAlls evener/launch/updated to every connected client after
+// any client's successful setLayer, so a change made in one browser tab
+// reaches every other tab's loaded launchLayer. Its own debounced channel,
+// like the ones the marketplaces and plugins stores run inside the package:
+// the three lists are unrelated fetches that should each coalesce their own
+// bursts. On the wire the notification carries {cwd, layer}
+// (notifyLaunchUpdated, app_rpc.go) whose fields the generated type drops
+// because codegen can't see into Go's untyped map[string]string; this refetch
+// is payload-agnostic either way.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let launchLayerRefetchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -210,14 +204,8 @@ export function resetExtensionsStoreForTests(): void {
   // straight into this store, over a core already at its initial state,
   // would otherwise survive the reset.
   extensionsStore.setState({
-    marketplaces: null,
-    marketplacesLoading: false,
-    marketplacesError: null,
-    browseCatalogs: new Map(),
-    plugins: null,
-    pluginRevision: 0,
-    pluginsLoading: false,
-    pluginsError: null,
+    ...marketplaces.getInitialState(),
+    ...plugins.getInitialState(),
     launchLayer: null,
     launchLayerLoading: false,
     launchLayerError: null,

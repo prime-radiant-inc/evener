@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../testing/fakeClient";
+import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
 
@@ -14,28 +14,6 @@ type BrowseResult = { name: string; description?: string; plugins: MarketplaceCa
 function storeWithFake() {
   const fake = new FakeClient("ready");
   return { fake, store: createMarketplacesStore(fake) };
-}
-
-function failing(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
-
-// Scripts `method` to hang and hands back the resolver of the request in
-// flight. FakeClient.request() defers the handler by one microtask, so the
-// resolver exists only after that has flushed; the callers below await a
-// microtask before releasing.
-function defer<T>(fake: FakeClient, method: Parameters<FakeClient["on"]>[0]) {
-  let release!: (value: T) => void;
-  fake.on(
-    method,
-    () =>
-      new Promise<T>((resolve) => {
-        release = resolve;
-      }) as never,
-  );
-  return (value: T) => release(value);
 }
 
 describe("store shape", () => {
@@ -150,7 +128,7 @@ describe("browse cache", () => {
 
   test("a browse for a catalog already in flight sends nothing and waits for it", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<BrowseResult>(fake, BROWSE);
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
     const first = store.getState().browseMarketplace("acme");
     await Promise.resolve();
     let secondSettled = false;
@@ -173,7 +151,7 @@ describe("browse cache", () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, () => ({ name: "local", plugins: [{ name: "kept" }] }));
     await store.getState().browseMarketplace("local");
-    const release = defer<BrowseResult>(fake, BROWSE);
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
     const stale = store.getState().browseMarketplace("acme");
     await Promise.resolve();
 
@@ -210,7 +188,7 @@ describe("browse cache", () => {
 describe("list ordering", () => {
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
     await Promise.resolve();
     fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
@@ -268,7 +246,7 @@ describe("notifications", () => {
     store.start();
     fake.on(LIST, () => ({ marketplaces: [ACME] }));
     fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
     await Promise.resolve();
     const before = store.getState();
@@ -290,7 +268,7 @@ describe("dispose fences mutations", () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, () => ({ name: "acme", plugins: [] }));
     await store.getState().browseMarketplace("acme");
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
     const removing = store.getState().removeMarketplace("acme");
     await Promise.resolve();
     const before = store.getState();
@@ -312,10 +290,10 @@ describe("dispose fences mutations", () => {
 describe("reset", () => {
   test("reset() returns to the initial state and fences the list and browses still in flight", async () => {
     const { fake, store } = storeWithFake();
-    const releaseList = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const releaseList = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
     await Promise.resolve();
-    const releaseBrowse = defer<BrowseResult>(fake, BROWSE);
+    const releaseBrowse = deferRequest<BrowseResult>(fake, BROWSE);
     const browsing = store.getState().browseMarketplace("acme");
     await Promise.resolve();
 

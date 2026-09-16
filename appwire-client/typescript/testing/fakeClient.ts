@@ -263,3 +263,26 @@ export class FakeClient implements AppwireClientLike {
     this.emitStateChange("ready", initialize);
   }
 }
+
+/** A request handler that throws `message`: scripts a method to fail. */
+export function failing(message: string): () => never {
+  return () => {
+    throw new Error(message);
+  };
+}
+
+/** Scripts `method` to hang and hands back the resolver of the request in
+ * flight. FakeClient.request() defers the handler by one microtask, so the
+ * resolver exists only after that has flushed; callers await a microtask
+ * before releasing. */
+export function deferRequest<T>(fake: FakeClient, method: MethodName): (value: T) => void {
+  let release!: (value: T) => void;
+  fake.on(
+    method,
+    () =>
+      new Promise<T>((resolve) => {
+        release = resolve;
+      }) as never,
+  );
+  return (value: T) => release(value);
+}
