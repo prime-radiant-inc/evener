@@ -592,13 +592,22 @@ class Driver {
   //
   // Error time is not idle time either. A failed poll is unobserved wall
   // clock, so it cannot stand as proof that the condition held across it: the
-  // settle window is SHIFTED FORWARD by the span since the last reading that
-  // came back -- the successful idle time already accumulated is kept (the
-  // window does not restart, which is what a hiccup used to cost), while the
-  // unobserved span itself is excluded from the proof. The deadline moves with
-  // the window, by exactly that lost span: a proof cannot complete inside a
-  // budget the failure has eaten, and the wait still fails once readings come
-  // back past the shifted deadline.
+  // settle window is SHIFTED FORWARD by that span -- the successful idle time
+  // already accumulated is kept (the window does not restart, which is what a
+  // hiccup used to cost), while the unobserved span itself is excluded from the
+  // proof. Each failure contributes only the span since the PREVIOUS POLL
+  // ATTEMPT, never since the last success: a run of failures must account every
+  // interval exactly once, or the deadline would outrun wall clock (a failed
+  // poll would push it further away than the clock advanced) and the window
+  // start would be shoved past the current poll -- a wait that can neither
+  // release nor fail.
+  //
+  // The deadline is refunded that span, because a proof cannot complete inside
+  // a budget the failure ate. The refund is bounded by the settle window it
+  // protects: once unobserved time has cost as much as the whole proof needs,
+  // the deadline stops moving forward, so an evaluate that never comes back
+  // fails the wait (at the caller's budget plus at most one settle window)
+  // instead of extending it forever.
   //
   // The settle window itself is part of the budget the caller asked for, so
   // the deadline is extended once, to `settleMs` after the condition is first
@@ -608,12 +617,15 @@ class Driver {
   // re-extending on every hold would let a flapping condition postpone the
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
-    let deadline = Date.now() + timeoutMs;
+    const startedAt = Date.now();
+    let deadline = startedAt + timeoutMs;
     let heldSince = null;
     let settleAccounted = false;
-    // When the last reading that CAME BACK landed. Everything after it is
-    // unobserved, and that span is what an error shifts out of the proof.
-    let readAt = Date.now();
+    // When the previous poll ATTEMPT landed, success or failure: the span a
+    // failure excludes from the proof is measured from here.
+    let readAt = startedAt;
+    // How much unobserved time may still be refunded to the deadline.
+    let refundLeft = settleMs;
     for (;;) {
       let errored = false;
       const value = await evaluate(this.send, exprSource).catch(() => {
@@ -625,11 +637,12 @@ class Driver {
         const unobserved = now - readAt;
         if (heldSince !== null) {
           heldSince += unobserved;
-          deadline += unobserved;
+          const refund = Math.min(unobserved, refundLeft);
+          refundLeft -= refund;
+          deadline += refund;
         }
-      } else {
-        readAt = now;
       }
+      readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
         if (settleMs <= 0) return value;
@@ -651,7 +664,9 @@ class Driver {
         const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
-        throw new Error(`timed out after ${timeoutMs}ms waiting for ${label ?? exprSource}${settle}${seen}`);
+        throw new Error(
+          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
     }
