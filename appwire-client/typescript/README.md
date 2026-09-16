@@ -68,7 +68,14 @@ names neither a store library nor a parser; that triple is
 `createFrameworkFreeStore`, the base every shared store here is built on; the
 disclosure store both transcripts keep a row's open/closed choice in across a
 remount (`createDisclosureStore()`, the triple plus store-bound actions, read
-reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
+reactively through the `isDisclosureOpenIn` selector); the keybindings
+overrides store both apps' shortcut settings run on
+(`createKeybindingsStore({ client, registry?, characterKeyTriggers?, drafts? })`:
+one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
+into the host's registry as a delta when it has one, with a checkpointed draft
+editor over an injected storage port for a host that edits offline; the host
+drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
+`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
@@ -106,9 +113,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
   the instance listing and its writes, the API-key, credential-file, sign-out,
-  sign-in and probe RPCs, and the `evener/auth/updated` refetch with its
+  sign-in, status (`authStatus`) and probe RPCs, and the `evener/auth/updated` refetch with its
   own-echo correlation, over a `request`/`onNotification` client port; with
-  the stale-listing refusal and its `staleListingHeld` predicate. Resolves to
+  the stale-listing refusal and its `staleListingHeld` predicate, the
+  `foreignListingChange` predicate both hosts gate a credential probe on, and
+  `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer

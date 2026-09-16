@@ -2,7 +2,6 @@ import {
   safeCredentialTestResult,
   sessionActionError,
 } from "@evener/appwire-client";
-import { randomUUID } from "expo-crypto";
 import type {
   AuthTestResponse,
   InstanceCreateParams,
@@ -10,12 +9,12 @@ import type {
 } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
+  type CredentialInstancesStore,
   type CredentialListing,
-  createCredentialInstancesStore,
+  foreignListingChange,
   listingChanged,
   listingOf,
 } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface ProviderState {
   credentialTest: {
@@ -23,29 +22,22 @@ interface ProviderState {
     pending: boolean;
     result?: AuthTestResponse;
   } | null;
-  // Null until a listing has landed: the core's empty listing and "never
-  // read" look the same from its state, and the screen shows a spinner for
-  // one and an empty list for the other.
+  // Null until a listing has landed (the core's listingEstablished): the
+  // screen shows a spinner for one and an empty list for the other.
   data: CredentialListing | null;
   loading: boolean;
   busy: boolean;
   error: string | null;
 }
 
-// This app's identity on the auth mutations it issues: the hub echoes it in
-// evener/auth/updated so every client attributes the change to its origin.
-// One per process is enough - nothing durable compares it later.
-const nativeClientId = `native-${randomUUID()}`;
-
-/** Provider data and operations owned by one connected hub's screen lifetime:
- * the package's credential instances store core, driven for one client and
- * projected into the snapshot the Providers screen renders. The core owns
- * the listing, its ordering, the evener/auth/updated refetch and the
- * post-write refresh; the screen's own rules stay here - one write at a time
- * (`busy`), a reconciling read after a write whose reply was lost, and a
- * credential test that never echoes the wire. */
+/** Provider data and operations for one hub's provider list: the credential
+ * store it is handed, projected into the snapshot the list renders. The
+ * core owns the listing, its ordering, the evener/auth/updated refetch, the
+ * post-write refresh, and the rule that a refused write reads nothing of its
+ * own (the hub's echo of a write it applied is what re-reads); the list's own
+ * rules stay here - one write at a time (`busy`) and a credential test that
+ * never echoes the wire. */
 export class ProviderInstances {
-  private core = createCredentialInstancesStore({ ownClientId: () => nativeClientId });
   private state: ProviderState = {
     credentialTest: null,
     data: null,
@@ -58,13 +50,12 @@ export class ProviderInstances {
   private disposed = false;
   private started = false;
   private testRevision = 0;
-  constructor(private client: ConversationClientLike) {}
-  // The core is wired on first use, not in the constructor: an instance a
-  // render built and discarded without start() must not leave a store
-  // listening for evener/auth/updated on a client it will never read for.
+  constructor(private readonly core: CredentialInstancesStore) {}
+  // The projection subscribes on first use, not in the constructor: an
+  // instance a render built and discarded without start() must not keep
+  // projecting a store it will never publish for.
   private connect() {
     if (this.stopProjecting || this.disposed) return;
-    this.core.connectionChanged(this.client, "ready");
     this.stopProjecting = this.core.subscribe((state, previous) => this.project(state, previous));
   }
   getSnapshot = () => this.state;
@@ -81,17 +72,22 @@ export class ProviderInstances {
   }
   private project(state: CredentialInstancesState, previous: CredentialInstancesState) {
     const change: Partial<ProviderState> = {};
-    if (listingChanged(state, previous)) {
-      change.data = listingOf(state);
-      // The rows a credential test was checked against are gone with the
-      // listing, whoever changed it - this screen, another client, the TUI -
-      // so a shown result comes down and a probe still in flight is discarded.
-      Object.assign(change, this.invalidateTest());
-    }
+    const moved = listingChanged(state, previous);
+    if (moved || state.listingEstablished !== previous.listingEstablished) change.data = this.listing(state);
+    // A credential test was checked against rows that a foreign change - another
+    // client, the TUI, a failed read - has moved from under it; the store's own
+    // post-write refresh is this screen's change and leaves the result standing.
+    if (foreignListingChange(state, previous, moved)) Object.assign(change, this.invalidateTest());
     if (state.loading !== previous.loading) change.loading = state.loading;
-    if (state.error !== previous.error)
-      change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);
+    if (state.error !== previous.error) change.error = this.loadFailure(state.error);
     if (Object.keys(change).length > 0) this.publish(change);
+  }
+  private listing(state: CredentialInstancesState): CredentialListing | null {
+    return state.listingEstablished ? listingOf(state) : null;
+  }
+  // loadFailure is the sentence the screen shows for the core's read error.
+  private loadFailure(error: string | null): string | null {
+    return error === null ? null : sessionActionError("Could not load providers", error);
   }
   // invalidateTest retires any credential test - a shown result, or a probe
   // still in flight - and returns the state change that takes it down.
@@ -102,6 +98,17 @@ export class ProviderInstances {
   start() {
     if (this.disposed || this.started) return;
     this.started = true;
+    this.connect();
+    // A listing the store already holds for this connection - a list remounted
+    // after a sign-in, say - is published as it is, with the read state it came
+    // with (a failed background refetch keeps its rows and its error): the
+    // store's own refresh keeps it current, and a read here would only repeat
+    // it. A listing that belongs to a replaced connection is read past, as ever.
+    const held = this.core.getState();
+    if (held.listingEstablished && !held.listingFromPreviousConnection) {
+      this.publish({ data: listingOf(held), loading: held.loading, error: this.loadFailure(held.error) });
+      return;
+    }
     void this.refresh();
   }
   refresh = async (): Promise<void> => {
@@ -118,13 +125,10 @@ export class ProviderInstances {
       throw new Error("Provider configuration is unavailable for editing");
     this.connect();
     this.publish({ busy: true, ...this.invalidateTest() });
+    // Never retry a credential or instance mutation: a lost reply is the hub's
+    // echo to reconcile.
     try {
       await action();
-    } catch (error) {
-      // A failed reply can still follow a successful server write. Read to
-      // reconcile either outcome; never retry a credential or instance mutation.
-      if (!this.disposed) await this.core.getState().fetch();
-      throw error;
     } finally {
       this.publish({ busy: false });
     }
@@ -176,10 +180,5 @@ export class ProviderInstances {
     this.disposed = true;
     this.stopProjecting?.();
     this.listeners.clear();
-    // Nothing more may go out on this client for a screen that is gone: this
-    // detaches the core's evener/auth/updated listener, cancels its pending
-    // refetch and restore-on-ready read, and drops whatever in-flight answer
-    // was still its to apply.
-    this.core.connectionChanged(null, "closed");
   }
 }

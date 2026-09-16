@@ -383,7 +383,7 @@ func TestNewSession_DefaultIsolatesThePersonalDoc(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(configHome, "evener", UserDocFile), []byte("AMBIENT\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	sess := newSession(t)
+	sess := newSession(t, withoutGitSnapshot())
 	if got := personalDocPath(sess.cfg.AgentsDocPath); got == "" {
 		t.Fatal("default AgentsDocPath resolves to no path, want an isolated path")
 	}

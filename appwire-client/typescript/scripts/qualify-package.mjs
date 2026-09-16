@@ -62,6 +62,7 @@ assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefi
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
+const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
 const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
@@ -375,6 +376,11 @@ const listing: CredentialListing = listingOf(store.getState()); void held; void 
       smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(credentialStore.getState().listingEstablished, false);
+assert.equal(
+  client.foreignListingChange({ ...credentialStore.getState(), loading: true }, credentialStore.getState()),
+  true,
+);
 assert.equal(typeof credentialStore.getState().setApiKey, "function");
 assert.equal(typeof credentialStore.getState().devicePoll, "function");
 assert.deepEqual(client.listingOf(credentialStore.getState()), {
@@ -389,6 +395,13 @@ assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], li
 assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
 assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
 assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+Promise.all([
+  assert.rejects(credentialStore.getState().fetch(), /no client connected/),
+  assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/),
+]).catch((err) => {
   console.error(err);
   process.exit(1);
 });

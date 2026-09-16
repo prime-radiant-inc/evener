@@ -332,6 +332,9 @@ describe("approval decisions", () => {
   });
 });
 
+// A resolution delivered while a reread is in flight precedes that reread's
+// response, and AppWire cuts the snapshot after it: the response arrives
+// without the card, and the store commits that snapshot as authoritative.
 it("does not resurrect an approval resolved while an older snapshot is in flight", async () => {
   const base = boundary();
   let reads = 0;
@@ -347,13 +350,16 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
         ref: "local:s",
         includeTurns: true,
       });
-      if (++reads === 2) {
-        started();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return response;
+      if (++reads !== 2) return response;
+      started();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
   } as unknown as ConversationClientLike;
   const service = createConversationService(client),
@@ -370,6 +376,9 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
   await refresh;
   expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
+// A resolution delivered before the initial read's response precedes the
+// snapshot cut: the response arrives without the card, and that snapshot is
+// what the open commits — no buffer, no replay.
 it("keeps resolutions delivered between the initial snapshot and its response", async () => {
   const base = boundary();
   let release!: () => void;
@@ -389,7 +398,11 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
       await new Promise<void>((resolve) => {
         release = resolve;
       });
-      return response;
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
     onNotification: (listener: typeof notification) => {
       notification = listener;

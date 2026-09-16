@@ -3,12 +3,14 @@ import type {
   AnyNotification,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import type { CredentialListing } from "@evener/appwire-client/state/credentials";
+import {
+  type CredentialListing,
+  createCredentialInstancesStore,
+} from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -43,14 +45,16 @@ function boundary() {
       };
     },
   } as ConversationClientLike;
-  const model = new ProviderInstances(client);
-  return { model, io, requests, handlers };
+  // The screen owns the store and its connection; the model drives it.
+  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
+  store.connectionChanged(client, "ready");
+  const model = new ProviderInstances(store);
+  return { model, io, requests, handlers, store, client };
 }
 // Another client (or the TUI) changed a provider's credentials: the hub's
 // broadcast reaches every listener on the connection.
-function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>) {
-  for (const notify of handlers)
-    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
+function foreignAuthChange(handlers: Set<(n: AnyNotification) => void>, provider = "test") {
+  for (const notify of handlers) notify({ method: "evener/auth/updated", params: { provider, activeSource: "oauth" } });
 }
 // answerProbeWith scripts the client so a credential test gets `probe`'s
 // answer and every listing read reports rows changed elsewhere.
@@ -75,6 +79,9 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   a.io.request = () => pending.promise;
   a.model.start();
   a.model.dispose();
+  // Leaving the hub is the screen's to say: it tells the store the connection
+  // closed, which detaches the store's listener from that client.
+  a.store.connectionChanged(null, "closed");
   await b.model.refresh();
   pending.resolve(listing("hub A"));
   await pending.promise;
@@ -83,6 +90,57 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   expect(b.model.getSnapshot().data).toEqual(listing("initial"));
   await expect(a.model.remove("old hub")).rejects.toThrow("closed");
   expect(a.requests).toHaveLength(1);
+});
+// held is a listing with rows: what a list remounted after a sign-in finds
+// already in the store.
+const held = { ...listing("held"), availableProviders: [{ id: "anthropic", protocol: "anthropic", auth: "bearer", implicit: true }] };
+it("start publishes the rows the store already holds for this connection without a read", async () => {
+  const { model, io, requests, store } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  const reads = requests.length;
+  model.start();
+  expect(model.getSnapshot().data).toEqual(held);
+  expect(requests).toHaveLength(reads);
+});
+it("start adopting held rows also shows the failure a background refetch left with them", async () => {
+  const { model, io, store } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  io.request = async () => {
+    throw new Error("offline");
+  };
+  await store.getState().fetch();
+  expect(store.getState().instances).toEqual(held.instances);
+  model.start();
+  expect(model.getSnapshot().data).toEqual(held);
+  expect(model.getSnapshot().error).toBe("Could not load providers: offline");
+  expect(model.getSnapshot().loading).toBe(false);
+});
+it("a replaced connection keeps the rows on screen until its own read lands", async () => {
+  vi.useFakeTimers();
+  const { model, io, requests, store, client } = boundary();
+  io.request = async () => held;
+  await model.refresh();
+  expect(model.getSnapshot().data).toEqual(held);
+  const reads = requests.length;
+  const later = { ...held, diagnostics: ["after reconnect"] };
+  io.request = async () => later;
+  store.connectionChanged({ ...client } as typeof client, "ready");
+  // No spinner, no blank: the previous connection's rows stay up.
+  expect(model.getSnapshot().data).toEqual(held);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(requests.length).toBe(reads + 1);
+  expect(model.getSnapshot().data).toEqual(later);
+});
+it("start reads when the rows the store holds belong to a replaced connection", async () => {
+  const { model, io, requests, store, client } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  store.connectionChanged({ ...client } as typeof client, "ready");
+  const reads = requests.length;
+  model.start();
+  await vi.waitFor(() => expect(requests.length).toBe(reads + 1));
 });
 it("refetches when auth changes during a read instead of publishing the stale result", async () => {
   vi.useFakeTimers();
@@ -121,7 +179,8 @@ it("refuses configuration writes while allowing independent credential repair", 
   ]);
 });
 it("does not replay a failed mutation and reconciles with a read", async () => {
-  const { model, io, requests } = boundary();
+  vi.useFakeTimers();
+  const { model, io, requests, handlers } = boundary();
   await model.refresh();
   io.request = async (method) => {
     if (method === "evener/instance/remove") throw new Error("connection lost");
@@ -131,6 +190,12 @@ it("does not replay a failed mutation and reconciles with a read", async () => {
   expect(
     requests.filter((r) => r.method === "evener/instance/remove"),
   ).toHaveLength(1);
+  // A failed reply may follow a write the hub applied; the hub's echo of that
+  // write is what re-reads, never the screen.
+  await vi.advanceTimersByTimeAsync(300);
+  expect(requests.filter((r) => r.method === "evener/instance/list")).toHaveLength(1);
+  foreignAuthChange(handlers);
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(model.getSnapshot().busy).toBe(false);
 });
@@ -249,7 +314,8 @@ it("does not echo credential test transport errors or retry the test", async () 
 });
 
 it("stores credential JSON once, reconciles a lost reply and never publishes its contents", async () => {
-  const { model, io, requests } = boundary();
+  vi.useFakeTimers();
+  const { model, io, requests, handlers } = boundary();
   await model.refresh();
   const credential = '{"type":"authorized_user","refresh_token":"fixture-sensitive"}';
   io.request = async (method) => {
@@ -263,6 +329,10 @@ it("stores credential JSON once, reconciles a lost reply and never publishes its
       params: { provider: "vertex", value: credential, originClientId: expect.stringMatching(/^native-/) },
     },
   ]);
+  // The write may have landed despite the lost reply: the hub's echo, no
+  // longer this screen's own (the refused write retired its marker), refetches.
+  foreignAuthChange(handlers, "vertex");
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-sensitive");
   expect(model.getSnapshot().busy).toBe(false);
