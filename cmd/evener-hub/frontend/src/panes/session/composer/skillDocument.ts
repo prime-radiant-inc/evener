@@ -1,5 +1,5 @@
+import { canonicalSkillNames } from "@evener/appwire-client";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { canonicalSkillNames } from "../../../../../../../appwire-client/typescript/composerInput";
 
 export interface SkillEditorValue {
   text: string;
