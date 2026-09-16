@@ -92,14 +92,17 @@ func (m hubModel) sessionControls() sessionControls {
 		queue: active && caps.Queue,
 		send:  !active && caps.Send,
 	}
+	// Ordered like submitRouting.ts's reason.drain: the harness, then the
+	// status, then the revision still syncing after a partial drain. The stale
+	// flag must not mask an awaiting or idle refusal, which no retry resolves.
 	switch {
 	case c.drain:
 	case !caps.Steer:
 		c.drainReason = "source does not advertise steer"
-	case m.queueRevisionStale:
-		c.drainReason = "the queue is syncing after the last force-steer; retry in a moment"
-	default:
+	case !active && !parked:
 		c.drainReason = "no active turn"
+	default:
+		c.drainReason = "the queue is syncing after the last force-steer; retry in a moment"
 	}
 	return c
 }

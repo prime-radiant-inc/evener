@@ -2405,6 +2405,33 @@ func TestHubModelInlineTurnBoundaryKeepsTheControls(t *testing.T) {
 // The stale gate a partial drain sets belongs to the session it happened in:
 // entering another session (clearSessionQueue) must not carry it over, or a
 // session whose queue revision is below the earlier drain's stays un-drainable.
+// The drain's reason is ordered like submitRouting.ts's reason.drain: the
+// harness, then the status, then the revision still syncing after a partial
+// drain. A stale flag left by a partial drain must not mask an awaiting or
+// idle refusal, or the banner tells the user to retry a sync that no retry
+// resolves.
+func TestHubModelDrainReasonNamesTheStatusBeforeTheStaleRevision(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+	if !got.queueRevisionStale {
+		t.Fatal("precondition: the partial drain should have marked the revision stale")
+	}
+	got.detail.State = appwire.ThreadStatusAwaiting
+	if reason := got.sessionControls().drainReason; reason != "no active turn" {
+		t.Fatalf("drainReason while awaiting with a stale revision = %q, want the status reason", reason)
+	}
+	got.detail.State = appwire.ThreadStatusActive
+	if reason := got.sessionControls().drainReason; reason != "the queue is syncing after the last force-steer; retry in a moment" {
+		t.Fatalf("drainReason while active with a stale revision = %q, want the revision reason", reason)
+	}
+}
+
 func TestHubModelStaleQueueGateDoesNotSurviveSessionSwitch(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = appwire.ThreadStatusActive
