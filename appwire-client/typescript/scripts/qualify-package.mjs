@@ -196,6 +196,15 @@ const pathRows = client.buildPathRows({
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
 assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { tokenCounts: true });
+assert.equal(client.advancedEnabledCount(displayConfig), 1);
+assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
+assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
+assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
+assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
+assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

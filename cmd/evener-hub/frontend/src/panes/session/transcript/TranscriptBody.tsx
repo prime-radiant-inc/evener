@@ -1,9 +1,9 @@
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
+import { configFingerprint, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
 import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { configFingerprint, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import {
   type ProjectedEntry,
   type ProjectedTurn,

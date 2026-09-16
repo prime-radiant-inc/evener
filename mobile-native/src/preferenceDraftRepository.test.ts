@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeTranscriptDisplayConfig } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
 import { TranscriptDraftRepository } from "./preferenceDraftRepository";
 

@@ -51,6 +51,7 @@
     "railSessionState.ts",
     "reasoningEffort.ts",
     "credentialLabels.ts",
-    "pathRows.ts"
+    "pathRows.ts",
+    "transcriptDisplayConfig.ts"
   ]
 }
