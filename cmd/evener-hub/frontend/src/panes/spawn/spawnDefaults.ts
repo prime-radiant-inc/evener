@@ -127,7 +127,10 @@ export interface SaveDefaultsInput {
   // OWN (round eight - the cwd key cannot distinguish a local checkout of the
   // same path from the remote one) while keeping a model already stored there
   // (round nine - a remote submit must not erase the local project's sticky
-  // choice).
+  // choice). Component 07b's round four adds one refinement main's round nine
+  // implies but did not yet do: a remote submit never takes the blob's
+  // removeRaw path either, so an empty remote form cannot delete a local
+  // project's stored layer (see saveDefaults).
   remoteLaunch?: boolean;
 }
 
@@ -172,11 +175,18 @@ export function saveDefaults(input: SaveDefaultsInput): void {
     if (typeof previous === "string" && previous.trim() !== "") blob.model = previous;
   }
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
-  else removeRaw(key);
+  // A remote submit that contributes no field of its own must not take the
+  // removeRaw path either (component 07b review, round four, adopted onto main's
+  // round-nine rule): an empty blob here means "this remote form named nothing",
+  // not "this path has no stored layer", and the evidence would only ever
+  // describe another machine. The carry-over above keeps the stored model; this
+  // keeps the rest of the layer - and the blob itself - intact.
+  else if (!input.remoteLaunch) removeRaw(key);
 
   // Global scalars are controller-wide defaults; a remote launch must not
   // rewrite them (round seven). The per-project blob above stays keyed by the
-  // submitted cwd, so the remote project's own layer is still remembered.
+  // submitted cwd, so the remote project's own layer is still remembered
+  // (round eight - only the host-specific model is withheld from it).
   if (!input.remoteLaunch) {
     if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
     if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);

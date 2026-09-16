@@ -66,7 +66,9 @@ test("the embedded license const matches LICENSES/beautiful-ui.txt on disk, from
 
 test("shows the hub version (and commit) once connected and loaded", async () => {
   const fake = connectFakeClient();
-  const response: SettingsOverviewResponse = { hub: { version: "1.2.3", commit: "abc1234" } };
+  const response: SettingsOverviewResponse = {
+    hub: { version: "1.2.3", commit: "abc1234", daemonIdleTimeoutMillis: 3600000 },
+  };
   fake.on("evener/settings/overview", () => response);
 
   render(<AboutSection />);

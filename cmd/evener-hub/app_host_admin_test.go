@@ -381,14 +381,23 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/auth/status":             true,
 		"evener/auth/test":               true,
 		"evener/command/list":            false,
-		"evener/dirs/create":             true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":            false,
-		"evener/git/head":                true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":          true, // discovery: the host's own harnesses
-		"evener/host/request":            false,
-		"evener/instance/create":         true,
-		"evener/instance/edit":           true,
-		"evener/instance/list":           true,
+		// The resident-process controls are a LOCAL operator surface: the
+		// inventory reads this host's live processes and rendezvous records, and
+		// retirement stops a daemon after verifying its kernel-serialized
+		// ownership on this host. Neither is designed to be driven through the
+		// remote admin proxy, so both are denied deliberately rather than left
+		// undecided — an unlisted method is refused with appwire.InvalidParams
+		// and never forwarded.
+		"evener/daemon/list":     false,
+		"evener/daemon/retire":   false,
+		"evener/dirs/create":     true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":    false,
+		"evener/git/head":        true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list":  true, // discovery: the host's own harnesses
+		"evener/host/request":    false,
+		"evener/instance/create": true,
+		"evener/instance/edit":   true,
+		"evener/instance/list":   true,
 		// Two instance methods landed on the catalog after this list was
 		// written (per-model enablement and its refresh). The proxy forwards the
 		// five instance handlers the settings panes drive remotely and nothing

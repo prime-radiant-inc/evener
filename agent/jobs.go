@@ -63,9 +63,12 @@ func (e *terminalRecordPersistError) Unwrap() error {
 }
 
 type jobManager struct {
-	mu             sync.Mutex
-	watchNotifyMu  sync.Mutex
-	watchPersistMu sync.Mutex
+	// retirementOwner is installed before publication and never rebound. Unlike
+	// stable-parent routing, process admission follows the Session's atomic pointer.
+	retirementOwner *Session
+	mu              sync.Mutex
+	watchNotifyMu   sync.Mutex
+	watchPersistMu  sync.Mutex
 	// watchPersistDone is non-nil while one watch-journal transition owns the
 	// process-local serialization token. Waiters observe it under watchPersistMu
 	// and wait only after releasing that mutex.
@@ -830,6 +833,42 @@ func (jm *jobManager) closeStoreOnly() error {
 	return nil
 }
 
+// releaseQuiescentRuntime is the non-terminal counterpart of closeRuntimeState:
+// it asserts the manager holds no runtime obligations, stops its process-local
+// idle infrastructure, and closes the store WITHOUT cancelling running jobs or
+// dropping/terminating watches. A manager still holding a running job or a
+// pending terminal flush refuses rather than silently abandoning work.
+func (jm *jobManager) releaseQuiescentRuntime() error {
+	if jm == nil {
+		return nil
+	}
+	jm.watchNotifyMu.Lock()
+	jm.mu.Lock()
+	if len(jm.running) != 0 || len(jm.terminalFlush) != 0 {
+		jm.mu.Unlock()
+		jm.watchNotifyMu.Unlock()
+		return errors.New("job manager still has runtime obligations")
+	}
+	// Refuse new process-local observer-link work and let idle progress tickers
+	// observe closing rather than being cancelled.
+	jm.closing = true
+	jm.mu.Unlock()
+	jm.watchNotifyMu.Unlock()
+
+	observerDone := make(chan struct{})
+	go func() {
+		jm.observerLinkWG.Wait()
+		close(observerDone)
+	}()
+	deadline := jm.clock.NewTimer(jm.closeGrace)
+	defer deadline.Stop()
+	select {
+	case <-observerDone:
+	case <-deadline.C():
+	}
+	return jm.closeStoreOnly()
+}
+
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
@@ -901,7 +940,19 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	run.closeDoneAbandoned()
 }
 
+func (jm *jobManager) beginRetirementMutation(category string) (func(), error) {
+	if jm.retirementOwner != nil {
+		return jm.retirementOwner.beginRetirementMutation(category)
+	}
+	return func() {}, nil
+}
+
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {
+	release, err := jm.beginRetirementMutation("job")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	startedAt := jm.now()
 	jobID, outputPath, output, err := jm.createJobOutput()
 	if err != nil {

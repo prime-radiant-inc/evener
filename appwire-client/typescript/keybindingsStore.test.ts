@@ -105,6 +105,23 @@ describe("two stores share nothing", () => {
   });
 });
 
+describe("an undecodable changed broadcast", () => {
+  test("schedules the store's own read so the state converges, without dropping the change", async () => {
+    const client = clientServing(1);
+    const store = await readyStore(client, { registry: registryWithDefaults() });
+    const rules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    client.on(getMethod, () => payload(2, rules));
+
+    client.emitNotification({ method: changedMethod, params: { version: 1, revision: "two", rules } as never });
+
+    await vi.waitFor(() => expect(store.getState().revision).toBe(2));
+    expect(store.getState().rawOverrides).toEqual(rules);
+    // The initial load plus exactly one follow-up read.
+    expect(client.calls.filter((c) => c.method === getMethod)).toHaveLength(2);
+    expect(store.getState().hubError).toBeNull();
+  });
+});
+
 describe("store shape", () => {
   test("subscribe delivers new and previous state; getInitialState is what the store was created with", () => {
     const store = createKeybindingsStore({ client: new FakeClient("ready") });
@@ -587,6 +604,9 @@ describe("payload rules shared by both apps", () => {
     ["the wrong version", { version: 2, revision: 2, rules: [] }, undefined],
     ["a negative revision", { version: 1, revision: -1, rules: [] }, undefined],
     ["a non-string action", { version: 1, revision: 1, rules: [{ action: 1, chord: null }] }, undefined],
+    ["an empty action id", { version: 1, revision: 1, rules: [{ action: "", chord: "Control+P" }] }, undefined],
+    ["an empty chord", { version: 1, revision: 1, rules: [{ action: "palette.open", chord: "" }] }, undefined],
+    ["an empty action and chord", { version: 1, revision: 1, rules: [{ action: "", chord: "" }] }, undefined],
     ["a non-string loadError", { version: 1, revision: 1, rules: [], loadError: 4 }, undefined],
     ["a non-object", "nope", undefined],
   ])("fromWireOverrides: %s", (_name, value, expected) => {

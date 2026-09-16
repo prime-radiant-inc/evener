@@ -31,7 +31,7 @@ func TestTaskTool_AppendEmitsTaskUpdated(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:           func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
@@ -75,7 +75,7 @@ func TestTaskTool_UpdateToDoneEmitsTaskUpdated(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:           func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
@@ -120,7 +120,7 @@ func TestTaskTool_UpdateToInProgressEmitsTaskUpdated(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:           func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
@@ -170,7 +170,7 @@ func TestTaskTool_MixedAddFailingUpdateIsAtomic(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:           func(_ events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer:          func(string, string) {},
+		steer:          func(string, string) error { return nil },
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
