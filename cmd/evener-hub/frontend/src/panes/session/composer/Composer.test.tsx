@@ -4018,6 +4018,26 @@ test("a token typed directly against a chip is separated so the reference stays 
   expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
 });
 
+test("one undo removes a typed character and the separator the chip needed with it", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_adjacent_undo";
+  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard("d");
+  expect(editor.textContent).toBe("Use /cleanup d");
+
+  // The separator exists only because of the typed character, so one undo has
+  // to take both: leaving `/cleanupd` behind would be a state the parser reads
+  // as prose, and re-separating it would make the undo look like a no-op.
+  await user.keyboard("{Control>}z{/Control}");
+  expect(editor.textContent).toBe("Use /cleanup");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup", skillNames: ["cleanup"] });
+});
+
 test("a character that already bounds the reference is left exactly as typed", async () => {
   const user = userEvent.setup();
   const ref = "ref_inline_bounding_character";

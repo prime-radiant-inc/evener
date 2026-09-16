@@ -86,7 +86,12 @@ const skillIntegrity = new Plugin({
       (atom) => completeSkillReferenceAt(text, atom.offset, [atom.name]) !== atom.name,
     );
     if (broken.length === 0) return null;
-    const tr = closeHistory(newState.tr);
+    // Deliberately NOT closeHistory: the separator exists only because of the
+    // edit that broke the reference, so it belongs to that edit's history
+    // event. As its own event, one undo would revert only the space - leaving
+    // `/skill-1d`, which this plugin would immediately re-separate, making undo
+    // look like a no-op and the typed character unreachable.
+    const tr = newState.tr;
     // Back to front, and each atom's own trailing side before its leading one,
     // so an insertion never invalidates a position still to be used.
     for (const atom of broken.reverse()) {
