@@ -2,10 +2,9 @@
 // (evener/command/list), read once per connection and re-read when the hub
 // reports a plugin change, plus the per-session view of it - the commands a
 // session's loaded plugins can run, merged with the skills its diagnostics
-// advertise - which is what a composer's slash menu shows. Both stores are
-// framework-free factories over the getState/setState/subscribe triple; each
-// app builds the instances it wires to its view layer, and tests build their
-// own. Pure logic - no DOM, no React.
+// advertise - which is what a composer's slash menu shows. Both are
+// framework-free store factories (frameworkFreeStore.ts); each app builds the
+// instances it wires to its view layer. Pure logic - no DOM, no React.
 //
 // createCommandCatalog is the hub-wide catalog, unfiltered, for a host that
 // already holds each session's diagnostics and projects the catalog through
@@ -31,29 +30,23 @@ export interface CommandCatalogState {
   loaded: boolean;
   loading: boolean;
   error: string | null;
-  /** Re-reads the catalog. A refresh during a load re-runs the load once more
-   * after it, so what lands is never older than the last request for it. */
+  /** Re-reads the catalog; refreshLoop below holds the coalescing rule. */
   refresh: () => Promise<void>;
 }
 
 export interface CommandCatalog extends FrameworkFreeStore<CommandCatalogState> {
-  /** Re-reads the catalog whenever the hub reports a plugin change, for as
-   * long as the returned disposer has not been called. */
+  /** Re-reads a loaded catalog whenever the hub reports a plugin change, for
+   * as long as the returned disposer has not been called; a catalog nobody
+   * has read yet stays unread. */
   watch(): () => void;
 }
 
 export function createCommandCatalog(client: CommandCatalogClient): CommandCatalog {
   const store = createFrameworkFreeStore<CommandCatalogState>((set) => {
     const loop = refreshLoop(
-      async (superseded) => {
-        try {
-          const commands = await readCatalog(client);
-          if (!superseded()) set({ commands, loaded: true, error: null });
-        } catch (error) {
-          if (!superseded()) set({ error: sessionActionError("Could not load commands", error) });
-        }
-      },
-      (loading) => set({ loading }),
+      set,
+      async () => ({ commands: await readCatalog(client), loaded: true }),
+      "Could not load commands",
     );
     return { commands: [], loaded: false, loading: false, error: null, refresh: loop.refresh };
   });
@@ -61,7 +54,8 @@ export function createCommandCatalog(client: CommandCatalogClient): CommandCatal
     ...store,
     watch: () =>
       client.onNotification((n) => {
-        if (n.method === "evener/plugin/updated") void store.getState().refresh();
+        const { loaded, refresh } = store.getState();
+        if (n.method === "evener/plugin/updated" && loaded) void refresh();
       }),
   };
 }
@@ -99,24 +93,18 @@ export function createSessionCommandCatalog(client: CommandCatalogClient, ref: s
   }));
   let unsubscribe: (() => void) | undefined;
   const loop = refreshLoop(
-    async (superseded) => {
-      const [catalog, thread] = await Promise.allSettled([
+    store.setState,
+    async () => {
+      const [catalog, thread] = await Promise.all([
         readCatalog(client),
         client.request("thread/read", { ref, includeTurns: false }),
       ]);
-      if (superseded()) return;
-      try {
-        if (catalog.status === "rejected") throw catalog.reason;
-        if (thread.status === "rejected") throw thread.reason;
-        const evener = thread.value.thread.evener;
-        if (evener.ref !== ref) throw new Error("Catalog belongs to another session");
-        const commands = visibleCatalogCommands(catalog.value, sessionPluginNames(evener.diagnostics));
-        store.setState({ items: mergeSlashCommands([], commands, evener.diagnostics?.skills ?? []), error: null });
-      } catch (error) {
-        store.setState({ error: sessionActionError("Could not load commands and skills", error) });
-      }
+      const evener = thread.thread.evener;
+      if (evener.ref !== ref) throw new Error("Catalog belongs to another session");
+      const commands = visibleCatalogCommands(catalog, sessionPluginNames(evener.diagnostics));
+      return { items: mergeSlashCommands([], commands, evener.diagnostics?.skills ?? []) };
     },
-    (loading) => store.setState({ loading }),
+    "Could not load commands and skills",
   );
   return {
     ...store,
@@ -141,14 +129,20 @@ async function readCatalog(client: CommandCatalogClient): Promise<CommandDescrip
   return response.commands ?? [];
 }
 
-// One load at a time. A refresh during a load marks it superseded - the
-// attempt drops its result and the loop runs once more - so a stale response
-// never lands over a newer request's, and a disposed loop publishes nothing.
-function refreshLoop(attempt: (superseded: () => boolean) => Promise<void>, setLoading: (loading: boolean) => void) {
+// One load at a time: `read` returns the state a successful load publishes
+// (with the error cleared) or throws, and the throw is published as `failure`
+// with the cause, over whatever state the store already had. A refresh during
+// a load marks it superseded - its result is dropped and the loop runs once
+// more - so a stale response never lands over a newer request's, and a
+// disposed loop publishes nothing.
+function refreshLoop<S extends { loading: boolean; error: string | null }>(
+  set: (partial: Partial<S>) => void,
+  read: () => Promise<Partial<S>>,
+  failure: string,
+) {
   let inFlight: Promise<void> | undefined;
   let dirty = false;
   let disposed = false;
-  const superseded = () => dirty || disposed;
   const refresh = (): Promise<void> => {
     if (disposed) return Promise.resolve();
     if (inFlight) {
@@ -156,12 +150,18 @@ function refreshLoop(attempt: (superseded: () => boolean) => Promise<void>, setL
       return inFlight;
     }
     inFlight = (async () => {
-      setLoading(true);
+      set({ loading: true } as Partial<S>);
       do {
         dirty = false;
-        await attempt(superseded);
+        let next: Partial<S>;
+        try {
+          next = { ...(await read()), error: null };
+        } catch (error) {
+          next = { error: sessionActionError(failure, error) } as Partial<S>;
+        }
+        if (!dirty && !disposed) set(next);
       } while (dirty && !disposed);
-      if (!disposed) setLoading(false);
+      if (!disposed) set({ loading: false } as Partial<S>);
     })().finally(() => {
       inFlight = undefined;
     });

@@ -6,12 +6,7 @@
 // connection store holds now, and follows that store so the plugin-change
 // subscription moves to a replacement client. Each consumer scopes the catalog
 // to a session itself, from the diagnostics the threads store already holds.
-import {
-  type AppwireClientLike,
-  type CommandCatalogClient,
-  type CommandCatalogState,
-  createCommandCatalog,
-} from "@evener/appwire-client";
+import { type CommandCatalogClient, type CommandCatalogState, createCommandCatalog } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { connectionStore } from "./connection";
 
@@ -22,19 +17,15 @@ const connectionClient: CommandCatalogClient = {
     return client.request(method, params, opts);
   },
   onNotification: (handler) => {
-    let wired: AppwireClientLike | null = null;
-    let unwire: (() => void) | undefined;
-    const follow = (client: AppwireClientLike | null) => {
-      if (client === wired) return;
+    let unwire = connectionStore.getState().client?.onNotification(handler);
+    const stop = connectionStore.subscribe((state, previous) => {
+      if (state.client === previous.client) return;
       unwire?.();
-      wired = client;
-      unwire = client?.onNotification(handler);
-    };
-    follow(connectionStore.getState().client);
-    const stop = connectionStore.subscribe((state) => follow(state.client));
+      unwire = state.client?.onNotification(handler);
+    });
     return () => {
       stop();
-      follow(null);
+      unwire?.();
     };
   },
 };

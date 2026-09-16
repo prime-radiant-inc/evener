@@ -40,17 +40,27 @@ test("a refresh with no client wired is a named failure, not a hang or a throw",
   expect(useCommandCatalog.getState().error).toContain("Not connected");
 });
 
-test("a plugin change on the wired client re-reads the catalog; a replaced client's changes are ignored", async () => {
+test("a plugin change on the wired client re-reads a loaded catalog; a replaced client's changes are ignored", async () => {
   const first = catalogClient(["review"]);
   connectionStore.setState({ client: first as never });
   first.emitNotification({ method: "evener/plugin/updated", params: {} });
-  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review"]));
+  await Promise.resolve();
+  expect(first.calls).toEqual([]);
+  await useCommandCatalog.getState().refresh();
+  first.on("evener/command/list", () => ({
+    commands: [
+      { name: "review", source: "user" },
+      { name: "ship", source: "user" },
+    ],
+  }));
+  first.emitNotification({ method: "evener/plugin/updated", params: {} });
+  await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review", "ship"]));
 
   const second = catalogClient(["release"]);
   connectionStore.setState({ client: second as never });
   first.emitNotification({ method: "evener/plugin/updated", params: {} });
   await Promise.resolve();
-  expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review"]);
+  expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["review", "ship"]);
   second.emitNotification({ method: "evener/plugin/updated", params: {} });
   await vi.waitFor(() => expect(useCommandCatalog.getState().commands.map((c) => c.name)).toEqual(["release"]));
 });
