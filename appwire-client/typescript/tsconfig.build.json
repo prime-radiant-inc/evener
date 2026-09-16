@@ -51,6 +51,13 @@
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
     "reasoningEffort.ts",
-    "credentialLabels.ts"
+    "credentialLabels.ts",
+    "pathRows.ts",
+    "modelCatalogTypes.ts",
+    "modelCatalogView.ts",
+    "modelCatalogPickerRows.ts",
+    "taskListData.ts",
+    "taskListGroups.ts",
+    "taskListTime.ts"
   ]
 }

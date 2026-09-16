@@ -9,6 +9,7 @@ import {
   presetContent,
   type TranscriptDisplayConfigV1,
 } from "./config";
+import { EntityViewsProvider } from "./entityViews";
 import type { TranscriptMetadataVisibility, TranscriptProjection } from "./projector";
 
 export type TranscriptSurface = "live" | "readOnly" | "preview";
@@ -26,8 +27,6 @@ export interface TranscriptRenderContextValue {
   readonly fullBaselineGeneration: number;
   /** Snapshot supplied by the owning transcript; never read from threadsStore. */
   readonly thread?: ThreadModel;
-  /** Shared entity index supplied by the owning transcript. */
-  readonly entities?: ReadonlyMap<string, EntityView>;
 }
 
 export interface TranscriptRenderContextInput {
@@ -41,7 +40,6 @@ export interface TranscriptRenderContextInput {
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
   thread?: ThreadModel;
-  entities?: ReadonlyMap<string, EntityView>;
 }
 
 export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
@@ -87,7 +85,6 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
   thread: undefined,
-  entities: undefined,
 };
 
 const TranscriptRenderContext = createContext<TranscriptRenderContextValue | null>(null);
@@ -129,7 +126,6 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
     thread: input.thread,
-    entities: input.entities,
   };
 }
 
@@ -137,6 +133,10 @@ export interface TranscriptRenderProviderProps extends Partial<Omit<TranscriptRe
   children: ReactNode;
   config?: TranscriptDisplayConfigV1;
   value?: TranscriptRenderContextValue;
+  /** Shared entity index supplied by the owning transcript, republished to
+   * EntityRef through the dedicated entity-views provider rather than carried
+   * on the render context (which EntityRef no longer reads). */
+  entities?: ReadonlyMap<string, EntityView>;
 }
 
 function isFullConfig(config: TranscriptDisplayConfigV1): boolean {
@@ -182,17 +182,15 @@ export function TranscriptRenderProvider({
     | {
         key: string;
         thread: ThreadModel | undefined;
-        entities: ReadonlyMap<string, EntityView> | undefined;
         context: TranscriptRenderContextValue;
       }
     | undefined
   >(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; thread and entity-map identities refresh snapshot-derived inputs
+  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; the thread identity refreshes snapshot-derived inputs
   const context = useMemo(() => {
     if (value !== undefined) return value;
     const previous = semanticContextRef.current;
-    if (previous?.key === semanticKey && previous.thread === thread && previous.entities === entities)
-      return previous.context;
+    if (previous?.key === semanticKey && previous.thread === thread) return previous.context;
     const next = createTranscriptRenderContext({
       config: semanticConfig,
       metadata: semanticMetadata,
@@ -201,11 +199,10 @@ export function TranscriptRenderProvider({
       disclosureScope: semanticScope,
       fullBaselineGeneration: semanticGeneration,
       thread,
-      entities,
     });
-    semanticContextRef.current = { key: semanticKey, thread, entities, context: next };
+    semanticContextRef.current = { key: semanticKey, thread, context: next };
     return next;
-  }, [semanticKey, thread, entities, value]);
+  }, [semanticKey, thread, value]);
   const full = isFullConfig(context.config);
   const previous = useRef<{ scope: string; full: boolean; generation: number; eligible: string } | undefined>(
     undefined,
@@ -246,7 +243,11 @@ export function TranscriptRenderProvider({
     };
   }, [context, context.disclosureScope, context.fullBaselineGeneration, eligibleFingerprint, full]);
 
-  return <TranscriptRenderContext.Provider value={context}>{children}</TranscriptRenderContext.Provider>;
+  return (
+    <TranscriptRenderContext.Provider value={context}>
+      <EntityViewsProvider entities={entities}>{children}</EntityViewsProvider>
+    </TranscriptRenderContext.Provider>
+  );
 }
 
 /** Test/transition hook: returns null when a caller has not supplied a provider. */

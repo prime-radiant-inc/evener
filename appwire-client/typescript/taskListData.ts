@@ -1,4 +1,4 @@
-// Narrows TaskListResponse.data (protocol/types.gen.ts types it `unknown` -
+// Narrows TaskListResponse.data (types.gen.ts types it `unknown` -
 // the Go source (appwire/types.go:896-898) is `Data any`, so codegen has no
 // named struct to reflect) into a display-ready TaskRow[]. The real runtime
 // shape - confirmed by reading the daemon handler chain rather than
@@ -12,13 +12,16 @@
 // `null`/`undefined` only when no tasksFn is registered
 // server-side (server/appwire_runtime.go:713-721) - an old daemon - which
 // this parser reports as `null` ("no data"), distinct from a real empty
-// list (`[]`, "zero tasks").
+// list (`[]`, "zero tasks"). Shared by the web tasks panel and its store, the
+// transcript's task_list card, and native's tasks sheet and task list.
 //
 // created_at/updated_at/completed_at ARE carried (as createdAt/updatedAt/
 // completedAt): the 2026-08-09 panel redesign (docs/superpowers/specs/
 // 2026-08-09-task-list-ui-design.md) shows per-task recency and completion
 // times, which the legacy panel's field set predates; `insert` remains
-// intentionally uncarried because the panel has no consumer for it.
+// intentionally uncarried because neither app has a consumer for it.
+
+import { asJsonObject } from "./watchRows";
 
 export type TaskStatus = "open" | "in_progress" | "done" | "cancelled";
 
@@ -51,8 +54,8 @@ export interface TaskRow {
   completedAt?: string;
 }
 
-// One condensed sentence for a task aggregate, shared by the inline card, the
-// panel trigger, and the panel body head: "N of M tasks left" while work
+// One condensed sentence for a task aggregate, shared by the web's inline task
+// card and its tasks panel's trigger and body head: "N of M tasks left" while work
 // remains, "All M tasks done" when everything finished without a
 // cancellation, "All M tasks settled" when the tail is all cancellations
 // ("settled" is already the panel's word for the done+cancelled group), and
@@ -69,17 +72,14 @@ export function taskAggregateLabel(tasks: TaskCounts): string {
   return `All ${tasks.total} ${noun} done`;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
 // A row is usable once it carries the wire's non-omitempty fields with the
 // right primitive types (id/type/description/prompt/status are never
 // omitted by the Go struct's own json tags, even when zero-valued) -
 // anything else (a null entry, a stray string, a shape missing `id`) is
 // dropped rather than fabricated or allowed to crash the whole parse.
 function parseRow(raw: unknown): TaskRow | null {
-  if (!isPlainObject(raw)) return null;
+  const fields = asJsonObject(raw);
+  if (!fields) return null;
   const {
     id,
     type,
@@ -93,7 +93,7 @@ function parseRow(raw: unknown): TaskRow | null {
     created_at,
     updated_at,
     completed_at,
-  } = raw;
+  } = fields;
   if (typeof id !== "number" || typeof type !== "string" || typeof description !== "string") return null;
   if (typeof prompt !== "string" || typeof status !== "string") return null;
 

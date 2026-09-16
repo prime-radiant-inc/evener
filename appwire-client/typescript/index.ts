@@ -139,6 +139,20 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { PickerModelRow, PickerRow } from "./modelCatalogPickerRows";
+export { buildPickerRows, pickableModelRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+export type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
+export type { CatalogOption } from "./modelCatalogView";
+export {
+  capabilityLabels,
+  contextWindowLabel,
+  filterCatalog,
+  formatCost,
+  toCatalogOptions,
+  withGroupHeads,
+} from "./modelCatalogView";
+export type { PathPickableRow, PathRow } from "./pathRows";
+export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
@@ -182,6 +196,11 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
+export { parseTaskListData, taskAggregateLabel } from "./taskListData";
+export type { TaskGroups } from "./taskListGroups";
+export { groupTasks } from "./taskListGroups";
+export { absoluteTime, relativeTime } from "./taskListTime";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
