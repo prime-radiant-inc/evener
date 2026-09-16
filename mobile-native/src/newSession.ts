@@ -1,17 +1,15 @@
 import { createStore } from "zustand/vanilla";
 import {
   buildComposerInput,
+  harnessSupportsPluginSelection,
   MAX_ATTACHMENTS,
   markerText,
+  pluginSelectionIssues,
+  resolveScalars,
   stripMarker,
   WireError,
-} from "@evener/appwire-client";
-import { harnessSupportsPluginSelection } from "../../cmd/evener-hub/frontend/src/panes/spawn/harnessModels";
-import {
-  pluginSelectionIssues,
   withPluginSelection,
-} from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
-import { resolveScalars } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
+} from "@evener/appwire-client";
 import type {
   HarnessDescriptor,
   LaunchConfigLayer,

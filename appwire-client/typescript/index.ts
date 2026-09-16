@@ -217,6 +217,19 @@ export {
   parseSlashToken,
   spliceSlashCommand,
 } from "./slashCompletion";
+export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
+export type { PluginSelectionState } from "./spawnPluginSelectionState";
+export {
+  pluginSelectionIssues,
+  reconcilePluginSelection,
+  selectAllPlugins,
+  selectedPluginNames,
+  selectNoPlugins,
+  setPluginSelected,
+  withPluginSelection,
+} from "./spawnPluginSelectionState";
+export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
+export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
