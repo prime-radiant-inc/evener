@@ -12,17 +12,17 @@
 // file's and AppShell.test.tsx's notes on the convention).
 
 import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { ACTIONS } from "../../keybindings/actions";
 import {
+  ACTIONS,
   CHARACTER_KEY_TRIGGER_BINDING_ID,
   CHEATSHEET_SCOPE,
   DEFAULT_BINDINGS,
   registerDefaultBindings,
-} from "../../keybindings/defaults";
-import { keybindingsRegistry } from "../../keybindings/registry";
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { initNotifications, resetNotificationsForTests } from "../../notifications";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";

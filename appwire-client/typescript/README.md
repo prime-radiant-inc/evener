@@ -44,7 +44,14 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, and the doc-pane URL builders, which hang
+level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+ids, the chord AST with its overlap predicate, the default binding map, the
+display rows, the override primitives and the semantic override validation) -
+its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`
+returning a `getState`/`setState`/`subscribe` triple each app wraps for its
+own view layer, and its chord parsing goes through a `KeybindingParser` port
+the host supplies (tinykeys' `parseKeybinding` in both apps), so the package
+names neither a store library nor a parser - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired

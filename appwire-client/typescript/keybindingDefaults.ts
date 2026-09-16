@@ -46,9 +46,15 @@
 // settings.close is scope-gated: it lives in the settings scope, NOT global.
 // The Settings pane pushes that scope while it is open.
 
-import { ACTIONS } from "./actions";
-import { type KeySequence, parseChord, serializeChord, withOptionalModifier } from "./chord";
-import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./registry";
+import { ACTIONS } from "./keybindingActions";
+import {
+  type KeybindingParser,
+  type KeySequence,
+  parseChord,
+  serializeChord,
+  withOptionalModifier,
+} from "./keybindingChord";
+import { type Binding, type BindingInput, GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
 
 export const SETTINGS_SCOPE = "settings";
 export const CHEATSHEET_SCOPE = "cheatsheet";
@@ -257,7 +263,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   // (chordDisplayKeys), so the row still reads "?". The entry is
   // CONDITIONAL: shell/cheatsheet/cheatsheetController.ts keeps it
   // registered only while the characterKeyTriggers pref is on.
-  // Listed SECOND for the action so defaultInputFor (overrides.ts) keeps
+  // Listed SECOND for the action so defaultInputFor (keybindingOverrides.ts) keeps
   // the $mod+/ entry's policy flags for overrides.
   {
     id: CHARACTER_KEY_TRIGGER_BINDING_ID,
@@ -296,21 +302,21 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
 // complement of $mod is added as an OPTIONAL modifier on both entries, so
 // pressing Meta and Ctrl together also fires - legacy accepted either or
 // both regardless of the other modifier's state.
-function modPair(input: DefaultBindingInput): [BindingInput, BindingInput] | null {
+function modPair(parse: KeybindingParser, input: DefaultBindingInput): [BindingInput, BindingInput] | null {
   if (typeof input.chord !== "string" || !input.chord.includes("$mod")) return null;
-  const resolved = serializeChord(parseChord(input.chord));
+  const resolved = serializeChord(parseChord(parse, input.chord));
   let twinString: string | null = null;
   for (const mod of ["Meta", "Control"] as const) {
     const candidate = input.chord.replaceAll("$mod", mod);
-    if (serializeChord(parseChord(candidate)) !== resolved) twinString = candidate;
+    if (serializeChord(parseChord(parse, candidate)) !== resolved) twinString = candidate;
   }
   if (twinString === null) return null;
   const { legacyEitherMod: _legacyEitherMod, title: _title, ...base } = input;
   const twin: BindingInput = { ...base, id: `${base.id}#mod-twin`, chord: twinString };
   if (!input.legacyEitherMod) return [base, twin];
   return [
-    { ...base, chord: withComplementOptional(parseChord(input.chord as string)) },
-    { ...twin, chord: withComplementOptional(parseChord(twinString)) },
+    { ...base, chord: withComplementOptional(parseChord(parse, input.chord as string)) },
+    { ...twin, chord: withComplementOptional(parseChord(parse, twinString)) },
   ];
 }
 
@@ -331,7 +337,7 @@ function withComplementOptional(sequence: KeySequence): KeySequence {
 export function registerDefaultBindings(registry: KeybindingsRegistry): Binding[] {
   const registered: Binding[] = [];
   for (const input of DEFAULT_BINDINGS) {
-    const pair = modPair(input);
+    const pair = modPair(registry.parseKeybinding, input);
     for (const entry of pair ?? [input]) {
       registered.push(registry.getState().registerBinding(entry));
     }
@@ -369,7 +375,7 @@ export function registerDefaultBindingsForAction(
   if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
   const registered: Binding[] = [];
   for (const input of inputs) {
-    const pair = modPair(input);
+    const pair = modPair(registry.parseKeybinding, input);
     for (const entry of pair ?? [input]) {
       if (!includeDefaultEntry(entry.id, options)) continue;
       registered.push(registry.getState().registerBinding(entry));
@@ -386,7 +392,8 @@ export interface DefaultBindingShape {
 
 /** The (scope, parsed chord) pairs registerDefaultBindingsForAction would
  * register for the action, WITHOUT registering them: the validation layer
- * simulates dropped-override restorations against these. Throws on an
+ * simulates dropped-override restorations against these. Takes the parser
+ * rather than a registry because it touches no registry state. Throws on an
  * unknown action id.
  *
  * `characterKeyTriggers: false` mirrors the live registry when the
@@ -395,6 +402,7 @@ export interface DefaultBindingShape {
  * excludes the character-key trigger binding, so the simulation cannot
  * report a conflict against a binding that will not exist. */
 export function defaultBindingShapesForAction(
+  parse: KeybindingParser,
   actionId: string,
   options?: { characterKeyTriggers?: boolean },
 ): DefaultBindingShape[] {
@@ -402,13 +410,13 @@ export function defaultBindingShapesForAction(
   if (inputs.length === 0) throw new Error(`unknown keybinding action "${actionId}"`);
   const shapes: DefaultBindingShape[] = [];
   for (const input of inputs) {
-    const pair = modPair(input);
+    const pair = modPair(parse, input);
     for (const entry of pair ?? [input]) {
       if (!includeDefaultEntry(entry.id, options)) continue;
       shapes.push({
         id: entry.id,
         scope: entry.scope ?? GLOBAL_SCOPE,
-        sequence: typeof entry.chord === "string" ? parseChord(entry.chord) : entry.chord,
+        sequence: typeof entry.chord === "string" ? parseChord(parse, entry.chord) : entry.chord,
       });
     }
   }
@@ -424,8 +432,8 @@ export interface DefaultChordInfo {
 /** The display-oriented (scope, serialized chord) form of
  * defaultBindingShapesForAction, for the read-only settings section's
  * customized-marker comparison. */
-export function defaultBindingChordsForAction(actionId: string): DefaultChordInfo[] {
-  return defaultBindingShapesForAction(actionId).map((shape) => ({
+export function defaultBindingChordsForAction(parse: KeybindingParser, actionId: string): DefaultChordInfo[] {
+  return defaultBindingShapesForAction(parse, actionId).map((shape) => ({
     id: shape.id,
     scope: shape.scope,
     serialized: serializeChord(shape.sequence),

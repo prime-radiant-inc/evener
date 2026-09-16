@@ -1,8 +1,7 @@
+import { ACTIONS, SETTINGS_SCOPE } from "@evener/appwire-client";
 import type { ComponentType } from "react";
 import { useCallback, useEffect } from "react";
-import { ACTIONS } from "../../keybindings/actions";
-import { SETTINGS_SCOPE } from "../../keybindings/defaults";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { chromeStore } from "../../shell/chromeStore";
 import { installKeybindings } from "../../shell/installKeybindings";
 import type { PaneProps } from "../../shell/paneRegistry";

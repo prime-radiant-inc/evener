@@ -71,6 +71,13 @@
     "state/navigation/types.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
-    "spawnHarnessModels.ts"
+    "spawnHarnessModels.ts",
+    "keybindingActions.ts",
+    "keybindingChord.ts",
+    "keybindingDefaults.ts",
+    "keybindingDisplay.ts",
+    "keybindingOverrides.ts",
+    "keybindingRegistry.ts",
+    "keybindingValidation.ts"
   ]
 }
